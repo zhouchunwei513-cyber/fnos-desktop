@@ -145,6 +145,27 @@
         </div>
         <input type="checkbox" id="opt-autohide" />
       </label>
+      <label class="switch-row">
+        <div>
+          <div class="hotkey-title">实验性玻璃标题栏</div>
+          <div class="hotkey-sub">使用 Windows 原生标题栏覆盖层，获得半透明毛玻璃效果（需重启程序生效）</div>
+        </div>
+        <input type="checkbox" id="opt-glass-titlebar" />
+      </label>
+      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">主题色</div>
+          <div class="hotkey-sub">影响标题栏、按钮高亮色</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap" id="accent-palette">
+          <span class="accent-dot" data-color="#3B82F6" style="background:#3B82F6" title="天空蓝"></span>
+          <span class="accent-dot" data-color="#8B5CF6" style="background:#8B5CF6" title="紫罗兰"></span>
+          <span class="accent-dot" data-color="#EC4899" style="background:#EC4899" title="粉红"></span>
+          <span class="accent-dot" data-color="#10B981" style="background:#10B981" title="翡翠绿"></span>
+          <span class="accent-dot" data-color="#F59E0B" style="background:#F59E0B" title="琥珀"></span>
+          <span class="accent-dot" data-color="#06B6D4" style="background:#06B6D4" title="青色"></span>
+        </div>
+      </div>
       <div class="setup-actions" style="margin-top:14px">
         <button type="button" class="btn-primary" id="opt-save">保存界面设置</button>
       </div>

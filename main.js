@@ -21,7 +21,7 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.10.1';
 
 // ---------------------- 启动性能开关 ----------------------
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
@@ -190,7 +190,20 @@ function defaultSettings() {
     autoHideMenuBar: false,
     // v1.10.0：CORS 绕过（直播源跨域），默认开启
     bypassCors: true,
+    // v1.10.1：实验性玻璃标题栏（默认关闭，不改变原功能）
+    glassTitleBar: false,
+    // v1.10.1：主题色（仅影响标题栏叠加色，不动页面内配色）
+    // 可选：'#1e1b2e'（默认深紫黑）、'#0f172a'（深蓝）、'#101828'（纯黑）、'#1f2937'（石墨）、'#312e81'（靛蓝）、'#831843'（酒红）
+    themeColor: '#1e1b2e',
   };
+}
+
+// 把 #RRGGBB 转成 Electron titleBarOverlay 需要的 [r,g,b,a]
+function hexToRgba(hex, alpha) {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || '').trim());
+  if (!m) return [30, 27, 46, alpha == null ? 190 : alpha];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255, alpha == null ? 190 : alpha];
 }
 
 // ---------------------- 启动密码哈希（scrypt + 随机 salt） ----------------------
@@ -484,32 +497,38 @@ function installDownloadTracker(ses) {
 }
 
 let downloadWindows = new Map();
+let downloadSeq = 0;
 function showDownloadProgress(item) {
   const totalBytes = item.getTotalBytes();
   const fname = item.getFilename();
+  const dlId = ++downloadSeq;
+  const CH_CANCEL = `download:cancel:${dlId}`;
+  const CH_OPEN = `download:open:${dlId}`;
+  const CH_CLOSE = `download:close:${dlId}`;
 
   const win = new BrowserWindow({
-    width: 440, height: 150,
+    width: 460, height: 168,
     frame: false,
     transparent: true,
     resizable: false,
     minimizable: false,
     maximizable: false,
     alwaysOnTop: true,
-    skipTaskbar: true,
+    skipTaskbar: false,
     show: false,
     icon: ICON_PATH,
     backgroundColor: '#00000000',
-    parent: mainWindow || undefined,
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
     modal: false,
     webPreferences: {
       preload: path.join(__dirname, 'download-preload.js'),
+      additionalArguments: [`--dl-id=${dlId}`],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
   });
-  downloadWindows.set(item, win);
+  downloadWindows.set(dlId, { win, item });
 
   const send = (channel, payload) => {
     if (win && !win.isDestroyed()) {
@@ -517,6 +536,18 @@ function showDownloadProgress(item) {
     }
   };
   const fmtMB = (b) => b > 0 ? `${(b / 1024 / 1024).toFixed(2)} MB` : '—';
+
+  let closed = false;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    try { item.removeListener('updated', onUpdated); } catch (_) {}
+    try { item.removeListener('done', onDone); } catch (_) {}
+    try { ipcMain.removeHandler(CH_CANCEL); } catch (_) {}
+    try { ipcMain.removeHandler(CH_OPEN); } catch (_) {}
+    try { ipcMain.removeHandler(CH_CLOSE); } catch (_) {}
+    downloadWindows.delete(dlId);
+  };
 
   win.loadFile(path.join(__dirname, 'download.html')).catch(() => {});
   win.once('ready-to-show', () => {
@@ -534,7 +565,12 @@ function showDownloadProgress(item) {
     if (state === 'progressing') {
       const received = item.getReceivedBytes();
       const pct = totalBytes > 0 ? Math.round((received / totalBytes) * 100) : 0;
-      send('download:progress', { received, totalBytes, pct, receivedText: fmtMB(received) });
+      const speedBps = item.getCurrentBytesPerSecond ? item.getCurrentBytesPerSecond() : 0;
+      send('download:progress', {
+        received, totalBytes, pct,
+        receivedText: fmtMB(received),
+        speedText: speedBps > 0 ? `${fmtMB(speedBps)}/s` : '',
+      });
     }
   };
   const onDone = (_e, state) => {
@@ -542,28 +578,27 @@ function showDownloadProgress(item) {
       state, // 'completed' | 'cancelled' | 'interrupted'
       savePath: item.getSavePath(),
     });
-    // 完成后 3 秒自动关闭（用户也可点"打开所在文件夹"或"关闭"）
     if (state === 'completed') {
       setTimeout(() => {
         if (win && !win.isDestroyed()) win.close();
-      }, 3000);
+      }, 3500);
     }
   };
 
   item.on('updated', onUpdated);
   item.once('done', onDone);
-  win.on('closed', () => {
-    try { item.removeListener('updated', onUpdated); } catch (_) {}
-    try { item.removeListener('done', onDone); } catch (_) {}
-    downloadWindows.delete(item);
-  });
+  win.on('closed', cleanup);
 
-  // 从下载窗口收到 IPC：取消 / 打开文件夹 / 关闭
-  ipcMain.handleOnce('download:cancel', () => { try { item.cancel(); } catch (_) {} });
-  ipcMain.handleOnce('download:open-folder', () => {
+  ipcMain.handle(CH_CANCEL, () => {
+    try { if (item.canResume()) item.cancel(); else item.cancel(); } catch (_) {}
+  });
+  ipcMain.handle(CH_OPEN, () => {
     try { shell.showItemInFolder(item.getSavePath()); } catch (_) {}
   });
-  ipcMain.handleOnce('download:close', () => { if (win && !win.isDestroyed()) win.close(); });
+  ipcMain.handle(CH_CLOSE, () => {
+    try { if (!item.isDone()) item.cancel(); } catch (_) {}
+    if (win && !win.isDestroyed()) win.close();
+  });
 }
 
 // ---------------------- 玻璃风格自定义对话框 ----------------------
@@ -1018,21 +1053,38 @@ function registerWindow(win, opts = {}) {
     ].includes(permission));
   });
 
-  // 子窗口的新窗口请求：在新窗口打开（同 partition 以保持登录态）
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  // 子窗口的新窗口请求：在客户端内同 partition 打开（保持登录态 & window.opener 可用于 OAuth postMessage）
+  win.webContents.setWindowOpenHandler(({ url, features, frameName }) => {
+    if (/^(about:blank|javascript:)/i.test(url) || url === '') {
+      // OAuth 弹窗常先打开 about:blank 再由脚本跳转，需放行且保留 opener
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1024, height: 720,
+          minWidth: 640, minHeight: 480,
+          backgroundColor: '#0b0d12',
+          autoHideMenuBar: !!loadSettings().autoHideMenuBar,
+          icon: ICON_PATH,
+          title: APP_NAME,
+          webPreferences: {
+            partition: entry.partition,
+            contextIsolation: true,
+            nodeIntegration: false,
+            webSecurity: true,
+            allowRunningInsecureContent: true,
+            backgroundThrottling: false,
+            enableBlinkFeatures: 'CSSBackdropFilter',
+          },
+        },
+      };
+    }
     if (/^https?:\/\//i.test(url)) {
-      // 判断是否是外部链接（非同 origin）
-      let isExternal = false;
-      try {
-        const urlObj = new URL(url);
-        const entryUrl = entry.url ? new URL(entry.url) : null;
-        if (entryUrl && urlObj.origin !== entryUrl.origin) {
-          // 同 origin 的在新窗口打开；跨 origin 且不是 fnos.net 的，也在新窗口打开
-          // 这里统一在新窗口打开
-        }
-      } catch (_) {}
+      // 普通 http(s) 链接：在独立窗口中打开（共享 partition 以保持登录态）
       setImmediate(() => createAppWindow(url, { partition: entry.partition }));
       return { action: 'deny' };
+    }
+    if (/^(mailto|tel|sms):/i.test(url)) {
+      setImmediate(() => shell.openExternal(url).catch(() => {}));
     }
     return { action: 'deny' };
   });
@@ -1086,15 +1138,23 @@ function createAppWindow(url, opts = {}) {
   const partition = opts.partition || currentPartition;
   applyUA(partition);
 
+  const useGlass = !!cachedSettings.glassTitleBar;
   const win = new BrowserWindow({
     width: opts.width || 1280,
     height: opts.height || 820,
     minWidth: 900,
     minHeight: 600,
     title: opts.title || APP_NAME,
-    backgroundColor: '#0b0d12',
+    backgroundColor: cachedSettings.themeColor || '#0b0d12',
     show: false,
     autoHideMenuBar: false,
+    frame: useGlass ? false : true,
+    titleBarStyle: useGlass ? 'hidden' : 'default',
+    titleBarOverlay: useGlass ? {
+      color: cachedSettings.themeColor || '#1e1b2e',
+      symbolColor: '#ffffff',
+      height: 36,
+    } : false,
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1439,8 +1499,16 @@ function withWebContents(fn) {
   };
 }
 
-// 查找系统中已安装的外部播放器（按优先级）
+// 查找播放器（优先内置 MPV，其次系统已装的 MPV/PotPlayer/VLC）
 function findExternalPlayer() {
+  // 1) 随程序打包的内置 MPV（bin/mpv/mpv.exe）
+  try {
+    const bundled = path.join(process.resourcesPath || __dirname, 'bin', 'mpv', 'mpv.exe');
+    if (fs.existsSync(bundled)) return bundled;
+    const bundledDev = path.join(__dirname, 'bin', 'mpv', 'mpv.exe');
+    if (fs.existsSync(bundledDev)) return bundledDev;
+  } catch (_) {}
+  // 2) 系统中已安装的播放器
   const candidates = [];
   if (process.platform === 'win32') {
     const pf = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)'], process.env['LOCALAPPDATA']].filter(Boolean);
@@ -1483,55 +1551,63 @@ async function extractVideoUrl(wc) {
 }
 
 // 用外部播放器打开当前视频（硬件解码由外部播放器完成）
-async function openInExternalPlayer(wc, ownerWin) {
+// 内置 MPV 播放器路径（打包后位于 app.asar.unpacked/bin/mpv/mpv.exe）
+function getMpvPath() {
+  // 开发环境：源码目录下的 bin/mpv/mpv.exe
+  const devPath = path.join(__dirname, '..', 'bin', 'mpv', 'mpv.exe');
+  if (fs.existsSync(devPath)) return devPath;
+  // 打包后环境：extraResources 解压到 app.asar.unpacked 旁边
+  try {
+    const { app } = require('electron');
+    const prodPath = path.join(path.dirname(app.getPath('exe')), 'resources', 'bin', 'mpv', 'mpv.exe');
+    if (fs.existsSync(prodPath)) return prodPath;
+  } catch {}
+  return null;
+}
+
+async function openInMpv(wc, ownerWin) {
   if (!wc || wc.isDestroyed()) return;
+  const mpvPath = getMpvPath();
+  if (!mpvPath) {
+    const r = await glassMessageBox(ownerWin || mainWindow, {
+      type: 'question', buttons: ['去下载 MPV', '取消'],
+      defaultId: 0, cancelId: 1,
+      title: 'MPV 播放器未安装',
+      message: '内置 MPV 播放器组件未找到。',
+      detail: 'MPV 是开源视频播放器（GPL 协议），支持 GPU 硬件解码。点击"去下载 MPV"前往 GitHub 下载页面，将 mpv.exe 放入程序目录的 bin/mpv/ 文件夹即可。',
+    });
+    if (r === 0) shell.openExternal('https://github.com/zhongfly/mpv-winbuild/releases/latest');
+    return;
+  }
   const url = await extractVideoUrl(wc);
   if (!url) {
     glassMessageBox(ownerWin || mainWindow, {
       type: 'info', buttons: ['我知道了'], defaultId: 0, cancelId: 0,
       title: '未找到可播放视频',
       message: '请先在飞牛影视中打开一个视频并开始播放，再使用此功能。',
-      detail: '提示：直播流、受 DRM 保护的视频，或使用 MSE/Blob 的播放源暂不支持外部播放器打开（因为外部播放器拿不到流地址）。普通影片文件（mp4/mkv 等直链）可以自动调用 MPV/PotPlayer/VLC。',
+      detail: '提示：直播流、受 DRM 保护的视频，或使用 MSE/Blob 的播放源暂不支持 MPV 打开（因为 MPV 拿不到流地址）。普通影片文件（mp4/mkv 等直链）可以正常调用 MPV 硬解播放。',
     });
-    return;
-  }
-  const player = findExternalPlayer();
-  if (!player) {
-    const r = await glassMessageBox(ownerWin || mainWindow, {
-      type: 'question', buttons: ['下载 MPV', '下载 VLC', '取消'],
-      defaultId: 0, cancelId: 2,
-      title: '未检测到外部播放器',
-      message: '系统中没有找到 MPV / PotPlayer / VLC / MPC-HC。',
-      detail: '推荐使用 MPV（开源、轻量、硬解能力强），点"下载 MPV"前往官网，安装后再试。',
-    });
-    if (r === 0) shell.openExternal('https://mpv.io/installation/');
-    else if (r === 1) shell.openExternal('https://www.videolan.org/vlc/');
     return;
   }
   try {
-    // 把当前页面的 Cookie 传给外部播放器（飞牛视频需要鉴权）
     const targetHost = (() => { try { return new URL(url).host; } catch { return ''; } })();
     let cookieHeader = '';
     try {
-      const cookies = await wc.session.cookies.get({ domain: '', path: '' });
-      const relevant = cookies.filter(c => targetHost.includes(c.domain || '') || (c.domain || '').includes(targetHost.split(':')[0]));
+      const cookies = await wc.session.cookies.get({});
+      const relevant = cookies.filter(c => {
+        if (!c.domain) return false;
+        return targetHost.includes(c.domain) || c.domain.includes(targetHost.split(':')[0]);
+      });
       cookieHeader = relevant.map(c => `${c.name}=${c.value}`).join('; ');
     } catch {}
     const args = [];
-    const lower = player.toLowerCase();
-    if (lower.includes('mpv')) {
-      if (cookieHeader) args.push(`--http-header-fields=Cookie: ${cookieHeader}`);
-      args.push(url);
-    } else if (lower.includes('vlc')) {
-      args.push(url);
-      if (cookieHeader) args.push(':http-cookie=' + cookieHeader);
-    } else {
-      args.push(url); // PotPlayer/MPC 通常直接用 URL
-    }
-    cp.spawn(player, args, { detached: true, stdio: 'ignore' }).unref();
+    args.push('--hwdec=auto'); // 自动硬件解码
+    if (cookieHeader) args.push(`--http-header-fields=Cookie: ${cookieHeader}`);
+    args.push(url);
+    cp.spawn(mpvPath, args, { detached: true, stdio: 'ignore' }).unref();
   } catch (e) {
-    console.error('spawn player failed', e);
-    glassErrorBox(ownerWin || mainWindow, '启动外部播放器失败：' + (e.message || e));
+    console.error('spawn mpv failed', e);
+    glassErrorBox(ownerWin || mainWindow, '启动 MPV 播放器失败：' + (e.message || e));
   }
 }
 
@@ -1618,8 +1694,8 @@ function buildMenu() {
         { label: '全屏 / 退出全屏', accelerator: 'F11',
           click: withWebContents((_wc, win) => win.setFullScreen(!win.isFullScreen())) },
         { type: 'separator' },
-        { label: '用外部播放器打开当前视频',
-          click: withWebContents((wc, win) => { openInExternalPlayer(wc, win); }) },
+        { label: '用 MPV 打开当前视频（硬解）',
+          click: withWebContents((wc, win) => { openInMpv(wc, win); }) },
         ...(IS_DEV ? [{ role: 'toggleDevTools', label: '开发者工具' }] : []),
       ],
     },
@@ -1640,6 +1716,7 @@ function buildMenu() {
           helpWin.setMenuBarVisibility(true);
           helpWin.loadFile(HELP_PAGE).catch(() => {});
         }},
+        { label: '检查更新…', click: () => { checkForUpdates(true); } },
         { type: 'separator' },
         { label: `关于 ${APP_NAME}`, click: () => {
           glassMessageBox(mainWindow, {
@@ -1731,6 +1808,8 @@ ipcMain.handle('settings:get', async () => {
     shortcuts: { ...DEFAULT_SHORTCUTS, ...(s.shortcuts || {}) },
     urlRewrites: Array.isArray(s.urlRewrites) ? s.urlRewrites : [],
     autoHideMenuBar: !!s.autoHideMenuBar,
+    glassTitleBar: !!s.glassTitleBar,
+    themeColor: String(s.themeColor || '#4F6EF7'),
     version: APP_VERSION,
   };
 });
@@ -1792,11 +1871,19 @@ ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
 ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
   try {
     const autoHide = !!opts?.autoHideMenuBar;
-    saveSettings({ autoHideMenuBar: autoHide });
+    const glassTitle = !!opts?.glassTitleBar;
+    const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
+    saveSettings({ autoHideMenuBar: autoHide, glassTitleBar: glassTitle, themeColor: accent });
+    cachedSettings.autoHideMenuBar = autoHide;
+    cachedSettings.glassTitleBar = glassTitle;
+    cachedSettings.themeColor = accent;
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
         w.setMenuBarVisibility(!autoHide);
+        if (glassTitle && w.titleBarStyle !== 'hidden') {
+          w.setTitleBarOverlay({ color: '#00000000', symbolColor: hexToRgba(accent, 0.9), height: 32 });
+        }
       } catch (_) {}
     }
     scheduleMenuRebuild();
@@ -1809,6 +1896,20 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
 ipcMain.on('settings:close', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (win && !win.isDestroyed()) win.close();
+});
+
+ipcMain.handle('settings:set-accent-color', async (_e, color) => {
+  try {
+    const c = String(color || '#4F6EF7');
+    saveSettings({ themeColor: c });
+    cachedSettings.themeColor = c;
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.setTitleBarOverlay({ color: '#00000000', symbolColor: hexToRgba(c, 0.9), height: 32 }); } catch (_) {}
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
 });
 
 // ---------------------- 生命周期 ----------------------

@@ -248,6 +248,24 @@
     }
   });
 
+  // --------- 玻璃标题栏 ---------
+  const optGlassTitle = document.getElementById('opt-glass-title');
+  if (optGlassTitle) {
+    optGlassTitle.addEventListener('change', async () => {
+      try {
+        await fnosSettings.setUIOptions({ glassTitleBar: !!optGlassTitle.checked });
+      } catch {}
+    });
+  }
+
+  // --------- 主题色 ---------
+  const accentDot = document.getElementById('accent-dot');
+  if (accentDot) {
+    accentDot.addEventListener('input', async () => {
+      await fnosSettings.setAccentColor(accentDot.value);
+    });
+  }
+
   btnClose.addEventListener('click', () => fnosSettings.close());
 
   // F5/Esc/右键阻断

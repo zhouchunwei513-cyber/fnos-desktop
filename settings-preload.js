@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   setUIOptions: (opts) =>
     ipcRenderer.invoke('settings:set-ui-options', {
       autoHideMenuBar: !!opts?.autoHideMenuBar,
+      glassTitleBar: !!opts?.glassTitleBar,
     }),
+  setAccentColor: (color) =>
+    ipcRenderer.invoke('settings:set-accent-color', String(color || '#5865F2')),
   close: () => ipcRenderer.send('settings:close'),
 });

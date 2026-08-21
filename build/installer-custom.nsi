@@ -17,7 +17,7 @@
 
 ; ------------------ 基本信息 ------------------
 !define PRODUCT_NAME       "FNOS"
-!define PRODUCT_VERSION    "1.11"
+!define PRODUCT_VERSION    "1.11.0"
 !define PRODUCT_PUBLISHER  "FNOS"
 !define PRODUCT_REGKEY     "Software\${PRODUCT_PUBLISHER}\${PRODUCT_NAME}"
 !define UNINSTALL_REGKEY   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"

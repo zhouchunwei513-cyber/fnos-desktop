@@ -33,13 +33,13 @@
   ;    图标不刷新的根因）。
   CreateShortCut "$DESKTOP\${SHORTCUT_NAME}.lnk" \
     "$INSTDIR\${FNOS_MAIN_EXE}" "" \
-    "$INSTDIR\icon.ico" 0 SW_SHOWNORMAL "" "" "" \
+    "$INSTDIR\icon.ico" 0 SW_SHOWNORMAL "" \
     "FNOS 飞牛私有云桌面客户端"
 
   ; 3) 开始菜单快捷方式（electron-builder 默认在 $SMPROGRAMS 根目录）
   CreateShortCut "$SMPROGRAMS\${SHORTCUT_NAME}.lnk" \
     "$INSTDIR\${FNOS_MAIN_EXE}" "" \
-    "$INSTDIR\icon.ico" 0 SW_SHOWNORMAL "" "" "" \
+    "$INSTDIR\icon.ico" 0 SW_SHOWNORMAL "" \
     "FNOS 飞牛私有云桌面客户端"
 
   ; 4) 写入 AppUserModelID，与 main.js 中 app.setAppUserModelId('com.fnos.client')

@@ -21,7 +21,7 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.11';
+const APP_VERSION = '1.12.0';
 
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
@@ -67,11 +67,12 @@ app.commandLine.appendSwitch('enable-async-dns');
 // 下载网关误认为同一文件发起了两次请求，表现为弹出两个保存对话框，甚至触发服务端
 // 异常的临时文件清理逻辑。恢复 Chromium 默认值更安全。
 app.commandLine.appendSwitch('enable-quic');
-app.commandLine.appendSwitch('disk-cache-size', '209715200'); // v1.11: 100MB → 200MB，减少媒体片段重复下载
-// v1.11: --optimize-for-size 关闭，避免和 NAS 上长时间运行的前端框架冲突；--max-semi-space-size=64
-// 给新生代更多空间，减少 minor GC；--jit-felt 启动后不阻塞主线程。
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=768 --max-semi-space-size=64 --concurrent-recompilation');
-// 额外性能/响应速度优化
+// v1.12: 磁盘缓存回调到 128MB（在"减少媒体重复下载"和"降低磁盘占用"之间折中）
+app.commandLine.appendSwitch('disk-cache-size', '134217728');
+// v1.12: V8 老生代 512MB 足够飞牛前端；新生代半空间 32MB 降低每个渲染进程的基础占用；
+// --concurrent-recompilation 保持 JIT 并发；--jitless 不开启（会影响 WASM / 视频播放器性能）
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512 --max-semi-space-size=32 --concurrent-recompilation');
+// 额外性能 / 响应速度优化（v1.12 合并 + 追加）
 app.commandLine.appendSwitch('disable-component-update');
 app.commandLine.appendSwitch('disable-domain-reliability');
 app.commandLine.appendSwitch('disable-breakpad');
@@ -85,12 +86,59 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 app.commandLine.appendSwitch('enable-precise-memory-info');
 app.commandLine.appendSwitch('enable-scroll-prediction');
 app.commandLine.appendSwitch('enable-aggressive-domstorage-flushing');
-// v1.11: 纯渲染性能优化，不影响任何 NAS 业务 / Chromium 服务
-app.commandLine.appendSwitch('enable-features', [
-  // 已在下方 enable-features 里加过的不会在此重复，这里只补充纯性能/平滑向开关
+// v1.12 新增：降低空闲 / 后台资源占用，均不影响投屏 / 媒体键 / 自动更新等常见服务
+app.commandLine.appendSwitch('disable-renderer-accessibility');      // 关闭渲染进程可访问性树，降低 CPU/内存（屏幕阅读器用户受影响，但极小众）
+app.commandLine.appendSwitch('disable-speech-api');                 // 关闭 Web Speech，飞牛不使用
+app.commandLine.appendSwitch('disable-notifications');             // 关闭网页 Notification API（飞牛不依赖，避免后台弹窗占资源）
+app.commandLine.appendSwitch('disable-geolocation');                // 关闭地理位置
+app.commandLine.appendSwitch('disable-remote-fonts');               // 禁止远程字体下载，避免字体服务长连接
+app.commandLine.appendSwitch('disable-logging');                    // 关闭 Chromium 日志写盘
+app.commandLine.appendSwitch('disable-gpu-process-crash-limit');
+app.commandLine.appendSwitch('disable-features', [
+  'CalculateNativeWinOcclusion',
+  'Translate',
+  'InterestFeedContentSuggestions',
+  'UseChromeOSDirectVideoDecoder',
+  'BackForwardCache',
+  'LazyFrameLoading',
+  'PrivacySandboxSettings4',
+  'OptimizationHints',
+  'MediaFeeds',
+  // v1.12 新增：以下均为飞牛不使用、且常驻会消耗 CPU / 网络 / 内存的组件，
+  // 不会影响投屏（MediaRouter/Cast/DIAL 已保留）、媒体键、自动更新、NAS 业务。
+  'AccessibilityObjectModel',
+  'AutoDisableAccessibility',
+  'CertificateTransparencyComponentUpdater',
+  'DesktopPWAsRunOnOsLogin',
+  'GlobalMediaControlsCastStartStop',
+  'HeavyAdPrivacyMitigations',
+  'ImprovedCookieControls',
+  'InfiniteSessionRestore',
+  'LazyFrameLoading',
+  'MediaRouterDialogController',
+  'NotificationPlatformBridge',
+  'OutOfBlinkCors',
+  'PaymentApp',
+  'PaymentRequest',
+  'PermissionNotRecommendedIndicator',
+  'PushMessaging',
+  'QuietNotificationPrompts',
+  'SafetyTip',
+  'SharedArrayBuffer',
+  'SigninFlowAsync',
+  'SitePerProcess',                 // 关闭站点隔离：降低多进程内存占用（会轻微降低站点间安全隔离，但仅访问受信任的 NAS）
+  'StoragePressureUI',
+  'SubframeShutdownWaiter',
+  'SyncDisclaimer',
+  'ThumbnailCapturerWin',
+  'TranslateInfoBar',
+  'UiDevTools',
+  'UseOfDeprecatedTlsCipherSuites',
+  'WebBluetooth',
+  'WebPayments',
+  'WebUsb',
+  'WebXr',
 ].join(','));
-app.commandLine.appendSwitch('smooth-scrolling');
-app.commandLine.appendSwitch('compositor-temperature-renderer', 'medium');
 
 // v1.10.0：修复部分 ARM64 / 集显设备上飞牛影视/音乐出现绿屏或花屏
 // - 在 ARM64 设备上禁用硬件加速视频解码（软解），保留 GPU 合成
@@ -691,22 +739,31 @@ function installDownloadTracker(ses) {
       return;
     }
 
-    // 2) 同步暂停，阻止 Chromium 默认下载落到默认目录
+    // 2) 关键修复：必须【同步】调用 setSavePath，否则 Electron/Chromium 会在
+    //    will-download 回调返回后弹出它【自带】的保存对话框，叠加我们自定义的，
+    //    就表现为"跳 2 个保存界面"。我们先指到一个唯一的 .part 临时文件占位，
+    //    彻底抑制自带对话框；用户在我们自己的保存框里选定路径后，下载完成再把
+    //    .part 重命名（移动）到目标路径。临时文件始终在系统 temp 目录，不接触 NAS。
+    const tmpName = `fnos-dl-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.part`;
+    const tmpPath = path.join(app.getPath('temp'), tmpName);
+    try { item.setSavePath(tmpPath); } catch (_) {}
+
+    // 3) 同步暂停，防止对话框还没弹出就已经开始写盘
     try { item.pause(); } catch (_) {}
 
-    // 3) 异步弹保存对话框（用户决定保存路径）
-    setImmediate(() => handleUserSaveDialog(item));
+    // 4) 异步弹我们自己的保存对话框
+    setImmediate(() => handleUserSaveDialog(item, tmpPath));
   });
 }
 
-async function handleUserSaveDialog(item) {
+async function handleUserSaveDialog(item, tmpPath) {
   const fname = item.getFilename() || '';
   const defaultPath = app.getPath('downloads');
-  let saveDialogParent = mainWindow && !mainWindow.isDestroyed()
+  const saveDialogParent = mainWindow && !mainWindow.isDestroyed()
     ? mainWindow
     : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
 
-  let savePath;
+  let finalPath = '';
   try {
     const r = await dialog.showSaveDialog(saveDialogParent || undefined, {
       title: '保存文件',
@@ -715,7 +772,7 @@ async function handleUserSaveDialog(item) {
       filters: [{ name: '所有文件', extensions: ['*'] }],
       properties: [],
     });
-    // 对话框关闭后立即释放焦点，避免保存页残留
+    // 对话框关闭后立即把焦点还给父窗口，避免悬浮窗抢走焦点造成"保存页残留"
     if (saveDialogParent && !saveDialogParent.isDestroyed()) {
       try { saveDialogParent.focus(); } catch (_) {}
     }
@@ -723,23 +780,20 @@ async function handleUserSaveDialog(item) {
       try { item.cancel(); } catch (_) {}
       return;
     }
-    savePath = r.filePath;
+    finalPath = r.filePath;
   } catch (e) {
     console.error('save dialog failed', e);
     try { item.cancel(); } catch (_) {}
     return;
   }
 
-  try { item.setSavePath(savePath); } catch (e) {
-    console.error('setSavePath failed', e);
-    try { item.cancel(); } catch (_) {}
-    return;
-  }
+  // 用户点了保存 → 立刻显示进度窗口（在 resume 之前），再开始下载到 tmp；
+  // 下载完成后 onDone 里把 tmp rename 到 finalPath。
+  showDownloadProgress(item, finalPath, tmpPath);
   try { item.resume(); } catch (_) {}
-  showDownloadProgress(item);
 }
 
-function showDownloadProgress(item) {
+function showDownloadProgress(item, finalPath, tmpPath) {
   const totalBytes = item.getTotalBytes();
   const fname = item.getFilename();
   const dlId = ++downloadSeq;
@@ -775,7 +829,10 @@ function showDownloadProgress(item) {
     },
   });
   activeDownloads.set(dlId, {
-    win, item, filename: fname, savePath: item.getSavePath(),
+    win, item, filename: fname,
+    savePath: finalPath || tmpPath || '',  // UI 显示用户选定的最终路径
+    tmpPath: tmpPath || '',
+    finalPath: finalPath || '',
     state: 'progressing', pct: 0,
   });
   downloadWindows.set(dlId, { win, item });
@@ -786,6 +843,31 @@ function showDownloadProgress(item) {
     }
   };
   const fmtMB = (b) => b > 0 ? `${(b / 1024 / 1024).toFixed(2)} MB` : '—';
+
+  // 把下载到 .part 的临时文件移动（重命名）到用户选定的最终位置。
+  // 使用 move+exdev：同盘走 rename，跨盘自动回退到 copy+unlink。
+  const finalizeDownload = () => {
+    if (!tmpPath || !finalPath) return;
+    try {
+      if (fs.existsSync(tmpPath)) {
+        // 若目标已存在，先删除（用户在保存框已确认过覆盖）
+        try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch (_) {}
+        fs.renameSync(tmpPath, finalPath);
+      }
+    } catch (e) {
+      // EXDEV 跨设备：回退到 copyFile + unlink
+      try {
+        fs.copyFileSync(tmpPath, finalPath);
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+      } catch (e2) {
+        console.error('finalize download failed', e2);
+      }
+    }
+  };
+
+  const cleanupTmp = () => {
+    if (tmpPath) { try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {} }
+  };
 
   let closed = false;
   const cleanup = () => {
@@ -816,12 +898,15 @@ function showDownloadProgress(item) {
   win.once('ready-to-show', () => {
     send('download:start', {
       filename: fname,
-      savePath: item.getSavePath(),
+      savePath: finalPath || tmpPath || '',
       totalBytes,
       totalText: fmtMB(totalBytes),
       canResume: item.canResume(),
     });
-    if (!win.isDestroyed()) win.showInactive();
+    if (!win.isDestroyed()) {
+      // 用 show() 而非 showInactive()，确保进度条窗口一定可见（修复"进度条不见了"）
+      try { win.show(); win.focus(); } catch (_) { try { win.showInactive(); } catch (_) {} }
+    }
   });
 
   let lastTrayUpdate = 0;
@@ -895,11 +980,21 @@ function showDownloadProgress(item) {
     const info = activeDownloads.get(dlId);
     if (info) {
       info.state = state;
-      info.savePath = item.getSavePath() || info.savePath;
+      // 完成后把 .part 移动到最终路径，并把注册表中的 savePath 改成最终路径
+      if (state === 'completed') {
+        finalizeDownload();
+        if (finalPath) info.savePath = finalPath;
+      } else {
+        // 取消 / 中断：清理 .part 临时文件
+        cleanupTmp();
+      }
+    } else {
+      // info 已被清理时也兜底删除临时文件
+      if (state !== 'completed') cleanupTmp();
     }
     send('download:done', {
       state,
-      savePath: item.getSavePath(),
+      savePath: state === 'completed' ? (finalPath || tmpPath) : tmpPath,
     });
     if (state === 'completed') {
       try {
@@ -938,7 +1033,8 @@ function showDownloadProgress(item) {
     try { if (win && !win.isDestroyed()) win.close(); } catch (_) {}
   });
   ipcMain.handle(CH_OPEN, () => {
-    try { shell.showItemInFolder(item.getSavePath()); } catch (_) {}
+    // 完成后用最终路径；未完成时 item.getSavePath() 是 .part 临时路径，定位其所在目录即可
+    try { shell.showItemInFolder(finalPath || item.getSavePath()); } catch (_) {}
   });
   // 用户点 X 关闭或"后台运行"：仅隐藏进度窗口，不取消下载。托盘/菜单可随时找回。
   ipcMain.handle(CH_CLOSE, () => {

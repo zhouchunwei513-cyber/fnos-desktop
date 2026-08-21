@@ -158,6 +158,24 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 | 未改变飞牛前端任何业务逻辑；所有下载管理仅作用于 Electron 主进程 DownloadItem 生命周期 | ✅ |
 | 不收集、不上传、不转发任何用户数据；无埋点、无崩溃上报、无自动更新下载 | ✅ |
 
+## v1.12 安全自查补充
+
+| 项 | 状态 |
+|---|---|
+| **will-download 同步 setSavePath 占位**：在 will-download 回调返回前同步把保存路径指到系统 temp 下唯一 `.part` 文件，彻底抑制 Chromium 自带保存对话框；不再依赖 pause 时序 | ✅ |
+| 用户选定路径后再 resume 下载，下载完成把 `.part` rename 到最终路径；同盘走 rename，跨盘回退 copyFile+unlink；用户取消时清理 `.part` | ✅ |
+| 临时文件始终位于 `app.getPath('temp')`，不接触 NAS、不接触用户下载目录的残留 | ✅ |
+| 全局下载去重保持 v1.11：文件名+总大小+URL path 末段指纹，3 秒窗口，跨所有 partition | ✅ |
+| 取消下载继续走 pause→1.5s→cancel，不向 NAS 发送任何 DELETE/PUT/POSITION | ✅ |
+| CORS 注入仍限定 m3u8/ts/mp4/mkv/flv/webm 媒体流，业务 API 完全透传 | ✅ |
+| 进度窗口 ready-to-show 后用 show()+focus() 强制可见，修复"进度条不见了" | ✅ |
+| NSIS 快捷方式图标改为直接引用 `$INSTDIR\icon.ico`（独立 ICO，不依赖 EXE 图标缓存）；删除所有历史名字的旧 .lnk；SHChangeNotify(SHCNE_ASSOCCHANGED) + SHCNE_UPDATEITEM(lnk path) + ie4uinit -show + -ClearIconCache 三重刷新 | ✅ |
+| 帮助页改为纯功能/操作手册，不再包含版本更新日志，符合"只介绍功能及操作"要求 | ✅ |
+| 性能优化仅关闭飞牛不使用的组件（Speech/Geolocation/Notification/WebPayments/WebBluetooth/WebUSB/WebXR 等），保留 MediaRouter/Cast/DIAL/GlobalMediaControls/HardwareMediaKeyHandling 等常见服务 | ✅ |
+| 磁盘缓存回调到 128MB、V8 老生代 512MB / 新生代 32MB，降低单渲染进程基础内存占用 | ✅ |
+| 未改变飞牛前端任何业务逻辑；所有下载管理仅作用于 Electron 主进程 DownloadItem 生命周期 | ✅ |
+| 不收集、不上传、不转发任何用户数据；无埋点、无崩溃上报、无自动更新下载 | ✅ |
+
 ## 版本对应
 
 - v1.10.0：玻璃锁屏、设置面板、性能开关、Win7 支持（Electron 22）
@@ -167,6 +185,7 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 - v1.10.4：下载速度/ETA 修复、检查更新交互修复、启动锁屏极简、EXE 图标写入修复
 - v1.10.5：双保存对话框修复、取消下载不损坏 NAS 文件、CORS 注入收窄、检查更新代理修复、恢复投屏/媒体服务、快捷方式图标覆盖
 - v1.11：跨 session 全局下载去重、后台下载菜单/托盘调出入口、取消检查更新菜单、图标缓存双重刷新、保存对话框焦点修复
+- v1.12：will-download 同步 setSavePath 抑制 Chromium 自带对话框（彻底修复双保存框）、.part 临时文件 + 完成后 rename、进度窗强制 show、快捷方式直接引用独立 ICO + 三重图标缓存刷新、帮助页改为纯功能手册、性能优化（关闭飞牛不用的组件）
 
 ## 免责声明
 

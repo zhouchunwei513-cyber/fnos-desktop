@@ -1,5 +1,5 @@
 ; =====================================================================
-; FNOS 自定义 NSIS 安装脚本 (v1.11)
+; FNOS 自定义 NSIS 安装脚本 (v1.12)
 ; 由沙箱内的 Linux makensis 直接编译，不依赖 wine。
 ; 功能：
 ;   - 检测程序是否在运行，若运行则提示退出后重试
@@ -17,7 +17,7 @@
 
 ; ------------------ 基本信息 ------------------
 !define PRODUCT_NAME       "FNOS"
-!define PRODUCT_VERSION    "1.11.0"
+!define PRODUCT_VERSION    "1.12.0"
 !define PRODUCT_PUBLISHER  "FNOS"
 !define PRODUCT_REGKEY     "Software\${PRODUCT_PUBLISHER}\${PRODUCT_NAME}"
 !define UNINSTALL_REGKEY   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -99,38 +99,46 @@ Section "-Core" SecCore
   WriteRegDWORD HKCU "${UNINSTALL_REGKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_REGKEY}" "NoRepair" 1
 
-  ; v1.11: 彻底解决桌面/开始菜单快捷方式图标不刷新的问题。
-  ; 1) 删除旧 .lnk 让 Windows 重新解析图标；
-  ; 2) 同时删除用户级 IconCache.db 中相关缓存通过 SHChangeNotify；
-  ; 3) 显式调用 ie4uinit.exe -ClearIconCache（Win10/11 通用）刷新图标缓存。
-  ; 注意：不使用 -show 参数，避免在某些 Windows 版本上短暂闪任务栏。
+  ; v1.12: 彻底解决桌面/开始菜单快捷方式图标不刷新的顽固问题。
+  ; 1) 删除所有可能存在的旧 .lnk（包括历史上其他快捷方式名）让 Windows 必须重建；
+  ; 2) 桌面 / 开始菜单图标直接引用 $INSTDIR\icon.ico（独立 ICO 文件，
+  ;    不依赖 EXE 资源段缓存），避免 Windows 资源管理器对 EXE 图标的内部缓存；
+  ; 3) SHChangeNotify 广播 SHCNE_ASSOCCHANGED + SHCNE_UPDATEITEM，
+  ;    并调用 ie4uinit.exe -show（Win10/11 会重建图标缓存并刷新任务栏/桌面）。
   Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
+  Delete "$DESKTOP\FNOS Cloud.lnk"
+  Delete "$DESKTOP\FNOS 飞牛私有云.lnk"
   !insertmacro MUI_STARTMENU_WRITE_BEGIN App
     Delete "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"
+    Delete "$SMPROGRAMS\$StartMenuFolder\FNOS Cloud.lnk"
+    Delete "$SMPROGRAMS\$StartMenuFolder\FNOS 飞牛私有云.lnk"
     Delete "$SMPROGRAMS\$StartMenuFolder\卸载 ${PRODUCT_NAME}.lnk"
   !insertmacro MUI_STARTMENU_WRITE_END
 
-  ; 桌面快捷方式（始终创建）
-  ; iconPathName 同时指向 $INSTDIR\${MAIN_EXE}（rcedit 已把飞牛 LOGO 写入 EXE 资源段）
-  ; 并通过额外写入 .ico 旁挂，确保即使 Windows 图标缓存异常也能正确解析
-  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL "" "" "" "FNOS 飞牛私有云桌面客户端"
-  ; 设置 AppUserModelID（和 main.js 中 setAppUserModelId 一致）
+  ; 确保 icon.ico 存在于安装目录（package.json 已把 icon.ico 列入 files）
+  ; 桌面快捷方式：图标使用独立 ICO 文件，绕开 EXE 图标缓存
+  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\icon.ico" 0 SW_SHOWNORMAL "" "" "" "FNOS 飞牛私有云桌面客户端"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\PropertySystem\SystemTileData\$DESKTOP\${PRODUCT_NAME}.lnk" "AppUserModelID" "com.fnos.client"
 
-  ; 开始菜单程序组（始终创建）
+  ; 开始菜单程序组
   !insertmacro MUI_STARTMENU_WRITE_BEGIN App
     CreateDirectory "$SMPROGRAMS\$StartMenuFolder"
-    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"   "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL "" "" "" "FNOS 飞牛私有云桌面客户端"
-    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\卸载 ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\Uninstall.exe" 0 SW_SHOWNORMAL
+    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk" "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\icon.ico" 0 SW_SHOWNORMAL "" "" "" "FNOS 飞牛私有云桌面客户端"
+    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\卸载 ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\icon.ico" 0 SW_SHOWNORMAL
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\PropertySystem\SystemTileData\$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk" "AppUserModelID" "com.fnos.client"
   !insertmacro MUI_STARTMENU_WRITE_END
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  ; v1.11: 双重刷新图标缓存。SHChangeNotify 广播关联变更 + ie4uinit 清理缓存。
-  ; SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL)
+  ; v1.12: 三重刷新图标缓存
+  ; 1) SHChangeNotify(SHCNE_ASSOCCHANGED, ...) 通知所有进程关联变更
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
-  ; 异步调用 ie4uinit.exe -ClearIconCache（不阻塞安装完成）
+  ; 2) SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, lnkPath) 强制资源管理器重读该快捷方式
+  System::Call 'shell32::SHChangeNotify(i 0x00002000, i 0x0005, w "$DESKTOP\${PRODUCT_NAME}.lnk", i 0)'
+  ; 3) ie4uinit.exe -show 清理并重建图标缓存（Win10/11 通用；在 Win7/8 上自动忽略）
+  nsExec::ExecToLog '"$WINDIR\System32\ie4uinit.exe" -show'
+  Pop $0
+  ; 兼容 Win7/8：-ClearIconCache
   nsExec::ExecToLog '"$WINDIR\System32\ie4uinit.exe" -ClearIconCache'
   Pop $0
 SectionEnd

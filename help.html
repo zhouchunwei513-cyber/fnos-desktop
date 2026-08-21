@@ -256,31 +256,9 @@ code {
 <main class="container">
 
   <section class="card">
-    <h2>v1.11 更新说明</h2>
-    <ul>
-      <li><b>彻底修复"点下载弹 2 个保存对话框"</b>：上一版的去重仅在单个 session 内生效，而飞牛前端在不同 partition 下可能从多个会话发起相同下载；本版新增<b>跨 session 全局下载注册表</b>，以「文件名 + 文件总大小 + URL 路径末段」作为下载指纹，3 秒内相同指纹只弹出一次保存对话框，其余自动静默取消。will-download 改为同步回调后立即 <code>pause()</code>，再通过 <code>setImmediate</code> 异步弹出保存框，避免 Chromium 默认保存路径与自定义保存框竞争。</li>
-      <li><b>保存对话框点击"保存"后立即消失</b>：保存对话框关闭（无论确认或取消）后立即把焦点还给父窗口，防止部分 Windows 环境下焦点被悬浮窗抢走导致对话框"假滞留"。</li>
-      <li><b>后台下载可随时调回前台</b>：进度窗口右上角的 × 不再关闭下载，而是<b>隐藏到后台</b>继续下载。顶部「文件 → 下载任务」子菜单会列出所有正在下载的文件（带实时百分比）和最近 8 条已完成记录；<b>系统托盘右键菜单</b>同样提供"正在下载（N）"和"最近完成的下载"两个子菜单，点击活跃项立即把对应进度窗口调到前台，点击已完成项直接打开文件所在文件夹并选中该文件。下载完成后系统通知区还会弹出"下载完成"提示。</li>
-      <li><b>取消"检查更新"菜单选项</b>：根据作者反馈，移除了「帮助 → 检查更新…」菜单项，避免用户在不便访问 GitHub 的网络环境下误点产生困惑。版本更新信息统一通过飞牛论坛发布帖获取。</li>
-      <li><b>快捷方式图标再次加固</b>：在 v1.10.5 基础上，NSIS 安装阶段额外调用 <code>ie4uinit.exe -ClearIconCache</code> 主动清理 Windows 图标缓存，并把 <code>SHChangeNotify(SHCNE_ASSOCCHANGED)</code> 广播与之组合，确保新安装后桌面和开始菜单立即显示飞牛 LOGO，无需重启资源管理器。</li>
-      <li><b>下载窗口布局微调</b>：进度窗口从 560×200 调整为 560×210，文件名与保存路径双行省略更稳定，速度 / ETA / 百分比三段状态栏在所有 DPI 下都不再被裁切。</li>
-      <li><b>安全 / 红线遵守</b>：① 所有下载取消仍然走 <code>pause → 1.5s → cancel</code> 流程，<b>不向 NAS 发送任何 DELETE/PUT 请求</b>，不会影响或损坏 NAS 上的原文件；② CORS 注入继续严格限定在 <code>m3u8/ts/mp4/mkv/flv/webm</code> 媒体流，业务 API（含下载、删除、重命名、取消等）一律透传；③ 未删除 / 禁用任何 Chromium 常见服务（投屏、媒体控制、硬件多媒体键、自动更新等保持 v1.10.5 状态）；④ 未改变飞牛前端任何业务逻辑。</li>
-    </ul>
-  </section>
-
-  <section class="card">
-    <h2>v1.10.5 更新说明</h2>
-    <ul>
-      <li><b>修复点下载弹出 2 个保存对话框</b>：同 URL + 同文件名在 1.5 秒内重复触发 will-download 时自动去重；移除了 <code>enable-parallel-downloading</code> 和 <code>max-connections-per-host=32</code> 两个会让部分 NAS 网关认为同一文件发起两次请求的激进开关；will-download 触发后立即 <code>pause()</code> 阻止 Chromium 默认下载落到默认目录。</li>
-      <li><b>修复下载进度框布局只显示一部分</b>：窗口从 500×168 调整为 560×200，允许横向拉伸；卡片内部改为 flex 列布局，文件名、保存路径自动省略，底部状态栏 / 按钮组使用 nowrap 防止换行裁切。</li>
-      <li><b>修复取消下载可能损坏 NAS 原文件（重大）</b>：① 取消按钮不再立即 <code>item.cancel()</code>（会发 TCP RST，飞牛 NAS 在某些版本下会误清理临时文件，极端情况波及原文件），改为先 <code>pause()</code> 停止接收数据，等 1.5 秒让服务端完成当前 chunk 并正常 EOF，再 <code>cancel()</code>；② 收紧 CORS 拦截器 —— 之前对所有响应都注入 <code>Access-Control-Allow-Origin: *</code> + <code>Allow-Credentials: true</code>（这在规范上是非法组合），且对所有 OPTIONS 请求直接返回 204 空响应，可能干扰飞牛前端的取消下载 / 删除等业务 API；现在只对 <code>m3u8 / ts / mp4 / mkv / flv</code> 等媒体 / 直播流注入 CORS，业务 API 的 OPTIONS 完全透传给 NAS。</li>
-      <li><b>修复开了代理仍提示无法连接 GitHub</b>：检查更新请求显式绑定 <code>session.defaultSession</code>，Electron <code>net</code> 会自动读取 Windows 系统代理（Clash / v2ray / Shadowsocks 等只要是"系统代理"或"TUN 模式"都会生效）；超时从 12 秒延长到 25 秒；失败后自动重试 1 次；错误提示中明确告知代理模式要求。</li>
-      <li><b>检查更新弹窗统一为透明玻璃风格</b>："正在检查更新…"的转圈弹窗改为和其他提示一致的毛玻璃卡片样式，不再使用自绘的不透明小方块。</li>
-      <li><b>快捷方式图标彻底覆盖</b>：NSIS 安装脚本在创建新快捷方式前先删除旧的 <code>.lnk</code>；为 EXE 和快捷方式显式指定 icon index 0；安装完成后调用 <code>SHChangeNotify</code> 通知资源管理器刷新图标缓存；写入 <code>AppUserModelID</code> 与主程序一致，任务栏分组不再使用旧图标缓存。</li>
-      <li><b>恢复被误禁用的 Chromium 服务</b>：v1.10.3/v1.10.4 为"性能优化"关闭了 <code>MediaRouter</code>、<code>CastMediaRouteProvider</code>、<code>DialMediaRouteProvider</code>、<code>GlobalMediaControls</code>、<code>HardwareMediaKeyHandling</code>，这些会影响飞牛影视的投屏（Chromecast / DLNA）、系统媒体控制面板、硬件多媒体键等功能。v1.10.5 全部恢复，只保留 <code>Translate</code>、<code>InterestFeedContentSuggestions</code>、<code>PrivacySandbox</code> 等与 NAS 业务无关的开关。</li>
-      <li><b>安全审查</b>：CORS 注入范围最小化、下载取消流程不向 NAS 发送任何 DELETE/PUT、检查更新请求不携带 Cookie / 凭据（<code>credentials: 'omit'</code>）、不去解析 GitHub 返回的 HTML（只取 <code>tag_name</code>/<code>name</code>/<code>body</code>/<code>html_url</code> 四个字段）。</li>
-    </ul>
-    <p style="margin-top:10px;color:var(--muted);font-size:12px;">提示：如果升级后桌面快捷方式仍显示旧图标，重启资源管理器或注销重登一次即可；这是 Windows 图标缓存机制所致，不是安装包本身的问题。</p>
+    <h2>软件简介</h2>
+    <p>FNOS 桌面客户端是飞牛私有云（fnOS）的<b>非官方第三方</b> Windows 桌面端。基于 Electron 22 构建，原生支持 Windows 7 SP1 x64 / Windows 10 / Windows 11，把飞牛 NAS 的文件、相册、影视、Docker 等所有应用收纳在一个独立客户端内，不跳系统浏览器，可锁定、可一键隐藏、可用内置 MPV 显卡硬解 4K 视频。</p>
+    <div class="tip">本软件<b>不收集、不上传、不转发</b>任何用户数据；无埋点、无崩溃上报、无静默下载。所有 NAS 密码使用系统 DPAPI + scrypt 加密保存在本机。</div>
   </section>
 
   <section class="card">
@@ -317,7 +295,8 @@ code {
         <ul>
           <li><b>返回 FNOS 主页</b>：主窗口回到服务器首页，已打开的应用可选择后台运行或关闭</li>
           <li><b>切换窗口</b>：列出所有已打开的应用窗口，快速跳转</li>
-          <li><b>切换服务器</b>：返回登录页，可选择历史地址快速切换（已登录服务器的账号密码会自动保持）</li>
+          <li><b>下载任务</b>：列出所有正在后台下载的文件（带实时百分比）和最近完成的下载，点击可把进度窗口调到前台，或打开文件所在文件夹</li>
+          <li><b>切换服务器</b>：返回登录页，可选择历史地址快速切换</li>
           <li><b>锁定 FNOS / 一键隐藏</b>：仅在已设置启动密码时出现</li>
         </ul>
       </div>
@@ -343,7 +322,7 @@ code {
         <h3>帮助</h3>
         <ul>
           <li><b>操作步骤帮助</b>：打开本页</li>
-          <li><b>检查更新…</b>：请求 GitHub Releases，提示「已是最新版」或「发现新版本」</li>
+          <li><b>关于 FNOS</b>：查看当前客户端版本号</li>
         </ul>
       </div>
     </div>
@@ -364,12 +343,14 @@ code {
   </section>
 
   <section class="card">
-    <h2>内置 MPV 播放器（显卡硬解）</h2>
+    <h2>下载文件到本地</h2>
     <ul>
-      <li>安装包已内置 <b>mpv.exe</b>（约 114 MB，GPL 开源），无需另外下载。</li>
-      <li>在飞牛影视播放页打开 <b>视图 → 用 MPV 打开当前视频（硬解）</b>，客户端会自动抓取页面上的视频地址并调用 MPV。</li>
-      <li>MPV 直接调用电脑显卡进行硬解，4K / HDR 视频更流畅，CPU 占用更低。</li>
-      <li>如需手动操作，也可以在系统终端运行：<code>"%LOCALAPPDATA%\Programs\FNOS\bin\mpv\mpv.exe" &lt;视频地址&gt;</code>。</li>
+      <li>在飞牛文件应用中点下载后，会弹出客户端的「<b>另存为</b>」对话框，选择保存位置后开始下载。</li>
+      <li>下载进度窗口实时显示文件名、保存路径、进度条、百分比、<b>下载速度</b>、已下载 / 总大小和剩余时间（ETA）。</li>
+      <li><b>点进度窗口右上角的 × 不会取消下载</b>，窗口只是隐藏到后台，下载继续进行。</li>
+      <li><b>找回后台下载</b>：顶部菜单「<b>文件 → 下载任务</b>」会列出所有正在下载的文件（带实时百分比）和最近 8 条已完成记录；<b>系统托盘右键菜单</b>同样提供"正在下载（N）"和"最近完成的下载"两个子菜单。点击活跃项可调出对应进度窗口，点击已完成项可打开文件所在文件夹。</li>
+      <li>下载完成后系统通知区会弹出"下载完成"提示，进度窗口自动关闭；点击「<b>打开所在文件夹</b>」会在资源管理器中选中该文件。</li>
+      <li><b>取消下载</b>会先本地暂停、等待 1.5 秒再安全断开，不会向 NAS 发送任何删除请求，不影响 NAS 上的原文件。</li>
     </ul>
   </section>
 
@@ -384,12 +365,22 @@ code {
   </section>
 
   <section class="card">
-    <h2>下载文件</h2>
+    <h2>内置 MPV 播放器（显卡硬解）</h2>
     <ul>
-      <li>在飞牛文件应用中点下载后，会先弹出系统「<b>另存为</b>」对话框，<b>选择保存位置后才开始下载</b>。</li>
-      <li>下载进度窗口实时显示文件名、进度条、百分比、<b>下载速度</b>、已下载 / 总大小。</li>
-      <li><b>关闭进度窗口不会取消下载</b>：下载会继续在后台进行，完成后窗口自动弹出提示。</li>
-      <li>下载完成后点击「<b>打开所在文件夹</b>」直接定位到文件。</li>
+      <li>安装包已内置 <b>mpv.exe</b>（约 114 MB，GPL 开源），无需另外下载。</li>
+      <li>在飞牛影视播放页打开 <b>视图 → 用 MPV 打开当前视频（硬解）</b>，客户端会自动抓取页面上的视频地址并调用 MPV。</li>
+      <li>MPV 直接调用电脑显卡进行硬解，4K / HDR 视频更流畅，CPU 占用更低。</li>
+      <li>如需手动操作，也可以在系统终端运行：<code>"%LOCALAPPDATA%\Programs\FNOS\bin\mpv\mpv.exe" &lt;视频地址&gt;</code>。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>多窗口与后台运行</h2>
+    <ul>
+      <li>在飞牛中打开的每个应用都在<b>独立窗口</b>中运行，可以同时使用多个应用。</li>
+      <li>点击主窗口关闭按钮时，可选择<b>「隐藏到托盘」</b>（所有窗口继续后台运行，适合下载、同步等长任务）或<b>「退出程序」</b>。</li>
+      <li>在系统托盘（任务栏右下角）<b>左键单击 FNOS 图标</b>显示所有窗口；<b>右键</b>打开菜单，可切换窗口、查看下载任务、退出程序。</li>
+      <li>选择「返回 FNOS 主页」时，如果还有其他应用窗口打开，会让你选择是<b>后台保留</b>还是<b>一并关闭</b>。</li>
     </ul>
   </section>
 
@@ -413,45 +404,13 @@ code {
   </section>
 
   <section class="card">
-    <h2>直播 / 绿屏 / 授权问题修复</h2>
+    <h2>直播 / 绿屏 / 授权问题</h2>
     <ul>
-      <li><b>电视直播跨域</b>：客户端自动注入 CORS 响应头，等效于 KNAS 浏览器插件，飞牛影视的直播频道可直接观看。</li>
+      <li><b>电视直播跨域</b>：客户端自动为 <code>m3u8 / ts / mp4 / mkv / flv / webm</code> 等媒体流注入 CORS 响应头，等效于 KNAS 浏览器插件，飞牛影视的直播频道可直接观看；业务 API 的跨域处理完全透传给 NAS，不做任何改写。</li>
       <li><b>绿屏 / 花屏</b>：移除了导致 ARM / 集显设备绿屏的 COEP / CORP 头，并伪装 User-Agent 为桌面 Chrome，飞牛音乐、飞牛影视登录后不再绿屏。</li>
       <li><b>NAS 账号授权无反应</b>：所有 OAuth 弹窗改为在客户端内以独立窗口打开，授权完成后自动回跳，不会再循环登录页。</li>
+      <li><b>投屏 / 媒体键</b>：保留 Chromium 原生的 MediaRouter、CastMediaRouteProvider、DialMediaRouteProvider、GlobalMediaControls、HardwareMediaKeyHandling，飞牛影视可正常投屏到 Chromecast / DLNA 设备，系统媒体面板和键盘多媒体键可控。</li>
       <li><b>Win7 支持</b>：基于 Electron 22（Chromium 108，最后一个支持 Win7 的版本）打包，Win7 SP1 x64 可安装运行。</li>
-    </ul>
-  </section>
-
-  <section class="card">
-    <h2>检查更新</h2>
-    <p>点击 <b>帮助 → 检查更新…</b>，程序请求 GitHub Releases API：</p>
-    <ul>
-      <li>如果当前已是最新版，提示「<b>已是最新版本</b>」。</li>
-      <li>如果有新版，弹窗显示<b>版本号和更新内容</b>，点击「前往下载」自动打开 GitHub Release 页面。</li>
-    </ul>
-    <p>项目开源地址：<code>https://github.com/zhouchunwei513-cyber/fnos-desktop</code></p>
-  </section>
-
-  <section class="card">
-    <h2>v1.10.4 更新说明</h2>
-    <ul>
-      <li><b>下载速度 / ETA 显示修复</b>：不再使用 Electron 自带的瞬时速度（曾出现 200MB/s 假速度），改为 3 秒滑动窗口手动计算，单位自动在 B/s、KB/s、MB/s 间切换，并新增<b>剩余时间</b>（ETA）显示。</li>
-      <li><b>下载窗关闭不再取消任务</b>：关闭进度窗仅隐藏到后台，托盘菜单可随时找回；所有下载完成后自动从托盘列表移除。</li>
-      <li><b>检查更新交互修复</b>：点击后立即弹出「正在检查更新…」玻璃转圈窗，12 秒超时；已是最新版 / 发现新版本 / 网络失败三种情况都有明确反馈，新版弹窗可直接打开 GitHub 下载页。</li>
-      <li><b>启动锁屏精简</b>：有启动密码时，锁屏界面只保留<b>密码输入框 + 解锁按钮</b>，首次设置 / 修改密码入口全部收在「设置」窗口中。</li>
-      <li><b>程序图标 / 快捷方式图标修复</b>：重新启用 electron-builder 的可执行文件图标写入（rcedit），EXE、桌面快捷方式、开始菜单、任务栏分组统一使用飞牛 LOGO（多尺寸 ICO：16/20/24/32/40/48/64/96/128/256）。</li>
-      <li><b>性能优化</b>：渲染进程后台节流关闭、GPU 光栅化、零拷贝、BackForwardCache 关闭、媒体路由 / 翻译 / 隐私沙盒等无用组件禁用；下载进度 UI 250ms 节流。</li>
-    </ul>
-    <p style="margin-top:10px;color:var(--muted);font-size:12px;">提示：如果升级后桌面快捷方式仍显示旧图标，这是 Windows 图标缓存问题，重启资源管理器或注销重登即可刷新。</p>
-  </section>
-
-  <section class="card">
-    <h2>多窗口与后台运行</h2>
-    <ul>
-      <li>在飞牛中打开的每个应用都在<b>独立窗口</b>中运行，可以同时使用多个应用。</li>
-      <li>点击主窗口关闭按钮时，可选择<b>「隐藏到托盘」</b>（所有窗口继续后台运行，适合下载、同步等长任务）或<b>「退出程序」</b>。</li>
-      <li>在系统托盘（任务栏右下角）<b>左键单击 FNOS 图标</b>显示所有窗口；<b>右键</b>打开菜单，可切换窗口、检查更新、退出程序。</li>
-      <li>选择「返回 FNOS 主页」时，如果还有其他应用窗口打开，会让你选择是<b>后台保留</b>还是<b>一并关闭</b>。</li>
     </ul>
   </section>
 
@@ -469,11 +428,21 @@ code {
     <p>托盘右键 → <b>退出</b>，或在文件菜单里选退出。选「隐藏到托盘」程序仍会在后台运行。</p>
     <h3>数据保存在哪里？</h3>
     <p>所有设置和登录信息保存在 <code>%APPDATA%\FNOS</code>，使用系统 DPAPI 加密。卸载程序时不会删除此目录，重新安装后登录数据仍在。</p>
+    <h3>桌面 / 开始菜单图标还是旧的？</h3>
+    <p>安装程序会自动调用 <code>SHChangeNotify</code> 和 <code>ie4uinit -show</code> 刷新 Windows 图标缓存。极少数情况下如果仍未刷新，可在任务管理器里重启「Windows 资源管理器」，或注销重登一次即可。</p>
+  </section>
+
+  <section class="card">
+    <h2>开源与免责</h2>
+    <ul>
+      <li>开源仓库：<code>https://github.com/zhouchunwei513-cyber/fnos-desktop</code>，MIT 协议。</li>
+      <li>本项目为第三方社区作品，与飞牛（fnOS）官方没有隶属关系。"fnOS"及相关商标归其权利人所有。</li>
+    </ul>
   </section>
 
 </main>
 
-<div class="footer">FNOS CLIENT · 1.11</div>
+<div class="footer">FNOS CLIENT · 1.12</div>
 
 </body>
 </html>

@@ -13,5 +13,5 @@ contextBridge.exposeInMainWorld('fnos', {
   // 删除一条历史（传入 partition 字符串）
   removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
   platform: process.platform,
-  version: '1.11'
+  version: '1.12.0'
 });

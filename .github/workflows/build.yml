@@ -31,7 +31,7 @@ jobs:
         run: pnpm install
 
       - name: Build Windows installer
-        run: pnpm dist
+        run: pnpm exec electron-builder --win --x64 --publish never
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

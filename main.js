@@ -21,8 +21,7 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.12.0';
-
+const APP_VERSION = '1.13.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -163,6 +162,13 @@ const LOCK_PRELOAD = path.join(__dirname, 'lock-preload.js');
 const SETTINGS_PAGE = path.join(__dirname, 'settings.html');
 const SETTINGS_PRELOAD = path.join(__dirname, 'settings-preload.js');
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
+// v1.12.1：历史服务器列表单独存一份到 servers.json，并写 .bak 备份。
+// 这是"历史地址不记录"的兜底：即使 settings.json 因 DPAPI/损坏/写入失败而读空，
+// servers.json 仍是明文、原子写入、带备份，历史与上次连接信息不会丢。
+const HISTORY_FILE = path.join(app.getPath('userData'), 'servers.json');
+// v1.12.1：确保 userData 目录存在，避免便携版 / 首次运行时 settings.json 写入失败，
+// 导致"历史地址不记录"（saveSettings 的 mkdir 在某些环境下静默失败）。
+try { fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true }); } catch (_) {}
 const ICON_PATH = path.join(__dirname, 'icon.ico');
 const ICON_PNG = path.join(__dirname, 'icon.png');
 
@@ -487,6 +493,7 @@ function loadSettings() {
       }
     }
   } catch (_) { raw = {}; }
+  raw = mergeHistoryStore(raw);
   cachedSettings = { ...defaultSettings(), ...raw };
   if (!Array.isArray(cachedSettings.history)) cachedSettings.history = [];
   if (!Array.isArray(cachedSettings.urlMappings)) cachedSettings.urlMappings = [];
@@ -520,14 +527,13 @@ function saveSettings(patch) {
   try {
     cachedSettings = { ...loadSettings(), ...patch, updatedAt: Date.now() };
     fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+    // v1.12.1：settings.json 改为明文 JSON 存储。
+    // 之前用 safeStorage(DPAPI) 加密，便携版换目录/换 Windows 账户或 DPAPI 异常时，
+    // 解密会静默返回空，导致每次启动都读成空设置——表现为"历史地址不记录、
+    // 上次服务器/登录状态丢失"。设置中仅含服务器地址等非敏感信息（不含密码，
+    // NAS 登录态保存在各自 partition 的 Cookie 中），明文更可靠且可移植。
     const payload = JSON.stringify(cachedSettings);
-    let out;
-    if (isEncryptionAvailable()) {
-      out = JSON.stringify({ __enc__: encryptString(payload) });
-    } else {
-      out = payload;
-    }
-    fs.writeFileSync(SETTINGS_FILE, out, { mode: 0o600 });
+    fs.writeFileSync(SETTINGS_FILE, payload, { mode: 0o600 });
   } catch (e) { console.warn('saveSettings error', e); }
 }
 
@@ -589,6 +595,15 @@ function upsertHistory(serverInput, parsed) {
     lastConnectHref: parsed.href,
     currentPartition: partition,
   });
+  // v1.12.1：同步写入独立历史文件（明文 + 备份），双保险防丢失
+  writeHistoryStore({
+    history: list.slice(0, 10),
+    server: serverInput.trim(),
+    origin: parsed.origin,
+    lastConnectHref: parsed.href,
+    currentPartition: partition,
+    lastConnectedAt: Date.now(),
+  });
 }
 
 function removeHistoryByPartition(partition) {
@@ -600,6 +615,17 @@ function removeHistoryByPartition(partition) {
     patch.currentPartition = 'persist:connect';
   }
   saveSettings(patch);
+  // v1.12.1：同步更新独立历史文件
+  try {
+    const hs = readHistoryStore();
+    const hsList = (Array.isArray(hs.history) ? hs.history : []).filter((h) => h.partition !== partition);
+    const hsPatch = { ...hs, history: hsList };
+    if (hs.currentPartition === partition) {
+      hsPatch.server = ''; hsPatch.origin = ''; hsPatch.lastConnectHref = '';
+      hsPatch.currentPartition = 'persist:connect';
+    }
+    writeHistoryStore(hsPatch);
+  } catch (_) {}
   // 清除该分区的存储数据（Cookie / localStorage / 缓存）
   try {
     const ses = session.fromPartition(partition);
@@ -607,6 +633,64 @@ function removeHistoryByPartition(partition) {
     ses.clearCache().catch(() => {});
   } catch (_) {}
   return list;
+}
+
+// v1.12.1：历史服务器独立持久化（明文 + 原子写 + .bak 备份），
+// 不依赖可能受 DPAPI/损坏影响的 settings.json。仅存地址信息，不含密码。
+function readHistoryStore() {
+  const readOne = (p) => {
+    try {
+      if (fs.existsSync(p)) {
+        const t = fs.readFileSync(p, 'utf-8').trim();
+        if (t) {
+          const o = JSON.parse(t);
+          if (o && typeof o === 'object') return o;
+        }
+      }
+    } catch (_) {}
+    return null;
+  };
+  return readOne(HISTORY_FILE) || readOne(HISTORY_FILE + '.bak') || {};
+}
+function writeHistoryStore(store) {
+  try {
+    fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+    const tmp = HISTORY_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(store), { mode: 0o600 });
+    // 先备份旧文件，再原子替换
+    try { if (fs.existsSync(HISTORY_FILE)) fs.copyFileSync(HISTORY_FILE, HISTORY_FILE + '.bak'); } catch (_) {}
+    fs.renameSync(tmp, HISTORY_FILE);
+    return true;
+  } catch (e) {
+    console.warn('writeHistoryStore error', e);
+    return false;
+  }
+}
+// 供 loadSettings 合并：把 servers.json 里的历史/上次连接信息并入设置
+function mergeHistoryStore(raw) {
+  try {
+    const hs = readHistoryStore();
+    const hsList = Array.isArray(hs.history) ? hs.history : [];
+    const curList = Array.isArray(raw.history) ? raw.history : [];
+    if (hsList.length > 0 || curList.length > 0) {
+      // 以 partition 去重合并，settings 里的优先（更新鲜）
+      const map = new Map();
+      for (const h of hsList) if (h && h.partition) map.set(h.partition, h);
+      for (const h of curList) if (h && h.partition) map.set(h.partition, h);
+      const merged = Array.from(map.values())
+        .sort((a, b) => (b.lastConnectedAt || 0) - (a.lastConnectedAt || 0))
+        .slice(0, 10);
+      raw.history = merged;
+    }
+    // 上次连接信息：servers.json 与 settings 取最新
+    if (!raw.server && hs.server) raw.server = hs.server;
+    if (!raw.origin && hs.origin) raw.origin = hs.origin;
+    if (!raw.lastConnectHref && hs.lastConnectHref) raw.lastConnectHref = hs.lastConnectHref;
+    if ((!raw.currentPartition || raw.currentPartition === 'persist:connect') && hs.currentPartition) {
+      raw.currentPartition = hs.currentPartition;
+    }
+  } catch (_) {}
+  return raw;
 }
 
 // ---------------------- User Agent ----------------------
@@ -697,6 +781,7 @@ function installCorsBypass(ses) {
 //  4) 取消下载仍走 pause -> 1.5s -> cancel 安全断开流程，不向 NAS 发 DELETE/PUT。
 const activeDownloads = new Map(); // dlId -> { win, item, filename, savePath, state }
 const finishedDownloads = []; // { filename, savePath, completedAt }，最多保留 10 条
+const downloadWindows = new Map(); // dlId -> { win, item }（v1.12.1：补齐声明，否则 ReferenceError 导致进度窗不显示/菜单无任务）
 let downloadSeq = 0;
 
 // 全局去重：key = 文件名 + 文件总大小（同文件名 + 同大小视为同一文件，20 秒窗口）
@@ -789,7 +874,12 @@ async function handleUserSaveDialog(item, tmpPath) {
 
   // 用户点了保存 → 立刻显示进度窗口（在 resume 之前），再开始下载到 tmp；
   // 下载完成后 onDone 里把 tmp rename 到 finalPath。
-  showDownloadProgress(item, finalPath, tmpPath);
+  try {
+    showDownloadProgress(item, finalPath, tmpPath);
+  } catch (e) {
+    // 进度窗口创建失败也不能让下载挂起：直接恢复下载并记录日志
+    console.error('showDownloadProgress failed', e);
+  }
   try { item.resume(); } catch (_) {}
 }
 
@@ -836,6 +926,8 @@ function showDownloadProgress(item, finalPath, tmpPath) {
     state: 'progressing', pct: 0,
   });
   downloadWindows.set(dlId, { win, item });
+  // 立即刷新菜单，让"下载任务"子菜单立刻出现该任务（v1.12.1：修复菜单为空）
+  try { rebuildTrayMenu(); buildMenu(); } catch (_) {}
 
   const send = (channel, payload) => {
     if (win && !win.isDestroyed()) {
@@ -1528,6 +1620,14 @@ function registerWindow(win, opts = {}) {
   win.webContents.on('did-navigate', (_e, url) => {
     entry.url = url;
     scheduleMenuRebuild();
+    // v1.12.1：每次主框架导航后立即把 Cookie / localStorage 落盘，
+    // 确保登录态不会因为强杀进程而丢失（Electron 默认有延迟写盘）。
+    try {
+      const ses = win.webContents.session;
+      if (ses && typeof ses.cookies.flushStorageData === 'function') {
+        ses.cookies.flushStorageData().catch(() => {});
+      }
+    } catch (_) {}
   });
   win.webContents.on('did-navigate-in-page', (_e, url) => {
     entry.url = url;
@@ -1934,6 +2034,8 @@ function connectTo(serverInput) {
   const parsed = normalizeServer(serverInput);
   const targetPartition = partitionForServer(parsed);
   upsertHistory(serverInput, parsed);
+  // v1.12.1：立即把历史写入磁盘，避免 30s 定时 flush 前进程被强杀导致历史不记录
+  try { flushPartition(targetPartition); } catch (_) {}
 
   if (currentPartition !== targetPartition) {
     // 关闭所有旧窗口，用新 partition 重建
@@ -2038,9 +2140,13 @@ function withWebContents(fn) {
 // 获取内置 MPV 播放器路径（随安装包打包，bin/mpv/mpv.exe）
 function findExternalPlayer() {
   try {
-    // 打包后：resources/bin/mpv/mpv.exe（extraResources 复制到 resources/bin/mpv/）
-    const prodPath = path.join(process.resourcesPath || '', 'bin', 'mpv', 'mpv.exe');
+    // 打包后：app.asar 内的 bin/mpv/mpv.exe 通过 asarUnpack 解包到 app.asar.unpacked/bin/mpv/mpv.exe
+    // （可执行文件无法直接从 asar 内 spawn，必须走 unpacked 路径）
+    const prodPath = path.join(process.resourcesPath || '', 'app.asar.unpacked', 'bin', 'mpv', 'mpv.exe');
     if (fs.existsSync(prodPath)) return prodPath;
+    // 兼容历史 / extraResources 布局
+    const prodPath2 = path.join(process.resourcesPath || '', 'bin', 'mpv', 'mpv.exe');
+    if (fs.existsSync(prodPath2)) return prodPath2;
     // 开发环境：源码目录 bin/mpv/mpv.exe
     const devPath = path.join(__dirname, 'bin', 'mpv', 'mpv.exe');
     if (fs.existsSync(devPath)) return devPath;
@@ -2116,6 +2222,64 @@ async function openInMpv(wc, ownerWin) {
   }
 }
 
+// 打开系统终端，工作目录定位到内置 MPV 所在目录，方便直接运行 mpv.exe <视频地址>。
+// 实现要点：把命令写进一个临时 .bat 文件再用 start 执行，彻底绕开 spawn 参数重组
+// 与 cmd start "标题" 引号/中文被二次解析的问题（否则会报 "Windows 找不到文件 '终端'"）。
+function openSystemTerminal() {
+  try {
+    let cwd = '';
+    try {
+      const mpv = findExternalPlayer();
+      if (mpv) cwd = path.dirname(mpv);
+    } catch (_) {}
+    if (!cwd || !fs.existsSync(cwd)) {
+      try { cwd = app.isPackaged ? path.dirname(process.execPath) : __dirname; } catch (_) {}
+    }
+    if (!cwd || !fs.existsSync(cwd)) cwd = app.getPath('home') || process.env.SystemRoot || 'C:\\';
+
+    if (process.platform !== 'win32') {
+      // 非 Windows 兜底（当前项目仅面向 Windows）
+      const term = process.env.TERM_PROGRAM || 'xterm';
+      cp.spawn(term, [], { cwd, detached: true, stdio: 'ignore' }).unref();
+      return;
+    }
+
+    const sysRoot = process.env.SystemRoot || 'C:\\Windows';
+    const ps = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const comspec = process.env.ComSpec || path.join(sysRoot, 'System32', 'cmd.exe');
+    const usePs = fs.existsSync(ps);
+
+    // 生成临时批处理：chcp 65001 切 UTF-8，cd /d 切目录，start 开新控制台窗口并保持。
+    // 标题用纯 ASCII "FNOS Terminal"，避免中文标题在某些代码页下被解析成程序名。
+    const batPath = path.join(app.getPath('temp'), `fnos-term-${process.pid}-${Date.now()}.bat`);
+    const lines = [
+      '@echo off',
+      'chcp 65001 >nul',
+      `cd /d "${cwd}"`,
+    ];
+    if (usePs) {
+      lines.push(`start "FNOS Terminal" "${ps}" -NoExit -Command "$Host.UI.RawUI.WindowTitle='FNOS Terminal'"`);
+    } else {
+      lines.push(`start "FNOS Terminal" "${comspec}" /k title FNOS Terminal`);
+    }
+    fs.writeFileSync(batPath, lines.join('\r\n'), { encoding: 'utf8' });
+
+    // detached 启动该 bat；bat 执行完后自删（用 start "" /b 后台删除，避免占用）
+    const child = cp.spawn(comspec, ['/c', batPath], {
+      detached: true, stdio: 'ignore', windowsHide: false,
+    });
+    child.on('error', () => {});
+    child.unref();
+    // 延迟删除临时 bat（等它执行完）
+    setTimeout(() => { try { if (fs.existsSync(batPath)) fs.unlinkSync(batPath); } catch (_) {} }, 5000);
+  } catch (e) {
+    console.error('open system terminal failed', e);
+    try {
+      glassErrorBox(mainWindow, '打开系统终端失败：' + (e.message || e));
+    } catch (_) {}
+  }
+}
+
 function buildMenu() {
   const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
 
@@ -2149,11 +2313,6 @@ function buildMenu() {
           label: '切换窗口',
           submenu: switchWindowItems,
         },
-        // 下载任务入口（活跃中 + 最近完成）。后台下载隐藏后可从这里调出。
-        {
-          label: '下载任务',
-          submenu: buildDownloadsMenu(),
-        },
         { type: 'separator' },
         ...(hasAppPassword() ? [{ label: `锁定 FNOS${lockAcc ? `  (${lockAcc})` : ''}`, click: () => lockApp() }] : []),
         { label: `一键隐藏 / 呼出${hideAcc ? `  (${hideAcc})` : ''}`, click: () => toggleCompletelyHidden() },
@@ -2168,6 +2327,10 @@ function buildMenu() {
         },
         { role: 'close', label: '关闭' },
       ],
+    },
+    {
+      label: '下载',
+      submenu: buildDownloadsMenu(),
     },
     {
       label: '编辑',
@@ -2202,10 +2365,26 @@ function buildMenu() {
         { type: 'separator' },
         { label: '全屏 / 退出全屏', accelerator: 'F11',
           click: withWebContents((_wc, win) => win.setFullScreen(!win.isFullScreen())) },
-        { type: 'separator' },
+        ...(IS_DEV ? [{ type: 'separator' }, { role: 'toggleDevTools', label: '开发者工具' }] : []),
+      ],
+    },
+    {
+      label: '工具',
+      submenu: [
         { label: '用 MPV 打开当前视频（硬解）',
           click: withWebContents((wc, win) => { openInMpv(wc, win); }) },
-        ...(IS_DEV ? [{ role: 'toggleDevTools', label: '开发者工具' }] : []),
+        { type: 'separator' },
+        { label: '系统终端', accelerator: 'Ctrl+`',
+          click: () => openSystemTerminal() },
+        { label: 'MPV 安装目录',
+          click: () => {
+            const mpv = findExternalPlayer();
+            if (mpv) {
+              try { shell.showItemInFolder(mpv); } catch (_) {}
+            } else {
+              glassErrorBox(mainWindow, '未找到内置 MPV 播放器（bin/mpv/mpv.exe）。');
+            }
+          } },
       ],
     },
     {
@@ -2445,6 +2624,21 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(() => {
+  // v1.12.1：诊断日志——记录实际使用的 userData 目录和设置文件路径，
+  // 便于排查"历史记录丢失"（常见原因是旧实例仍在托盘运行占用单实例锁，
+  // 新解压的 exe 根本没启动，或误判了数据目录）。
+  try {
+    const diag = [
+      `[FNOS] userData = ${app.getPath('userData')}`,
+      `[FNOS] settings = ${SETTINGS_FILE}`,
+      `[FNOS] history  = ${HISTORY_FILE}`,
+      `[FNOS] exe      = ${process.execPath}`,
+      `[FNOS] version  = ${APP_VERSION}`,
+      `[FNOS] time     = ${new Date().toISOString()}`,
+      '',
+    ].join('\n');
+    fs.appendFileSync(path.join(app.getPath('userData'), 'fnos-diag.log'), diag);
+  } catch (_) {}
   applyUA('persist:connect');
   applyUA('persist:default');
 

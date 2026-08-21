@@ -158,6 +158,23 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 | 未改变飞牛前端任何业务逻辑；所有下载管理仅作用于 Electron 主进程 DownloadItem 生命周期 | ✅ |
 | 不收集、不上传、不转发任何用户数据；无埋点、无崩溃上报、无自动更新下载 | ✅ |
 
+## v1.13 安全自查补充
+
+| 项 | 状态 |
+|---|---|
+| 修复 `downloadWindows` 未声明导致进度窗创建抛 ReferenceError、进度条不显示且菜单无任务的问题；事件注册与窗口创建加 try/catch 兜底 | ✅ |
+| 历史服务器新增独立 `servers.json` 存储（明文 + 原子写 + `.bak` 备份），与 `settings.json` 双保险；`settings.json` 由 DPAPI 加密改为明文 JSON（仅含服务器地址等非敏感信息，密码保存在各 partition Cookie），解决便携版换目录/DPAPI 异常导致历史读空 | ✅ |
+| `loadSettings` 合并 `servers.json` 与 `settings.json` 历史（按 partition 去重），任一份存活即不丢历史 | ✅ |
+| 连接成功与每次主框架导航后立即 `flushStorageData` / `cookies.flushStorageData`，避免强杀进程丢失登录态 | ✅ |
+| 内置 mpv.exe 通过 `asarUnpack` 解包到 `resources/app.asar.unpacked/bin/mpv/`，`findExternalPlayer` 优先查找该路径，可执行文件不从 asar 内 spawn | ✅ |
+| 新增「下载」「工具」一级菜单；工具菜单含 MPV 硬解、系统终端、MPV 安装目录；系统终端用临时 .bat 启动 PowerShell/cmd，工作目录定位 MPV 目录，标题纯 ASCII 避免中文解析错误 | ✅ |
+| 系统终端仅启动本机控制台，不接收/拼接任何外部输入，无命令注入面 | ✅ |
+| 启动诊断日志 `fnos-diag.log` 仅记录 userData 路径、exe 路径、版本、时间，不含任何账号/服务器凭据 | ✅ |
+| 取消下载继续走 pause→1.5s→cancel，不向 NAS 发送任何 DELETE/PUT/POSITION | ✅ |
+| CORS 注入仍限定媒体流，业务 API 完全透传；保留投屏/媒体键等常见服务 | ✅ |
+| 安装包所有图标（安装程序、卸载程序、EXE、快捷方式、标题栏）统一使用飞牛 LOGO `icon.ico`；快捷方式直接引用 `$INSTDIR\icon.ico` + 三重图标缓存刷新 | ✅ |
+| 未改变飞牛前端任何业务逻辑；不收集/不上传/不转发任何用户数据 | ✅ |
+
 ## v1.12 安全自查补充
 
 | 项 | 状态 |
@@ -176,6 +193,21 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 | 未改变飞牛前端任何业务逻辑；所有下载管理仅作用于 Electron 主进程 DownloadItem 生命周期 | ✅ |
 | 不收集、不上传、不转发任何用户数据；无埋点、无崩溃上报、无自动更新下载 | ✅ |
 
+## v1.13 安全自查补充
+
+| 项 | 状态 |
+|---|---|
+| 修复 `downloadWindows` 未声明导致进度窗创建抛 ReferenceError、进度条不显示且菜单无任务；事件注册与窗口创建加 try/catch 兜底 | ✅ |
+| 历史服务器新增独立 `servers.json` 存储（明文 + 原子写 + `.bak` 备份），与 `settings.json` 双保险；`settings.json` 由 DPAPI 加密改为明文 JSON（仅含服务器地址等非敏感信息，密码保存在各 partition Cookie），解决便携版换目录/DPAPI 异常导致历史读空 | ✅ |
+| `loadSettings` 合并 `servers.json` 与 `settings.json` 历史（按 partition 去重），任一份存活即不丢历史 | ✅ |
+| 连接成功与每次主框架导航后立即 `flushStorageData` / `cookies.flushStorageData`，避免强杀进程丢失登录态 | ✅ |
+| 内置 mpv.exe 通过 `asarUnpack` 解包到 `app.asar.unpacked/bin/mpv/`，可执行文件不从 asar 内 spawn | ✅ |
+| 新增「下载」「工具」一级菜单；系统终端用临时 .bat 启动本机 PowerShell/cmd，不接收/拼接外部输入，无命令注入面 | ✅ |
+| 启动诊断日志 `fnos-diag.log` 仅记录 userData 路径、exe 路径、版本、时间，不含任何账号/服务器凭据 | ✅ |
+| 取消下载继续走 pause→1.5s→cancel，不向 NAS 发送任何 DELETE/PUT/POSITION | ✅ |
+| 安装包所有图标（安装程序、卸载程序、EXE、快捷方式、标题栏）统一使用飞牛 LOGO `icon.ico`；快捷方式直接引用 `$INSTDIR\icon.ico` + 三重图标缓存刷新 | ✅ |
+| 未改变飞牛前端任何业务逻辑；不收集/不上传/不转发任何用户数据 | ✅ |
+
 ## 版本对应
 
 - v1.10.0：玻璃锁屏、设置面板、性能开关、Win7 支持（Electron 22）
@@ -186,6 +218,7 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 - v1.10.5：双保存对话框修复、取消下载不损坏 NAS 文件、CORS 注入收窄、检查更新代理修复、恢复投屏/媒体服务、快捷方式图标覆盖
 - v1.11：跨 session 全局下载去重、后台下载菜单/托盘调出入口、取消检查更新菜单、图标缓存双重刷新、保存对话框焦点修复
 - v1.12：will-download 同步 setSavePath 抑制 Chromium 自带对话框（彻底修复双保存框）、.part 临时文件 + 完成后 rename、进度窗强制 show、快捷方式直接引用独立 ICO + 三重图标缓存刷新、帮助页改为纯功能手册、性能优化（关闭飞牛不用的组件）
+- v1.13：修复下载进度窗/菜单任务丢失、新增「下载」「工具」一级菜单与系统终端、历史服务器独立 servers.json 双保险持久化、登录态及时落盘、mpv asarUnpack 修复、安装包所有图标统一飞牛 LOGO
 
 ## 免责声明
 

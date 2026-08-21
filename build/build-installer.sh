@@ -28,7 +28,7 @@ sed \
   -e "s|ICON_PATH|$ROOT/icon.ico|g" \
   -e "s|LICENSE_FILE|$ROOT/build/LICENSE.txt|g" \
   -e "s|APP_DIR|$ROOT/dist/win-unpacked|g" \
-  "$ROOT/build/installer.nsi" > "$WORK/installer.nsi"
+  "$ROOT/build/installer-custom.nsi" > "$WORK/installer.nsi"
 
 echo "==> 使用 makensis 编译: $($MAKENSIS -VERSION | head -1)"
 echo "==> 输出: $OUT"

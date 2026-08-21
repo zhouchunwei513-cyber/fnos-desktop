@@ -26,17 +26,10 @@
   </div>
   <div class="scrim" aria-hidden="true"></div>
 
-  <main class="lock-card glass">
-    <div class="lock-logo" aria-hidden="true">
-      <img src="assets/fnos-logo.png" alt="fnOS" width="56" height="56" />
-    </div>
-    <h1 id="lock-title" class="lock-title">FNOS 已锁定</h1>
-    <p id="lock-subtitle" class="lock-subtitle">输入启动密码以恢复</p>
-
-    <!-- 解锁 -->
+  <main class="lock-card glass lock-card-minimal">
     <form id="unlock-form" class="lock-form" autocomplete="off">
       <div class="input-wrap glass-input">
-        <input id="unlock-pwd" type="password" placeholder="启动密码" autocomplete="current-password" spellcheck="false" />
+        <input id="unlock-pwd" type="password" placeholder="启动密码" autocomplete="current-password" spellcheck="false" autofocus />
         <button type="button" id="toggle-pwd" class="eye" aria-label="显示密码">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>
@@ -49,8 +42,9 @@
       </button>
     </form>
 
-    <!-- 首次设置 / 修改密码 -->
+    <!-- 首次设置 / 修改密码（仅从设置页进入时显示） -->
     <form id="setup-form" class="lock-form" autocomplete="off" hidden>
+      <h1 id="setup-title" class="lock-title" style="margin-bottom:14px;font-size:18px;letter-spacing:3px;">设置启动密码</h1>
       <div class="input-wrap glass-input">
         <input id="old-pwd" type="password" placeholder="当前密码（首次设置留空）" autocomplete="off" spellcheck="false" />
       </div>
@@ -66,12 +60,6 @@
         <button type="submit" class="btn-primary" id="setup-save">保存</button>
       </div>
     </form>
-
-    <div class="lock-meta">
-      <span>FNOS 桌面客户端</span>
-      <span class="dot">·</span>
-      <span id="version-tag"></span>
-    </div>
   </main>
 
   <script src="lock.js"></script>

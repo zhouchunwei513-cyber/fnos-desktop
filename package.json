@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "1.10.3",
+  "version": "1.10.4",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -52,7 +52,6 @@
     "compression": "maximum",
     "win": {
       "icon": "icon.ico",
-      "signAndEditExecutable": false,
       "target": [
         {
           "target": "portable",

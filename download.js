@@ -29,12 +29,24 @@
     return (bps / 1024).toFixed(1) + ' KB/s';
   };
 
+  const etaWrap = document.getElementById('eta-wrap');
+  const etaEl = document.getElementById('eta');
+
   const onProgress = (data) => {
     fillEl.style.width = `${data.pct || 0}%`;
     pctEl.textContent = `${data.pct || 0}%`;
-    if (speedEl) speedEl.textContent = fmtSpeed(data.speedBps);
+    // v1.10.4: 直接使用主进程计算好的速度文本（滑动窗口平均值，避免异常数值）
+    if (speedEl) speedEl.textContent = data.speedText || fmtSpeed(data.speedBps);
     const totalMB = data.totalBytes > 0 ? (data.totalBytes / 1024 / 1024).toFixed(2) : '—';
     sizeEl.textContent = `${data.receivedText || '0 MB'} / 共 ${totalMB} MB`;
+    if (etaWrap && etaEl) {
+      if (data.etaText) {
+        etaEl.textContent = data.etaText;
+        etaWrap.hidden = false;
+      } else {
+        etaWrap.hidden = true;
+      }
+    }
   };
 
   const onDone = (data) => {

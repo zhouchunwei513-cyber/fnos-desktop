@@ -1,5 +1,5 @@
 ; =====================================================================
-; FNOS 自定义 NSIS 安装脚本 (v1.10.3)
+; FNOS 自定义 NSIS 安装脚本 (v1.10.4)
 ; 由沙箱内的 Linux makensis 直接编译，不依赖 wine。
 ; 功能：
 ;   - 检测程序是否在运行，若运行则提示退出后重试
@@ -15,7 +15,7 @@
 
 ; ------------------ 基本信息 ------------------
 !define PRODUCT_NAME       "FNOS"
-!define PRODUCT_VERSION    "1.10.3"
+!define PRODUCT_VERSION    "1.10.4"
 !define PRODUCT_PUBLISHER  "FNOS"
 !define PRODUCT_REGKEY     "Software\${PRODUCT_PUBLISHER}\${PRODUCT_NAME}"
 !define UNINSTALL_REGKEY   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"

@@ -21,7 +21,13 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.10.3';
+const APP_VERSION = '1.10.4';
+
+// Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
+// 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
+if (process.platform === 'win32') {
+  try { app.setAppUserModelId('com.fnos.client'); } catch (_) {}
+}
 
 // ---------------------- 启动性能开关 ----------------------
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
@@ -108,48 +114,92 @@ const RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/lates
 const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases/latest`;
 
 async function checkGitLatestTag() {
-  try {
-    const r = await net.request({
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(v);
+    };
+    const timer = setTimeout(() => {
+      try { r.abort(); } catch (_) {}
+      finish(reject, new Error('连接 GitHub 超时（请检查网络或代理后重试）'));
+    }, 12000);
+    const r = net.request({
       method: 'GET',
       url: RELEASES_API,
       redirect: 'follow',
     });
     r.setHeader('User-Agent', `FNOS-Desktop/${APP_VERSION}`);
     r.setHeader('Accept', 'application/vnd.github+json');
-    return await new Promise((resolve, reject) => {
-      const chunks = [];
-      r.on('data', (c) => chunks.push(c));
-      r.on('end', () => {
-        try {
-          const body = Buffer.concat(chunks).toString('utf8');
-          const data = JSON.parse(body);
-          if (data && data.tag_name) {
-            resolve({
-              tag: String(data.tag_name).replace(/^v/i, ''),
-              name: data.name || data.tag_name,
-              notes: data.body || '',
-              html_url: data.html_url || RELEASES_PAGE,
-            });
-          } else if (data && data.message) {
-            reject(new Error(data.message));
-          } else {
-            reject(new Error('未检查到发布版本'));
-          }
-        } catch (e) { reject(e); }
-      });
-      r.on('error', reject);
-      r.end();
+    const chunks = [];
+    r.on('data', (c) => chunks.push(c));
+    r.on('end', () => {
+      try {
+        const body = Buffer.concat(chunks).toString('utf8');
+        const data = JSON.parse(body);
+        if (data && data.tag_name) {
+          finish(resolve, {
+            tag: String(data.tag_name).replace(/^v/i, ''),
+            name: data.name || data.tag_name,
+            notes: data.body || '',
+            html_url: data.html_url || RELEASES_PAGE,
+          });
+        } else if (data && data.message) {
+          finish(reject, new Error(data.message));
+        } else {
+          finish(reject, new Error('未检查到发布版本'));
+        }
+      } catch (e) { finish(reject, e); }
     });
-  } catch (err) {
-    throw err;
-  }
+    r.on('error', (err) => finish(reject, err));
+    r.end();
+  });
 }
 
 async function checkForUpdates(interactive = true) {
+  let checkingWin = null;
+  if (interactive) {
+    try {
+      const parentWin = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : BrowserWindow.getFocusedWindow();
+      checkingWin = new BrowserWindow({
+        width: 320, height: 110,
+        frame: false, transparent: true, resizable: false, minimizable: false, maximizable: false,
+        alwaysOnTop: true, skipTaskbar: true, show: false,
+        parent: parentWin || undefined, modal: false,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
+      });
+      const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+        body{margin:0;font-family:"Microsoft YaHei",sans-serif;background:rgba(20,22,30,.82);border:1px solid rgba(255,255,255,.14);border-radius:14px;color:#e9efff;padding:22px;text-align:center;backdrop-filter:blur(20px)}
+        .sp{width:22px;height:22px;border:3px solid rgba(255,255,255,.2);border-top-color:#7cecff;border-radius:50%;animation:r 1s linear infinite;margin:0 auto 10px}
+        @keyframes r{to{transform:rotate(360deg)}}
+        .t{font-size:13px;letter-spacing:2px}
+      </style></head><body><div class="sp"></div><div class="t">正在检查更新…</div></body></html>`;
+      checkingWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {});
+      checkingWin.once('ready-to-show', () => { try { checkingWin.show(); } catch (_) {} });
+    } catch (_) {}
+  }
+  const closeChecking = () => {
+    try { if (checkingWin && !checkingWin.isDestroyed()) checkingWin.close(); } catch (_) {}
+    checkingWin = null;
+  };
   try {
     const info = await checkGitLatestTag();
+    closeChecking();
     const latest = info.tag.replace(/^v/i, '');
     const cmp = compareVersions(latest, APP_VERSION);
+    if (!mainWindow && interactive) {
+      // 主窗口还没出来，用当前活动窗口兜底
+      const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+      if (!w) return;
+      if (cmp > 0) glassMessageBox(w, {
+        type: 'info', title: `发现新版本 v${latest}`,
+        detail: `${(info.notes || '').trim().slice(0, 400)}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。`,
+        buttons: ['前往下载', '稍后'], defaultId: 0, cancelId: 1, width: 520,
+      }).then(({ response }) => { if (response === 0) shell.openExternal(info.html_url || RELEASES_PAGE); });
+      return;
+    }
     if (!mainWindow) return;
     if (cmp > 0) {
       const detail = (info.notes || '').trim().slice(0, 500);
@@ -174,8 +224,12 @@ async function checkForUpdates(interactive = true) {
       });
     }
   } catch (err) {
-    if (interactive && mainWindow) {
-      await glassErrorBox('检查更新失败', `无法连接到 GitHub：\n${err?.message || err}`);
+    closeChecking();
+    if (interactive) {
+      const w = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : BrowserWindow.getFocusedWindow();
+      if (w) {
+        await glassErrorBox('检查更新失败', `无法连接到 GitHub：\n${err?.message || err}\n\n如在国内网络环境，请配置系统代理后重试，或直接访问：\n${RELEASES_PAGE}`);
+      }
     }
   }
 }
@@ -616,18 +670,64 @@ function showDownloadProgress(item) {
   });
 
   let lastTrayUpdate = 0;
+  // v1.10.4: 手动计算下载速度，避免 Electron getCurrentBytesPerSecond 在某些环境下返回异常值
+  const SPEED_WINDOW_MS = 3000; // 3 秒滑动窗口
+  const speedSamples = []; // {t, bytes}
+  let lastUiUpdate = 0;
+  let lastSentReceived = 0;
   const onUpdated = (_e, state) => {
     if (state === 'progressing') {
       const received = item.getReceivedBytes();
-      const pct = totalBytes > 0 ? Math.round((received / totalBytes) * 100) : 0;
-      const speedBps = item.getCurrentBytesPerSecond ? item.getCurrentBytesPerSecond() : 0;
-      send('download:progress', {
-        received, totalBytes, pct,
-        receivedText: fmtMB(received),
-        speedBps,
-        speedText: speedBps > 0 ? `${fmtMB(speedBps)}/s` : '0 KB/s',
-      });
       const now = Date.now();
+      speedSamples.push({ t: now, b: received });
+      // 清理 3 秒前的样本
+      while (speedSamples.length > 0 && now - speedSamples[0].t > SPEED_WINDOW_MS) {
+        speedSamples.shift();
+      }
+      // 计算窗口内平均速度：至少要有 500ms 跨度和 2 个样本才算有效
+      let speedBps = 0;
+      if (speedSamples.length >= 2) {
+        const oldest = speedSamples[0];
+        const newest = speedSamples[speedSamples.length - 1];
+        const dt = newest.t - oldest.t;
+        if (dt >= 500) {
+          speedBps = Math.max(0, Math.round((newest.b - oldest.b) * 1000 / dt));
+        }
+      }
+      const pct = totalBytes > 0 ? Math.min(100, Math.round((received / totalBytes) * 100)) : 0;
+
+      // 节流：UI 最多 250ms 更新一次
+      if (now - lastUiUpdate >= 250 || received === totalBytes) {
+        lastUiUpdate = now;
+        lastSentReceived = received;
+        let speedText = '0 KB/s';
+        if (speedBps > 0) {
+          if (speedBps >= 1024 * 1024) {
+            speedText = `${(speedBps / 1024 / 1024).toFixed(2)} MB/s`;
+          } else if (speedBps >= 1024) {
+            speedText = `${(speedBps / 1024).toFixed(1)} KB/s`;
+          } else {
+            speedText = `${speedBps} B/s`;
+          }
+        }
+        // 剩余时间
+        let etaText = '';
+        if (speedBps > 1024 && totalBytes > 0) {
+          const remain = Math.max(0, totalBytes - received);
+          const secs = Math.round(remain / speedBps);
+          if (secs < 60) etaText = `${secs} 秒`;
+          else if (secs < 3600) etaText = `${Math.floor(secs / 60)} 分 ${secs % 60} 秒`;
+          else etaText = `${Math.floor(secs / 3600)} 时 ${Math.floor((secs % 3600) / 60)} 分`;
+        }
+        send('download:progress', {
+          received, totalBytes, pct,
+          receivedText: fmtMB(received),
+          speedBps,
+          speedText,
+          etaText,
+        });
+      }
+
       if (now - lastTrayUpdate > 1500) {
         lastTrayUpdate = now;
         try { rebuildTrayMenu(); } catch (_) {}

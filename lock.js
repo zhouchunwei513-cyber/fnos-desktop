@@ -1,5 +1,6 @@
 /* global fnosLock */
 // 锁屏页面：解锁 / 首次设置 / 修改密码
+// v1.10.4: 启动锁定时只显示密码输入框 + 解锁按钮
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -12,11 +13,8 @@
   const unlockError = $('unlock-error');
   const setupError = $('setup-error');
   const togglePwd = $('toggle-pwd');
-  const title = $('lock-title');
-  const subtitle = $('lock-subtitle');
+  const setupTitle = $('setup-title');
   const cancelBtn = $('setup-cancel');
-  const versionTag = $('version-tag');
-  const gotoChange = $('goto-change');
   let initialMode = 'unlock';
 
   function showError(el, msg) {
@@ -25,30 +23,24 @@
     el.textContent = msg; el.hidden = false;
   }
 
-  function showUnlock(mode /* 'unlock' | 'setup' | 'change' */, hasPassword) {
-    if (mode === 'setup' || (mode === 'unlock' && !hasPassword)) {
+  function showUnlock(mode /* 'unlock' | 'setup' | 'change' */) {
+    if (mode === 'setup') {
       // 首次设置
-      title.textContent = '设置启动密码';
-      subtitle.textContent = '设置后，每次打开 FNOS 需要此密码';
+      if (setupTitle) setupTitle.textContent = '设置启动密码';
       unlockForm.hidden = true;
       setupForm.hidden = false;
       oldPwd.parentElement.style.display = 'none';
-      if (gotoChange) gotoChange.style.display = 'none';
       setTimeout(() => newPwd.focus(), 50);
     } else if (mode === 'change') {
-      title.textContent = '修改启动密码';
-      subtitle.textContent = '请输入当前密码并设置新密码（留空新密码可取消密码）';
+      if (setupTitle) setupTitle.textContent = '修改启动密码';
       unlockForm.hidden = true;
       setupForm.hidden = false;
       oldPwd.parentElement.style.display = '';
-      if (gotoChange) gotoChange.style.display = 'none';
       setTimeout(() => oldPwd.focus(), 50);
     } else {
-      title.textContent = 'FNOS 已锁定';
-      subtitle.textContent = '输入启动密码以恢复';
+      // 极简锁屏：只显示密码输入框 + 解锁按钮
       unlockForm.hidden = false;
       setupForm.hidden = true;
-      if (gotoChange) gotoChange.style.display = hasPassword ? '' : 'none';
       setTimeout(() => unlockPwd.focus(), 50);
     }
   }
@@ -105,20 +97,19 @@
       if (res && res.ok) {
         // 设置成功
         if (newV === '') {
-          // 已取消密码 —— 若处于锁屏态，直接解锁；否则回到解锁视图
+          // 已取消密码 —— 若处于锁屏态，直接解锁
           if (initialMode === 'change' || initialMode === 'unlock') {
             try { await fnosLock.verify(''); } catch (_) {}
             return;
           }
         }
         if (initialMode === 'setup' || initialMode === 'change') {
-          // 修改/设置成功后回到解锁页，要求输入新密码解锁（如果是取消密码，上面已处理）
           if (newV) {
-            showUnlock('unlock', true);
+            showUnlock('unlock');
             unlockPwd.value = '';
           }
         } else {
-          showUnlock('unlock', true);
+          showUnlock('unlock');
           unlockPwd.value = '';
         }
       } else {
@@ -130,16 +121,11 @@
   });
 
   cancelBtn?.addEventListener('click', async () => {
-    // 取消修改密码：回到解锁页（必须有密码才能进入 change 模式）
+    // 取消修改密码：回到解锁页
     setupForm.hidden = true; unlockForm.hidden = false;
     oldPwd.value = newPwd.value = confirmPwd.value = '';
     showError(setupError, '');
-    if (gotoChange) gotoChange.style.display = '';
     setTimeout(() => unlockPwd.focus(), 30);
-  });
-
-  gotoChange?.addEventListener('click', () => {
-    showUnlock('change', true);
   });
 
   // 阻止拖拽 / F5 / 右键
@@ -154,11 +140,9 @@
     try {
       const info = await fnosLock.getInfo();
       initialMode = info?.mode || 'unlock';
-      versionTag.textContent = `v${info?.version || ''}`;
-      showUnlock(initialMode, !!info?.hasPassword);
+      showUnlock(initialMode);
     } catch (err) {
-      title.textContent = '初始化失败';
-      subtitle.textContent = String(err?.message || err);
+      showUnlock('unlock');
     }
   })();
 })();

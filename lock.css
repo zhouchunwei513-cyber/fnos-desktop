@@ -206,3 +206,30 @@ html, body {
   transition: color .15s, background .15s;
 }
 .link-btn:hover { color: #aef0ff; background: rgba(124,236,255,.08); }
+
+/* v1.10.4: 极简启动锁屏 —— 只保留密码输入框和解锁按钮 */
+.lock-card-minimal {
+  width: 360px;
+  padding: 28px 28px 24px;
+  border-radius: 22px;
+}
+.lock-card-minimal .lock-form { margin-top: 0; gap: 14px; }
+.lock-card-minimal .input-wrap { height: 50px; }
+.lock-card-minimal .glass-input input {
+  font-size: 15px;
+  letter-spacing: 2px;
+  text-align: center;
+}
+.lock-card-minimal .glass-input .eye { right: 14px; }
+.lock-card-minimal .lock-btn {
+  height: 48px;
+  font-size: 14px;
+  letter-spacing: 8px;
+  text-indent: 8px;
+}
+.lock-card-minimal #setup-form .lock-title {
+  text-align: center;
+}
+@media (max-width: 420px) {
+  .lock-card-minimal { width: 100%; padding: 22px 20px; }
+}

@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FNOS · 帮助</title>
+<style>
+:root {
+  --bg: #05060a;
+  --card-bg: rgba(20, 22, 30, 0.78);
+  --card-border: rgba(255, 255, 255, 0.10);
+  --text: #f5f7fb;
+  --muted: rgba(245, 247, 251, 0.65);
+  --primary: #3b82f6;
+  --primary-2: #6366f1;
+  --accent: #22d3ee;
+  --radius: 22px;
+  --font: 'PingFang SC', 'Microsoft YaHei UI', 'Source Han Sans SC',
+    'Noto Sans CJK SC', 'Helvetica Neue', system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  min-height: 100%;
+  font-family: var(--font);
+  color: var(--text);
+  background: #000;
+  overflow-x: hidden;
+}
+
+.bg-wrap {
+  position: fixed; inset: 0; z-index: -1;
+  background: #000; overflow: hidden;
+}
+.bg { position: absolute; inset: -8%; filter: blur(36px) saturate(160%); opacity: .95; }
+.bg-veil {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(120% 100% at 50% 0%, rgba(0,0,0,.1) 0%, rgba(0,0,0,.55) 60%, #000 100%);
+}
+.bg-grain {
+  position: absolute; inset: 0;
+  background-image:
+    radial-gradient(rgba(255,255,255,.04) 1px, transparent 1px),
+    radial-gradient(rgba(255,255,255,.025) 1px, transparent 1px);
+  background-size: 3px 3px, 7px 7px;
+  background-position: 0 0, 1px 2px;
+  opacity: .3; mix-blend-mode: overlay;
+}
+@keyframes streakA {
+  0%,100% { transform: translate3d(-8%,-4%,0) rotate(-18deg) scale(1.1); }
+  50%     { transform: translate3d(6%,3%,0) rotate(-14deg) scale(1.18); }
+}
+@keyframes streakB {
+  0%,100% { transform: translate3d(4%,2%,0) rotate(22deg) scale(1.05); }
+  50%     { transform: translate3d(-6%,-3%,0) rotate(26deg) scale(1.14); }
+}
+.streak {
+  position: absolute; width: 180%; height: 90%; left: -40%; top: -10%;
+  pointer-events: none;
+}
+.streak.s1 { animation: streakA 18s ease-in-out infinite; }
+.streak.s2 { animation: streakB 22s ease-in-out infinite .8s; }
+
+.hero {
+  padding: 64px 24px 30px;
+  text-align: center;
+}
+.hero-logo {
+  width: 72px; height: 72px;
+  margin: 0 auto 18px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #6366f1, #3b82f6 50%, #06b6d4);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 20px 50px -15px rgba(59,130,246,.7),
+              inset 0 1px 0 rgba(255,255,255,.35);
+  position: relative;
+}
+.hero-logo::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: linear-gradient(160deg, rgba(255,255,255,.35), rgba(255,255,255,0) 45%);
+  pointer-events: none;
+}
+.hero-title {
+  font-size: 30px; font-weight: 800;
+  letter-spacing: 8px;
+  background: linear-gradient(90deg, #fff, #cfe0ff 55%, #9ec5ff);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.hero-sub {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px; letter-spacing: 4px;
+}
+
+.container {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 24px 60px;
+  display: grid;
+  gap: 18px;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 26px 28px;
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  box-shadow:
+    0 30px 80px -30px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.1);
+  animation: cardIn .5s cubic-bezier(.22,.9,.3,1) both;
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+.card h2 {
+  font-size: 18px; font-weight: 800;
+  color: #fff;
+  margin-bottom: 16px;
+  display: flex; align-items: center; gap: 10px;
+}
+.card h2::before {
+  content: '';
+  display: inline-block;
+  width: 4px; height: 18px; border-radius: 3px;
+  background: linear-gradient(180deg, #3b82f6, #06b6d4);
+  box-shadow: 0 0 12px rgba(59,130,246,.6);
+}
+.card h3 {
+  font-size: 15px; font-weight: 700;
+  color: #cfe0ff;
+  margin: 16px 0 8px;
+}
+.card p, .card li {
+  font-size: 14px; line-height: 1.8;
+  color: rgba(245,247,251,.82);
+}
+.card ul, .card ol {
+  padding-left: 22px;
+  margin: 8px 0;
+}
+.card li { margin-bottom: 4px; }
+.card li b { color: #fff; font-weight: 700; }
+code {
+  background: rgba(99,102,241,.18);
+  border: 1px solid rgba(99,102,241,.35);
+  color: #c7d2fe;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+.kbd {
+  display: inline-block;
+  min-width: 26px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.2);
+  border-radius: 6px;
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,.3);
+  text-align: center;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+
+.step {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px dashed rgba(255,255,255,.08);
+}
+.step:last-child { border-bottom: 0; }
+.step-num {
+  width: 28px; height: 28px; flex-shrink: 0;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  color: #fff; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  box-shadow: 0 6px 16px -6px rgba(59,130,246,.7);
+}
+.step-body { flex: 1; }
+.step-body b { color: #fff; font-weight: 700; }
+.step-body p { color: rgba(245,247,251,.75); font-size: 13.5px; }
+
+.tip {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(59,130,246,.16), rgba(34,211,238,.12));
+  border: 1px solid rgba(99,102,241,.3);
+  color: #dbeafe;
+  font-size: 13px; line-height: 1.7;
+}
+.tip b { color: #fff; }
+
+.footer {
+  text-align: center;
+  color: rgba(255,255,255,.4);
+  font-size: 12px;
+  padding: 10px 0 40px;
+  letter-spacing: 2px;
+}
+</style>
+</head>
+<body>
+
+<div class="bg-wrap">
+  <div class="bg">
+    <svg class="streak s1" viewBox="0 0 1000 600" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="h1" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#ff2d55" stop-opacity="0"/>
+          <stop offset="20%" stop-color="#ff5e3a" stop-opacity=".85"/>
+          <stop offset="45%" stop-color="#ffb347" stop-opacity=".9"/>
+          <stop offset="70%" stop-color="#ffe066" stop-opacity=".75"/>
+          <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M-50,380 C200,200 400,180 620,300 C820,410 950,320 1100,260" fill="none" stroke="url(#h1)" stroke-width="160" stroke-linecap="round"/>
+    </svg>
+    <svg class="streak s2" viewBox="0 0 1000 600" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="h2" x1="0%" y1="100%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#0055ff" stop-opacity="0"/>
+          <stop offset="25%" stop-color="#00b4ff" stop-opacity=".85"/>
+          <stop offset="55%" stop-color="#22e5c8" stop-opacity=".8"/>
+          <stop offset="80%" stop-color="#a78bfa" stop-opacity=".7"/>
+          <stop offset="100%" stop-color="#f472b6" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M-100,520 C180,380 380,420 600,280 C820,140 960,200 1150,80" fill="none" stroke="url(#h2)" stroke-width="180" stroke-linecap="round"/>
+    </svg>
+    <div class="bg-veil"></div>
+    <div class="bg-grain"></div>
+  </div>
+</div>
+
+<section class="hero">
+  <div class="hero-logo">
+    <svg width="40" height="40" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6 10 C 8 14, 11 15, 14 14 C 13 17, 12 19, 14 21 L 16 23 L 36 23 C 40 23, 43 20, 42 16 C 41 13, 38 11, 35 12 C 34 9, 36 7, 39 6 C 36 2, 30 4, 28 8 C 25 10, 22 10, 19 10 C 16 10, 13 9, 11 8 C 9 4, 3 2, 0 6 C 3 7, 5 9, 4 12 C 1 11, -2 13, -3 16 C -4 20, -1 23, 3 23 L 8 23 L 10 21 C 12 19, 11 17, 10 14 C 13 15, 16 14, 18 10 Z"
+            fill="white" transform="translate(5,8) scale(0.78)"/>
+    </svg>
+  </div>
+  <h1 class="hero-title">FNOS</h1>
+  <p class="hero-sub">私 有 云 桌 面 客 户 端 · 使 用 指 南</p>
+</section>
+
+<main class="container">
+
+  <section class="card">
+    <h2>快速开始</h2>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <b>在登录页输入服务器地址</b>
+        <p>支持三种形式：内网 IP（如 <code>192.168.1.10</code>）、域名加端口（如 <code>nas.example.com:5666</code>），或 FN ID（直接填写，例如 <code>abc123</code>，会自动跳转 <code>fnos.net</code>）。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <b>点击「登 录」</b>
+        <p>客户端会自动跳转到飞牛 fnOS 的登录页面，请输入你的飞牛账号密码。登录成功后，客户端会保持登录状态，下次打开无需重复登录。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <b>在客户端内使用所有应用</b>
+        <p>文件、相册、Docker 等所有飞牛应用均在客户端内打开，不会外跳到系统浏览器。每个应用以独立窗口运行，可以通过菜单栏或托盘切换。</p>
+      </div>
+    </div>
+    <div class="tip">💡 历史地址会自动记录。输入框右侧的 ▾ 按钮可查看、切换或删除已连接过的服务器，每个服务器的登录状态独立保存。</div>
+  </section>
+
+  <section class="card">
+    <h2>菜单栏与快捷键</h2>
+    <div class="grid-2">
+      <div>
+        <h3>文件</h3>
+        <ul>
+          <li><b>返回 FNOS 主页</b>：主窗口回到服务器首页，已打开的应用可选择后台运行或关闭</li>
+          <li><b>切换窗口</b>：列出所有已打开的应用窗口，快速跳转</li>
+          <li><b>切换服务器</b>：返回登录页，可选择历史地址快速切换（已登录服务器的账号密码会自动保持）</li>
+        </ul>
+      </div>
+      <div>
+        <h3>视图</h3>
+        <ul>
+          <li><b>后退 / 前进</b>：页面历史导航</li>
+          <li><b>刷新 / 强制刷新</b>：F5 / Ctrl+F5</li>
+          <li><b>全屏</b>：F11，按 <span class="kbd">Esc</span> 退出全屏</li>
+          <li><b>缩放</b>：Ctrl + = / - / 0</li>
+        </ul>
+      </div>
+    </div>
+    <h3>常用快捷键</h3>
+    <p>
+      <span class="kbd">Alt</span>+<span class="kbd">H</span> 返回主页 &nbsp;
+      <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">L</span> 切换服务器 &nbsp;
+      <span class="kbd">F5</span> 刷新 &nbsp;
+      <span class="kbd">F11</span> 全屏 &nbsp;
+      <span class="kbd">Esc</span> 退出全屏 / 最大化
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>多窗口与后台运行</h2>
+    <ul>
+      <li>在飞牛中打开的每个应用都在<b>独立窗口</b>中运行，可以同时使用多个应用。</li>
+      <li>点击主窗口关闭按钮时，可选择<b>「隐藏到托盘」</b>（所有窗口继续后台运行，适合下载、同步等长任务）或<b>「退出程序」</b>。</li>
+      <li>在系统托盘（任务栏右下角）<b>左键单击 FNOS 图标</b>显示所有窗口；<b>右键</b>打开菜单，可切换窗口、检查更新、退出程序。</li>
+      <li>选择「返回 FNOS 主页」时，如果还有其他应用窗口打开，会让你选择是<b>后台保留</b>还是<b>一并关闭</b>。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>常见问题</h2>
+    <h3>连接失败怎么办？</h3>
+    <ul>
+      <li>IP / 域名方式：确认 NAS 已开机、和电脑在同一网络、端口（默认 <code>5666</code>）正确。</li>
+      <li>FN ID 方式：确认 FN ID 拼写正确，电脑能访问外网（<code>fnos.net</code>）。</li>
+      <li>HTTPS 自签证书站点：在弹出的证书确认窗口选择继续即可。</li>
+    </ul>
+    <h3>登录状态会失效吗？</h3>
+    <p>不会。每个服务器都有独立的持久化会话分区，Cookie 和本地数据加密保存在本机；关闭主窗口、隐藏到托盘、切换到其他服务器再切回来、或重启电脑后再次打开，该服务器的飞牛账号都会自动保持登录。只有在登录页历史列表里主动删除该服务器，或在飞牛页面里主动登出，才会清除对应服务器的登录状态。</p>
+    <h3>如何彻底退出？</h3>
+    <p>托盘右键 → <b>退出</b>，或在文件菜单里选退出。选「隐藏到托盘」程序仍会在后台运行。</p>
+    <h3>数据保存在哪里？</h3>
+    <p>所有设置和登录信息保存在 <code>%APPDATA%\FNOS</code>，使用系统 DPAPI 加密。卸载程序时不会删除此目录，重新安装后登录数据仍在。</p>
+  </section>
+
+</main>
+
+<div class="footer">FNOS CLIENT · 1.8.2</div>
+
+</body>
+</html>

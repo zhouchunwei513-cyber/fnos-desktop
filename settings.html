@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>FNOS 设置</title>
+  <link rel="stylesheet" href="lock.css" />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body class="settings-body">
+  <div class="aurora" aria-hidden="true">
+    <svg class="aurora-svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="blurS" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="90" />
+        </filter>
+      </defs>
+      <rect width="1920" height="1080" fill="#05060a"/>
+      <g filter="url(#blurS)" opacity="0.75">
+        <path d="M-150 720 C 220 520 480 980 820 740 S 1500 520 2070 800 L 2070 1200 L -150 1200 Z" fill="#ff5b8c" opacity="0.55"/>
+        <path d="M-120 600 C 280 820 600 380 980 620 S 1600 920 2050 540 L 2050 1180 L -120 1180 Z" fill="#ffd166" opacity="0.5"/>
+        <path d="M-100 820 C 360 620 720 1020 1100 780 S 1680 520 2060 820 L 2060 1200 L -100 1200 Z" fill="#43e7ff" opacity="0.55"/>
+        <path d="M-160 500 C 260 700 600 460 960 560 S 1620 720 2080 480 L 2080 1180 L -160 1180 Z" fill="#8b6bff" opacity="0.45"/>
+      </g>
+    </svg>
+  </div>
+
+  <main class="settings-card glass">
+    <header class="settings-head">
+      <div class="settings-logo" aria-hidden="true">
+        <svg viewBox="0 0 128 128" width="44" height="44" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="sg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#7cecff"/>
+              <stop offset="0.5" stop-color="#7c83ff"/>
+              <stop offset="1" stop-color="#ff6bcb"/>
+            </linearGradient>
+          </defs>
+          <rect x="6" y="6" width="116" height="116" rx="30" fill="url(#sg)"/>
+          <path d="M40 40 C 32 40, 28 48, 30 58 C 31 64, 36 68, 42 68 L 42 86 C 42 92, 47 96, 53 96 L 70 96 C 76 96, 81 92, 81 86 L 81 78 C 81 74, 84 71, 88 71 L 104 71 C 104 60, 96 52, 86 52 L 56 52 L 56 40 Z"
+                fill="none" stroke="#fff" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <h1>FNOS 设置</h1>
+        <p id="version-line"></p>
+      </div>
+    </header>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>启动密码</h2>
+      </div>
+      <p class="section-desc">设置后，每次启动 FNOS 或从托盘恢复都需要输入密码；密码通过系统凭据加密保存。</p>
+
+      <div id="pwd-status" class="pwd-status">
+        <span class="dot-ok"></span><span>当前已设置启动密码</span>
+      </div>
+
+      <form id="pwd-form" class="lock-form" autocomplete="off">
+        <div class="input-wrap glass-input" id="old-wrap">
+          <input id="old-pwd" type="password" placeholder="当前密码" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="input-wrap glass-input">
+          <input id="new-pwd" type="password" placeholder="新密码（至少 4 位，留空取消密码）" autocomplete="new-password" spellcheck="false" />
+        </div>
+        <div class="input-wrap glass-input">
+          <input id="confirm-pwd" type="password" placeholder="再次输入新密码" autocomplete="new-password" spellcheck="false" />
+        </div>
+        <div id="pwd-error" class="lock-error" hidden></div>
+        <div class="setup-actions">
+          <button type="button" class="btn-ghost" id="pwd-cancel">清除</button>
+          <button type="submit" class="btn-primary" id="pwd-save">保存密码</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>快捷键</h2>
+      </div>
+      <p class="section-desc">在输入框中按下组合键即可设置。留空则禁用该快捷键。</p>
+
+      <div class="hotkey-row">
+        <div class="hotkey-label">
+          <div class="hotkey-title">一键锁定</div>
+          <div class="hotkey-sub">锁定后自动最小化到托盘，点击托盘需输入启动密码恢复</div>
+        </div>
+        <div class="hotkey-input-wrap">
+          <input type="text" id="hk-lock" class="hotkey-input glass-input" readonly
+                 placeholder="点击此处并按下组合键" spellcheck="false" />
+          <button type="button" class="hotkey-clear" data-target="hk-lock" title="清除">×</button>
+        </div>
+      </div>
+
+      <div class="hotkey-row">
+        <div class="hotkey-label">
+          <div class="hotkey-title">一键隐藏 / 呼出</div>
+          <div class="hotkey-sub">隐藏所有窗口和托盘图标；再次按下呼出</div>
+        </div>
+        <div class="hotkey-input-wrap">
+          <input type="text" id="hk-hide" class="hotkey-input glass-input" readonly
+                 placeholder="点击此处并按下组合键" spellcheck="false" />
+          <button type="button" class="hotkey-clear" data-target="hk-hide" title="清除">×</button>
+        </div>
+      </div>
+
+      <div id="hk-error" class="lock-error" hidden style="margin-top:12px"></div>
+
+      <div class="setup-actions" style="margin-top:18px">
+        <button type="button" class="btn-ghost" id="hk-reset">恢复默认</button>
+        <button type="button" class="btn-primary" id="hk-save">保存快捷键</button>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>关于</h2>
+      </div>
+      <p class="section-desc">FNOS 桌面客户端 — 多窗口、多服务器登录态保持、系统托盘与玻璃质感界面。</p>
+      <div class="about-meta">
+        <div><span>官网</span><b>fnos.net</b></div>
+        <div><span>版本</span><b id="about-version"></b></div>
+      </div>
+      <div class="setup-actions" style="margin-top:14px">
+        <button type="button" class="btn-ghost" id="btn-close">关闭</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FNOS</title>
+<link rel="stylesheet" href="login.css" />
+</head>
+<body>
+
+<div class="bg-wrap">
+  <div class="bg">
+    <!-- 彩虹光带 1：暖色调（红/橙/黄） -->
+    <svg class="streak s1" viewBox="0 0 1000 600" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#ff2d55" stop-opacity="0"/>
+          <stop offset="18%" stop-color="#ff5e3a" stop-opacity=".85"/>
+          <stop offset="40%" stop-color="#ffb347" stop-opacity=".9"/>
+          <stop offset="60%" stop-color="#ffe066" stop-opacity=".8"/>
+          <stop offset="82%" stop-color="#7fe7ff" stop-opacity=".6"/>
+          <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M-50,380 C200,200 400,180 620,300 C820,410 950,320 1100,260" fill="none" stroke="url(#g1)" stroke-width="160" stroke-linecap="round"/>
+      <path d="M-50,400 C200,230 400,220 620,330 C820,430 950,350 1100,290" fill="none" stroke="url(#g1)" stroke-width="60" stroke-linecap="round" opacity=".7"/>
+    </svg>
+
+    <!-- 彩虹光带 2：冷色调（蓝/青/紫） -->
+    <svg class="streak s2" viewBox="0 0 1000 600" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="g2" x1="0%" y1="100%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#0055ff" stop-opacity="0"/>
+          <stop offset="20%" stop-color="#00b4ff" stop-opacity=".85"/>
+          <stop offset="45%" stop-color="#22e5c8" stop-opacity=".8"/>
+          <stop offset="65%" stop-color="#a78bfa" stop-opacity=".7"/>
+          <stop offset="85%" stop-color="#f472b6" stop-opacity=".5"/>
+          <stop offset="100%" stop-color="#ff5e3a" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M-100,520 C180,380 380,420 600,280 C820,140 960,200 1150,80" fill="none" stroke="url(#g2)" stroke-width="180" stroke-linecap="round"/>
+      <path d="M-100,540 C180,410 380,440 600,310 C820,180 960,230 1150,120" fill="none" stroke="url(#g2)" stroke-width="55" stroke-linecap="round" opacity=".65"/>
+    </svg>
+
+    <!-- 彩虹光带 3：斜穿中央的主光带（青/紫/粉） -->
+    <svg class="streak s3" viewBox="0 0 1000 600" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="g3" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#22d3ee" stop-opacity="0"/>
+          <stop offset="15%" stop-color="#38bdf8" stop-opacity=".7"/>
+          <stop offset="40%" stop-color="#818cf8" stop-opacity=".9"/>
+          <stop offset="65%" stop-color="#e879f9" stop-opacity=".85"/>
+          <stop offset="85%" stop-color="#fb7185" stop-opacity=".6"/>
+          <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M-80,100 C220,260 420,200 640,340 C860,480 980,420 1120,540" fill="none" stroke="url(#g3)" stroke-width="140" stroke-linecap="round"/>
+      <path d="M-80,80 C220,240 420,180 640,320 C860,460 980,400 1120,520" fill="none" stroke="url(#g3)" stroke-width="50" stroke-linecap="round" opacity=".7"/>
+    </svg>
+
+    <div class="bg-veil"></div>
+    <div class="bg-grain"></div>
+  </div>
+</div>
+
+<main class="scene">
+  <section class="login-card" role="main">
+    <div class="brand">
+      <div class="brand-logo" aria-hidden="true">
+        <svg width="40" height="40" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M6 10 C 8 14, 11 15, 14 14 C 13 17, 12 19, 14 21 L 16 23 L 36 23 C 40 23, 43 20, 42 16 C 41 13, 38 11, 35 12 C 34 9, 36 7, 39 6 C 36 2, 30 4, 28 8 C 25 10, 22 10, 19 10 C 16 10, 13 9, 11 8 C 9 4, 3 2, 0 6 C 3 7, 5 9, 4 12 C 1 11, -2 13, -3 16 C -4 20, -1 23, 3 23 L 8 23 L 10 21 C 12 19, 11 17, 10 14 C 13 15, 16 14, 18 10 Z"
+                fill="white" transform="translate(5,8) scale(0.78)"/>
+        </svg>
+      </div>
+      <div class="brand-name">FNOS</div>
+      <div class="brand-sub">私 有 云 · 安 全 连 接</div>
+    </div>
+
+    <form id="login-form" class="login-form" autocomplete="off">
+      <label class="label" for="server-input">服务器地址</label>
+      <div class="input-wrap">
+        <input id="server-input" name="server" class="input" type="text"
+               autocomplete="off" spellcheck="false" autofocus
+               placeholder="IP / 域名 / FN ID" />
+        <button id="dropdown-btn" class="hist-btn" type="button" title="历史地址" aria-label="历史地址">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div id="dropdown" class="history" role="listbox" hidden></div>
+      </div>
+
+      <div class="hint">支持 IP、域名（默认端口 5666）和 FN ID，登录状态自动保持</div>
+
+      <button id="connect-btn" class="btn-login" type="submit">
+        <span class="btn-label">登 录</span>
+      </button>
+      <div id="error" class="error" role="alert"></div>
+    </form>
+  </section>
+</main>
+
+<div class="footer">FNOS CLIENT · SECURE CONNECTION</div>
+
+<script src="login.js"></script>
+</body>
+</html>

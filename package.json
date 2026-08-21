@@ -1,0 +1,83 @@
+{
+  "name": "fnos-client",
+  "version": "1.9.0",
+  "description": "FNOS 桌面客户端",
+  "main": "main.js",
+  "author": "FNOS",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3",
+    "sharp": "^0.35.3"
+  },
+  "build": {
+    "appId": "com.fnos.client",
+    "productName": "FNOS",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "login.html",
+      "login.css",
+      "login.js",
+      "help.html",
+      "dialog.html",
+      "dialog.css",
+      "dialog.js",
+      "dialog-preload.js",
+      "lock.html",
+      "lock.css",
+      "lock.js",
+      "lock-preload.js",
+      "settings.html",
+      "settings.css",
+      "settings.js",
+      "settings-preload.js",
+      "assets/**/*",
+      "icon.ico",
+      "icon.png",
+      "package.json"
+    ],
+    "compression": "maximum",
+    "win": {
+      "icon": "icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "FNOS-${version}-portable.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FNOS",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "FNOS-Setup-${version}.${ext}"
+    }
+  }
+}

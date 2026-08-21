@@ -1,0 +1,134 @@
+/* 设置页 — 复用 lock.css 中的玻璃与按钮样式 */
+.settings-body {
+  position: relative;
+  width: 100vw; min-height: 100vh;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 20px;
+  overflow-y: auto;
+}
+
+.settings-card {
+  position: relative; z-index: 1;
+  width: 640px;
+  max-width: 100%;
+  padding: 36px 40px 32px;
+  border-radius: 28px;
+  animation: pop .35s cubic-bezier(.2,.9,.3,1.2);
+}
+
+.settings-head {
+  display: flex; align-items: center; gap: 16px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.settings-logo {
+  width: 60px; height: 60px; border-radius: 18px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(145deg, rgba(255,255,255,.15), rgba(255,255,255,.04));
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: 0 10px 24px -10px rgba(124,131,255,.55);
+}
+.settings-head h1 {
+  font-size: 22px; font-weight: 800; letter-spacing: 3px;
+  background: linear-gradient(90deg, #aef0ff, #bcb6ff, #ffb3e0);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.settings-head p {
+  margin-top: 4px;
+  font-size: 12px; font-weight: 600; letter-spacing: 2px;
+  color: rgba(233,239,255,.55);
+}
+
+.settings-section {
+  padding: 24px 0 8px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.settings-section:last-child { border-bottom: 0; padding-bottom: 0; }
+
+.section-title {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 6px;
+}
+.section-title .bar {
+  display: inline-block; width: 4px; height: 18px; border-radius: 4px;
+  background: linear-gradient(180deg, #7cecff, #7c83ff);
+  box-shadow: 0 0 14px rgba(124,236,255,.5);
+}
+.section-title h2 {
+  font-size: 16px; font-weight: 800; letter-spacing: 2px; color: #f2f6ff;
+}
+.section-desc {
+  margin: 4px 0 16px;
+  padding-left: 14px;
+  font-size: 12.5px; line-height: 1.7; font-weight: 500;
+  color: rgba(233,239,255,.6);
+}
+
+.pwd-status {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 4px 0 14px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(120,230,170,.1);
+  border: 1px solid rgba(120,230,170,.35);
+  color: #b8f5d0;
+  font-size: 12px; font-weight: 700; letter-spacing: 1px;
+}
+.pwd-status .dot-ok {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #56f0a0; box-shadow: 0 0 10px #56f0a0;
+}
+.pwd-status.off {
+  background: rgba(255,200,120,.08);
+  border-color: rgba(255,200,120,.3);
+  color: #ffd9a8;
+}
+.pwd-status.off .dot-ok { background: #ffb86b; box-shadow: 0 0 10px #ffb86b; }
+
+.hotkey-row {
+  display: flex; align-items: center; gap: 18px;
+  padding: 14px 0;
+  border-top: 1px dashed rgba(255,255,255,.07);
+}
+.hotkey-row:first-of-type { border-top: 0; }
+.hotkey-label { flex: 1; min-width: 0; }
+.hotkey-title { font-size: 14px; font-weight: 800; color: #f2f6ff; letter-spacing: 1px; }
+.hotkey-sub { margin-top: 4px; font-size: 12px; font-weight: 500; color: rgba(233,239,255,.5); line-height: 1.5; }
+
+.hotkey-input-wrap { position: relative; }
+.hotkey-input {
+  width: 220px; height: 42px; padding: 0 38px 0 14px;
+  border-radius: 12px; font-size: 13px; text-align: center; cursor: pointer;
+  letter-spacing: 1px;
+}
+.hotkey-input.recording {
+  border-color: rgba(255,107,203,.7);
+  box-shadow: 0 0 0 4px rgba(255,107,203,.18), 0 8px 22px -8px rgba(255,107,203,.5);
+  color: #ffd6ee;
+}
+.hotkey-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; border-radius: 8px;
+  border: 0; cursor: pointer;
+  background: rgba(255,255,255,.08);
+  color: rgba(233,239,255,.7);
+  font-size: 18px; line-height: 1;
+  transition: background .15s, color .15s;
+}
+.hotkey-clear:hover { background: rgba(255,90,120,.2); color: #ffd0d8; }
+
+.about-meta {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.about-meta > div {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.1);
+  font-size: 12.5px;
+}
+.about-meta span { color: rgba(233,239,255,.5); font-weight: 600; }
+.about-meta b { color: #e9efff; font-weight: 800; letter-spacing: 1px; }
+
+.setup-actions { justify-content: flex-end; }

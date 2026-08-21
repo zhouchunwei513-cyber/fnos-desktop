@@ -21,3 +21,5 @@ Thumbs.db
 *.blockmap
 *.yaml
 !pnpm-lock.yaml
+# 内置 mpv 播放器例外（GPL 开源协议，必须随仓库分发）
+!bin/mpv/mpv.exe

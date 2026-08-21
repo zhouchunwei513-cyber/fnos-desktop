@@ -6,6 +6,7 @@
   const fillEl = document.getElementById('fill');
   const pctEl = document.getElementById('pct');
   const sizeEl = document.getElementById('size');
+  const speedEl = document.getElementById('speed');
   const statusEl = document.getElementById('status');
   const cancelBtn = document.getElementById('cancel-btn');
   const closeBtn = document.getElementById('close-btn');
@@ -21,9 +22,16 @@
     savePath = data.savePath || '';
   };
 
+  const fmtSpeed = (bps) => {
+    if (!bps || bps <= 0) return '0 KB/s';
+    if (bps > 1024 * 1024) return (bps / 1024 / 1024).toFixed(2) + ' MB/s';
+    return (bps / 1024).toFixed(1) + ' KB/s';
+  };
+
   const onProgress = (data) => {
     fillEl.style.width = `${data.pct || 0}%`;
     pctEl.textContent = `${data.pct || 0}%`;
+    if (speedEl) speedEl.textContent = fmtSpeed(data.speedBps);
     const totalMB = data.totalBytes > 0 ? (data.totalBytes / 1024 / 1024).toFixed(2) : '—';
     sizeEl.textContent = `${data.receivedText || '0 MB'} / 共 ${totalMB} MB`;
   };

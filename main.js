@@ -21,7 +21,7 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.10.1';
+const APP_VERSION = '1.10.2';
 
 // ---------------------- 启动性能开关 ----------------------
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
@@ -32,9 +32,13 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
-app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
+app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization,VaapiVideoDecoder,VaapiVideoEncoder,MediaFoundationVideoCapture');
 app.commandLine.appendSwitch('enable-async-dns');
 app.commandLine.appendSwitch('max-connections-per-host', '32');
+app.commandLine.appendSwitch('enable-quic');
+app.commandLine.appendSwitch('enable-parallel-downloading');
+app.commandLine.appendSwitch('disk-cache-size', '104857600');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512');
 
 // v1.10.0：修复部分 ARM64 / 集显设备上飞牛影视/音乐出现绿屏或花屏
 // - 在 ARM64 设备上禁用硬件加速视频解码（软解），保留 GPU 合成
@@ -190,9 +194,9 @@ function defaultSettings() {
     autoHideMenuBar: false,
     // v1.10.0：CORS 绕过（直播源跨域），默认开启
     bypassCors: true,
-    // v1.10.1：实验性玻璃标题栏（默认关闭，不改变原功能）
+    // v1.10.2：实验性玻璃标题栏（默认关闭，不改变原功能）
     glassTitleBar: false,
-    // v1.10.1：主题色（仅影响标题栏叠加色，不动页面内配色）
+    // v1.10.2：主题色（仅影响标题栏叠加色，不动页面内配色）
     // 可选：'#1e1b2e'（默认深紫黑）、'#0f172a'（深蓝）、'#101828'（纯黑）、'#1f2937'（石墨）、'#312e81'（靛蓝）、'#831843'（酒红）
     themeColor: '#1e1b2e',
   };
@@ -487,11 +491,35 @@ function installCorsBypass(ses) {
 
 // ---------------------- 下载进度提示 ----------------------
 // v1.10.0：用户反馈"NAS 往桌面下载文件缺少进度条"。
-// 监听会话的 will-download，弹出一个小的进度条 BrowserWindow。
+// 监听会话的 will-download：先弹保存对话框，用户确认后再开始下载，并显示速度/进度。
 function installDownloadTracker(ses) {
   if (!ses || ses.__fnosDlInstalled) return;
   ses.__fnosDlInstalled = true;
-  ses.on('will-download', (_event, item) => {
+  ses.on('will-download', async (event, item) => {
+    // 先暂停，等用户选择保存路径
+    item.pause();
+    const fname = item.getFilename();
+    const defaultPath = app.getPath('downloads');
+    let savePath;
+    try {
+      const r = await dialog.showSaveDialog(mainWindow, {
+        title: '保存文件',
+        defaultPath: path.join(defaultPath, fname),
+        buttonLabel: '保存',
+        filters: [{ name: '所有文件', extensions: ['*'] }],
+      });
+      if (r.canceled || !r.filePath) {
+        item.cancel();
+        return;
+      }
+      savePath = r.filePath;
+    } catch (e) {
+      console.error('save dialog failed', e);
+      item.cancel();
+      return;
+    }
+    item.setSavePath(savePath);
+    item.resume();
     showDownloadProgress(item);
   });
 }
@@ -569,7 +597,8 @@ function showDownloadProgress(item) {
       send('download:progress', {
         received, totalBytes, pct,
         receivedText: fmtMB(received),
-        speedText: speedBps > 0 ? `${fmtMB(speedBps)}/s` : '',
+        speedBps,
+        speedText: speedBps > 0 ? `${fmtMB(speedBps)}/s` : '0 KB/s',
       });
     }
   };
@@ -1499,35 +1528,16 @@ function withWebContents(fn) {
   };
 }
 
-// 查找播放器（优先内置 MPV，其次系统已装的 MPV/PotPlayer/VLC）
+// 获取内置 MPV 播放器路径（随安装包打包，bin/mpv/mpv.exe）
 function findExternalPlayer() {
-  // 1) 随程序打包的内置 MPV（bin/mpv/mpv.exe）
   try {
-    const bundled = path.join(process.resourcesPath || __dirname, 'bin', 'mpv', 'mpv.exe');
-    if (fs.existsSync(bundled)) return bundled;
-    const bundledDev = path.join(__dirname, 'bin', 'mpv', 'mpv.exe');
-    if (fs.existsSync(bundledDev)) return bundledDev;
+    // 打包后：resources/bin/mpv/mpv.exe（extraResources 复制到 resources/bin/mpv/）
+    const prodPath = path.join(process.resourcesPath || '', 'bin', 'mpv', 'mpv.exe');
+    if (fs.existsSync(prodPath)) return prodPath;
+    // 开发环境：源码目录 bin/mpv/mpv.exe
+    const devPath = path.join(__dirname, 'bin', 'mpv', 'mpv.exe');
+    if (fs.existsSync(devPath)) return devPath;
   } catch (_) {}
-  // 2) 系统中已安装的播放器
-  const candidates = [];
-  if (process.platform === 'win32') {
-    const pf = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)'], process.env['LOCALAPPDATA']].filter(Boolean);
-    for (const root of pf) {
-      candidates.push(
-        path.join(root, 'MPV', 'mpv.exe'),
-        path.join(root, 'mpv', 'mpv.exe'),
-        path.join(root, 'PotPlayer', 'PotPlayerMini64.exe'),
-        path.join(root, 'PotPlayer', 'PotPlayerMini.exe'),
-        path.join(root, 'DAUM', 'PotPlayer', 'PotPlayerMini64.exe'),
-        path.join(root, 'VideoLAN', 'VLC', 'vlc.exe'),
-        path.join(root, 'MPC-HC', 'mpc-hc64.exe'),
-        path.join(root, 'MPC-BE', 'mpc-be64.exe'),
-      );
-    }
-  }
-  for (const p of candidates) {
-    try { if (fs.existsSync(p)) return p; } catch {}
-  }
   return null;
 }
 
@@ -1550,33 +1560,21 @@ async function extractVideoUrl(wc) {
   }
 }
 
-// 用外部播放器打开当前视频（硬件解码由外部播放器完成）
-// 内置 MPV 播放器路径（打包后位于 app.asar.unpacked/bin/mpv/mpv.exe）
+// 用内置 MPV 播放器打开当前视频（硬件解码由 MPV 完成）
 function getMpvPath() {
-  // 开发环境：源码目录下的 bin/mpv/mpv.exe
-  const devPath = path.join(__dirname, '..', 'bin', 'mpv', 'mpv.exe');
-  if (fs.existsSync(devPath)) return devPath;
-  // 打包后环境：extraResources 解压到 app.asar.unpacked 旁边
-  try {
-    const { app } = require('electron');
-    const prodPath = path.join(path.dirname(app.getPath('exe')), 'resources', 'bin', 'mpv', 'mpv.exe');
-    if (fs.existsSync(prodPath)) return prodPath;
-  } catch {}
-  return null;
+  return findExternalPlayer();
 }
 
 async function openInMpv(wc, ownerWin) {
   if (!wc || wc.isDestroyed()) return;
   const mpvPath = getMpvPath();
   if (!mpvPath) {
-    const r = await glassMessageBox(ownerWin || mainWindow, {
-      type: 'question', buttons: ['去下载 MPV', '取消'],
-      defaultId: 0, cancelId: 1,
-      title: 'MPV 播放器未安装',
+    await glassMessageBox(ownerWin || mainWindow, {
+      type: 'error', buttons: ['我知道了'], defaultId: 0, cancelId: 0,
+      title: 'MPV 播放器缺失',
       message: '内置 MPV 播放器组件未找到。',
-      detail: 'MPV 是开源视频播放器（GPL 协议），支持 GPU 硬件解码。点击"去下载 MPV"前往 GitHub 下载页面，将 mpv.exe 放入程序目录的 bin/mpv/ 文件夹即可。',
+      detail: '请重新安装 FNOS 客户端，安装包已内置 MPV（GPL 协议开源）。若仍出现此问题，请在 GitHub Issues 反馈。',
     });
-    if (r === 0) shell.openExternal('https://github.com/zhongfly/mpv-winbuild/releases/latest');
     return;
   }
   const url = await extractVideoUrl(wc);

@@ -256,6 +256,21 @@ code {
 <main class="container">
 
   <section class="card">
+    <h2>v1.10.5 更新说明</h2>
+    <ul>
+      <li><b>修复点下载弹出 2 个保存对话框</b>：同 URL + 同文件名在 1.5 秒内重复触发 will-download 时自动去重；移除了 <code>enable-parallel-downloading</code> 和 <code>max-connections-per-host=32</code> 两个会让部分 NAS 网关认为同一文件发起两次请求的激进开关；will-download 触发后立即 <code>pause()</code> 阻止 Chromium 默认下载落到默认目录。</li>
+      <li><b>修复下载进度框布局只显示一部分</b>：窗口从 500×168 调整为 560×200，允许横向拉伸；卡片内部改为 flex 列布局，文件名、保存路径自动省略，底部状态栏 / 按钮组使用 nowrap 防止换行裁切。</li>
+      <li><b>修复取消下载可能损坏 NAS 原文件（重大）</b>：① 取消按钮不再立即 <code>item.cancel()</code>（会发 TCP RST，飞牛 NAS 在某些版本下会误清理临时文件，极端情况波及原文件），改为先 <code>pause()</code> 停止接收数据，等 1.5 秒让服务端完成当前 chunk 并正常 EOF，再 <code>cancel()</code>；② 收紧 CORS 拦截器 —— 之前对所有响应都注入 <code>Access-Control-Allow-Origin: *</code> + <code>Allow-Credentials: true</code>（这在规范上是非法组合），且对所有 OPTIONS 请求直接返回 204 空响应，可能干扰飞牛前端的取消下载 / 删除等业务 API；现在只对 <code>m3u8 / ts / mp4 / mkv / flv</code> 等媒体 / 直播流注入 CORS，业务 API 的 OPTIONS 完全透传给 NAS。</li>
+      <li><b>修复开了代理仍提示无法连接 GitHub</b>：检查更新请求显式绑定 <code>session.defaultSession</code>，Electron <code>net</code> 会自动读取 Windows 系统代理（Clash / v2ray / Shadowsocks 等只要是"系统代理"或"TUN 模式"都会生效）；超时从 12 秒延长到 25 秒；失败后自动重试 1 次；错误提示中明确告知代理模式要求。</li>
+      <li><b>检查更新弹窗统一为透明玻璃风格</b>："正在检查更新…"的转圈弹窗改为和其他提示一致的毛玻璃卡片样式，不再使用自绘的不透明小方块。</li>
+      <li><b>快捷方式图标彻底覆盖</b>：NSIS 安装脚本在创建新快捷方式前先删除旧的 <code>.lnk</code>；为 EXE 和快捷方式显式指定 icon index 0；安装完成后调用 <code>SHChangeNotify</code> 通知资源管理器刷新图标缓存；写入 <code>AppUserModelID</code> 与主程序一致，任务栏分组不再使用旧图标缓存。</li>
+      <li><b>恢复被误禁用的 Chromium 服务</b>：v1.10.3/v1.10.4 为"性能优化"关闭了 <code>MediaRouter</code>、<code>CastMediaRouteProvider</code>、<code>DialMediaRouteProvider</code>、<code>GlobalMediaControls</code>、<code>HardwareMediaKeyHandling</code>，这些会影响飞牛影视的投屏（Chromecast / DLNA）、系统媒体控制面板、硬件多媒体键等功能。v1.10.5 全部恢复，只保留 <code>Translate</code>、<code>InterestFeedContentSuggestions</code>、<code>PrivacySandbox</code> 等与 NAS 业务无关的开关。</li>
+      <li><b>安全审查</b>：CORS 注入范围最小化、下载取消流程不向 NAS 发送任何 DELETE/PUT、检查更新请求不携带 Cookie / 凭据（<code>credentials: 'omit'</code>）、不去解析 GitHub 返回的 HTML（只取 <code>tag_name</code>/<code>name</code>/<code>body</code>/<code>html_url</code> 四个字段）。</li>
+    </ul>
+    <p style="margin-top:10px;color:var(--muted);font-size:12px;">提示：如果升级后桌面快捷方式仍显示旧图标，重启资源管理器或注销重登一次即可；这是 Windows 图标缓存机制所致，不是安装包本身的问题。</p>
+  </section>
+
+  <section class="card">
     <h2>快速开始</h2>
     <div class="step">
       <div class="step-num">1</div>
@@ -445,7 +460,7 @@ code {
 
 </main>
 
-<div class="footer">FNOS CLIENT · 1.10.4</div>
+<div class="footer">FNOS CLIENT · 1.10.5</div>
 
 </body>
 </html>

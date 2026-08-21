@@ -1,5 +1,5 @@
 ; =====================================================================
-; FNOS 自定义 NSIS 安装脚本 (v1.10.4)
+; FNOS 自定义 NSIS 安装脚本 (v1.10.5)
 ; 由沙箱内的 Linux makensis 直接编译，不依赖 wine。
 ; 功能：
 ;   - 检测程序是否在运行，若运行则提示退出后重试
@@ -7,6 +7,8 @@
 ;   - 默认创建桌面快捷方式 + 开始菜单程序组（无选项页，强制创建）
 ;   - 释放 win-unpacked 目录中的全部文件
 ;   - 生成卸载程序、控制面板卸载项
+;   - v1.10.5: 安装前删除旧的快捷方式并刷新 Windows 图标缓存，
+;             确保新安装后快捷方式图标立即更新为飞牛 LOGO
 ; =====================================================================
 
 !include "MUI2.nsh"
@@ -15,7 +17,7 @@
 
 ; ------------------ 基本信息 ------------------
 !define PRODUCT_NAME       "FNOS"
-!define PRODUCT_VERSION    "1.10.4"
+!define PRODUCT_VERSION    "1.10.5"
 !define PRODUCT_PUBLISHER  "FNOS"
 !define PRODUCT_REGKEY     "Software\${PRODUCT_PUBLISHER}\${PRODUCT_NAME}"
 !define UNINSTALL_REGKEY   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -97,17 +99,34 @@ Section "-Core" SecCore
   WriteRegDWORD HKCU "${UNINSTALL_REGKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_REGKEY}" "NoRepair" 1
 
+  ; v1.10.5: 先删除可能存在的旧版本快捷方式（指向旧路径或旧图标缓存），再重新创建。
+  ; Windows 资源管理器会缓存 .lnk 中引用的图标，如果直接覆盖，可能继续显示旧图标。
+  Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
+  !insertmacro MUI_STARTMENU_WRITE_BEGIN App
+    Delete "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"
+    Delete "$SMPROGRAMS\$StartMenuFolder\卸载 ${PRODUCT_NAME}.lnk"
+  !insertmacro MUI_STARTMENU_WRITE_END
+
   ; 桌面快捷方式（始终创建）
-  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0
+  ; 第 5 个参数 iconPathName 指向 $INSTDIR\${MAIN_EXE}（rcedit 已把飞牛 LOGO 写入 EXE 资源段）
+  ; 第 6 个参数 iconIndex 设为 0，强制使用 EXE 中的第一组图标
+  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL
+  ; 设置 AppUserModelID（和 main.js 中 setAppUserModelId 一致），便于 Windows 任务栏分组
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\PropertySystem\SystemTileData\$DESKTOP\${PRODUCT_NAME}.lnk" "AppUserModelID" "com.fnos.client"
 
   ; 开始菜单程序组（始终创建）
   !insertmacro MUI_STARTMENU_WRITE_BEGIN App
     CreateDirectory "$SMPROGRAMS\$StartMenuFolder"
-    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"   "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0
-    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\卸载 ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\Uninstall.exe" 0
+    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"   "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL
+    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\卸载 ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\Uninstall.exe" 0 SW_SHOWNORMAL
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\PropertySystem\SystemTileData\$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk" "AppUserModelID" "com.fnos.client"
   !insertmacro MUI_STARTMENU_WRITE_END
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+
+  ; v1.10.5: 通知 Windows 资源管理器刷新图标缓存（非阻塞）
+  ; SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL)
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 SectionEnd
 
 ; ------------------ 卸载前回调：检测程序是否运行 ------------------

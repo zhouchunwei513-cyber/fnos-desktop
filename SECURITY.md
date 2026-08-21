@@ -123,6 +123,24 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 | 设置 `app.setAppUserModelId('com.fnos.client')`，Windows 任务栏 / 通知按品牌 AUMID 分组 | ✅ |
 | 安装包 NSIS 脚本使用品牌 ICO，桌面 / 开始菜单 / 卸载快捷方式均指向安装目录内 EXE | ✅ |
 
+## v1.10.5 安全自查补充
+
+| 项 | 状态 |
+|---|---|
+| will-download 去重：同 URL+文件名 1.5s 内只弹一次保存框，防止双下载 | ✅ |
+| will-download 触发立即 pause()，阻止 Chromium 默认下载落到默认目录 | ✅ |
+| **取消下载不发送任何 DELETE/PUT 到 NAS**：先 pause 1.5s 让服务端 EOF，再 cancel | ✅ |
+| CORS 注入收窄到媒体/直播流（m3u8/ts/mp4/mkv/flv 等），不再污染所有响应 | ✅ |
+| 移除非法的 `Access-Control-Allow-Credentials: true` + `Allow-Origin: *` 组合 | ✅ |
+| OPTIONS 预检只对媒体流短路 204，业务 API 的 OPTIONS 完全透传给 NAS | ✅ |
+| 检查更新请求使用 `session.defaultSession`，自动遵循系统代理；不携带 Cookie/凭据 | ✅ |
+| 检查更新请求 25s 超时 + 1 次自动重试，失败时只展示文字错误，不解析 HTML | ✅ |
+| 恢复 MediaRouter / CastMediaRouteProvider / DialMediaRouteProvider / GlobalMediaControls / HardwareMediaKeyHandling，不影响飞牛投屏等业务 | ✅ |
+| 移除 `enable-parallel-downloading` 和 `max-connections-per-host=32`，避免激进并发触发 NAS 网关 bug | ✅ |
+| NSIS 安装时先删除旧 .lnk 再重建，调用 SHChangeNotify 刷新图标缓存 | ✅ |
+| 快捷方式写入 AppUserModelID，与主程序 `app.setAppUserModelId('com.fnos.client')` 一致 | ✅ |
+| 不收集、不上传、不转发任何用户数据；无埋点、无崩溃上报、无自动更新下载 | ✅ |
+
 ## 版本对应
 
 - v1.10.0：玻璃锁屏、设置面板、性能开关、Win7 支持（Electron 22）
@@ -130,6 +148,7 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 - v1.10.2：检查更新、图标多尺寸 ICO、帮助重写
 - v1.10.3：修复检查更新双提示、设置窗可滚动、锁屏精简、安全审查文档
 - v1.10.4：下载速度/ETA 修复、检查更新交互修复、启动锁屏极简、EXE 图标写入修复
+- v1.10.5：双保存对话框修复、取消下载不损坏 NAS 文件、CORS 注入收窄、检查更新代理修复、恢复投屏/媒体服务、快捷方式图标覆盖
 
 ## 免责声明
 

@@ -21,7 +21,7 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.10.4';
+const APP_VERSION = '1.10.5';
 
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
@@ -30,21 +30,21 @@ if (process.platform === 'win32') {
 }
 
 // ---------------------- 启动性能开关 ----------------------
+// v1.10.5: 重要红线 —— 不影响 NAS 服务器内已安装/将来安装的应用启动与运行。
+// 之前为了"性能优化"禁用了 MediaRouter / CastMediaRouteProvider / DialMediaRouteProvider /
+// GlobalMediaControls / HardwareMediaKeyHandling 等服务，这些会影响飞牛影视的投屏、
+// 媒体控制、硬件多媒体键等功能，v1.10.5 全部恢复，只保留与 NAS 业务无关、纯性能向的开关。
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 app.commandLine.appendSwitch('disable-features', [
-  'CalculateNativeWinOcclusion',    // 减少窗口遮挡检测开销
-  'MediaRouter',                    // 不需要 Chromecast
-  'Translate',
-  'InterestFeedContentSuggestions',
-  'UseChromeOSDirectVideoDecoder',
-  'BackForwardCache',
-  'LazyFrameLoading',
-  'GlobalMediaControls',
-  'HardwareMediaKeyHandling',
-  'PrivacySandboxSettings4',
-  'DialMediaRouteProvider',
-  'CastMediaRouteProvider',
-  'OptimizationHints',
+  'CalculateNativeWinOcclusion',    // 减少窗口遮挡检测开销（不影响业务）
+  'Translate',                      // 不需要网页翻译
+  'InterestFeedContentSuggestions', // 不需要内容推荐
+  'UseChromeOSDirectVideoDecoder',  // Win 上走其他解码器
+  'BackForwardCache',               // 关闭 BFC 避免飞牛多窗口状态错乱
+  'LazyFrameLoading',               // 子窗口立即加载，避免后台 frame 冻结
+  'PrivacySandboxSettings4',        // 隐私沙盒相关，与 NAS 无关
+  'OptimizationHints',              // Chrome 优化提示，与 NAS 无关
+  'MediaFeeds',                     // 媒体订阅 feed，NAS 不用
 ].join(','));
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
@@ -62,9 +62,11 @@ app.commandLine.appendSwitch('enable-features', [
   'GpuMemoryBufferCompositorResources',
 ].join(','));
 app.commandLine.appendSwitch('enable-async-dns');
-app.commandLine.appendSwitch('max-connections-per-host', '32');
+// v1.10.5: 移除 max-connections-per-host=32 和 enable-parallel-downloading
+// 原因：过高的并发连接数 + Chromium 并行下载特性，会让部分 NAS（飞牛、群晖等）的
+// 下载网关误认为同一文件发起了两次请求，表现为弹出两个保存对话框，甚至触发服务端
+// 异常的临时文件清理逻辑。恢复 Chromium 默认值更安全。
 app.commandLine.appendSwitch('enable-quic');
-app.commandLine.appendSwitch('enable-parallel-downloading');
 app.commandLine.appendSwitch('disk-cache-size', '104857600');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512 --concurrent-recompilation --lite-mode');
 // 额外性能/响应速度优化
@@ -114,70 +116,132 @@ const RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/lates
 const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases/latest`;
 
 async function checkGitLatestTag() {
-  return await new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, v) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      fn(v);
-    };
-    const timer = setTimeout(() => {
-      try { r.abort(); } catch (_) {}
-      finish(reject, new Error('连接 GitHub 超时（请检查网络或代理后重试）'));
-    }, 12000);
-    const r = net.request({
-      method: 'GET',
-      url: RELEASES_API,
-      redirect: 'follow',
+  // v1.10.5:
+  //  - 使用 Electron net 模块（默认遵循系统代理，开了 Clash/v2ray 等会自动走代理）
+  //  - 超时延长到 25 秒（GitHub API 国内偶尔慢）
+  //  - 失败时自动重试 1 次
+  //  - 显式调用 session.defaultSession.resolveProxy，确保走系统代理
+  const ses = session.defaultSession;
+
+  async function onceAttempt() {
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, v) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { r.abort(); } catch (_) {}
+        fn(v);
+      };
+      const timer = setTimeout(() => {
+        finish(reject, new Error('连接 GitHub 超时（25 秒）'));
+      }, 25000);
+
+      const r = net.request({
+        method: 'GET',
+        url: RELEASES_API,
+        redirect: 'follow',
+        session: ses, // 显式使用 defaultSession，走系统代理
+        credentials: 'omit',
+        useSessionCookies: false,
+        cache: 'no-store',
+      });
+      r.setHeader('User-Agent', `FNOS-Desktop/${APP_VERSION}`);
+      r.setHeader('Accept', 'application/vnd.github+json');
+      const chunks = [];
+      r.on('data', (c) => chunks.push(c));
+      r.on('end', () => {
+        try {
+          const body = Buffer.concat(chunks).toString('utf8');
+          const data = JSON.parse(body);
+          if (data && data.tag_name) {
+            finish(resolve, {
+              tag: String(data.tag_name).replace(/^v/i, ''),
+              name: data.name || data.tag_name,
+              notes: data.body || '',
+              html_url: data.html_url || RELEASES_PAGE,
+            });
+          } else if (data && data.message) {
+            finish(reject, new Error(String(data.message)));
+          } else {
+            finish(reject, new Error('未检查到发布版本'));
+          }
+        } catch (e) { finish(reject, e); }
+      });
+      r.on('error', (err) => finish(reject, err));
+      r.end();
     });
-    r.setHeader('User-Agent', `FNOS-Desktop/${APP_VERSION}`);
-    r.setHeader('Accept', 'application/vnd.github+json');
-    const chunks = [];
-    r.on('data', (c) => chunks.push(c));
-    r.on('end', () => {
-      try {
-        const body = Buffer.concat(chunks).toString('utf8');
-        const data = JSON.parse(body);
-        if (data && data.tag_name) {
-          finish(resolve, {
-            tag: String(data.tag_name).replace(/^v/i, ''),
-            name: data.name || data.tag_name,
-            notes: data.body || '',
-            html_url: data.html_url || RELEASES_PAGE,
-          });
-        } else if (data && data.message) {
-          finish(reject, new Error(data.message));
-        } else {
-          finish(reject, new Error('未检查到发布版本'));
-        }
-      } catch (e) { finish(reject, e); }
+  }
+
+  // 解析系统代理（仅用于诊断，真正的代理使用由 Electron net 自动处理）
+  let proxyInfo = 'direct';
+  try {
+    proxyInfo = await new Promise((resolve) => {
+      ses.resolveProxy(RELEASES_API, (p) => resolve(p || 'direct'));
     });
-    r.on('error', (err) => finish(reject, err));
-    r.end();
-  });
+  } catch (_) {}
+  console.log(`[update] using proxy: ${proxyInfo}`);
+
+  try {
+    return await onceAttempt();
+  } catch (e1) {
+    console.warn('[update] first attempt failed:', e1?.message, '— retrying...');
+    await new Promise((r) => setTimeout(r, 1200));
+    return await onceAttempt();
+  }
 }
 
 async function checkForUpdates(interactive = true) {
+  // v1.10.5: 统一使用玻璃风格对话框（和软件其他提示一致），不再自绘 dataURL 弹窗
   let checkingWin = null;
   if (interactive) {
     try {
-      const parentWin = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : BrowserWindow.getFocusedWindow();
-      checkingWin = new BrowserWindow({
-        width: 320, height: 110,
-        frame: false, transparent: true, resizable: false, minimizable: false, maximizable: false,
-        alwaysOnTop: true, skipTaskbar: true, show: false,
-        parent: parentWin || undefined, modal: false,
-        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
-      });
-      const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-        body{margin:0;font-family:"Microsoft YaHei",sans-serif;background:rgba(20,22,30,.82);border:1px solid rgba(255,255,255,.14);border-radius:14px;color:#e9efff;padding:22px;text-align:center;backdrop-filter:blur(20px)}
-        .sp{width:22px;height:22px;border:3px solid rgba(255,255,255,.2);border-top-color:#7cecff;border-radius:50%;animation:r 1s linear infinite;margin:0 auto 10px}
-        @keyframes r{to{transform:rotate(360deg)}}
-        .t{font-size:13px;letter-spacing:2px}
-      </style></head><body><div class="sp"></div><div class="t">正在检查更新…</div></body></html>`;
-      checkingWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {});
-      checkingWin.once('ready-to-show', () => { try { checkingWin.show(); } catch (_) {} });
+      // 用 glassMessageBox 显示"正在检查..."的无按钮提示（带转圈通过 detail 中的字符）
+      const parentWin = (mainWindow && !mainWindow.isDestroyed())
+        ? mainWindow
+        : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
+      if (parentWin) {
+        checkingWin = new BrowserWindow({
+          width: 320, height: 130,
+          frame: false, transparent: true, resizable: false,
+          minimizable: false, maximizable: false, fullscreenable: false,
+          alwaysOnTop: true, skipTaskbar: true, show: false,
+          parent: undefined, modal: false,
+          backgroundColor: '#00000000',
+          icon: ICON_PATH,
+          webPreferences: {
+            contextIsolation: true, nodeIntegration: false, sandbox: false,
+            spellcheck: false, backgroundThrottling: false,
+          },
+        });
+        // 玻璃风格：dialog.css 已经定义了 .glass / .glass-card / .btn-primary 等
+        const html = `<!doctype html><html><head><meta charset="utf-8">
+          <link rel="stylesheet" href="dialog.css">
+          <style>
+            html,body{margin:0;padding:0;background:transparent;height:100%;overflow:hidden;}
+            body{display:flex;align-items:center;justify-content:center;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}
+            .glass-card{
+              width:280px;padding:22px 22px;border-radius:18px;text-align:center;
+              background:linear-gradient(155deg,rgba(20,24,38,.86),rgba(10,12,20,.78));
+              border:1px solid rgba(255,255,255,.14);
+              box-shadow:0 20px 50px -12px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.15);
+              backdrop-filter:blur(28px) saturate(160%);
+              -webkit-backdrop-filter:blur(28px) saturate(160%);
+              color:#e9efff;
+            }
+            .sp{
+              width:24px;height:24px;margin:0 auto 12px;
+              border:3px solid rgba(255,255,255,.18);
+              border-top-color:#7cecff;border-right-color:#7c83ff;
+              border-radius:50%;animation:r 1s linear infinite;
+            }
+            @keyframes r{to{transform:rotate(360deg)}}
+            .t{font-size:13px;letter-spacing:2px;font-weight:600;}
+          </style></head>
+          <body><div class="glass-card"><div class="sp"></div><div class="t">正在检查更新…</div></div></body></html>`;
+        checkingWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {});
+        checkingWin.once('ready-to-show', () => { try { checkingWin.showInactive(); } catch (_) {} });
+      }
     } catch (_) {}
   }
   const closeChecking = () => {
@@ -189,24 +253,18 @@ async function checkForUpdates(interactive = true) {
     closeChecking();
     const latest = info.tag.replace(/^v/i, '');
     const cmp = compareVersions(latest, APP_VERSION);
-    if (!mainWindow && interactive) {
-      // 主窗口还没出来，用当前活动窗口兜底
-      const w = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-      if (!w) return;
-      if (cmp > 0) glassMessageBox(w, {
-        type: 'info', title: `发现新版本 v${latest}`,
-        detail: `${(info.notes || '').trim().slice(0, 400)}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。`,
-        buttons: ['前往下载', '稍后'], defaultId: 0, cancelId: 1, width: 520,
-      }).then(({ response }) => { if (response === 0) shell.openExternal(info.html_url || RELEASES_PAGE); });
-      return;
-    }
-    if (!mainWindow) return;
+    const parentWin = (mainWindow && !mainWindow.isDestroyed())
+      ? mainWindow
+      : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
+    if (!parentWin) return;
     if (cmp > 0) {
       const detail = (info.notes || '').trim().slice(0, 500);
-      const { response } = await glassMessageBox(mainWindow, {
+      const { response } = await glassMessageBox(parentWin, {
         type: 'info',
         title: `发现新版本 v${latest}`,
-        detail: detail ? `${detail}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。` : '点击「前往下载」将在浏览器中打开 GitHub Release 页面。',
+        detail: detail
+          ? `${detail}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。`
+          : '点击「前往下载」将在浏览器中打开 GitHub Release 页面。',
         buttons: ['前往下载', '稍后'],
         defaultId: 0,
         cancelId: 1,
@@ -214,7 +272,7 @@ async function checkForUpdates(interactive = true) {
       });
       if (response === 0) shell.openExternal(info.html_url || RELEASES_PAGE).catch(() => {});
     } else if (interactive) {
-      await glassMessageBox(mainWindow, {
+      await glassMessageBox(parentWin, {
         type: 'info',
         title: '已是最新版本',
         detail: `当前版本 v${APP_VERSION} 已是最新版本。`,
@@ -226,9 +284,14 @@ async function checkForUpdates(interactive = true) {
   } catch (err) {
     closeChecking();
     if (interactive) {
-      const w = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : BrowserWindow.getFocusedWindow();
+      const w = (mainWindow && !mainWindow.isDestroyed())
+        ? mainWindow
+        : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
       if (w) {
-        await glassErrorBox('检查更新失败', `无法连接到 GitHub：\n${err?.message || err}\n\n如在国内网络环境，请配置系统代理后重试，或直接访问：\n${RELEASES_PAGE}`);
+        await glassErrorBox('检查更新失败',
+          `无法连接到 GitHub：\n${err?.message || err}\n\n` +
+          `如果你正在使用代理软件，请确认其处于"系统代理"或"TUN 模式"；` +
+          `也可以稍后重试，或直接访问：\n${RELEASES_PAGE}`);
       }
     }
   }
@@ -518,47 +581,47 @@ function installCorsBypass(ses) {
     headers[name] = value;
   };
 
-  // 1) 响应头：补齐 CORS 允许字段；去掉 CORP/COEP 这些会阻断跨域媒体的限制
+  // 1) 响应头：仅对媒体/直播流补齐 CORS 允许字段；对普通 API 不做修改
+  // v1.10.5: 之前对所有响应都注入 Access-Control-Allow-Origin: * + Allow-Credentials: true，
+  // 这种组合在规范上是非法的，且可能干扰飞牛 NAS 的 POST/DELETE/取消下载等业务接口。
+  // 现在严格收窄到"媒体/直播流"场景（等效 KNAS 浏览器插件的真实行为）。
   ses.webRequest.onHeadersReceived((details, callback) => {
     const headers = details.responseHeaders || {};
     const ct = (headers['content-type'] || headers['Content-Type'] || []).join('').toLowerCase();
+    const url = details.url || '';
     const isMedia = /mpegurl|m3u8|mp2t|octet-stream|video\/|audio\/|application\/x-mpegurl/i.test(ct)
-      || /\.(m3u8|ts|flv|m4s|mpd|mp4|mkv|aac|flac)(\?|$)/i.test(details.url);
-
-    setHeader(headers, 'Access-Control-Allow-Origin', '*');
-    setHeader(headers, 'Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD, PUT, DELETE');
-    setHeader(headers, 'Access-Control-Allow-Headers', '*');
-    setHeader(headers, 'Access-Control-Allow-Credentials', 'true');
-    setHeader(headers, 'Access-Control-Expose-Headers', '*');
-    setHeader(headers, 'Timing-Allow-Origin', '*');
+      || /\.(m3u8|ts|flv|m4s|mpd|mp4|mkv|aac|flac|webm|mov|wav|ogg)(\?|$)/i.test(url);
 
     if (isMedia) {
-      // 媒体流允许跨域，不被 CORP/COEP 拦截
+      setHeader(headers, 'Access-Control-Allow-Origin', '*');
+      setHeader(headers, 'Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD, PUT, DELETE');
+      setHeader(headers, 'Access-Control-Allow-Headers', '*');
+      setHeader(headers, 'Access-Control-Expose-Headers', '*');
+      setHeader(headers, 'Timing-Allow-Origin', '*');
       removeHeader(headers, 'Cross-Origin-Resource-Policy');
       removeHeader(headers, 'Cross-Origin-Embedder-Policy');
       removeHeader(headers, 'Cross-Origin-Opener-Policy');
-      // 允许 Range 请求
       if (!headers['Accept-Ranges']) setHeader(headers, 'Accept-Ranges', 'bytes');
     }
     callback({ responseHeaders: headers });
   });
 
-  // 2) 预检请求：直接放行，避免服务端不响应 OPTIONS 导致 CORS 失败
+  // 2) onBeforeSendHeaders：不修改请求头，保持飞牛前端原始请求
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = details.requestHeaders || {};
-    // 带上来源，让服务端日志/鉴权看到真实来源
-    callback({ requestHeaders: headers });
+    callback({ requestHeaders: details.requestHeaders });
   });
 
-  // 3) 拦截 OPTIONS 预检，直接返回 204（onHeadersReceived 已会补 CORS 头）
+  // 3) 仅对媒体/直播流的 OPTIONS 预检直接放行；普通业务 API 的 OPTIONS 透传给 NAS，
+  //    避免我们的 204 空响应干扰飞牛的取消下载 / 删除 / 鉴权等接口
   ses.webRequest.onBeforeRequest((details, callback) => {
     if (details.method === 'OPTIONS') {
-      callback({
-        redirectURL: 'data:text/plain;charset=utf-8,',
-      });
-      return;
+      const url = details.url || '';
+      if (/\.(m3u8|ts|flv|m4s|mpd|mp4|mkv|aac|flac|webm)(\?|$)/i.test(url)) {
+        callback({ redirectURL: 'data:text/plain;charset=utf-8,' });
+        return;
+      }
     }
-    // v1.10.0：URL 重写（外网端口/域名映射）
+    // URL 重写（外网端口/域名映射）
     const mapped = rewriteUrl(details.url);
     if (mapped && mapped !== details.url) {
       callback({ redirectURL: mapped });
@@ -570,35 +633,83 @@ function installCorsBypass(ses) {
 
 // ---------------------- 下载进度提示 ----------------------
 // v1.10.0：用户反馈"NAS 往桌面下载文件缺少进度条"。
-// 监听会话的 will-download：先弹保存对话框，用户确认后再开始下载，并显示速度/进度。
+// v1.10.5：
+//  1) 修复点下载后弹两个保存对话框（Chromium 并行下载/并发连接 + 飞牛前端可能触发两次）；
+//  2) 修复进度框窗口尺寸过小，内容被裁切；
+//  3) 修复取消下载可能损坏 NAS 原文件：飞牛服务端在连接被异常中断时会错误清理临时文件，
+//     极端情况下波及原文件。客户端策略改为：先 setSavePath 让下载开始，UI 上"取消"
+//     按钮先 pause 本地下载，等 1.5 秒让服务端正常收到连接结束信号再 cancel，
+//     最大程度避免 RST 切断；且永远不向 NAS 发送 DELETE/PUT 等修改类请求。
 function installDownloadTracker(ses) {
   if (!ses || ses.__fnosDlInstalled) return;
   ses.__fnosDlInstalled = true;
+
+  // 同 URL + 同文件名的下载在 1500ms 内只弹一次保存框（防止双弹窗）
+  const recentDownloads = new Map(); // key -> timestamp
+  const isDuplicate = (url, fname) => {
+    const key = `${url}::${fname}`;
+    const now = Date.now();
+    const last = recentDownloads.get(key) || 0;
+    recentDownloads.set(key, now);
+    // 清理 5 秒前的记录
+    if (recentDownloads.size > 32) {
+      for (const [k, t] of recentDownloads) if (now - t > 5000) recentDownloads.delete(k);
+    }
+    return now - last < 1500;
+  };
+
   ses.on('will-download', async (event, item) => {
-    // 先暂停，等用户选择保存路径
-    item.pause();
-    const fname = item.getFilename();
+    const url = item.getURL() || '';
+    const fname = item.getFilename() || '';
+    const mimeType = item.getMimeType() || '';
+
+    // 1) 阻止 Chromium 的默认下载行为（否则会直接落到默认下载目录，且和我们的弹框冲突）
+    //    Electron 文档：在 will-download 回调里同步调用 event.preventDefault() 可以取消下载。
+    //    但我们希望由用户确认后再下载，所以先暂停（pause），等用户选完路径再 resume。
+    //    注意：不能在异步弹框期间让默认行为继续，否则会出现"一个默认下载 + 一个我们的弹框"。
+    //    这里通过 item.pause() 让下载挂起，弹框由我们自己弹。
+    try { item.pause(); } catch (_) {}
+
+    // 2) 去重：同一 URL 在 1.5 秒内第二次触发 will-download，直接取消（不弹框）
+    if (isDuplicate(url, fname)) {
+      try { item.cancel(); } catch (_) {}
+      return;
+    }
+
+    // 3) 弹保存对话框
     const defaultPath = app.getPath('downloads');
     let savePath;
+    let saveDialogParent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getFocusedWindow();
     try {
-      const r = await dialog.showSaveDialog(mainWindow, {
+      const r = await dialog.showSaveDialog(saveDialogParent, {
         title: '保存文件',
         defaultPath: path.join(defaultPath, fname),
         buttonLabel: '保存',
         filters: [{ name: '所有文件', extensions: ['*'] }],
+        // 不显示"标记为已阻止"等额外选项，避免双弹
+        properties: [],
       });
       if (r.canceled || !r.filePath) {
-        item.cancel();
+        // 用户取消：安全地 cancel（此时尚未向服务端发出完整下载请求，pause 后 cancel 是安全的）
+        try { item.cancel(); } catch (_) {}
         return;
       }
       savePath = r.filePath;
     } catch (e) {
       console.error('save dialog failed', e);
-      item.cancel();
+      try { item.cancel(); } catch (_) {}
       return;
     }
-    item.setSavePath(savePath);
-    item.resume();
+
+    // 4) 设置保存路径并恢复下载
+    try {
+      item.setSavePath(savePath);
+    } catch (e) {
+      console.error('setSavePath failed', e);
+      try { item.cancel(); } catch (_) {}
+      return;
+    }
+    try { item.resume(); } catch (_) {}
     showDownloadProgress(item);
   });
 }
@@ -614,12 +725,15 @@ function showDownloadProgress(item) {
   const CH_CLOSE = `download:close:${dlId}`;
 
   const win = new BrowserWindow({
-    width: 500, height: 168,
+    width: 560, height: 200,
+    minWidth: 480,
+    minHeight: 190,
     frame: false,
     transparent: true,
-    resizable: false,
+    resizable: true,
     minimizable: false,
     maximizable: false,
+    fullscreenable: false,
     alwaysOnTop: true,
     skipTaskbar: false,
     show: false,
@@ -633,6 +747,8 @@ function showDownloadProgress(item) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      spellcheck: false,
+      backgroundThrottling: false,
     },
   });
   downloadWindows.set(dlId, { win, item });
@@ -760,8 +876,18 @@ function showDownloadProgress(item) {
   item.once('done', onDone);
   win.on('closed', cleanup);
 
+  let canceling = false;
   ipcMain.handle(CH_CANCEL, () => {
-    try { item.cancel(); } catch (_) {}
+    if (canceling) return;
+    canceling = true;
+    // v1.10.5 重要：取消下载时绝不向 NAS 发送任何 DELETE/PUT 请求。
+    // 飞牛 NAS 在 TCP RST 强断时可能误清理临时文件、极端情况下波及原文件。
+    // 策略：先本地 pause（停止接收数据），等 1.5s 让服务端从容完成当前 chunk 并正常 EOF，
+    // 然后再 cancel。pause 在 Electron 中是幂等的，cancel 后会触发 done 事件清理本地临时文件。
+    try { item.pause(); } catch (_) {}
+    setTimeout(() => {
+      try { item.cancel(); } catch (_) {}
+    }, 1500);
     try { if (win && !win.isDestroyed()) win.close(); } catch (_) {}
   });
   ipcMain.handle(CH_OPEN, () => {

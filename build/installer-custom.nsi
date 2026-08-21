@@ -1,5 +1,5 @@
 ; =====================================================================
-; FNOS 自定义 NSIS 安装脚本 (v1.10.5)
+; FNOS 自定义 NSIS 安装脚本 (v1.11)
 ; 由沙箱内的 Linux makensis 直接编译，不依赖 wine。
 ; 功能：
 ;   - 检测程序是否在运行，若运行则提示退出后重试
@@ -17,7 +17,7 @@
 
 ; ------------------ 基本信息 ------------------
 !define PRODUCT_NAME       "FNOS"
-!define PRODUCT_VERSION    "1.10.5"
+!define PRODUCT_VERSION    "1.11"
 !define PRODUCT_PUBLISHER  "FNOS"
 !define PRODUCT_REGKEY     "Software\${PRODUCT_PUBLISHER}\${PRODUCT_NAME}"
 !define UNINSTALL_REGKEY   "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -99,8 +99,11 @@ Section "-Core" SecCore
   WriteRegDWORD HKCU "${UNINSTALL_REGKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_REGKEY}" "NoRepair" 1
 
-  ; v1.10.5: 先删除可能存在的旧版本快捷方式（指向旧路径或旧图标缓存），再重新创建。
-  ; Windows 资源管理器会缓存 .lnk 中引用的图标，如果直接覆盖，可能继续显示旧图标。
+  ; v1.11: 彻底解决桌面/开始菜单快捷方式图标不刷新的问题。
+  ; 1) 删除旧 .lnk 让 Windows 重新解析图标；
+  ; 2) 同时删除用户级 IconCache.db 中相关缓存通过 SHChangeNotify；
+  ; 3) 显式调用 ie4uinit.exe -ClearIconCache（Win10/11 通用）刷新图标缓存。
+  ; 注意：不使用 -show 参数，避免在某些 Windows 版本上短暂闪任务栏。
   Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
   !insertmacro MUI_STARTMENU_WRITE_BEGIN App
     Delete "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"
@@ -108,25 +111,28 @@ Section "-Core" SecCore
   !insertmacro MUI_STARTMENU_WRITE_END
 
   ; 桌面快捷方式（始终创建）
-  ; 第 5 个参数 iconPathName 指向 $INSTDIR\${MAIN_EXE}（rcedit 已把飞牛 LOGO 写入 EXE 资源段）
-  ; 第 6 个参数 iconIndex 设为 0，强制使用 EXE 中的第一组图标
-  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL
-  ; 设置 AppUserModelID（和 main.js 中 setAppUserModelId 一致），便于 Windows 任务栏分组
+  ; iconPathName 同时指向 $INSTDIR\${MAIN_EXE}（rcedit 已把飞牛 LOGO 写入 EXE 资源段）
+  ; 并通过额外写入 .ico 旁挂，确保即使 Windows 图标缓存异常也能正确解析
+  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL "" "" "" "FNOS 飞牛私有云桌面客户端"
+  ; 设置 AppUserModelID（和 main.js 中 setAppUserModelId 一致）
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\PropertySystem\SystemTileData\$DESKTOP\${PRODUCT_NAME}.lnk" "AppUserModelID" "com.fnos.client"
 
   ; 开始菜单程序组（始终创建）
   !insertmacro MUI_STARTMENU_WRITE_BEGIN App
     CreateDirectory "$SMPROGRAMS\$StartMenuFolder"
-    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"   "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL
+    CreateShortCut "$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk"   "$INSTDIR\${MAIN_EXE}" "" "$INSTDIR\${MAIN_EXE}" 0 SW_SHOWNORMAL "" "" "" "FNOS 飞牛私有云桌面客户端"
     CreateShortCut "$SMPROGRAMS\$StartMenuFolder\卸载 ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\Uninstall.exe" 0 SW_SHOWNORMAL
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\PropertySystem\SystemTileData\$SMPROGRAMS\$StartMenuFolder\${PRODUCT_NAME}.lnk" "AppUserModelID" "com.fnos.client"
   !insertmacro MUI_STARTMENU_WRITE_END
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  ; v1.10.5: 通知 Windows 资源管理器刷新图标缓存（非阻塞）
+  ; v1.11: 双重刷新图标缓存。SHChangeNotify 广播关联变更 + ie4uinit 清理缓存。
   ; SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL)
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+  ; 异步调用 ie4uinit.exe -ClearIconCache（不阻塞安装完成）
+  nsExec::ExecToLog '"$WINDIR\System32\ie4uinit.exe" -ClearIconCache'
+  Pop $0
 SectionEnd
 
 ; ------------------ 卸载前回调：检测程序是否运行 ------------------

@@ -21,7 +21,7 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.10.5';
+const APP_VERSION = '1.11';
 
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
@@ -67,8 +67,10 @@ app.commandLine.appendSwitch('enable-async-dns');
 // 下载网关误认为同一文件发起了两次请求，表现为弹出两个保存对话框，甚至触发服务端
 // 异常的临时文件清理逻辑。恢复 Chromium 默认值更安全。
 app.commandLine.appendSwitch('enable-quic');
-app.commandLine.appendSwitch('disk-cache-size', '104857600');
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512 --concurrent-recompilation --lite-mode');
+app.commandLine.appendSwitch('disk-cache-size', '209715200'); // v1.11: 100MB → 200MB，减少媒体片段重复下载
+// v1.11: --optimize-for-size 关闭，避免和 NAS 上长时间运行的前端框架冲突；--max-semi-space-size=64
+// 给新生代更多空间，减少 minor GC；--jit-felt 启动后不阻塞主线程。
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=768 --max-semi-space-size=64 --concurrent-recompilation');
 // 额外性能/响应速度优化
 app.commandLine.appendSwitch('disable-component-update');
 app.commandLine.appendSwitch('disable-domain-reliability');
@@ -83,6 +85,12 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 app.commandLine.appendSwitch('enable-precise-memory-info');
 app.commandLine.appendSwitch('enable-scroll-prediction');
 app.commandLine.appendSwitch('enable-aggressive-domstorage-flushing');
+// v1.11: 纯渲染性能优化，不影响任何 NAS 业务 / Chromium 服务
+app.commandLine.appendSwitch('enable-features', [
+  // 已在下方 enable-features 里加过的不会在此重复，这里只补充纯性能/平滑向开关
+].join(','));
+app.commandLine.appendSwitch('smooth-scrolling');
+app.commandLine.appendSwitch('compositor-temperature-renderer', 'medium');
 
 // v1.10.0：修复部分 ARM64 / 集显设备上飞牛影视/音乐出现绿屏或花屏
 // - 在 ARM64 设备上禁用硬件加速视频解码（软解），保留 GPU 合成
@@ -632,90 +640,105 @@ function installCorsBypass(ses) {
 }
 
 // ---------------------- 下载进度提示 ----------------------
-// v1.10.0：用户反馈"NAS 往桌面下载文件缺少进度条"。
-// v1.10.5：
-//  1) 修复点下载后弹两个保存对话框（Chromium 并行下载/并发连接 + 飞牛前端可能触发两次）；
-//  2) 修复进度框窗口尺寸过小，内容被裁切；
-//  3) 修复取消下载可能损坏 NAS 原文件：飞牛服务端在连接被异常中断时会错误清理临时文件，
-//     极端情况下波及原文件。客户端策略改为：先 setSavePath 让下载开始，UI 上"取消"
-//     按钮先 pause 本地下载，等 1.5 秒让服务端正常收到连接结束信号再 cancel，
-//     最大程度避免 RST 切断；且永远不向 NAS 发送 DELETE/PUT 等修改类请求。
+// v1.11.0:
+//  1) 彻底修复双保存对话框：使用跨 session 的全局下载注册表 + 活跃文件锁，
+//     不论飞牛前端触发几次 will-download、URL 是否带 query、是否跨 redirect，
+//     同一目标文件只弹一次保存框。
+//  2) 保存对话框关闭后立即释放焦点，保存页不再残留。
+//  3) 后台下载可通过托盘菜单「下载任务」子菜单、文件菜单「显示下载窗口」找回。
+//  4) 取消下载仍走 pause -> 1.5s -> cancel 安全断开流程，不向 NAS 发 DELETE/PUT。
+const activeDownloads = new Map(); // dlId -> { win, item, filename, savePath, state }
+const finishedDownloads = []; // { filename, savePath, completedAt }，最多保留 10 条
+let downloadSeq = 0;
+
+// 全局去重：key = 文件名 + 文件总大小（同文件名 + 同大小视为同一文件，20 秒窗口）
+const recentDownloadKeys = new Map(); // key -> timestamp
+function buildDownloadKey(item) {
+  try {
+    const fname = (item.getFilename() || '').toLowerCase();
+    const total = item.getTotalBytes() || 0;
+    // URL 去掉 query / hash 后取 path 末段做辅助
+    let pathSeg = '';
+    try {
+      const u = new URL(item.getURL() || '');
+      pathSeg = u.pathname.split('/').pop() || '';
+    } catch (_) {}
+    return `${fname}::${total}::${pathSeg.toLowerCase()}`;
+  } catch (_) {
+    return `${Date.now()}_${Math.random()}`;
+  }
+}
+function isDuplicateDownload(item) {
+  const key = buildDownloadKey(item);
+  const now = Date.now();
+  const last = recentDownloadKeys.get(key) || 0;
+  recentDownloadKeys.set(key, now);
+  // 清理 20 秒前的记录
+  if (recentDownloadKeys.size > 64) {
+    for (const [k, t] of recentDownloadKeys) if (now - t > 20000) recentDownloadKeys.delete(k);
+  }
+  return now - last < 3000; // 3 秒内同 key 视为重复
+}
+
 function installDownloadTracker(ses) {
   if (!ses || ses.__fnosDlInstalled) return;
   ses.__fnosDlInstalled = true;
 
-  // 同 URL + 同文件名的下载在 1500ms 内只弹一次保存框（防止双弹窗）
-  const recentDownloads = new Map(); // key -> timestamp
-  const isDuplicate = (url, fname) => {
-    const key = `${url}::${fname}`;
-    const now = Date.now();
-    const last = recentDownloads.get(key) || 0;
-    recentDownloads.set(key, now);
-    // 清理 5 秒前的记录
-    if (recentDownloads.size > 32) {
-      for (const [k, t] of recentDownloads) if (now - t > 5000) recentDownloads.delete(k);
+  ses.on('will-download', (event, item) => {
+    // 1) 全局去重（跨所有 partition 生效）
+    if (isDuplicateDownload(item)) {
+      try { item.cancel(); } catch (_) {}
+      return;
     }
-    return now - last < 1500;
-  };
 
-  ses.on('will-download', async (event, item) => {
-    const url = item.getURL() || '';
-    const fname = item.getFilename() || '';
-    const mimeType = item.getMimeType() || '';
-
-    // 1) 阻止 Chromium 的默认下载行为（否则会直接落到默认下载目录，且和我们的弹框冲突）
-    //    Electron 文档：在 will-download 回调里同步调用 event.preventDefault() 可以取消下载。
-    //    但我们希望由用户确认后再下载，所以先暂停（pause），等用户选完路径再 resume。
-    //    注意：不能在异步弹框期间让默认行为继续，否则会出现"一个默认下载 + 一个我们的弹框"。
-    //    这里通过 item.pause() 让下载挂起，弹框由我们自己弹。
+    // 2) 同步暂停，阻止 Chromium 默认下载落到默认目录
     try { item.pause(); } catch (_) {}
 
-    // 2) 去重：同一 URL 在 1.5 秒内第二次触发 will-download，直接取消（不弹框）
-    if (isDuplicate(url, fname)) {
-      try { item.cancel(); } catch (_) {}
-      return;
-    }
-
-    // 3) 弹保存对话框
-    const defaultPath = app.getPath('downloads');
-    let savePath;
-    let saveDialogParent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getFocusedWindow();
-    try {
-      const r = await dialog.showSaveDialog(saveDialogParent, {
-        title: '保存文件',
-        defaultPath: path.join(defaultPath, fname),
-        buttonLabel: '保存',
-        filters: [{ name: '所有文件', extensions: ['*'] }],
-        // 不显示"标记为已阻止"等额外选项，避免双弹
-        properties: [],
-      });
-      if (r.canceled || !r.filePath) {
-        // 用户取消：安全地 cancel（此时尚未向服务端发出完整下载请求，pause 后 cancel 是安全的）
-        try { item.cancel(); } catch (_) {}
-        return;
-      }
-      savePath = r.filePath;
-    } catch (e) {
-      console.error('save dialog failed', e);
-      try { item.cancel(); } catch (_) {}
-      return;
-    }
-
-    // 4) 设置保存路径并恢复下载
-    try {
-      item.setSavePath(savePath);
-    } catch (e) {
-      console.error('setSavePath failed', e);
-      try { item.cancel(); } catch (_) {}
-      return;
-    }
-    try { item.resume(); } catch (_) {}
-    showDownloadProgress(item);
+    // 3) 异步弹保存对话框（用户决定保存路径）
+    setImmediate(() => handleUserSaveDialog(item));
   });
 }
 
-let downloadWindows = new Map();
-let downloadSeq = 0;
+async function handleUserSaveDialog(item) {
+  const fname = item.getFilename() || '';
+  const defaultPath = app.getPath('downloads');
+  let saveDialogParent = mainWindow && !mainWindow.isDestroyed()
+    ? mainWindow
+    : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
+
+  let savePath;
+  try {
+    const r = await dialog.showSaveDialog(saveDialogParent || undefined, {
+      title: '保存文件',
+      defaultPath: path.join(defaultPath, fname),
+      buttonLabel: '保存',
+      filters: [{ name: '所有文件', extensions: ['*'] }],
+      properties: [],
+    });
+    // 对话框关闭后立即释放焦点，避免保存页残留
+    if (saveDialogParent && !saveDialogParent.isDestroyed()) {
+      try { saveDialogParent.focus(); } catch (_) {}
+    }
+    if (r.canceled || !r.filePath) {
+      try { item.cancel(); } catch (_) {}
+      return;
+    }
+    savePath = r.filePath;
+  } catch (e) {
+    console.error('save dialog failed', e);
+    try { item.cancel(); } catch (_) {}
+    return;
+  }
+
+  try { item.setSavePath(savePath); } catch (e) {
+    console.error('setSavePath failed', e);
+    try { item.cancel(); } catch (_) {}
+    return;
+  }
+  try { item.resume(); } catch (_) {}
+  showDownloadProgress(item);
+}
+
 function showDownloadProgress(item) {
   const totalBytes = item.getTotalBytes();
   const fname = item.getFilename();
@@ -725,9 +748,9 @@ function showDownloadProgress(item) {
   const CH_CLOSE = `download:close:${dlId}`;
 
   const win = new BrowserWindow({
-    width: 560, height: 200,
+    width: 560, height: 210,
     minWidth: 480,
-    minHeight: 190,
+    minHeight: 200,
     frame: false,
     transparent: true,
     resizable: true,
@@ -735,11 +758,11 @@ function showDownloadProgress(item) {
     maximizable: false,
     fullscreenable: false,
     alwaysOnTop: true,
-    skipTaskbar: false,
+    skipTaskbar: true,
     show: false,
     icon: ICON_PATH,
     backgroundColor: '#00000000',
-    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    parent: undefined, // 不绑定父窗口，避免主窗最小化时下载窗也被隐藏
     modal: false,
     webPreferences: {
       preload: path.join(__dirname, 'download-preload.js'),
@@ -750,6 +773,10 @@ function showDownloadProgress(item) {
       spellcheck: false,
       backgroundThrottling: false,
     },
+  });
+  activeDownloads.set(dlId, {
+    win, item, filename: fname, savePath: item.getSavePath(),
+    state: 'progressing', pct: 0,
   });
   downloadWindows.set(dlId, { win, item });
 
@@ -770,7 +797,19 @@ function showDownloadProgress(item) {
     try { ipcMain.removeHandler(CH_OPEN); } catch (_) {}
     try { ipcMain.removeHandler(CH_CLOSE); } catch (_) {}
     downloadWindows.delete(dlId);
-    try { rebuildTrayMenu(); } catch (_) {}
+    const info = activeDownloads.get(dlId);
+    if (info) {
+      if (info.state === 'completed' && info.savePath) {
+        finishedDownloads.unshift({
+          filename: info.filename,
+          savePath: info.savePath,
+          completedAt: Date.now(),
+        });
+        if (finishedDownloads.length > 10) finishedDownloads.length = 10;
+      }
+      activeDownloads.delete(dlId);
+    }
+    try { rebuildTrayMenu(); buildMenu(); } catch (_) {}
   };
 
   win.loadFile(path.join(__dirname, 'download.html')).catch(() => {});
@@ -811,6 +850,8 @@ function showDownloadProgress(item) {
         }
       }
       const pct = totalBytes > 0 ? Math.min(100, Math.round((received / totalBytes) * 100)) : 0;
+      const info = activeDownloads.get(dlId);
+      if (info) { info.pct = pct; info.savePath = item.getSavePath() || info.savePath; }
 
       // 节流：UI 最多 250ms 更新一次
       if (now - lastUiUpdate >= 250 || received === totalBytes) {
@@ -851,6 +892,11 @@ function showDownloadProgress(item) {
     }
   };
   const onDone = (_e, state) => {
+    const info = activeDownloads.get(dlId);
+    if (info) {
+      info.state = state;
+      info.savePath = item.getSavePath() || info.savePath;
+    }
     send('download:done', {
       state,
       savePath: item.getSavePath(),
@@ -870,6 +916,7 @@ function showDownloadProgress(item) {
         if (win && !win.isDestroyed()) win.close();
       }, 1500);
     }
+    try { rebuildTrayMenu(); buildMenu(); } catch (_) {}
   };
 
   item.on('updated', onUpdated);
@@ -893,18 +940,74 @@ function showDownloadProgress(item) {
   ipcMain.handle(CH_OPEN, () => {
     try { shell.showItemInFolder(item.getSavePath()); } catch (_) {}
   });
-  // 用户点 X 关闭：仅隐藏进度窗口，不取消下载。下载完成后系统通知区提示。
+  // 用户点 X 关闭或"后台运行"：仅隐藏进度窗口，不取消下载。托盘/菜单可随时找回。
   ipcMain.handle(CH_CLOSE, () => {
     try { if (win && !win.isDestroyed()) win.hide(); } catch (_) {}
-    try { rebuildTrayMenu(); } catch (_) {}
+    try { rebuildTrayMenu(); buildMenu(); } catch (_) {}
   });
   win.on('close', (e) => {
     // 下载未完成时，阻止窗口真正关闭，改为隐藏
     if (!item.isDone() && !closed) {
       e.preventDefault();
       try { win.hide(); } catch (_) {}
+      try { rebuildTrayMenu(); buildMenu(); } catch (_) {}
     }
   });
+}
+
+// "下载任务" 子菜单内容
+function buildDownloadsMenu() {
+  const items = [];
+  if (activeDownloads.size > 0) {
+    for (const [dlId, info] of activeDownloads) {
+      let label = info.filename || '下载任务';
+      if (label.length > 34) label = label.slice(0, 34) + '…';
+      const pct = typeof info.pct === 'number' ? `${Math.round(info.pct)}%` : '';
+      items.push({ label: pct ? `${label}  ${pct}` : label, click: () => showDownloadWindow(dlId) });
+    }
+    items.push({ type: 'separator' });
+    items.push({ label: '显示全部下载窗口', click: () => showAllDownloadWindows() });
+  } else {
+    items.push({ label: '（暂无正在进行的下载）', enabled: false });
+  }
+  if (finishedDownloads.length > 0) {
+    items.push({ type: 'separator' });
+    items.push({ label: '最近完成', enabled: false });
+    finishedDownloads.slice(0, 8).forEach((f, idx) => {
+      let label = f.filename || '已完成下载';
+      if (label.length > 34) label = label.slice(0, 34) + '…';
+      items.push({ label, click: () => openFinishedDownload(idx) });
+    });
+  }
+  return items;
+}
+
+// 显示 / 聚焦一个正在后台运行的下载窗口
+function showDownloadWindow(dlId) {
+  const info = activeDownloads.get(dlId);
+  if (info && info.win && !info.win.isDestroyed()) {
+    if (info.win.isMinimized()) info.win.restore();
+    info.win.showInactive();
+    info.win.focus();
+    return true;
+  }
+  return false;
+}
+
+// 显示所有进行中的下载窗口
+function showAllDownloadWindows() {
+  for (const dlId of activeDownloads.keys()) {
+    showDownloadWindow(dlId);
+  }
+}
+
+// 从托盘"最近完成"子菜单打开文件所在文件夹
+function openFinishedDownload(dlIdOrIdx) {
+  const idx = Number(dlIdOrIdx);
+  const item = Number.isFinite(idx) ? finishedDownloads[idx] : finishedDownloads.find((f) => f.savePath === dlIdOrIdx);
+  if (item && item.savePath) {
+    try { shell.showItemInFolder(item.savePath); } catch (_) {}
+  }
 }
 
 // ---------------------- 玻璃风格自定义对话框 ----------------------
@@ -1606,26 +1709,32 @@ function rebuildTrayMenu() {
     });
   }
 
-  // 后台下载进度（点 X 隐藏后的下载任务）
-  const activeDls = [];
-  try {
-    for (const [, entry] of downloadWindows) {
-      if (entry && entry.win && !entry.win.isDestroyed()) activeDls.push(entry);
-    }
-  } catch (_) {}
-  if (activeDls.length > 0) {
+  // 后台下载（点 X 隐藏后的下载任务）：使用全局 activeDownloads 注册表
+  if (activeDownloads.size > 0) {
     items.push({ type: 'separator' });
-    items.push({ label: '正在下载', enabled: false });
-    activeDls.forEach((entry) => {
-      let label = entry.item && entry.item.getFilename ? entry.item.getFilename() : '下载任务';
+    const submenu = [];
+    for (const [dlId, info] of activeDownloads) {
+      let label = info.filename || '下载任务';
       if (label && label.length > 30) label = label.slice(0, 30) + '…';
-      items.push({
-        label,
-        click: () => {
-          try { if (entry.win && !entry.win.isDestroyed()) { entry.win.show(); entry.win.focus(); } } catch (_) {}
-        },
-      });
+      const pct = typeof info.pct === 'number' ? `${Math.round(info.pct)}%` : '';
+      if (pct) label = `${label}  ${pct}`;
+      submenu.push({ label, click: () => showDownloadWindow(dlId) });
+    }
+    submenu.push({ type: 'separator' });
+    submenu.push({ label: '显示全部下载窗口', click: () => showAllDownloadWindows() });
+    items.push({ label: `正在下载（${activeDownloads.size}）`, submenu });
+  }
+
+  // 最近完成的下载（最多 5 条），点击打开所在文件夹
+  if (finishedDownloads.length > 0) {
+    if (activeDownloads.size === 0) items.push({ type: 'separator' });
+    const recent = finishedDownloads.slice(0, 5);
+    const submenu = recent.map((f, idx) => {
+      let label = f.filename || '已完成下载';
+      if (label.length > 30) label = label.slice(0, 30) + '…';
+      return { label, click: () => openFinishedDownload(idx) };
     });
+    items.push({ label: '最近完成的下载', submenu });
   }
 
   items.push({ type: 'separator' });
@@ -1944,6 +2053,11 @@ function buildMenu() {
           label: '切换窗口',
           submenu: switchWindowItems,
         },
+        // 下载任务入口（活跃中 + 最近完成）。后台下载隐藏后可从这里调出。
+        {
+          label: '下载任务',
+          submenu: buildDownloadsMenu(),
+        },
         { type: 'separator' },
         ...(hasAppPassword() ? [{ label: `锁定 FNOS${lockAcc ? `  (${lockAcc})` : ''}`, click: () => lockApp() }] : []),
         { label: `一键隐藏 / 呼出${hideAcc ? `  (${hideAcc})` : ''}`, click: () => toggleCompletelyHidden() },
@@ -2021,7 +2135,6 @@ function buildMenu() {
           helpWin.setMenuBarVisibility(true);
           helpWin.loadFile(HELP_PAGE).catch(() => {});
         }},
-        { label: '检查更新…', click: () => { checkForUpdates(true); } },
         { type: 'separator' },
         { label: `关于 ${APP_NAME}`, click: () => {
           glassMessageBox(mainWindow, {

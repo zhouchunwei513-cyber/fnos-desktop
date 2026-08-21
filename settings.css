@@ -132,3 +132,35 @@
 .about-meta b { color: #e9efff; font-weight: 800; letter-spacing: 1px; }
 
 .setup-actions { justify-content: flex-end; }
+
+.rewrite-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.rewrite-row {
+  display: grid; grid-template-columns: 1fr 24px 1fr 28px; gap: 8px; align-items: center;
+}
+.rewrite-row .glass-input { padding: 0 12px; height: 40px; font-size: 12.5px; }
+.rewrite-arrow { color: rgba(233,239,255,.4); text-align: center; font-size: 16px; }
+.rewrite-del {
+  width: 28px; height: 28px; border-radius: 8px; border: 0; cursor: pointer;
+  background: rgba(255,255,255,.06); color: rgba(233,239,255,.65); font-size: 16px;
+}
+.rewrite-del:hover { background: rgba(255,90,120,.2); color: #ffd0d8; }
+
+.switch-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-radius: 12px;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+  cursor: pointer;
+}
+.switch-row input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 44px; height: 24px; border-radius: 12px;
+  background: rgba(255,255,255,.12);
+  position: relative; cursor: pointer; transition: background .2s;
+}
+.switch-row input[type="checkbox"]::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  transition: left .2s;
+}
+.switch-row input[type="checkbox"]:checked { background: linear-gradient(135deg,#3d7bff,#7a5cff); }
+.switch-row input[type="checkbox"]:checked::after { left: 23px; }

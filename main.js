@@ -12,18 +12,20 @@
  */
 const {
   app, BrowserWindow, Menu, shell, session, ipcMain, dialog, screen, Tray, nativeImage, safeStorage,
-  globalShortcut,
+  globalShortcut, net,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const os = require('os');
+const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 
 // ---------------------- 启动性能开关 ----------------------
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,MediaRouter,Translate,InterestFeedContentSuggestions');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,MediaRouter,Translate,InterestFeedContentSuggestions,UseChromeOSDirectVideoDecoder');
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -33,6 +35,18 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
 app.commandLine.appendSwitch('enable-async-dns');
 app.commandLine.appendSwitch('max-connections-per-host', '32');
+
+// v1.10.0：修复部分 ARM64 / 集显设备上飞牛影视/音乐出现绿屏或花屏
+// - 在 ARM64 设备上禁用硬件加速视频解码（软解），保留 GPU 合成
+// - x64 设备保留硬解，发挥显卡解码性能
+try {
+  const arch = process.arch || '';
+  const isArm = arch === 'arm64' || (process.env.PROCESSOR_ARCHITECTURE || '').toLowerCase().includes('arm');
+  if (isArm) {
+    app.commandLine.appendSwitch('disable-accelerated-video-decode');
+    app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames');
+  }
+} catch (_) {}
 
 const APP_NAME = 'FNOS';
 const IS_DEV = !app.isPackaged;
@@ -49,6 +63,94 @@ const ICON_PATH = path.join(__dirname, 'icon.ico');
 const ICON_PNG = path.join(__dirname, 'icon.png');
 
 const DEFAULT_SHORTCUTS = { lockApp: 'Ctrl+Alt+L', hideAll: 'Ctrl+Alt+H' };
+const GITHUB_REPO = 'zhouchunwei513-cyber/fnos-desktop';
+const RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases/latest`;
+
+async function checkGitLatestTag() {
+  try {
+    const r = await net.request({
+      method: 'GET',
+      url: RELEASES_API,
+      redirect: 'follow',
+    });
+    r.setHeader('User-Agent', `FNOS-Desktop/${APP_VERSION}`);
+    r.setHeader('Accept', 'application/vnd.github+json');
+    return await new Promise((resolve, reject) => {
+      const chunks = [];
+      r.on('data', (c) => chunks.push(c));
+      r.on('end', () => {
+        try {
+          const body = Buffer.concat(chunks).toString('utf8');
+          const data = JSON.parse(body);
+          if (data && data.tag_name) {
+            resolve({
+              tag: String(data.tag_name).replace(/^v/i, ''),
+              name: data.name || data.tag_name,
+              notes: data.body || '',
+              html_url: data.html_url || RELEASES_PAGE,
+            });
+          } else if (data && data.message) {
+            reject(new Error(data.message));
+          } else {
+            reject(new Error('未检查到发布版本'));
+          }
+        } catch (e) { reject(e); }
+      });
+      r.on('error', reject);
+      r.end();
+    });
+  } catch (err) {
+    throw err;
+  }
+}
+
+async function checkForUpdates(interactive = true) {
+  if (interactive && mainWindow) {
+    try {
+      await glassMessageBox(mainWindow, {
+        type: 'info',
+        title: '检查更新',
+        message: '正在检查更新…',
+        buttons: [],
+      });
+    } catch (_) {}
+  }
+  try {
+    const info = await checkGitLatestTag();
+    const latest = info.tag.replace(/^v/i, '');
+    const cmp = compareVersions(latest, APP_VERSION);
+    if (!mainWindow) return;
+    if (cmp > 0) {
+      const detail = (info.notes || '').trim().slice(0, 400);
+      const btn = await glassMessageBox(mainWindow, {
+        type: 'info',
+        title: '发现新版本',
+        message: `发现新版本 v${latest}，是否前往下载？`,
+        detail: detail ? `更新内容：\n${detail}` : '点击「前往下载」将在浏览器中打开 GitHub Release 页面。',
+        buttons: [{ label: '前往下载', value: 'ok', primary: true }, { label: '稍后', value: 'cancel', cancel: true }],
+        defaultButton: 0,
+        cancelButton: 1,
+      });
+      if (btn === 'ok') shell.openExternal(info.html_url || RELEASES_PAGE).catch(() => {});
+    } else if (interactive) {
+      await glassMessageBox(mainWindow, {
+        type: 'info',
+        title: '已是最新版本',
+        message: `当前版本 v${APP_VERSION} 已是最新版本。`,
+        detail: '若想确认，请前往 GitHub Releases 页面查看。',
+        buttons: [{ label: '确定', value: 'ok', primary: true }, { label: '打开 Release 页面', value: 'page' }],
+        defaultButton: 0,
+        cancelButton: 0,
+      }).then((v) => { if (v === 'page') shell.openExternal(RELEASES_PAGE).catch(() => {}); }).catch(() => {});
+    }
+  } catch (err) {
+    if (interactive && mainWindow) {
+      await glassErrorBox(mainWindow, '检查更新失败', `无法连接到 GitHub：\n${err?.message || err}`);
+    }
+  }
+}
+
 
 let mainWindow = null;
 let tray = null;
@@ -81,6 +183,13 @@ function defaultSettings() {
     appPasswordSalt: '',
     // 全局快捷键（accelerator 字符串），空字符串表示禁用
     shortcuts: { ...DEFAULT_SHORTCUTS },
+    // v1.10.0：URL 重写映射，用于外网访问应用时端口/域名映射
+    // 格式：[{from:'http://192.168.1.10:5666', to:'https://nas.example.com:10443'}, ...]
+    urlMappings: [],
+    // v1.10.0：菜单栏自动隐藏（按 Alt 显示）
+    autoHideMenuBar: false,
+    // v1.10.0：CORS 绕过（直播源跨域），默认开启
+    bypassCors: true,
   };
 }
 
@@ -165,8 +274,32 @@ function loadSettings() {
   } catch (_) { raw = {}; }
   cachedSettings = { ...defaultSettings(), ...raw };
   if (!Array.isArray(cachedSettings.history)) cachedSettings.history = [];
+  if (!Array.isArray(cachedSettings.urlMappings)) cachedSettings.urlMappings = [];
   cachedSettings.shortcuts = { ...DEFAULT_SHORTCUTS, ...(raw.shortcuts || {}) };
   return cachedSettings;
+}
+
+// v1.10.0：URL 重写（外网访问端口/域名映射）
+// urlMappings: [{from:'http://192.168.1.10:5666', to:'https://nas.example.com:10443'}]
+// 也支持 from 为前缀匹配（不带协议时按 host:port 匹配）
+function rewriteUrl(url) {
+  if (!url) return url;
+  const s = loadSettings();
+  const mappings = Array.isArray(s.urlMappings) ? s.urlMappings : [];
+  if (!mappings.length) return url;
+  try {
+    let rewritten = String(url);
+    for (const m of mappings) {
+      if (!m || !m.from || !m.to) continue;
+      const from = String(m.from).trim();
+      const to = String(m.to).trim();
+      if (!from || !to) continue;
+      if (rewritten.startsWith(from)) {
+        rewritten = to + rewritten.slice(from.length);
+      }
+    }
+    return rewritten;
+  } catch (_) { return url; }
 }
 function saveSettings(patch) {
   try {
@@ -267,6 +400,170 @@ function getNasUA() {
 }
 function applyUA(partition) {
   try { session.fromPartition(partition).setUserAgent(getNasUA()); } catch (_) {}
+  try { installCorsBypass(session.fromPartition(partition)); } catch (_) {}
+  try { installDownloadTracker(session.fromPartition(partition)); } catch (_) {}
+}
+
+// ---------------------- CORS / 直播源跨域（等效 KNAS 浏览器插件） ----------------------
+// 飞牛影视的直播源在 Web 端受 CORS 限制无法播放；KNAS 插件通过修改响应头绕过。
+// 这里在主进程统一对所有会话注入相应响应头，让 <video>/XHR/fetch 都能正常加载直播流。
+function installCorsBypass(ses) {
+  if (!ses || ses.__fnosCorsInstalled) return;
+  ses.__fnosCorsInstalled = true;
+
+  const removeHeader = (headers, name) => {
+    const lower = name.toLowerCase();
+    Object.keys(headers).forEach((k) => {
+      if (k.toLowerCase() === lower) delete headers[k];
+    });
+  };
+  const setHeader = (headers, name, value) => {
+    removeHeader(headers, name);
+    headers[name] = value;
+  };
+
+  // 1) 响应头：补齐 CORS 允许字段；去掉 CORP/COEP 这些会阻断跨域媒体的限制
+  ses.webRequest.onHeadersReceived((details, callback) => {
+    const headers = details.responseHeaders || {};
+    const ct = (headers['content-type'] || headers['Content-Type'] || []).join('').toLowerCase();
+    const isMedia = /mpegurl|m3u8|mp2t|octet-stream|video\/|audio\/|application\/x-mpegurl/i.test(ct)
+      || /\.(m3u8|ts|flv|m4s|mpd|mp4|mkv|aac|flac)(\?|$)/i.test(details.url);
+
+    setHeader(headers, 'Access-Control-Allow-Origin', '*');
+    setHeader(headers, 'Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD, PUT, DELETE');
+    setHeader(headers, 'Access-Control-Allow-Headers', '*');
+    setHeader(headers, 'Access-Control-Allow-Credentials', 'true');
+    setHeader(headers, 'Access-Control-Expose-Headers', '*');
+    setHeader(headers, 'Timing-Allow-Origin', '*');
+
+    if (isMedia) {
+      // 媒体流允许跨域，不被 CORP/COEP 拦截
+      removeHeader(headers, 'Cross-Origin-Resource-Policy');
+      removeHeader(headers, 'Cross-Origin-Embedder-Policy');
+      removeHeader(headers, 'Cross-Origin-Opener-Policy');
+      // 允许 Range 请求
+      if (!headers['Accept-Ranges']) setHeader(headers, 'Accept-Ranges', 'bytes');
+    }
+    callback({ responseHeaders: headers });
+  });
+
+  // 2) 预检请求：直接放行，避免服务端不响应 OPTIONS 导致 CORS 失败
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = details.requestHeaders || {};
+    // 带上来源，让服务端日志/鉴权看到真实来源
+    callback({ requestHeaders: headers });
+  });
+
+  // 3) 拦截 OPTIONS 预检，直接返回 204（onHeadersReceived 已会补 CORS 头）
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    if (details.method === 'OPTIONS') {
+      callback({
+        redirectURL: 'data:text/plain;charset=utf-8,',
+      });
+      return;
+    }
+    // v1.10.0：URL 重写（外网端口/域名映射）
+    const mapped = rewriteUrl(details.url);
+    if (mapped && mapped !== details.url) {
+      callback({ redirectURL: mapped });
+      return;
+    }
+    callback({});
+  });
+}
+
+// ---------------------- 下载进度提示 ----------------------
+// v1.10.0：用户反馈"NAS 往桌面下载文件缺少进度条"。
+// 监听会话的 will-download，弹出一个小的进度条 BrowserWindow。
+function installDownloadTracker(ses) {
+  if (!ses || ses.__fnosDlInstalled) return;
+  ses.__fnosDlInstalled = true;
+  ses.on('will-download', (_event, item) => {
+    showDownloadProgress(item);
+  });
+}
+
+let downloadWindows = new Map();
+function showDownloadProgress(item) {
+  const totalBytes = item.getTotalBytes();
+  const fname = item.getFilename();
+
+  const win = new BrowserWindow({
+    width: 440, height: 150,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    icon: ICON_PATH,
+    backgroundColor: '#00000000',
+    parent: mainWindow || undefined,
+    modal: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'download-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  downloadWindows.set(item, win);
+
+  const send = (channel, payload) => {
+    if (win && !win.isDestroyed()) {
+      try { win.webContents.send(channel, payload); } catch (_) {}
+    }
+  };
+  const fmtMB = (b) => b > 0 ? `${(b / 1024 / 1024).toFixed(2)} MB` : '—';
+
+  win.loadFile(path.join(__dirname, 'download.html')).catch(() => {});
+  win.once('ready-to-show', () => {
+    send('download:start', {
+      filename: fname,
+      savePath: item.getSavePath(),
+      totalBytes,
+      totalText: fmtMB(totalBytes),
+      canResume: item.canResume(),
+    });
+    if (!win.isDestroyed()) win.showInactive();
+  });
+
+  const onUpdated = (_e, state) => {
+    if (state === 'progressing') {
+      const received = item.getReceivedBytes();
+      const pct = totalBytes > 0 ? Math.round((received / totalBytes) * 100) : 0;
+      send('download:progress', { received, totalBytes, pct, receivedText: fmtMB(received) });
+    }
+  };
+  const onDone = (_e, state) => {
+    send('download:done', {
+      state, // 'completed' | 'cancelled' | 'interrupted'
+      savePath: item.getSavePath(),
+    });
+    // 完成后 3 秒自动关闭（用户也可点"打开所在文件夹"或"关闭"）
+    if (state === 'completed') {
+      setTimeout(() => {
+        if (win && !win.isDestroyed()) win.close();
+      }, 3000);
+    }
+  };
+
+  item.on('updated', onUpdated);
+  item.once('done', onDone);
+  win.on('closed', () => {
+    try { item.removeListener('updated', onUpdated); } catch (_) {}
+    try { item.removeListener('done', onDone); } catch (_) {}
+    downloadWindows.delete(item);
+  });
+
+  // 从下载窗口收到 IPC：取消 / 打开文件夹 / 关闭
+  ipcMain.handleOnce('download:cancel', () => { try { item.cancel(); } catch (_) {} });
+  ipcMain.handleOnce('download:open-folder', () => {
+    try { shell.showItemInFolder(item.getSavePath()); } catch (_) {}
+  });
+  ipcMain.handleOnce('download:close', () => { if (win && !win.isDestroyed()) win.close(); });
 }
 
 // ---------------------- 玻璃风格自定义对话框 ----------------------
@@ -434,25 +731,25 @@ function createLockWindow(mode /* 'unlock' | 'setup' | 'change' */ = 'unlock') {
     } catch (_) {}
     return lockWindow;
   }
+  // v1.10.0：改为全屏覆盖（无边框 + 透明），让玻璃卡片正确模糊其下桌面；同时避免固定高度在高 DPI 下被裁切
   const primary = screen.getPrimaryDisplay();
-  const { width: sw, height: sh } = primary.workAreaSize;
+  const { x, y, width: sw, height: sh } = primary.bounds;
   lockWindow = new BrowserWindow({
-    width: Math.min(460, sw - 40),
-    height: 560,
-    x: Math.round((sw - 460) / 2),
-    y: Math.round((sh - 560) / 2),
+    x, y, width: sw, height: sh,
     frame: false,
     transparent: true,
     resizable: false,
+    movable: false,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     show: false,
-    center: true,
     icon: ICON_PATH,
     backgroundColor: '#00000000',
+    hasShadow: false,
+    thickFrame: false,
     webPreferences: {
       preload: LOCK_PRELOAD,
       contextIsolation: true,
@@ -795,7 +1092,7 @@ function createAppWindow(url, opts = {}) {
     minWidth: 900,
     minHeight: 600,
     title: opts.title || APP_NAME,
-    backgroundColor: '#0f7a3e',
+    backgroundColor: '#0b0d12',
     show: false,
     autoHideMenuBar: false,
     icon: ICON_PATH,
@@ -812,9 +1109,10 @@ function createAppWindow(url, opts = {}) {
     },
   });
 
-  // 菜单栏常驻显示（v1.7.0：关闭自动隐藏）
-  win.setAutoHideMenuBar(false);
-  win.setMenuBarVisibility(true);
+  // 菜单栏自动隐藏开关（v1.10.0）
+  const autoHide = !!loadSettings().autoHideMenuBar;
+  win.setAutoHideMenuBar(autoHide);
+  win.setMenuBarVisibility(!autoHide);
 
   const isHome = !!opts.isHome;
   registerWindow(win, {
@@ -986,9 +1284,10 @@ function createMainWindow(partition, loadTarget) {
     },
   });
 
-  // 菜单栏常驻显示（v1.7.0：关闭自动隐藏）
-  mainWindow.setAutoHideMenuBar(false);
-  mainWindow.setMenuBarVisibility(true);
+  // 菜单栏自动隐藏开关（v1.10.0）
+  const mainAutoHide = !!loadSettings().autoHideMenuBar;
+  mainWindow.setAutoHideMenuBar(mainAutoHide);
+  mainWindow.setMenuBarVisibility(!mainAutoHide);
 
   registerWindow(mainWindow, {
     url: (loadTarget && loadTarget.href) || LOGIN_PAGE,
@@ -1140,6 +1439,102 @@ function withWebContents(fn) {
   };
 }
 
+// 查找系统中已安装的外部播放器（按优先级）
+function findExternalPlayer() {
+  const candidates = [];
+  if (process.platform === 'win32') {
+    const pf = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)'], process.env['LOCALAPPDATA']].filter(Boolean);
+    for (const root of pf) {
+      candidates.push(
+        path.join(root, 'MPV', 'mpv.exe'),
+        path.join(root, 'mpv', 'mpv.exe'),
+        path.join(root, 'PotPlayer', 'PotPlayerMini64.exe'),
+        path.join(root, 'PotPlayer', 'PotPlayerMini.exe'),
+        path.join(root, 'DAUM', 'PotPlayer', 'PotPlayerMini64.exe'),
+        path.join(root, 'VideoLAN', 'VLC', 'vlc.exe'),
+        path.join(root, 'MPC-HC', 'mpc-hc64.exe'),
+        path.join(root, 'MPC-BE', 'mpc-be64.exe'),
+      );
+    }
+  }
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return p; } catch {}
+  }
+  return null;
+}
+
+// 让渲染端从 <video> 中抓取当前播放的视频 URL
+async function extractVideoUrl(wc) {
+  try {
+    const result = await wc.executeJavaScript(`(() => {
+      const vs = Array.from(document.querySelectorAll('video'));
+      for (const v of vs) {
+        if (v && v.src && v.src.startsWith('http')) return v.src;
+        if (v && v.currentSrc && v.currentSrc.startsWith('http')) return v.currentSrc;
+      }
+      // blob: 源需要 MSE，外部播放器无法直接播放；返回 null
+      return null;
+    })()`, true);
+    return result || null;
+  } catch (e) {
+    console.warn('extract video url failed', e);
+    return null;
+  }
+}
+
+// 用外部播放器打开当前视频（硬件解码由外部播放器完成）
+async function openInExternalPlayer(wc, ownerWin) {
+  if (!wc || wc.isDestroyed()) return;
+  const url = await extractVideoUrl(wc);
+  if (!url) {
+    glassMessageBox(ownerWin || mainWindow, {
+      type: 'info', buttons: ['我知道了'], defaultId: 0, cancelId: 0,
+      title: '未找到可播放视频',
+      message: '请先在飞牛影视中打开一个视频并开始播放，再使用此功能。',
+      detail: '提示：直播流、受 DRM 保护的视频，或使用 MSE/Blob 的播放源暂不支持外部播放器打开（因为外部播放器拿不到流地址）。普通影片文件（mp4/mkv 等直链）可以自动调用 MPV/PotPlayer/VLC。',
+    });
+    return;
+  }
+  const player = findExternalPlayer();
+  if (!player) {
+    const r = await glassMessageBox(ownerWin || mainWindow, {
+      type: 'question', buttons: ['下载 MPV', '下载 VLC', '取消'],
+      defaultId: 0, cancelId: 2,
+      title: '未检测到外部播放器',
+      message: '系统中没有找到 MPV / PotPlayer / VLC / MPC-HC。',
+      detail: '推荐使用 MPV（开源、轻量、硬解能力强），点"下载 MPV"前往官网，安装后再试。',
+    });
+    if (r === 0) shell.openExternal('https://mpv.io/installation/');
+    else if (r === 1) shell.openExternal('https://www.videolan.org/vlc/');
+    return;
+  }
+  try {
+    // 把当前页面的 Cookie 传给外部播放器（飞牛视频需要鉴权）
+    const targetHost = (() => { try { return new URL(url).host; } catch { return ''; } })();
+    let cookieHeader = '';
+    try {
+      const cookies = await wc.session.cookies.get({ domain: '', path: '' });
+      const relevant = cookies.filter(c => targetHost.includes(c.domain || '') || (c.domain || '').includes(targetHost.split(':')[0]));
+      cookieHeader = relevant.map(c => `${c.name}=${c.value}`).join('; ');
+    } catch {}
+    const args = [];
+    const lower = player.toLowerCase();
+    if (lower.includes('mpv')) {
+      if (cookieHeader) args.push(`--http-header-fields=Cookie: ${cookieHeader}`);
+      args.push(url);
+    } else if (lower.includes('vlc')) {
+      args.push(url);
+      if (cookieHeader) args.push(':http-cookie=' + cookieHeader);
+    } else {
+      args.push(url); // PotPlayer/MPC 通常直接用 URL
+    }
+    cp.spawn(player, args, { detached: true, stdio: 'ignore' }).unref();
+  } catch (e) {
+    console.error('spawn player failed', e);
+    glassErrorBox(ownerWin || mainWindow, '启动外部播放器失败：' + (e.message || e));
+  }
+}
+
 function buildMenu() {
   const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
 
@@ -1222,6 +1617,9 @@ function buildMenu() {
         { type: 'separator' },
         { label: '全屏 / 退出全屏', accelerator: 'F11',
           click: withWebContents((_wc, win) => win.setFullScreen(!win.isFullScreen())) },
+        { type: 'separator' },
+        { label: '用外部播放器打开当前视频',
+          click: withWebContents((wc, win) => { openInExternalPlayer(wc, win); }) },
         ...(IS_DEV ? [{ role: 'toggleDevTools', label: '开发者工具' }] : []),
       ],
     },
@@ -1331,6 +1729,8 @@ ipcMain.handle('settings:get', async () => {
   return {
     hasPassword: hasAppPassword(),
     shortcuts: { ...DEFAULT_SHORTCUTS, ...(s.shortcuts || {}) },
+    urlRewrites: Array.isArray(s.urlRewrites) ? s.urlRewrites : [],
+    autoHideMenuBar: !!s.autoHideMenuBar,
     version: APP_VERSION,
   };
 });
@@ -1366,6 +1766,39 @@ ipcMain.handle('settings:set-shortcuts', async (_e, payload) => {
     }
     saveSettings({ shortcuts: { lockApp: lockAcc, hideAll: hideAcc } });
     registerGlobalShortcuts();
+    scheduleMenuRebuild();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
+  try {
+    const clean = (Array.isArray(list) ? list : [])
+      .filter((r) => r && typeof r.match === 'string' && typeof r.replace === 'string')
+      .map((r) => ({ match: r.match.trim(), replace: r.replace.trim() }))
+      .filter((r) => r.match && r.replace);
+    for (const r of clean) {
+      try { new URL(r.replace); } catch { return { ok: false, error: `右侧地址无效：${r.replace}` }; }
+    }
+    saveSettings({ urlRewrites: clean });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
+  try {
+    const autoHide = !!opts?.autoHideMenuBar;
+    saveSettings({ autoHideMenuBar: autoHide });
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        w.setAutoHideMenuBar(autoHide);
+        w.setMenuBarVisibility(!autoHide);
+      } catch (_) {}
+    }
     scheduleMenuRebuild();
     return { ok: true };
   } catch (err) {

@@ -1,29 +1,38 @@
-/* 锁屏页样式 — 与登录页一致的深色玻璃 + 彩虹光带动效 */
+/* 锁屏页样式 — 透明玻璃 + 彩虹光带（v1.10.0：修复透明不生效与内容被裁切） */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
-  width: 100%; height: 100%;
-  overflow: hidden;
-  background: #05060a;
+  width: 100%;
+  background: transparent;
   color: #e9efff;
   font-family: "PingFang SC", "Microsoft YaHei", "HarmonyOS Sans SC",
                "Source Han Sans SC", "Noto Sans CJK SC", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   user-select: none;
   cursor: default;
+  overflow: hidden;
 }
 
 .lock-body {
   position: relative;
   width: 100vw; height: 100vh;
   display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  padding: 24px 16px;
+}
+
+/* 暗色蒙层：在桌面之上、光带之下，保证锁屏上文字可读，但仍保留透明质感 */
+.scrim {
+  position: fixed; inset: 0; z-index: 0;
+  background: radial-gradient(ellipse at 50% 40%, rgba(8,10,22,.42), rgba(5,6,10,.78) 70%);
+  pointer-events: none;
 }
 
 .aurora {
   position: fixed; inset: 0; z-index: 0;
-  background: radial-gradient(ellipse at 50% 120%, rgba(120,90,255,.18), transparent 60%),
-              radial-gradient(ellipse at 100% 0%, rgba(67,231,255,.12), transparent 55%),
-              #05060a;
+  background:
+    radial-gradient(ellipse at 50% 120%, rgba(120,90,255,.18), transparent 60%),
+    radial-gradient(ellipse at 100% 0%, rgba(67,231,255,.12), transparent 55%);
   overflow: hidden;
 }
 .aurora-svg {

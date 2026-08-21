@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -10,7 +10,7 @@
     "dist": "electron-builder --win --x64"
   },
   "devDependencies": {
-    "electron": "^30.0.0",
+    "electron": "22.3.27",
     "electron-builder": "^24.13.3",
     "sharp": "^0.35.3"
   },
@@ -40,6 +40,9 @@
       "settings.css",
       "settings.js",
       "settings-preload.js",
+      "download.html",
+      "download.js",
+      "download-preload.js",
       "assets/**/*",
       "icon.ico",
       "icon.png",

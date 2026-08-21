@@ -186,6 +186,68 @@
     showError(hkError, '');
   });
 
+  // --------- URL 重写 ---------
+  const rwList = document.getElementById('rewrite-list');
+  const rwAdd = document.getElementById('rw-add');
+  const rwSave = document.getElementById('rw-save');
+  const rwError = document.getElementById('rw-error');
+  const rwTpl = (m = '', r = '') => {
+    const row = document.createElement('div');
+    row.className = 'rewrite-row';
+    row.innerHTML = `
+      <div class="input-wrap glass-input"><input class="rw-match" placeholder="内网端口或路径，例如 5667 或 /movie/" value="${m.replace(/"/g,'&quot;')}" spellcheck="false"/></div>
+      <div class="rewrite-arrow">→</div>
+      <div class="input-wrap glass-input"><input class="rw-replace" placeholder="外网完整地址，例如 https://nas.example.com:5667/" value="${r.replace(/"/g,'&quot;')}" spellcheck="false"/></div>
+      <button type="button" class="rewrite-del" title="删除">×</button>`;
+    row.querySelector('.rewrite-del').addEventListener('click', () => row.remove());
+    rwList.appendChild(row);
+  };
+  rwAdd.addEventListener('click', () => rwTpl());
+  rwSave.addEventListener('click', async () => {
+    const rows = [...rwList.querySelectorAll('.rewrite-row')];
+    const list = [];
+    for (const row of rows) {
+      const m = row.querySelector('.rw-match').value.trim();
+      const r = row.querySelector('.rw-replace').value.trim();
+      if (!m && !r) continue;
+      if (!m || !r) { showError(rwError, '规则的左右两侧都要填'); return; }
+      try { new URL(r); } catch { showError(rwError, `右侧不是有效的完整地址：${r}`); return; }
+      list.push({ match: m, replace: r });
+    }
+    rwSave.disabled = true; rwSave.textContent = '保 存 中';
+    try {
+      const res = await fnosSettings.setUrlRewrites(list);
+      if (res && res.ok) {
+        rwSave.textContent = '已 保 存';
+        setTimeout(() => { rwSave.textContent = '保存规则'; }, 1400);
+      } else {
+        showError(rwError, (res && res.error) || '保存失败');
+      }
+    } catch (err) {
+      showError(rwError, err?.message || '保存失败');
+    } finally {
+      rwSave.disabled = false;
+      if (rwSave.textContent === '保 存 中') rwSave.textContent = '保存规则';
+    }
+  });
+
+  // --------- 界面开关 ---------
+  const optAutohide = document.getElementById('opt-autohide');
+  const optSave = document.getElementById('opt-save');
+  optSave.addEventListener('click', async () => {
+    optSave.disabled = true; optSave.textContent = '保 存 中';
+    try {
+      const res = await fnosSettings.setUIOptions({ autoHideMenuBar: !!optAutohide.checked });
+      if (res && res.ok) {
+        optSave.textContent = '已 保 存（重启后完全生效）';
+        setTimeout(() => { optSave.textContent = '保存界面设置'; }, 1800);
+      }
+    } finally {
+      optSave.disabled = false;
+      if (optSave.textContent === '保 存 中') optSave.textContent = '保存界面设置';
+    }
+  });
+
   btnClose.addEventListener('click', () => fnosSettings.close());
 
   // F5/Esc/右键阻断
@@ -203,6 +265,10 @@
       setPwdStatus(!!info?.hasPassword);
       hkLock.value = info?.shortcuts?.lockApp || '';
       hkHide.value = info?.shortcuts?.hideAll || '';
+      const rewrites = info?.urlRewrites || [];
+      if (rewrites.length === 0) rwTpl();
+      else rewrites.forEach((r) => rwTpl(r.match || '', r.replace || ''));
+      optAutohide.checked = !!info?.autoHideMenuBar;
     } catch (err) {
       showError(hkError, err?.message || '加载设置失败');
     }

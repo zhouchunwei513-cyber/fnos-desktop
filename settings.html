@@ -119,6 +119,40 @@
     <section class="settings-section">
       <div class="section-title">
         <span class="bar"></span>
+        <h2>应用外网地址（URL 重写）</h2>
+      </div>
+      <p class="section-desc">
+        程序内点击飞牛主页的应用图标时，会按下方规则把内网地址替换成你配置的外网地址，用于外网访问特定应用。
+        留空表示不重写。规则格式：<code>内网端口或路径片段 → 外网完整地址</code>。
+      </p>
+      <div id="rewrite-list" class="rewrite-list"></div>
+      <div class="setup-actions" style="margin-top:12px">
+        <button type="button" class="btn-ghost" id="rw-add">+ 添加规则</button>
+        <button type="button" class="btn-primary" id="rw-save">保存规则</button>
+      </div>
+      <div id="rw-error" class="lock-error" hidden style="margin-top:10px"></div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>界面</h2>
+      </div>
+      <label class="switch-row">
+        <div>
+          <div class="hotkey-title">自动隐藏菜单栏</div>
+          <div class="hotkey-sub">开启后菜单栏平时隐藏，按 Alt 键或鼠标移到窗口顶部显示</div>
+        </div>
+        <input type="checkbox" id="opt-autohide" />
+      </label>
+      <div class="setup-actions" style="margin-top:14px">
+        <button type="button" class="btn-primary" id="opt-save">保存界面设置</button>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
         <h2>关于</h2>
       </div>
       <p class="section-desc">FNOS 桌面客户端 — 多窗口、多服务器登录态保持、系统托盘与玻璃质感界面。</p>

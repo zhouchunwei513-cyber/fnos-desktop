@@ -13,5 +13,19 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       lockApp: String(payload?.lockApp || ''),
       hideAll: String(payload?.hideAll || ''),
     }),
+  setUrlRewrites: (list) =>
+    ipcRenderer.invoke(
+      'settings:set-url-rewrites',
+      Array.isArray(list)
+        ? list
+            .filter((r) => r && typeof r.match === 'string' && typeof r.replace === 'string')
+            .map((r) => ({ match: r.match.trim(), replace: r.replace.trim() }))
+            .filter((r) => r.match && r.replace)
+        : []
+    ),
+  setUIOptions: (opts) =>
+    ipcRenderer.invoke('settings:set-ui-options', {
+      autoHideMenuBar: !!opts?.autoHideMenuBar,
+    }),
   close: () => ipcRenderer.send('settings:close'),
 });

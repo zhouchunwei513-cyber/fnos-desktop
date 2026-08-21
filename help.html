@@ -247,10 +247,7 @@ code {
 
 <section class="hero">
   <div class="hero-logo">
-    <svg width="40" height="40" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M6 10 C 8 14, 11 15, 14 14 C 13 17, 12 19, 14 21 L 16 23 L 36 23 C 40 23, 43 20, 42 16 C 41 13, 38 11, 35 12 C 34 9, 36 7, 39 6 C 36 2, 30 4, 28 8 C 25 10, 22 10, 19 10 C 16 10, 13 9, 11 8 C 9 4, 3 2, 0 6 C 3 7, 5 9, 4 12 C 1 11, -2 13, -3 16 C -4 20, -1 23, 3 23 L 8 23 L 10 21 C 12 19, 11 17, 10 14 C 13 15, 16 14, 18 10 Z"
-            fill="white" transform="translate(5,8) scale(0.78)"/>
-    </svg>
+    <img src="assets/fnos-logo.png" alt="fnOS" width="40" height="40" style="border-radius:8px;" />
   </div>
   <h1 class="hero-title">FNOS</h1>
   <p class="hero-sub">私 有 云 桌 面 客 户 端 · 使 用 指 南</p>
@@ -293,6 +290,7 @@ code {
           <li><b>返回 FNOS 主页</b>：主窗口回到服务器首页，已打开的应用可选择后台运行或关闭</li>
           <li><b>切换窗口</b>：列出所有已打开的应用窗口，快速跳转</li>
           <li><b>切换服务器</b>：返回登录页，可选择历史地址快速切换（已登录服务器的账号密码会自动保持）</li>
+          <li><b>锁定 FNOS / 一键隐藏</b>：仅在已设置启动密码时出现</li>
         </ul>
       </div>
       <div>
@@ -302,6 +300,22 @@ code {
           <li><b>刷新 / 强制刷新</b>：F5 / Ctrl+F5</li>
           <li><b>全屏</b>：F11，按 <span class="kbd">Esc</span> 退出全屏</li>
           <li><b>缩放</b>：Ctrl + = / - / 0</li>
+          <li><b>用 MPV 打开当前视频（硬解）</b>：自动调用内置 MPV 播放器进行显卡硬解</li>
+        </ul>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div>
+        <h3>设置（一级菜单）</h3>
+        <ul>
+          <li><b>偏好设置…（Ctrl+,）</b>：打开设置窗口，可配置启动密码、全局快捷键、URL 重写、玻璃标题栏、主题色、菜单栏自动隐藏等</li>
+        </ul>
+      </div>
+      <div>
+        <h3>帮助</h3>
+        <ul>
+          <li><b>操作步骤帮助</b>：打开本页</li>
+          <li><b>检查更新…</b>：请求 GitHub Releases，提示「已是最新版」或「发现新版本」</li>
         </ul>
       </div>
     </div>
@@ -309,10 +323,85 @@ code {
     <p>
       <span class="kbd">Alt</span>+<span class="kbd">H</span> 返回主页 &nbsp;
       <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">L</span> 切换服务器 &nbsp;
+      <span class="kbd">Ctrl</span>+<span class="kbd">,</span> 偏好设置 &nbsp;
       <span class="kbd">F5</span> 刷新 &nbsp;
       <span class="kbd">F11</span> 全屏 &nbsp;
       <span class="kbd">Esc</span> 退出全屏 / 最大化
     </p>
+    <p style="margin-top:8px;color:var(--muted);font-size:13px;">
+      全局快捷键（在 <b>设置</b> 中可自定义，默认）：
+      <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">L</span> 锁定 FNOS；
+      <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">H</span> 一键隐藏（含托盘图标）。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>内置 MPV 播放器（显卡硬解）</h2>
+    <ul>
+      <li>安装包已内置 <b>mpv.exe</b>（约 114 MB，GPL 开源），无需另外下载。</li>
+      <li>在飞牛影视播放页打开 <b>视图 → 用 MPV 打开当前视频（硬解）</b>，客户端会自动抓取页面上的视频地址并调用 MPV。</li>
+      <li>MPV 直接调用电脑显卡进行硬解，4K / HDR 视频更流畅，CPU 占用更低。</li>
+      <li>如需手动操作，也可以在系统终端运行：<code>"%LOCALAPPDATA%\Programs\FNOS\bin\mpv\mpv.exe" &lt;视频地址&gt;</code>。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>启动密码 / 一键锁定 / 一键隐藏</h2>
+    <ul>
+      <li>在 <b>设置 → 启动密码</b> 中设置 4 位以上密码。密码使用 <code>scrypt</code> + 随机盐哈希存储，<b>不保存明文</b>，并经系统 DPAPI 加密。</li>
+      <li>设置后，每次启动 FNOS 会弹出玻璃锁屏，<b>只显示密码输入框</b>，输入正确密码才能进入。</li>
+      <li><b>锁定 FNOS</b>：菜单或托盘项 / 全局快捷键 <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">L</span>。</li>
+      <li><b>一键隐藏</b>：所有窗口连同托盘图标一起消失，适合临时遮挡屏幕；再次按同一快捷键即可恢复。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>下载文件</h2>
+    <ul>
+      <li>在飞牛文件应用中点下载后，会先弹出系统「<b>另存为</b>」对话框，<b>选择保存位置后才开始下载</b>。</li>
+      <li>下载进度窗口实时显示文件名、进度条、百分比、<b>下载速度</b>、已下载 / 总大小。</li>
+      <li><b>关闭进度窗口不会取消下载</b>：下载会继续在后台进行，完成后窗口自动弹出提示。</li>
+      <li>下载完成后点击「<b>打开所在文件夹</b>」直接定位到文件。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>外网访问与 URL 重写</h2>
+    <p>在 <b>设置 → 应用外网地址（URL 重写规则）</b> 中，可以把内网地址自动替换成外网地址。例如：</p>
+    <ul>
+      <li>匹配：<code>http://192.168.1.10:5666</code></li>
+      <li>替换为：<code>https://nas.example.com</code></li>
+    </ul>
+    <p>这样点应用卡片时会自动用外网地址打开，适合在外网环境下使用。</p>
+  </section>
+
+  <section class="card">
+    <h2>界面个性化</h2>
+    <ul>
+      <li><b>自动隐藏菜单栏（按 Alt 显示）</b>：设置中开启后，菜单栏平时隐藏，按 <span class="kbd">Alt</span> 临时呼出，最大化时更清爽。</li>
+      <li><b>玻璃标题栏（实验性）</b>：默认关闭，开启后使用 Windows 11 Mica/Acrylic 风格的标题栏。不影响任何现有功能，不喜欢可随时关闭。</li>
+      <li><b>主题色</b>：内置蓝、青、紫、粉、绿、橙 6 种标题栏配色。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>直播 / 绿屏 / 授权问题修复</h2>
+    <ul>
+      <li><b>电视直播跨域</b>：客户端自动注入 CORS 响应头，等效于 KNAS 浏览器插件，飞牛影视的直播频道可直接观看。</li>
+      <li><b>绿屏 / 花屏</b>：移除了导致 ARM / 集显设备绿屏的 COEP / CORP 头，并伪装 User-Agent 为桌面 Chrome，飞牛音乐、飞牛影视登录后不再绿屏。</li>
+      <li><b>NAS 账号授权无反应</b>：所有 OAuth 弹窗改为在客户端内以独立窗口打开，授权完成后自动回跳，不会再循环登录页。</li>
+      <li><b>Win7 支持</b>：基于 Electron 22（Chromium 108，最后一个支持 Win7 的版本）打包，Win7 SP1 x64 可安装运行。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>检查更新</h2>
+    <p>点击 <b>帮助 → 检查更新…</b>，程序请求 GitHub Releases API：</p>
+    <ul>
+      <li>如果当前已是最新版，提示「<b>已是最新版本</b>」。</li>
+      <li>如果有新版，弹窗显示<b>版本号和更新内容</b>，点击「前往下载」自动打开 GitHub Release 页面。</li>
+    </ul>
+    <p>项目开源地址：<code>https://github.com/zhouchunwei513-cyber/fnos-desktop</code></p>
   </section>
 
   <section class="card">
@@ -343,7 +432,7 @@ code {
 
 </main>
 
-<div class="footer">FNOS CLIENT · 1.10.2</div>
+<div class="footer">FNOS CLIENT · 1.10.3</div>
 
 </body>
 </html>

@@ -34,9 +34,9 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 
 ## 第三方依赖
 
-- Electron 30（Chromium + Node.js）
+- Electron 22（Chromium 108，最后一个支持 Windows 7 的版本）
 - 所有 npm 依赖都在 `package.json` 中列明，使用 pnpm 锁定版本（`pnpm-lock.yaml`）
-- 不包含任何闭源二进制或来源不明的脚本
+- 内置 **mpv.exe**（GPL v2+ 协议开源），来自 mpv 官方 winbuild，仅用于本地显卡硬解视频，不发起任何网络请求
 
 ## CORS 绕过 / KNAS 等效功能说明
 
@@ -86,6 +86,27 @@ FNOS Desktop 是一个基于 Electron 的 fnOS 飞牛私有云桌面客户端。
 ## 报告漏洞
 
 如果你发现安全问题，请通过 GitHub Issues 私下联系作者，或直接提交 PR 修复。请勿在公开 Issue 中提交可利用的 0-day 细节。
+
+## v1.10.3 安全自查清单
+
+| 项 | 状态 |
+|---|---|
+| `contextIsolation: true` + `nodeIntegration: false`（所有窗口） | ✅ |
+| `sandbox: false`（需 preload 暴露 API，但 IPC 白名单最小化） | ✅ |
+| 渲染进程无可直接调用的文件系统 / shell 接口 | ✅ |
+| 启动密码使用 `scryptSync` + 16 字节随机盐 + `timingSafeEqual` | ✅ |
+| settings.json 使用 `safeStorage`（Windows DPAPI）加密 | ✅ |
+| 每服务器独立 `persist:nas-<hash>` partition，Cookie/缓存物理隔离 | ✅ |
+| 外链下载：`showSaveDialog` 后才 setSavePath/resume，不自动落盘 | ✅ |
+| 关闭下载进度窗口仅隐藏，不取消后台下载，任务项可在托盘查看 | ✅ |
+| URL 重写规则仅替换 origin/path 前缀，不执行 JS | ✅ |
+| CORS 头注入仅作用于用户配置的服务器 partition | ✅ |
+| 检查更新只请求 GitHub Releases API，不携带任何身份凭据 | ✅ |
+| 全局快捷键（锁定/隐藏）可在设置中自定义，冲突时优雅跳过 | ✅ |
+| 锁屏窗口屏蔽 F5/Ctrl+R/ESC/右键/Alt+F4 | ✅ |
+| 一键隐藏彻底销毁 Tray，仅全局快捷键可恢复 | ✅ |
+| MPV 仅以本地文件路径或当前页 video.src 启动，不接受远程任意命令 | ✅ |
+| 无埋点、无崩溃上报、无自动更新下载（仅弹窗提示，由用户手动下载） | ✅ |
 
 ## 免责声明
 

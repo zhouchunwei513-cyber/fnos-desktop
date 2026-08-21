@@ -11,6 +11,7 @@
   const cancelBtn = document.getElementById('cancel-btn');
   const closeBtn = document.getElementById('close-btn');
   const openBtn = document.getElementById('open-btn');
+  const bgBtn = document.getElementById('bg-btn');
   const card = document.getElementById('card');
 
   let savePath = '';
@@ -39,6 +40,7 @@
   const onDone = (data) => {
     card.classList.add('done');
     fillEl.style.width = '100%';
+    if (bgBtn) bgBtn.hidden = true;
     if (data.state === 'completed') {
       titleEl.textContent = '下载完成';
       statusEl.innerHTML = '<span style="color:#7cf0b0;font-weight:800;">✓ 已保存</span>';
@@ -65,6 +67,7 @@
   cancelBtn.addEventListener('click', () => api.cancel && api.cancel());
   closeBtn.addEventListener('click', () => api.close && api.close());
   openBtn.addEventListener('click', () => api.openFolder && api.openFolder());
+  if (bgBtn) bgBtn.addEventListener('click', () => api.close && api.close());
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {

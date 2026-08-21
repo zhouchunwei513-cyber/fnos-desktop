@@ -21,24 +21,60 @@ const os = require('os');
 const cp = require('child_process');
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.10.2';
+const APP_VERSION = '1.10.3';
 
 // ---------------------- 启动性能开关 ----------------------
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,MediaRouter,Translate,InterestFeedContentSuggestions,UseChromeOSDirectVideoDecoder');
+app.commandLine.appendSwitch('disable-features', [
+  'CalculateNativeWinOcclusion',    // 减少窗口遮挡检测开销
+  'MediaRouter',                    // 不需要 Chromecast
+  'Translate',
+  'InterestFeedContentSuggestions',
+  'UseChromeOSDirectVideoDecoder',
+  'BackForwardCache',
+  'LazyFrameLoading',
+  'GlobalMediaControls',
+  'HardwareMediaKeyHandling',
+  'PrivacySandboxSettings4',
+  'DialMediaRouteProvider',
+  'CastMediaRouteProvider',
+  'OptimizationHints',
+].join(','));
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
-app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization,VaapiVideoDecoder,VaapiVideoEncoder,MediaFoundationVideoCapture');
+app.commandLine.appendSwitch('enable-features', [
+  'CanvasOopRasterization',
+  'VaapiVideoDecoder',
+  'VaapiVideoEncoder',
+  'MediaFoundationVideoCapture',
+  'RawDraw',
+  'ScrollPredictorSmoothness',
+  'GpuMemoryBufferCompositorResources',
+].join(','));
 app.commandLine.appendSwitch('enable-async-dns');
 app.commandLine.appendSwitch('max-connections-per-host', '32');
 app.commandLine.appendSwitch('enable-quic');
 app.commandLine.appendSwitch('enable-parallel-downloading');
 app.commandLine.appendSwitch('disk-cache-size', '104857600');
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512 --concurrent-recompilation --lite-mode');
+// 额外性能/响应速度优化
+app.commandLine.appendSwitch('disable-component-update');
+app.commandLine.appendSwitch('disable-domain-reliability');
+app.commandLine.appendSwitch('disable-breakpad');
+app.commandLine.appendSwitch('disable-crash-reporter');
+app.commandLine.appendSwitch('disable-hang-monitor');
+app.commandLine.appendSwitch('disable-ipc-flooding-protection');
+app.commandLine.appendSwitch('disable-print-preview');
+app.commandLine.appendSwitch('disable-bundled-ppapi-flash');
+app.commandLine.appendSwitch('safebrowsing-disable-auto-update');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+app.commandLine.appendSwitch('enable-precise-memory-info');
+app.commandLine.appendSwitch('enable-scroll-prediction');
+app.commandLine.appendSwitch('enable-aggressive-domstorage-flushing');
 
 // v1.10.0：修复部分 ARM64 / 集显设备上飞牛影视/音乐出现绿屏或花屏
 // - 在 ARM64 设备上禁用硬件加速视频解码（软解），保留 GPU 合成
@@ -110,47 +146,36 @@ async function checkGitLatestTag() {
 }
 
 async function checkForUpdates(interactive = true) {
-  if (interactive && mainWindow) {
-    try {
-      await glassMessageBox(mainWindow, {
-        type: 'info',
-        title: '检查更新',
-        message: '正在检查更新…',
-        buttons: [],
-      });
-    } catch (_) {}
-  }
   try {
     const info = await checkGitLatestTag();
     const latest = info.tag.replace(/^v/i, '');
     const cmp = compareVersions(latest, APP_VERSION);
     if (!mainWindow) return;
     if (cmp > 0) {
-      const detail = (info.notes || '').trim().slice(0, 400);
-      const btn = await glassMessageBox(mainWindow, {
+      const detail = (info.notes || '').trim().slice(0, 500);
+      const { response } = await glassMessageBox(mainWindow, {
         type: 'info',
-        title: '发现新版本',
-        message: `发现新版本 v${latest}，是否前往下载？`,
-        detail: detail ? `更新内容：\n${detail}` : '点击「前往下载」将在浏览器中打开 GitHub Release 页面。',
-        buttons: [{ label: '前往下载', value: 'ok', primary: true }, { label: '稍后', value: 'cancel', cancel: true }],
-        defaultButton: 0,
-        cancelButton: 1,
+        title: `发现新版本 v${latest}`,
+        detail: detail ? `${detail}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。` : '点击「前往下载」将在浏览器中打开 GitHub Release 页面。',
+        buttons: ['前往下载', '稍后'],
+        defaultId: 0,
+        cancelId: 1,
+        width: 520,
       });
-      if (btn === 'ok') shell.openExternal(info.html_url || RELEASES_PAGE).catch(() => {});
+      if (response === 0) shell.openExternal(info.html_url || RELEASES_PAGE).catch(() => {});
     } else if (interactive) {
       await glassMessageBox(mainWindow, {
         type: 'info',
         title: '已是最新版本',
-        message: `当前版本 v${APP_VERSION} 已是最新版本。`,
-        detail: '若想确认，请前往 GitHub Releases 页面查看。',
-        buttons: [{ label: '确定', value: 'ok', primary: true }, { label: '打开 Release 页面', value: 'page' }],
-        defaultButton: 0,
-        cancelButton: 0,
-      }).then((v) => { if (v === 'page') shell.openExternal(RELEASES_PAGE).catch(() => {}); }).catch(() => {});
+        detail: `当前版本 v${APP_VERSION} 已是最新版本。`,
+        buttons: ['确定'],
+        defaultId: 0,
+        cancelId: 0,
+      });
     }
   } catch (err) {
     if (interactive && mainWindow) {
-      await glassErrorBox(mainWindow, '检查更新失败', `无法连接到 GitHub：\n${err?.message || err}`);
+      await glassErrorBox('检查更新失败', `无法连接到 GitHub：\n${err?.message || err}`);
     }
   }
 }
@@ -535,7 +560,7 @@ function showDownloadProgress(item) {
   const CH_CLOSE = `download:close:${dlId}`;
 
   const win = new BrowserWindow({
-    width: 460, height: 168,
+    width: 500, height: 168,
     frame: false,
     transparent: true,
     resizable: false,
@@ -575,6 +600,7 @@ function showDownloadProgress(item) {
     try { ipcMain.removeHandler(CH_OPEN); } catch (_) {}
     try { ipcMain.removeHandler(CH_CLOSE); } catch (_) {}
     downloadWindows.delete(dlId);
+    try { rebuildTrayMenu(); } catch (_) {}
   };
 
   win.loadFile(path.join(__dirname, 'download.html')).catch(() => {});
@@ -589,6 +615,7 @@ function showDownloadProgress(item) {
     if (!win.isDestroyed()) win.showInactive();
   });
 
+  let lastTrayUpdate = 0;
   const onUpdated = (_e, state) => {
     if (state === 'progressing') {
       const received = item.getReceivedBytes();
@@ -600,17 +627,32 @@ function showDownloadProgress(item) {
         speedBps,
         speedText: speedBps > 0 ? `${fmtMB(speedBps)}/s` : '0 KB/s',
       });
+      const now = Date.now();
+      if (now - lastTrayUpdate > 1500) {
+        lastTrayUpdate = now;
+        try { rebuildTrayMenu(); } catch (_) {}
+      }
     }
   };
   const onDone = (_e, state) => {
     send('download:done', {
-      state, // 'completed' | 'cancelled' | 'interrupted'
+      state,
       savePath: item.getSavePath(),
     });
     if (state === 'completed') {
+      try {
+        if (win && !win.isDestroyed()) {
+          win.showInactive();
+          win.setAlwaysOnTop(true, 'pop-up-menu');
+        }
+      } catch (_) {}
       setTimeout(() => {
         if (win && !win.isDestroyed()) win.close();
-      }, 3500);
+      }, 2500);
+    } else if (state === 'cancelled' || state === 'interrupted') {
+      setTimeout(() => {
+        if (win && !win.isDestroyed()) win.close();
+      }, 1500);
     }
   };
 
@@ -619,14 +661,23 @@ function showDownloadProgress(item) {
   win.on('closed', cleanup);
 
   ipcMain.handle(CH_CANCEL, () => {
-    try { if (item.canResume()) item.cancel(); else item.cancel(); } catch (_) {}
+    try { item.cancel(); } catch (_) {}
+    try { if (win && !win.isDestroyed()) win.close(); } catch (_) {}
   });
   ipcMain.handle(CH_OPEN, () => {
     try { shell.showItemInFolder(item.getSavePath()); } catch (_) {}
   });
+  // 用户点 X 关闭：仅隐藏进度窗口，不取消下载。下载完成后系统通知区提示。
   ipcMain.handle(CH_CLOSE, () => {
-    try { if (!item.isDone()) item.cancel(); } catch (_) {}
-    if (win && !win.isDestroyed()) win.close();
+    try { if (win && !win.isDestroyed()) win.hide(); } catch (_) {}
+    try { rebuildTrayMenu(); } catch (_) {}
+  });
+  win.on('close', (e) => {
+    // 下载未完成时，阻止窗口真正关闭，改为隐藏
+    if (!item.isDone() && !closed) {
+      e.preventDefault();
+      try { win.hide(); } catch (_) {}
+    }
   });
 }
 
@@ -962,10 +1013,13 @@ function createSettingsWindow() {
     return settingsWindow;
   }
   settingsWindow = new BrowserWindow({
-    width: 720,
-    height: 720,
-    minWidth: 560,
+    width: 780,
+    height: 860,
+    minWidth: 620,
     minHeight: 560,
+    resizable: true,
+    maximizable: true,
+    fullscreenable: false,
     title: 'FNOS 设置',
     backgroundColor: '#05060a',
     autoHideMenuBar: true,
@@ -1326,12 +1380,34 @@ function rebuildTrayMenu() {
     });
   }
 
+  // 后台下载进度（点 X 隐藏后的下载任务）
+  const activeDls = [];
+  try {
+    for (const [, entry] of downloadWindows) {
+      if (entry && entry.win && !entry.win.isDestroyed()) activeDls.push(entry);
+    }
+  } catch (_) {}
+  if (activeDls.length > 0) {
+    items.push({ type: 'separator' });
+    items.push({ label: '正在下载', enabled: false });
+    activeDls.forEach((entry) => {
+      let label = entry.item && entry.item.getFilename ? entry.item.getFilename() : '下载任务';
+      if (label && label.length > 30) label = label.slice(0, 30) + '…';
+      items.push({
+        label,
+        click: () => {
+          try { if (entry.win && !entry.win.isDestroyed()) { entry.win.show(); entry.win.focus(); } } catch (_) {}
+        },
+      });
+    });
+  }
+
   items.push({ type: 'separator' });
   items.push({ label: '切换服务器…', click: () => showConnectPage() });
   if (hasAppPassword()) {
     items.push({ label: '锁定 FNOS', click: () => lockApp() });
   }
-  items.push({ label: '隐私设置…', click: () => createSettingsWindow() });
+  items.push({ label: '设置…', click: () => createSettingsWindow() });
   items.push({ type: 'separator' });
   items.push({ label: '退出', click: () => { app.isQuitting = true; app.quit(); } });
 
@@ -1645,7 +1721,6 @@ function buildMenu() {
         { type: 'separator' },
         ...(hasAppPassword() ? [{ label: `锁定 FNOS${lockAcc ? `  (${lockAcc})` : ''}`, click: () => lockApp() }] : []),
         { label: `一键隐藏 / 呼出${hideAcc ? `  (${hideAcc})` : ''}`, click: () => toggleCompletelyHidden() },
-        { label: '隐私设置…', click: () => createSettingsWindow() },
         { type: 'separator' },
         { role: 'minimize', label: '最小化' },
         {
@@ -1695,6 +1770,12 @@ function buildMenu() {
         { label: '用 MPV 打开当前视频（硬解）',
           click: withWebContents((wc, win) => { openInMpv(wc, win); }) },
         ...(IS_DEV ? [{ role: 'toggleDevTools', label: '开发者工具' }] : []),
+      ],
+    },
+    {
+      label: '设置',
+      submenu: [
+        { label: '偏好设置…', accelerator: 'Ctrl+,', click: () => createSettingsWindow() },
       ],
     },
     {

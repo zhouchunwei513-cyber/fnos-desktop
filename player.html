@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FNOS · 外部播放器</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #151922;
+    --fg: #e8ecf3;
+    --muted: #8b93a7;
+    --accent: #f46b95;
+    --ok: #4ade80;
+    --err: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: #000;
+  }
+  video {
+    width: 100%; height: 100%;
+    background: #000;
+    object-fit: contain;
+  }
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    padding: 14px 18px;
+    background: linear-gradient(to bottom, rgba(0,0,0,.72), rgba(0,0,0,0));
+    pointer-events: none;
+    display: flex; align-items: center; gap: 12px;
+    z-index: 5;
+  }
+  #title {
+    font-size: 15px; font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    max-width: 70vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #status {
+    font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    background: rgba(255,255,255,.12); color: var(--fg);
+    backdrop-filter: blur(4px);
+  }
+  #status.ok { background: rgba(74,222,128,.22); color: var(--ok); }
+  #status.err { background: rgba(248,113,113,.22); color: var(--err); }
+  #overlay {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; z-index: 4; text-align: center; padding: 24px;
+    background: radial-gradient(circle at 50% 40%, #1a1f2b 0%, #000 75%);
+  }
+  #overlay.hidden { display: none; }
+  .spinner {
+    width: 46px; height: 46px; border-radius: 50%;
+    border: 4px solid rgba(255,255,255,.15);
+    border-top-color: var(--accent);
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #ovTitle { font-size: 18px; font-weight: 600; }
+  #ovMsg { font-size: 13px; color: var(--muted); max-width: 520px; line-height: 1.6; word-break: break-all; }
+  #ovHint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .btn {
+    pointer-events: auto; cursor: pointer;
+    margin-top: 8px; padding: 9px 20px; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.08);
+    color: var(--fg); font-size: 13px;
+  }
+  .btn:hover { background: rgba(255,255,255,.16); }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <video id="video" controls autoplay playsinline></video>
+  </div>
+
+  <div id="hud">
+    <div id="title">FNOS 外部播放器</div>
+    <div id="status">初始化</div>
+  </div>
+
+  <div id="overlay">
+    <div class="spinner" id="spinner"></div>
+    <div id="ovTitle">正在连接媒体…</div>
+    <div id="ovMsg"></div>
+    <div id="ovHint">如长时间无响应，请检查 NAS 是否可达，或回到客户端重试。</div>
+  </div>
+
+  <script src="/hls.min.js"></script>
+  <script>
+  (function () {
+    const params = new URLSearchParams(location.search);
+    let src = params.get('src') || '';
+    const title = params.get('title') || '正在播放';
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ovTitle = document.getElementById('ovTitle');
+    const ovMsg = document.getElementById('ovMsg');
+    const spinner = document.getElementById('spinner');
+    const statusEl = document.getElementById('status');
+    document.getElementById('title').textContent = title;
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls || '';
+    }
+    function showOverlay(t, m, fatal) {
+      overlay.classList.remove('hidden');
+      ovTitle.textContent = t || '';
+      ovMsg.textContent = m || '';
+      spinner.style.display = fatal ? 'none' : '';
+    }
+    function hideOverlay() { overlay.classList.add('hidden'); }
+
+    if (!src) {
+      setStatus('无地址', 'err');
+      showOverlay('未提供媒体地址', '请从客户端「在浏览器中打开」重新进入。', true);
+      return;
+    }
+
+    const isHls = /\.m3u8(\?|$)/i.test(src) || src.includes('.m3u8');
+    let started = false;
+
+    video.addEventListener('playing', () => {
+      started = true;
+      hideOverlay();
+      setStatus('播放中', 'ok');
+    });
+    video.addEventListener('waiting', () => { if (started) setStatus('缓冲中…'); });
+    video.addEventListener('error', () => {
+      const e = video.error;
+      const msg = e ? ('媒体错误 code=' + e.code + (e.message ? ' ' + e.message : '')) : '未知播放错误';
+      setStatus('播放失败', 'err');
+      showOverlay('无法播放该媒体', msg, true);
+    });
+
+    // v1.23.6：HEVC/E-AC-3 封装在 MPEG-TS 里时，hls.js 的 TS 解复用器会直接拒绝
+    // （"Unsupported HEVC/EC-3 in M2TS found"），这类流只能交给飞牛/XTE 自带的网页播放器。
+    // 从代理地址 /__proxy?u=<encoded> 解出真实源站 origin，提示并打开其网页。
+    function getNativeOrigin() {
+      try {
+        const p = new URLSearchParams(location.search);
+        const proxied = p.get('src') || '';
+        const u = new URL(proxied, location.href);
+        const real = u.searchParams.get('u') || '';
+        if (real) return new URL(real).origin;
+      } catch (_) {}
+      return '';
+    }
+    function showNativeFallback(reason) {
+      const origin = getNativeOrigin();
+      setStatus('需用飞牛网页播放', 'err');
+      overlay.querySelector('#nativeBtn')?.remove();
+      const msg = origin
+        ? '该 4K/高清频道采用 HEVC/E-AC-3 编码封装，hls.js 无法在本地解码，需使用飞牛自带的网页播放器观看。' +
+          '\n源站：' + origin + (reason ? '\n原因：' + reason : '')
+        : '该频道采用 HEVC/E-AC-3 编码，hls.js 无法在本地解码，请直接在飞牛 NAS 网页中观看。';
+      showOverlay('该频道需在飞牛网页中播放', msg, true);
+      spinner.style.display = 'none';
+      if (origin) {
+        const b = document.createElement('button');
+        b.id = 'nativeBtn'; b.className = 'btn'; b.textContent = '🌐 在飞牛网页中观看';
+        b.onclick = () => { window.location.href = origin + '/'; };
+        overlay.appendChild(b);
+      }
+    }
+
+    function nativePlay() {
+      video.src = src;
+      video.play().catch((err) => {
+        setStatus('等待播放', 'err');
+        showOverlay('点击开始播放', String(err && err.message || err), false);
+        overlay.querySelector('.btn') || addPlayButton();
+      });
+    }
+    function addPlayButton() {
+      if (document.getElementById('playBtn')) return;
+      const b = document.createElement('button');
+      b.id = 'playBtn'; b.className = 'btn'; b.textContent = '▶ 播放';
+      b.onclick = () => { video.play(); b.remove(); };
+      overlay.appendChild(b);
+    }
+
+    if (isHls) {
+      if (window.Hls && Hls.isSupported()) {
+        setStatus('加载直播流…');
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          // 经本地 /__proxy 反代，无需额外 loader；默认 XHR loader 最稳定
+          manifestLoadingTimeOut: 20000,
+          manifestLoadingMaxRetry: 2,
+          levelLoadingTimeOut: 20000,
+          fragLoadingTimeOut: 30000,
+        });
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          setStatus('解码中…');
+          video.play().catch(() => addPlayButton());
+        });
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (!data) return;
+          if (data.fatal) {
+            const detail = (data.type || '') + '/' + (data.details || '') + (data.reason ? ' ' + data.reason : '');
+            const reasonMsg = (data.reason && data.reason.message) ? data.reason.message : (data.details || '');
+            // HEVC/E-AC-3 in MPEG-TS：hls.js 无法解复用，提示在飞牛网页播放器观看
+            if (/HEVC in M2TS|EC-3 in M2TS|unsupported hevc|unsupported ec-3/i.test(reasonMsg) ||
+                /HEVC in M2TS|EC-3 in M2TS/i.test(detail)) {
+              showNativeFallback(reasonMsg);
+              try { hls.destroy(); } catch (_) {}
+              return;
+            }
+            setStatus('播放失败', 'err');
+            showOverlay('直播流播放失败', detail + '\n源地址：' + src, true);
+            try { hls.destroy(); } catch (_) {}
+          } else {
+            // 非致命错误（如分片重试）仅更新状态，不打断
+            setStatus('重试中…', 'err');
+          }
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari 等原生支持 HLS
+        setStatus('原生播放…');
+        nativePlay();
+      } else {
+        setStatus('不支持 HLS', 'err');
+        showOverlay('当前浏览器不支持 HLS 播放', '请使用最新版 Edge / 豆包浏览器打开。', true);
+      }
+    } else {
+      // 非 HLS（mp4/mkv/webm 等直链）：交给浏览器原生播放
+      setStatus('加载媒体…');
+      nativePlay();
+    }
+  })();
+  </script>
+</body>
+</html>

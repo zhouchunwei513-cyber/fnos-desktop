@@ -1,0 +1,185 @@
+{
+  "extensionName": {
+    "message": "KNAS Media Extension"
+  },
+  "extensionDescription": {
+    "message": "Boost STRM and live playback compatibility for media services."
+  },
+  "common_active": {
+    "message": "Active"
+  },
+  "common_paused": {
+    "message": "Paused"
+  },
+  "common_enabled": {
+    "message": "Enabled"
+  },
+  "common_disabled": {
+    "message": "Disabled"
+  },
+  "common_settings": {
+    "message": "Settings"
+  },
+  "common_delete": {
+    "message": "Delete"
+  },
+  "common_test": {
+    "message": "Test"
+  },
+  "common_system": {
+    "message": "System"
+  },
+  "common_followBrowser": {
+    "message": "Follow browser"
+  },
+  "common_light": {
+    "message": "Light"
+  },
+  "common_dark": {
+    "message": "Dark"
+  },
+  "common_english": {
+    "message": "English"
+  },
+  "common_chinese": {
+    "message": "Simplified Chinese"
+  },
+  "popup_noTab": {
+    "message": "Rules can be managed after opening a website tab."
+  },
+  "popup_openSettings": {
+    "message": "Open settings"
+  },
+  "popup_hlsPreset": {
+    "message": "STRM / live playback boost"
+  },
+  "popup_currentSiteOnly": {
+    "message": "All settings in this panel only take effect on the current website."
+  },
+  "options_title": {
+    "message": "KNAS Media Extension"
+  },
+  "options_subtitle": {
+    "message": "Boost STRM and live playback compatibility for media services."
+  },
+  "options_globalSwitch": {
+    "message": "Extension enabled"
+  },
+  "options_globalSwitchDescription": {
+    "message": "Controls all playback enhancement rules."
+  },
+  "options_language": {
+    "message": "Language"
+  },
+  "options_languageDescription": {
+    "message": "Display language for the popup and options page."
+  },
+  "options_theme": {
+    "message": "Theme"
+  },
+  "options_themeDescription": {
+    "message": "Display theme for the options page."
+  },
+  "options_sites": {
+    "message": "Sites"
+  },
+  "options_sitesDescription": {
+    "message": "Websites enabled from the popup are listed here."
+  },
+  "options_general": {
+    "message": "General"
+  },
+  "options_sourceAuth": {
+    "message": "Advanced"
+  },
+  "options_siteManagement": {
+    "message": "Site management"
+  },
+  "options_sourceAuthTitle": {
+    "message": "Playback source rules"
+  },
+  "options_sourceAuthDescription": {
+    "message": "Only used when specific STRM / IPTV playback sources require extra request information."
+  },
+  "options_noSourceAuthRules": {
+    "message": "No advanced playback source rules yet."
+  },
+  "options_addSourceAuthRule": {
+    "message": "Add playback source rule"
+  },
+  "options_sourceAuthRuleName": {
+    "message": "Rule name"
+  },
+  "options_sourceAuthRuleNamePlaceholder": {
+    "message": "Optional name"
+  },
+  "options_sourceAuthDomain": {
+    "message": "Source domain"
+  },
+  "options_sourceAuthDomainRequired": {
+    "message": "Source domain is required."
+  },
+  "options_sourceAuthDomainInvalid": {
+    "message": "Source domain format is invalid."
+  },
+  "options_authHeadersNotice": {
+    "message": "Saved locally in this browser. Only applies to rare sources that require fixed request information. It may not solve account, IP, region, or dynamic signature restrictions. Some browsers may limit User-Agent or Origin changes."
+  },
+  "options_requestHeaders": {
+    "message": "Request headers"
+  },
+  "options_requestHeadersDescription": {
+    "message": "Fill in only as required by the source provider. Empty values are not sent."
+  },
+  "options_addHeader": {
+    "message": "Add header"
+  },
+  "options_noCustomHeaders": {
+    "message": "No extra headers yet."
+  },
+  "options_headerName": {
+    "message": "Header name"
+  },
+  "options_headerValue": {
+    "message": "Header value"
+  },
+  "options_duplicateHeaderName": {
+    "message": "Header names cannot repeat."
+  },
+  "options_invalidHeaderName": {
+    "message": "Header name format is invalid."
+  },
+  "options_footer": {
+    "message": "KNAS Media Extension"
+  },
+  "options_officialSite": {
+    "message": "Official website"
+  },
+  "options_noSites": {
+    "message": "No sites enabled yet."
+  },
+  "options_origin": {
+    "message": "Origin"
+  },
+  "options_preset": {
+    "message": "Preset"
+  },
+  "options_status": {
+    "message": "Status"
+  },
+  "options_updatedAt": {
+    "message": "Updated"
+  },
+  "preset_hlsIptv_name": {
+    "message": "STRM / live playback boost"
+  },
+  "preset_hlsIptv_description": {
+    "message": "Adds compatibility headers for STRM, cloud-drive direct playback, IPTV live streams, and other external media sources."
+  },
+  "errors_applyRulesFailed": {
+    "message": "Failed to apply rules."
+  },
+  "errors_currentTabFailed": {
+    "message": "Failed to read the current tab."
+  }
+}

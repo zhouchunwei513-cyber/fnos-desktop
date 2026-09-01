@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/tmp/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Packaged artifacts
+*.exe
+*.blockmap
+*.yaml
+!pnpm-lock.yaml
+
+# 内置 mpv 播放器二进制（约 120MB，超过 GitHub 100MB 单文件限制）。
+# 不入库，由 .github/workflows/build.yml 在构建时自动从官方下载。
+/mpv/*.exe
+/mpv/*.dll

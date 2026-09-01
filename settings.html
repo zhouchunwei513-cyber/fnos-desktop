@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>FNOS 设置</title>
+  <link rel="stylesheet" href="lock.css" />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body class="settings-body">
+  <div class="aurora" aria-hidden="true">
+    <svg class="aurora-svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="blurS" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="90" />
+        </filter>
+      </defs>
+      <rect width="1920" height="1080" fill="#05060a"/>
+      <g filter="url(#blurS)" opacity="0.75">
+        <path d="M-150 720 C 220 520 480 980 820 740 S 1500 520 2070 800 L 2070 1200 L -150 1200 Z" fill="#ff5b8c" opacity="0.55"/>
+        <path d="M-120 600 C 280 820 600 380 980 620 S 1600 920 2050 540 L 2050 1180 L -120 1180 Z" fill="#ffd166" opacity="0.5"/>
+        <path d="M-100 820 C 360 620 720 1020 1100 780 S 1680 520 2060 820 L 2060 1200 L -100 1200 Z" fill="#43e7ff" opacity="0.55"/>
+        <path d="M-160 500 C 260 700 600 460 960 560 S 1620 720 2080 480 L 2080 1180 L -160 1180 Z" fill="#8b6bff" opacity="0.45"/>
+      </g>
+    </svg>
+  </div>
+
+  <main class="settings-card glass">
+    <header class="settings-head">
+      <div class="settings-logo" aria-hidden="true">
+        <img src="assets/fnos-logo.png" alt="fnOS" width="36" height="36" />
+      </div>
+      <div>
+        <h1>FNOS 设置</h1>
+        <p id="version-line"></p>
+      </div>
+    </header>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>启动密码</h2>
+      </div>
+      <p class="section-desc">设置后，每次启动 FNOS 或从托盘恢复都需要输入密码；密码通过系统凭据加密保存。</p>
+
+      <div id="pwd-status" class="pwd-status">
+        <span class="dot-ok"></span><span>当前已设置启动密码</span>
+      </div>
+
+      <form id="pwd-form" class="lock-form" autocomplete="off">
+        <div class="input-wrap glass-input" id="old-wrap">
+          <input id="old-pwd" type="password" placeholder="当前密码" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="input-wrap glass-input">
+          <input id="new-pwd" type="password" placeholder="新密码（至少 4 位，留空取消密码）" autocomplete="new-password" spellcheck="false" />
+        </div>
+        <div class="input-wrap glass-input">
+          <input id="confirm-pwd" type="password" placeholder="再次输入新密码" autocomplete="new-password" spellcheck="false" />
+        </div>
+        <div id="pwd-error" class="lock-error" hidden></div>
+        <div class="setup-actions">
+          <button type="button" class="btn-ghost" id="pwd-cancel">清除</button>
+          <button type="submit" class="btn-primary" id="pwd-save">保存密码</button>
+        </div>
+      </form>
+
+      <div class="auto-lock-wrap" style="margin-top:20px;padding-top:18px;border-top:1px solid rgba(255,255,255,.08)">
+        <div class="hotkey-row" style="align-items:center">
+          <div class="hotkey-label">
+            <div class="hotkey-title">无操作自动锁定</div>
+            <div class="hotkey-sub">离开后键鼠无操作达到设定时长，自动锁定并隐藏所有窗口；恢复时需在锁屏页输入启动密码。全屏播放视频时不触发。</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto">
+            <div class="glass-select" data-select="auto-lock" data-value="0" tabindex="0">
+              <span class="glass-select-value">关闭</span>
+              <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <div class="glass-select-menu">
+                <div class="glass-select-option" data-value="0">关闭</div>
+                <div class="glass-select-option" data-value="1">1 分钟</div>
+                <div class="glass-select-option" data-value="3">3 分钟</div>
+                <div class="glass-select-option" data-value="5">5 分钟</div>
+                <div class="glass-select-option" data-value="10">10 分钟</div>
+                <div class="glass-select-option" data-value="20">20 分钟</div>
+                <div class="glass-select-option" data-value="30">30 分钟</div>
+                <div class="glass-select-option" data-value="60">1 小时</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="auto-lock-hint" class="hotkey-sub" style="margin-top:8px;color:#f0b429"></div>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>快捷键</h2>
+      </div>
+      <p class="section-desc">在输入框中按下组合键即可设置。留空则禁用该快捷键。</p>
+
+      <div class="hotkey-row">
+        <div class="hotkey-label">
+          <div class="hotkey-title">一键锁定</div>
+          <div class="hotkey-sub">锁定后自动最小化到托盘，点击托盘需输入启动密码恢复</div>
+        </div>
+        <div class="hotkey-input-wrap">
+          <input type="text" id="hk-lock" class="hotkey-input glass-input" readonly
+                 placeholder="点击此处并按下组合键" spellcheck="false" />
+          <button type="button" class="hotkey-clear" data-target="hk-lock" title="清除">×</button>
+        </div>
+      </div>
+
+      <div class="hotkey-row">
+        <div class="hotkey-label">
+          <div class="hotkey-title">一键隐藏 / 呼出</div>
+          <div class="hotkey-sub">隐藏所有窗口和托盘图标；再次按下呼出</div>
+        </div>
+        <div class="hotkey-input-wrap">
+          <input type="text" id="hk-hide" class="hotkey-input glass-input" readonly
+                 placeholder="点击此处并按下组合键" spellcheck="false" />
+          <button type="button" class="hotkey-clear" data-target="hk-hide" title="清除">×</button>
+        </div>
+      </div>
+
+      <div id="hk-error" class="lock-error" hidden style="margin-top:12px"></div>
+
+      <div class="setup-actions" style="margin-top:18px">
+        <button type="button" class="btn-ghost" id="hk-reset">恢复默认</button>
+        <button type="button" class="btn-primary" id="hk-save">保存快捷键</button>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>应用外网地址（URL 重写）</h2>
+      </div>
+      <p class="section-desc">
+        程序内点击飞牛主页的应用图标时，会按下方规则把内网地址替换成你配置的外网地址，用于外网访问特定应用。
+        留空表示不重写。规则格式：<code>内网端口或路径片段 → 外网完整地址</code>。
+      </p>
+      <div id="rewrite-list" class="rewrite-list"></div>
+      <div class="setup-actions" style="margin-top:12px">
+        <button type="button" class="btn-ghost" id="rw-add">+ 添加规则</button>
+        <button type="button" class="btn-primary" id="rw-save">保存规则</button>
+      </div>
+      <div id="rw-error" class="lock-error" hidden style="margin-top:10px"></div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>界面</h2>
+      </div>
+      <label class="switch-row">
+        <div>
+          <div class="hotkey-title">自动隐藏菜单栏</div>
+          <div class="hotkey-sub">开启后菜单栏平时隐藏，按 Alt 键或鼠标移到窗口顶部显示</div>
+        </div>
+        <input type="checkbox" id="opt-autohide" />
+      </label>
+      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">主题色</div>
+          <div class="hotkey-sub">影响标题栏、按钮高亮色</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap" id="accent-palette">
+          <span class="accent-dot" data-color="#3B82F6" style="background:#3B82F6" title="天空蓝"></span>
+          <span class="accent-dot" data-color="#8B5CF6" style="background:#8B5CF6" title="紫罗兰"></span>
+          <span class="accent-dot" data-color="#EC4899" style="background:#EC4899" title="粉红"></span>
+          <span class="accent-dot" data-color="#10B981" style="background:#10B981" title="翡翠绿"></span>
+          <span class="accent-dot" data-color="#F59E0B" style="background:#F59E0B" title="琥珀"></span>
+          <span class="accent-dot" data-color="#06B6D4" style="background:#06B6D4" title="青色"></span>
+        </div>
+      </div>
+      <div class="setup-actions" style="margin-top:14px">
+        <button type="button" class="btn-primary" id="opt-save">保存界面设置</button>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>直播与播放</h2>
+      </div>
+      <p class="section-desc">
+        v1.18.1 起已移除本地 8340 内存代理与外部播放器路径配置，飞牛影视与内置播放器均直连 FPK 服务端，由服务端完成流治理与重封装。
+      </p>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">NAS 直播基地址（可选）</div>
+          <div class="hotkey-sub">XTE 网关地址，如 http://192.168.1.10:34500；留空则使用当前连接的 NAS 地址</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <input type="text" id="iptv-baseurl" class="hotkey-input glass-input" placeholder="http://nas:34500" style="width:100%" />
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">默认订阅线路</div>
+          <div class="hotkey-sub">对应 NAS 侧 inner/ipv6/frp 多线路列表</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <div class="glass-select hotkey-input" data-select="iptv-line" data-value="inner" tabindex="0" style="width:100%">
+            <span class="glass-select-value">内网 IPv4</span>
+            <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="glass-select-menu">
+              <div class="glass-select-option" data-value="inner">内网 IPv4</div>
+              <div class="glass-select-option" data-value="ipv6">IPv6 DDNS</div>
+              <div class="glass-select-option" data-value="frp">FRP 中转</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">EPG 节目单地址（可选，支持多个）</div>
+          <div class="hotkey-sub">XMLTV 格式的 .xml/.xml.gz 地址；多个地址用英文逗号分隔，将合并加载；留空则自动读取直播源 M3U 头中的 x-tvg-url</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <input type="text" id="iptv-epgurl" class="hotkey-input glass-input" placeholder="https://example.com/epg.xml" style="width:100%" />
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">直播缓冲秒数</div>
+          <div class="hotkey-sub">网络不稳定时增大缓冲可减少卡顿（0-120 秒，默认 30）</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <input type="number" id="iptv-cacheseconds" class="hotkey-input glass-input" min="0" max="120" value="30" style="width:100%" />
+        </div>
+      </div>
+
+      <div id="iptv-error" class="lock-error" hidden style="margin-top:10px"></div>
+
+      <div class="setup-actions" style="margin-top:14px">
+        <button type="button" class="btn-primary" id="iptv-save">保存直播设置</button>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>兼容性播放器（MPV）</h2>
+      </div>
+      <p class="section-desc">
+        飞牛影视网页/内置直播默认使用系统网页内核播放；遇到网页解不了的格式（HEVC/H.265 10bit、4K、MKV、特殊音轨）时，
+        会自动用内置 <b>MPV</b> 播放器（自带完整 ffmpeg 解码器）在<b>应用内视频区</b>直接播放，通吃绝大多数视频，无需跳出外部窗口。MPV 运行库随应用打包。
+      </p>
+
+      <div id="vlc-runtime" class="hotkey-sub" style="margin:10px 0;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,0.05);line-height:1.7">
+        正在检测 MPV 运行状态…
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">解码失败时自动用 MPV 播放</div>
+          <div class="hotkey-sub">关闭后仅保留菜单/按钮里的「用 MPV 播放」手动入口</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center">
+          <label class="switch" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="vlc-enabled" checked />
+            <span id="vlc-enabled-label">已启用</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">硬件解码</div>
+          <div class="hotkey-sub">自动（推荐）/ D3D11VA / DXVA2 / 关闭（纯软解，最稳但耗 CPU）</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <div class="glass-select hotkey-input" data-select="vlc-hw" data-value="auto" tabindex="0" style="width:100%">
+            <span class="glass-select-value">自动（推荐）</span>
+            <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="glass-select-menu">
+              <div class="glass-select-option" data-value="auto">自动（推荐）</div>
+              <div class="glass-select-option" data-value="d3d11va">D3D11VA</div>
+              <div class="glass-select-option" data-value="dxva2">DXVA2</div>
+              <div class="glass-select-option" data-value="no">关闭（软解）</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">网络缓存 / 预读（消除卡顿）</div>
+          <div class="hotkey-sub">播放卡顿/缓冲频繁时调大：均衡(32MB/60s)、流畅(128MB/120s，4K 推荐)、超大(512MB/300s)</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <div class="glass-select hotkey-input" data-select="vlc-cache" data-value="smooth" tabindex="0" style="width:100%">
+            <span class="glass-select-value">流畅（4K 推荐）</span>
+            <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="glass-select-menu">
+              <div class="glass-select-option" data-value="standard">均衡（32MB / 60s）</div>
+              <div class="glass-select-option" data-value="smooth">流畅（128MB / 120s）</div>
+              <div class="glass-select-option" data-value="unlimited">超大（512MB / 300s）</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="vlc-error" class="lock-error" hidden style="margin-top:10px"></div>
+
+      <div class="setup-actions" style="margin-top:14px">
+        <button type="button" class="btn-primary" id="vlc-save">保存播放器设置</button>
+      </div>
+    </section>
+
+    <div class="setup-actions" style="margin-top:14px">
+      <button type="button" class="btn-ghost" id="btn-close">关闭</button>
+    </div>
+  </main>
+
+  <script src="settings.js"></script>
+</body>
+</html>

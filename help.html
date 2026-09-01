@@ -376,15 +376,38 @@ code {
       <li><b>锁定 FNOS</b>：菜单或托盘项 / 全局快捷键 <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">L</span>。</li>
       <li><b>一键隐藏</b>：所有窗口连同托盘图标一起消失，适合临时遮挡屏幕；再次按同一快捷键即可恢复。</li>
     </ul>
+    <h3>忘记启动密码怎么办？</h3>
+    <p>启动密码仅保存在本机、经系统 DPAPI 加密，<b>无法找回明文</b>。忘记密码时按下面步骤重置（不会删除你的 NAS 登录信息与其它设置之外的数据，仅清除启动密码）：</p>
+    <ul>
+      <li>1）先<b>完全退出 FNOS</b>（托盘右键 → 退出；若停在锁屏界面，可在任务管理器里结束 FNOS 进程）。</li>
+      <li>2）按 <span class="kbd">Win</span>+<span class="kbd">R</span> 打开"运行"，输入 <code>%APPDATA%\FNOS</code> 回车，打开配置目录。</li>
+      <li>3）删除该目录下的 <code>settings.json</code> 文件（可先备份到桌面）。</li>
+      <li>4）重新打开 FNOS，启动密码即被清除，可进入后到 <b>设置 → 启动密码</b> 重新设置。</li>
+    </ul>
+    <div class="tip">说明：删除 <code>settings.json</code> 会同时重置偏好设置（主题、缓存档位、URL 重写等）；NAS 服务器登录历史保存在 <code>servers.json</code>，不受影响。</div>
   </section>
 
   <section class="card">
-    <h2>内置 MPV 播放器（显卡硬解）</h2>
+    <h2>内置 MPV 播放器（显卡硬解 · 点开即看）</h2>
     <ul>
-      <li>安装包已内置 <b>mpv.exe</b>（约 114 MB，GPL 开源），无需另外下载。</li>
-      <li>在飞牛影视播放页打开 <b>工具 → 用 MPV 打开当前视频（硬解）</b>，客户端会自动抓取页面上的视频地址并调用 MPV。</li>
-      <li>MPV 直接调用电脑显卡进行硬解，4K / HDR 视频更流畅，CPU 占用更低。</li>
-      <li>如需手动操作，可点击菜单栏 <b>工具 → 系统终端</b>（快捷键 <span class="kbd">Ctrl</span>+<span class="kbd">`</span>），会自动打开一个已经定位到 MPV 目录的控制台窗口，直接运行：<code>mpv.exe &lt;视频地址&gt;</code> 即可。也可在任意终端中运行完整路径，例如：<code>"%LOCALAPPDATA%\Programs\FNOS\resources\app.asar.unpacked\bin\mpv\mpv.exe" &lt;视频地址&gt;</code>。</li>
+      <li>安装包已内置 <b>mpv.exe</b>（GPL 开源），无需另外下载。</li>
+      <li><b>自动接管</b>：飞牛影视里遇到网页播放器解不了的视频（<b>HEVC/H.265、10bit、4K、MKV</b> 等），客户端会自动抓取真实视频地址，在页面视频区<b>原位</b>调用内置 MPV 显卡硬解播放，不弹外部窗口；也可在播放页打开 <b>工具 → 用 MPV 打开当前视频（硬解）</b>手动接管。</li>
+      <li><b>中文界面</b>：MPV 的控制条（OSC）、右键菜单、对话框均已为<b>中文</b>。鼠标移到画面底部显示控制条，<b>右键</b>弹出菜单（字幕、音轨、画面、播放速度等）。</li>
+      <li><b>硬解低占用</b>：默认 d3d11va 显卡硬解 + d3d11 渲染，4K/HDR 更流畅、CPU 占用更低；可在 <b>设置 → MPV</b> 切换硬解方式与缓存档位。</li>
+      <li><b>长视频自动续播</b>：点播（MKV/电影）使用的是 NAS 生成的<b>时效签名链接</b>，播放一段时间后续传链接可能过期。MPV 会<b>自动重新获取新链接并从断点继续</b>，无需手动重播；<b>拖动进度条</b>若定位较慢也会自动重新取流并跳到你拖动的位置。</li>
+      <li><b>关闭 MPV</b>：点 MPV 画面右上角的 <b>×</b> 即可关闭播放器并回到网页（不会再自动重开）；换台 / 换电影时会自动切换到新节目。</li>
+      <li><b>播放日志</b>：MPV 的详细运行日志（HTTP 状态、重定向、断流与重连/重新取流记录）写在 <code>%APPDATA%\FNOS\fnos-mpv.log</code>；客户端诊断日志为 <code>%APPDATA%\FNOS\fnos-diag.log</code>，反馈问题时可一并提供。</li>
+      <li>如需手动操作，可点击菜单栏 <b>工具 → 系统终端</b>（快捷键 <span class="kbd">Ctrl</span>+<span class="kbd">`</span>），会自动打开一个已定位到 MPV 目录的控制台窗口，直接运行 <code>mpv.exe &lt;视频地址&gt;</code> 即可。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>内置电视直播（配合 XTE-IPTV）</h2>
+    <ul>
+      <li>客户端内置<b>电视直播</b>窗口，同样使用内置 MPV 内核播放，支持 <b>4K 高清直播</b>、HLS(m3u8)/FLV 等流，自动为媒体流注入跨域(CORS)头，换台即播。</li>
+      <li>直播流长时间运行遇到运营商断流/抖动时，MPV 会<b>自动重连</b>（最多 30 次）并在进程异常时<b>崩溃自愈续播</b>，保持画面不中断。</li>
+      <li><b>配合 XTE-IPTV</b>：内置直播的节目源可配合你自建的 <b>XTE-IPTV</b> 工具生成的直播订阅 / 播放列表使用，在直播窗口中填入订阅地址即可加载频道列表与节目单（EPG）。</li>
+      <li>飞牛影视网页内的直播频道也会自动用 MPV 接管播放。</li>
     </ul>
   </section>
 
@@ -438,6 +461,8 @@ code {
     </ul>
     <h3>登录状态会失效吗？</h3>
     <p>不会。每个服务器都有独立的持久化会话分区，Cookie 和本地数据加密保存在本机；关闭主窗口、隐藏到托盘、切换到其他服务器再切回来、或重启电脑后再次打开，该服务器的飞牛账号都会自动保持登录。只有在登录页历史列表里主动删除该服务器，或在飞牛页面里主动登出，才会清除对应服务器的登录状态。</p>
+    <h3>视频播放到一半中断 / 进度条拖不动？</h3>
+    <p>电影/MKV 走的是 NAS 生成的<b>时效签名链接</b>，播放较久后链接可能过期。新版内置 MPV 会<b>自动重新获取链接并从断点续播</b>，拖进度条卡住时也会自动重新取流并跳到目标位置，一般无需操作。若仍异常，可关闭 MPV 后用 <b>工具 → 用 MPV 打开当前视频</b> 重新接管，并把 <code>%APPDATA%\FNOS\fnos-mpv.log</code> 与 <code>fnos-diag.log</code> 反馈给作者。直播频道因分片实时刷新，不受此影响。</p>
     <h3>如何彻底退出？</h3>
     <p>托盘右键 → <b>退出</b>，或在文件菜单里选退出。选「隐藏到托盘」程序仍会在后台运行。</p>
     <h3>数据保存在哪里？</h3>
@@ -456,7 +481,7 @@ code {
 
 </main>
 
-<div class="footer">FNOS CLIENT · 1.14</div>
+<div class="footer">FNOS CLIENT · 1.28.0</div>
 
 </body>
 </html>

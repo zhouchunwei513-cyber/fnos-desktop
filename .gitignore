@@ -1,23 +1,30 @@
 # Dependencies
 node_modules/
 .pnpm-store/
+
 # Build output
 dist/
 build/tmp/
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
 # OS / editor
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
+
 # Packaged artifacts
 *.exe
 *.blockmap
 *.yaml
 !pnpm-lock.yaml
-# 内置 mpv 播放器二进制（约120MB，超 GitHub 单文件限制），不入库，CI 从 mpv-runtime Release 下载。
-/mpv/*.exe
-/mpv/*.dll
+# 内置 mpv 播放器例外（GPL 开源协议，必须随仓库分发）
+!bin/mpv/mpv.exe
+
+# mpv 运行时（由 CI 从 mpv-runtime Release 下载，不入库）
+mpv/*.exe
+mpv/*.dll
+mpv/*.com

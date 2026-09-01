@@ -90,7 +90,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.27.1';
+const APP_VERSION = '1.28.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4479,6 +4479,54 @@ function normalizeDipRect(rect) {
   }
 }
 
+// 通知飞牛网页（guest）mpv 已关闭：恢复被隐藏的 <video>、重置接管状态
+function notifyGuestMpvClosed(guestWc) {
+  try {
+    const wc = guestWc;
+    if (wc && !wc.isDestroyed() && typeof wc.send === 'function') {
+      try { wc.send('mpv:embed-closed'); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+// 点播断流恢复：让飞牛网页（preload）重新走 play/info → media/range 取一条新鲜签名地址。
+// 返回 {url, headers, isLive} 供 mpv 续播；失败返回 null（mpv 侧会回放旧地址兜底）。
+async function refreshVodStreamUrl(guestWc) {
+  try {
+    const wc = guestWc;
+    if (!wc || wc.isDestroyed() || typeof wc.executeJavaScript !== 'function') return null;
+    dlog('info', 'mpv.refresh.request', {});
+    const fresh = await wc.executeJavaScript(
+      'Promise.resolve(window.fnos && window.fnos.__refreshMpvMedia ? window.fnos.__refreshMpvMedia() : null)',
+      true
+    );
+    if (fresh && fresh.url) {
+      const headers = {};
+      try {
+        const origin = fresh.origin || '';
+        const u = new URL(fresh.url);
+        const oHost = origin ? new URL(origin).host : '';
+        const sameOrigin = origin ? u.host === oHost : true;
+        if (sameOrigin) {
+          const ck = await gatherCookiesForOrigin(origin || fresh.url);
+          if (ck) headers['Cookie'] = ck;
+          if (fresh.token) headers['Authorization'] = String(fresh.token);
+          if (fresh.playLink) headers['Play-Link'] = String(fresh.playLink);
+          if (origin) headers['Referer'] = origin.replace(/\/?$/, '/');
+        }
+      } catch (_) {}
+      headers['User-Agent'] = getNasUA();
+      dlog('info', 'mpv.refresh.ok', { url: String(fresh.url).slice(0, 100), hasCookie: !!headers['Cookie'], isLive: !!fresh.isLive });
+      return { url: fresh.url, headers, isLive: !!fresh.isLive };
+    }
+    dlog('warn', 'mpv.refresh.nourl', {});
+    return null;
+  } catch (e) {
+    dlog('warn', 'mpv.refresh.err', { err: String(e && e.message || e) });
+    return null;
+  }
+}
+
 async function embedMpvPlay(hostWin, payload) {
   if (process.platform !== 'win32' || !MpvSurfaceMod || !MpvPlayerMod) {
     return { ok: false, reason: 'MPV 仅支持 Windows 且模块已加载' };
@@ -4513,18 +4561,44 @@ async function embedMpvPlay(hostWin, payload) {
   });
 
   const hostId = hostWin.id;
+  // guest（飞牛网页 webContents）：用于"点播断流时重新签名取新鲜地址"与"通知网页恢复显示"
+  const guestWc = payload._sender || hostWin.webContents;
   let surf = mpvSurfaces.get(hostId);
   if (surf && !surf.isAlive()) { try { surf.destroy(); } catch (_) {} mpvSurfaces.delete(hostId); surf = null; }
   if (!surf) {
+    // 点播断流（飞牛 media/range 签名链接约 10 分钟失效）时，让飞牛网页重新走 play/info→media/range
+    // 取一条新鲜签名地址返回，mpv 用它续播（并续播到断点）。
+    const onNeedFreshUrl = () => refreshVodStreamUrl(guestWc);
     surf = new MpvSurfaceMod.MpvSurface(hostWin, dipRect, {
       viewOffsetX: viewOffset.x, viewOffsetY: viewOffset.y,
-      settings: st
+      settings: st,
+      onNeedFreshUrl
     });
     mpvSurfaces.set(hostId, surf);
-    surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 300) }));
-    surf.player.on('surface-log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 300) }));
+    surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
+    surf.player.on('surface-log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
     surf.player.on('end-file', reason => dlog('info', 'mpv.player.end', { reason: String(reason) }));
-    surf.player.on('exit', (code) => dlog('info', 'mpv.player.exit', { code }));
+    // exit 第三参 userClosed：true=用户点 mpv 窗口 X（正常关闭），false=进程崩溃
+    surf.player.on('exit', (code, _sig, userClosed) => {
+      dlog('info', 'mpv.player.exit', { code, userClosed: !!userClosed });
+      if (userClosed) {
+        // 用户主动关闭 mpv：回收嵌入层、通知网页恢复 <video>，避免 mpv 被崩溃自愈重启。
+        try {
+          if (!surf.isAlive()) { surf.destroy && surf.destroy(); }
+          if (mpvSurfaces.get(hostId) === surf) mpvSurfaces.delete(hostId);
+          notifyGuestMpvClosed(guestWc);
+        } catch (_) {}
+      }
+    });
+    // 用户点 mpv 窗口 X（end-file reason=quit）：立即回收 + 通知网页
+    surf.player.on('user-closed', () => {
+      try {
+        dlog('info', 'mpv.player.userclosed', { host: hostId });
+        surf.destroy();
+        if (mpvSurfaces.get(hostId) === surf) mpvSurfaces.delete(hostId);
+        notifyGuestMpvClosed(guestWc);
+      } catch (_) {}
+    });
   } else {
     surf.setRect(dipRect, viewOffset);
   }
@@ -4589,6 +4663,8 @@ ipcMain.handle('mpv:embed-close', async (e) => {
     const hostWin = hostWindowFromSender(e && e.sender) || mainWindow;
     const surf = mpvSurfaces.get(hostWin.id);
     if (surf) { try { surf.destroy(); } catch (_) {} mpvSurfaces.delete(hostWin.id); }
+    // 通知 guest 网页恢复 <video> 显示
+    try { notifyGuestMpvClosed(e && e.sender); } catch (_) {}
     return { ok: true };
   } catch (_) { return { ok: false }; }
 });

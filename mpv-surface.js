@@ -20,6 +20,7 @@ class MpvSurface {
     this.player = new mpvMod.MpvPlayer();
     this._started = false;
     this._startSettings = opts.settings || {};
+    this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
     this._pollTimer = null;
     this._lastBoundsKey = '';
     // 注：log/end-file/exit 监听由 main.js（embedMpvPlay）统一绑定，这里不重复绑定。
@@ -89,8 +90,12 @@ class MpvSurface {
         geometry: geo || undefined,
         hwDecode: this._startSettings.hwDecode || 'auto',
         cacheLevel: this._startSettings.cacheLevel || 'smooth',
-        headers: this._startSettings.headers || null
+        headers: this._startSettings.headers || null,
+        // 点播断流（签名链接时效失效）时，由主进程注入回调重新签名取新鲜地址
+        onNeedFreshUrl: this._onNeedFreshUrl || null
       });
+      // 用户点 mpv 窗口自带关闭按钮：冒泡给 main.js 回收嵌入层（否则崩溃自愈会重启）
+      this.player.on('user-closed', () => { this._dead = true; this._emit('user-closed'); });
       this._started = true;
     } catch (e) {
       this._emit('log', 'surface start failed: ' + (e && e.message));

@@ -8,11 +8,18 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
   platform: process.platform,
-  version: '1.27.1',
+  version: '1.28.0',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),
   mpvClose: () => ipcRenderer.invoke('mpv:embed-close'),
+  // 点播播放中途断流（飞牛签名链接约 10 分钟失效）时，由主进程回调：
+  // 让页面内取流逻辑重新走 play/info→media/range，返回新鲜签名地址。
+  __mpvRefreshHolder: { fn: null },
+  __refreshMpvMedia: () => {
+    try { return Promise.resolve(window.fnos && window.fnos.__mpvRefreshHolder && window.fnos.__mpvRefreshHolder.fn ? window.fnos.__mpvRefreshHolder.fn() : null); }
+    catch (e) { return Promise.resolve(null); }
+  },
 });
 
 // ============================================================================
@@ -507,6 +514,39 @@ contextBridge.exposeInMainWorld('fnos', {
       return null;
     }
 
+    // 点播播放中途断流（飞牛 media/range 是时效签名链接，约 10 分钟后续传 4xx）时，
+    // 由主进程通过 window.fnos.__refreshMpvMedia() 回调：强制重新走 play/info 取新的 mediaGuid，
+    // 返回一条新鲜签名地址；直播则复用 resolveDirectUrl（m3u8/分片天然刷新）。
+    async function refreshMpvMedia() {
+      try {
+        readTokenFromStorage();
+        const isLivePage = /\/v\/live\//.test(location.pathname);
+        if (!state.itemGuid) state.itemGuid = guidFromPath();
+        const item = state.itemGuid || guidFromPath();
+        if (item && !isLivePage) {
+          state.itemGuid = item;
+          let mg = '';
+          try { mg = await fetchPlayInfo(item); } catch (e) { log('refresh.playinfo.err', { err: String(e && e.message || e) }); }
+          if (!mg) { try { mg = await fetchStreamList(item); } catch (e) { log('refresh.streamlist.err', { err: String(e && e.message || e) }); } }
+          if (mg) {
+            state.mediaGuid = mg;
+            const url = state.baseOrigin + '/v/api/v1/media/range/' + mg;
+            log('refresh.media', { itemGuid: item, mediaGuid: mg });
+            return { url, mediaGuid: mg, itemGuid: item, token: state.token, playLink: state.playLink || '', origin: state.baseOrigin, isLive: false };
+          }
+        }
+        // 直播 / 兜底：重新解析当前直链
+        const direct = await resolveDirectUrl();
+        if (direct && direct.url) {
+          const live = isLivePage || /\.(m3u8|flv)(\?|$)/i.test(direct.url) || /\/play\//i.test(direct.url);
+          log('refresh.media.resolved', { source: direct.source, isLive: live });
+          return { url: direct.url, mediaGuid: direct.mediaGuid || '', itemGuid: state.itemGuid || '', token: state.token, playLink: state.playLink || '', origin: state.baseOrigin, isLive: live };
+        }
+        log('refresh.media.fail', { itemGuid: state.itemGuid });
+        return null;
+      } catch (e) { log('refresh.media.ex', { err: String(e && e.message || e) }); return null; }
+    }
+
     function getMainVideo() {
       return Array.from(document.querySelectorAll('video'))
         .filter(x => { const r = x.getBoundingClientRect(); return r.width > 200 && r.height > 120; })
@@ -645,6 +685,8 @@ contextBridge.exposeInMainWorld('fnos', {
     const boot = () => {
       readTokenFromStorage();
       state.itemGuid = guidFromPath();
+      // 挂载"重新取流"供主进程在点播断流时回调（contextBridge 与 IIFE 解耦）
+      try { if (window.fnos && window.fnos.__mpvRefreshHolder) window.fnos.__mpvRefreshHolder.fn = refreshMpvMedia; } catch (_) {}
       try { hookFetch(); } catch (_) {}
       try { hookXHR(); } catch (_) {}
       scan();

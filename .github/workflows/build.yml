@@ -1,10 +1,17 @@
 name: Build & Release
 
+# 推送 v* 标签（如 v1.27.1）时自动构建 Windows 便携版并发布到 Releases；
+# 也可在 Actions 页面手动触发（Run workflow，可填自定义 mpv 直链）。
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      mpv_url:
+        description: '可选：自定义 mpv 运行时 .7z 直链；留空则用本仓库 mpv-runtime Release'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -30,25 +37,63 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Build Windows installer
-        run: pnpm exec electron-builder --win --x64 --publish never
+      - name: 下载内置 mpv 运行时（Windows x86_64，GPL）
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MPV_URL: ${{ github.event.inputs.mpv_url }}
+        run: |
+          New-Item -ItemType Directory -Force -Path mpv | Out-Null
+          if (Test-Path mpv/mpv.exe) { Write-Host "mpv 已存在，跳过"; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:MPV_URL)) {
+            $rel = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent'='fnos-build' } `
+              "https://api.github.com/repos/$($env:GITHUB_REPOSITORY)/releases/tags/mpv-runtime"
+            $asset = $rel.assets | Where-Object { $_.name -eq 'mpv-runtime-x86_64.7z' } | Select-Object -First 1
+            if (-not $asset) { throw "未找到 mpv-runtime Release 资产 mpv-runtime-x86_64.7z" }
+            Write-Host "使用内置 mpv 运行时: $($asset.name) $([math]::Round($asset.size/1MB,1)) MB"
+            curl.exe -L --retry 3 -H "Authorization: Bearer $env:GH_TOKEN" -H "Accept: application/octet-stream" -o mpv.7z $asset.url
+          } else {
+            Write-Host "使用自定义 mpv 直链: $($env:MPV_URL)"
+            curl.exe -L --retry 3 -o mpv.7z $env:MPV_URL
+          }
+          if (-not (Test-Path mpv.7z)) { throw "mpv 下载失败" }
+          & 7z x mpv.7z -omvpmpt -y | Out-Null
+          $exe = Get-ChildItem -Recurse mvpmpt -Filter mpv.exe | Select-Object -First 1
+          if (-not $exe) { throw "解压后未找到 mpv.exe" }
+          Copy-Item $exe.FullName "mpv/mpv.exe" -Force
+          $d3d = Get-ChildItem -Recurse mvpmpt -Filter d3dcompiler_43.dll | Select-Object -First 1
+          if ($d3d) { Copy-Item $d3d.FullName "mpv/d3dcompiler_43.dll" -Force }
+          Get-ChildItem mpv | ForEach-Object { Write-Host "  mpv/$($_.Name) $([math]::Round($_.Length/1MB,1)) MB" }
+
+      - name: Build Windows portable
+        run: pnpm exec electron-builder --win portable --x64 --publish never
+
+      - name: 校验内置 mpv 内核已打包（防止产出无内核安装包）
+        shell: pwsh
+        run: |
+          $out = "dist/win-unpacked/resources/mpv/mpv.exe"
+          if (-not (Test-Path $out)) {
+            # 兼容不同输出目录，兜底全局搜索
+            $found = Get-ChildItem -Recurse -Path dist -Filter mpv.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $found) { throw "打包产物中未找到内置 mpv.exe，请勿发布此版本（下载步骤可能失败）" }
+            Write-Host "mpv.exe 已打包: $($found.FullName) $([math]::Round($found.Length/1MB,1)) MB"
+          } else {
+            $f = Get-Item $out
+            Write-Host "mpv.exe 已打包: $out $([math]::Round($f.Length/1MB,1)) MB"
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FNOS-Setup-${{ github.ref_name }}
-          path: |
-            dist/FNOS-Setup-*.exe
-            dist/FNOS-*-portable.exe
+          name: FNOS-${{ github.ref_name }}
+          path: dist/FNOS-*-portable.exe
           if-no-files-found: error
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/FNOS-Setup-*.exe
-            dist/FNOS-*-portable.exe
+          files: dist/FNOS-*-portable.exe
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}

@@ -90,7 +90,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.28.0';
+const APP_VERSION = '1.28.1';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4529,12 +4529,21 @@ async function refreshVodStreamUrl(guestWc) {
 
 async function embedMpvPlay(hostWin, payload) {
   if (process.platform !== 'win32' || !MpvSurfaceMod || !MpvPlayerMod) {
+    dlog('warn', 'mpv.embed.skip', { reason: 'platform-or-module', platform: process.platform, hasSurface: !!MpvSurfaceMod, hasPlayer: !!MpvPlayerMod });
     return { ok: false, reason: 'MPV 仅支持 Windows 且模块已加载' };
   }
-  if (!MpvPlayerMod.getMpvExe()) return { ok: false, reason: '未找到内置 mpv.exe' };
+  const exePath = MpvPlayerMod.getMpvExe();
+  if (!exePath) {
+    // mpv.exe 缺失（如 CI 未下载内置内核/打包遗漏）：明确记录，避免静默无任何日志
+    dlog('warn', 'mpv.embed.skip', { reason: 'mpv.exe-missing', resourcesPath: process.resourcesPath || '' });
+    return { ok: false, reason: '未找到内置 mpv.exe（内置内核缺失，请重新下载完整安装包）' };
+  }
   const st = getMpvSettings();
   try { global.__mpvSettings = st; } catch (_) {}
-  if (st.enabled === false) return { ok: false, reason: 'MPV 已在设置中关闭' };
+  if (st.enabled === false) {
+    dlog('info', 'mpv.embed.skip', { reason: 'disabled-in-settings' });
+    return { ok: false, reason: 'MPV 已在设置中关闭' };
+  }
 
   let url = String(payload.url || '');
   if (!/^https?:/i.test(url)) {

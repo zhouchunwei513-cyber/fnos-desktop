@@ -1,6 +1,13 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 点播断流重新取流函数：由下方 installEmbeddedMpv IIFE 在同一隔离世界内赋值。
+// 关键：不能把函数写进 contextBridge 暴露的对象（window.fnos.xxx.fn = ...）——
+// contextIsolation 下暴露对象是冻结代理，运行时改写其属性会抛错并被 catch 吞掉，
+// 导致主进程永远拿不到刷新函数（重新签名恒为 null）。这里用模块级变量 + 闭包活引用，
+// 暴露的 __refreshMpvMedia 始终读取该变量的最新值。
+let __mpvRefreshFn = null;
+
 // 安全地暴露给登录页/渲染页面使用。
 contextBridge.exposeInMainWorld('fnos', {
   connect: (server) => ipcRenderer.invoke('auth:connect', { server }),
@@ -8,16 +15,15 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
   platform: process.platform,
-  version: '1.28.4',
+  version: '1.28.5',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),
   mpvClose: () => ipcRenderer.invoke('mpv:embed-close'),
-  // 点播播放中途断流（飞牛签名链接约 10 分钟失效）时，由主进程回调：
-  // 让页面内取流逻辑重新走 play/info→media/range，返回新鲜签名地址。
-  __mpvRefreshHolder: { fn: null },
+  // 点播播放中途断流（飞牛签名链接约 10 分钟失效）时，由主进程经 executeJavaScript 回调：
+  // 读取隔离世界内注册的刷新函数，重新走 play/info→media/range，返回新鲜签名地址。
   __refreshMpvMedia: () => {
-    try { return Promise.resolve(window.fnos && window.fnos.__mpvRefreshHolder && window.fnos.__mpvRefreshHolder.fn ? window.fnos.__mpvRefreshHolder.fn() : null); }
+    try { return Promise.resolve(typeof __mpvRefreshFn === 'function' ? __mpvRefreshFn() : null); }
     catch (e) { return Promise.resolve(null); }
   },
 });
@@ -685,8 +691,9 @@ contextBridge.exposeInMainWorld('fnos', {
     const boot = () => {
       readTokenFromStorage();
       state.itemGuid = guidFromPath();
-      // 挂载"重新取流"供主进程在点播断流时回调（contextBridge 与 IIFE 解耦）
-      try { if (window.fnos && window.fnos.__mpvRefreshHolder) window.fnos.__mpvRefreshHolder.fn = refreshMpvMedia; } catch (_) {}
+      // 挂载"重新取流"函数：直接给【隔离世界模块级变量】赋值（与 contextBridge 暴露的
+      // __refreshMpvMedia 闭包共享），不要改写 window.fnos 上的 bridge 代理对象（冻结、赋值无效）。
+      try { __mpvRefreshFn = refreshMpvMedia; } catch (_) {}
       try { hookFetch(); } catch (_) {}
       try { hookXHR(); } catch (_) {}
       scan();

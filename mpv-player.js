@@ -194,6 +194,7 @@ class MpvPlayer extends EventEmitter {
     this._fileLoadedAt = 0;    // 最近一次 file-loaded 时间戳（起播宽限基准）
     this._loadStartAt = 0;     // loadfile 发起时间戳（file-loaded 前的宽限基准）
     this._earlyEofTries = 0;   // 点播提前 EOF 恢复次数
+    this._resumeTargetAt = 0;  // 续播定位目标秒数；播放越过该位置+5s 判定续播成功并重置计数
     this._lastRecoverAt = 0;   // 最近一次自动恢复时间戳（恢复冷却，防重复触发）
     this._logFilePath = '';   // mpv 自身详细日志文件（fnos-mpv.log）
   }
@@ -444,6 +445,12 @@ class MpvPlayer extends EventEmitter {
       else if (id === 2) {
         if (typeof val === 'number') {
           this._timePosVal = val;
+          // 续播成功确认：新流已定位到断点并继续往后播（越过断点 5s），
+          // 说明本次恢复真正生效——重置提前 EOF 计数，允许后续再次断流时继续恢复（长时间播放 NAS 可能多次断连）。
+          if (this._resumeTargetAt && val > this._resumeTargetAt + 5) {
+            this._resumeTargetAt = 0;
+            this._earlyEofTries = 0;
+          }
           // 播放位置在推进：刷新"最后推进时间"，卡死看护据此判断是否真的卡住
           if (this._lastTimePos < 0 || Math.abs(val - this._lastTimePos) > 0.01) {
             this._lastTimePos = val; this._lastProgressAt = Date.now();
@@ -479,12 +486,26 @@ class MpvPlayer extends EventEmitter {
       this._fileLoadedAt = Date.now(); // 起播宽限计时基准（loadfile 时也会重置）
       this._lastTimePos = -1; this._lastProgressAt = Date.now(); this._coreIdle = false;
       this._eofReached = false; this._seeking = false; this._seekStartedAt = 0;
-      this._buffering = 100; this._recoveringStall = false; this._earlyEofTries = 0;
-      // 点播续播：崩溃自愈/重新取流后续播到断点
+      this._buffering = 100; this._recoveringStall = false;
+      // 点播续播：崩溃自愈/重新取流后续播到断点。HTTP 上的 MKV 首次 seek 可能因索引/关键帧
+      // 尚未就绪而失败，这里做"seek→校验位置→必要时重试"，确保真正回到断点而不是从头播。
       if (typeof this._resumePos === 'number' && this._resumePos > 1 && !this._isLive) {
-        const pos = this._resumePos;
-        const doSeek = () => { try { this.seek(pos); } catch (_) {} };
-        setTimeout(doSeek, 400);
+        const target = this._resumePos;
+        const trySeek = (attempt) => {
+          try {
+            this.seek(target);
+            if (attempt < 3) {
+              setTimeout(() => {
+                const cur = (typeof this._timePosVal === 'number') ? this._timePosVal : 0;
+                // 位置离目标差 6s 以上 = 上一次 seek 没到位，重试
+                if (Math.abs(cur - target) > 6 && !this._quitByUser && !this._manualStop) trySeek(attempt + 1);
+              }, attempt === 0 ? 700 : 1600);
+            }
+          } catch (_) {}
+        };
+        trySeek(0);
+        this._resumeTargetAt = target; // time-pos 越过断点 5s 即判定续播成功，重置 earlyEof 计数
+        this.emit('log', 'resume seek to ' + Math.round(target) + 's after re-load');
       }
       this._resumePos = undefined;
       this.emit('loaded');
@@ -576,7 +597,7 @@ class MpvPlayer extends EventEmitter {
   _handlePrematureEof() {
     try {
       if (this._isLive || this._quitByUser || this._manualStop || this._refreshing) return;
-      if (this._earlyEofTries >= 5) return;
+      if (this._earlyEofTries >= 8) return;
       const pos = (typeof this._timePosVal === 'number') ? this._timePosVal : 0;
       // duration 已知且离片尾还差 10s 以上 = 非正常播完；duration 未知则交给卡死看护兜底。
       if (!(this._duration > 0 && pos < this._duration - 10)) return;
@@ -603,9 +624,10 @@ class MpvPlayer extends EventEmitter {
       // 重新取流期间强制让 mpv 退出自动暂停态（keep-open 在 EOF 时会暂停），
       // 否则新流加载后仍暂停，表现为"点播放没反应"。
       this._userPause = false;
+      const recoverOpts = { isLive: this._isLive, recover: true };
       if (this._isLive || !this._onNeedFreshUrl) {
-        // 直播或无重新取流回调：回放原地址（直播分片刷新；点播兜底）
-        await this.loadfile(this._lastUrl, this._lastHeaders, { isLive: this._isLive });
+        // 直播或无重新取流回调：回放原地址（直播分片刷新；点播兜底）。recover=true 保留断点。
+        await this.loadfile(this._lastUrl, this._lastHeaders, recoverOpts);
         return;
       }
       this._refreshing = true;
@@ -618,14 +640,17 @@ class MpvPlayer extends EventEmitter {
       const headers = (fresh && fresh.headers) ? fresh.headers : this._lastHeaders;
       const isLive = fresh ? !!fresh.isLive : this._isLive;
       this.emit('log', 're-signed url ' + (fresh && fresh.url ? 'ok' : 'failed(fallback old)'));
-      await this.loadfile(url, headers, { isLive });
+      // recover=true：保留 _resumePos，让新流 file-loaded 后 seek 回断点（否则从头播=循环）。
+      await this.loadfile(url, headers, { isLive, recover: true, resumePos: this._resumePos });
     } catch (e) {
       this._refreshing = false;
       this.emit('log', 'reload stream failed: ' + (e && e.message));
     }
   }
 
-  // 加载并播放（可带该媒体专属头）。opts: { isLive }
+  // 加载并播放（可带该媒体专属头）。opts: { isLive, recover, resumePos }
+  // recover=true 表示这是断流恢复（重新签名/重连）：保留 _resumePos，新流 file-loaded 后 seek 回断点，
+  // 不能像"打开新视频"那样把断点清空（否则恢复后会从头播放，表现为播一段时间就回到开头循环）。
   async loadfile(url, headers, opts) {
     this._quitByUser = false;
     this._manualStop = false;
@@ -634,10 +659,19 @@ class MpvPlayer extends EventEmitter {
     this._isLive = !!(opts && opts.isLive);
     this._reloadTries = 0;
     this._refreshing = false;
-    this._resumePos = undefined;
+    const recover = !!(opts && opts.recover);
+    if (recover) {
+      // 恢复场景：若显式带了 resumePos 就采用，否则沿用 _reloadStream 已记录的断点；
+      // 点播兜底（旧地址重连）同样要保留断点。
+      if (typeof (opts && opts.resumePos) === 'number' && opts.resumePos > 1) this._resumePos = opts.resumePos;
+      // 不重置 _earlyEofTries（新流若再提前 EOF 仍需受上限保护），其余进度状态照常刷新。
+    } else {
+      this._resumePos = undefined;
+      this._earlyEofTries = 0;
+    }
     this._lastTimePos = -1; this._lastProgressAt = Date.now(); this._coreIdle = false;
     this._eofReached = false; this._userPause = false; this._seeking = false; this._seekStartedAt = 0;
-    this._loadStartAt = Date.now(); this._fileLoadedAt = 0; this._earlyEofTries = 0;
+    this._loadStartAt = Date.now(); this._fileLoadedAt = 0;
     this._buffering = 100;
     const waitReady = this.connected ? Promise.resolve() :
       new Promise(res => this.once('ipc-ready', res));

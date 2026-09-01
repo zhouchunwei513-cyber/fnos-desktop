@@ -1,0 +1,331 @@
+/* 设置页 — 复用 lock.css 中的玻璃与按钮样式 */
+/* 覆盖 lock.css 的 html,body { overflow:hidden }，使设置页可纵向滚动 */
+html, body {
+  height: auto !important;
+  min-height: 100vh;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+.settings-body {
+  position: relative;
+  width: 100%; min-height: 100vh;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 20px 60px;
+  overflow-y: visible;
+}
+
+.settings-card {
+  position: relative; z-index: 1;
+  width: 640px;
+  max-width: 100%;
+  padding: 36px 40px 32px;
+  border-radius: 28px;
+  animation: pop .35s cubic-bezier(.2,.9,.3,1.2);
+}
+
+.settings-head {
+  display: flex; align-items: center; gap: 16px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.settings-logo {
+  width: 60px; height: 60px; border-radius: 18px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(145deg, rgba(255,255,255,.15), rgba(255,255,255,.04));
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: 0 10px 24px -10px rgba(124,131,255,.55);
+  overflow: hidden;
+}
+.settings-logo img {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.settings-head h1 {
+  font-size: 22px; font-weight: 800; letter-spacing: 3px;
+  background: linear-gradient(90deg, #aef0ff, #bcb6ff, #ffb3e0);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.settings-head p {
+  margin-top: 4px;
+  font-size: 12px; font-weight: 600; letter-spacing: 2px;
+  color: rgba(233,239,255,.55);
+}
+
+.settings-section {
+  padding: 24px 0 8px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.settings-section:last-child { border-bottom: 0; padding-bottom: 0; }
+
+.section-title {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 6px;
+}
+.section-title .bar {
+  display: inline-block; width: 4px; height: 18px; border-radius: 4px;
+  background: linear-gradient(180deg, #7cecff, #7c83ff);
+  box-shadow: 0 0 14px rgba(124,236,255,.5);
+}
+.section-title h2 {
+  font-size: 16px; font-weight: 800; letter-spacing: 2px; color: #f2f6ff;
+}
+.section-desc {
+  margin: 4px 0 16px;
+  padding-left: 14px;
+  font-size: 12.5px; line-height: 1.7; font-weight: 500;
+  color: rgba(233,239,255,.6);
+}
+
+.pwd-status {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 4px 0 14px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(120,230,170,.1);
+  border: 1px solid rgba(120,230,170,.35);
+  color: #b8f5d0;
+  font-size: 12px; font-weight: 700; letter-spacing: 1px;
+}
+.pwd-status .dot-ok {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #56f0a0; box-shadow: 0 0 10px #56f0a0;
+}
+.pwd-status.off {
+  background: rgba(255,200,120,.08);
+  border-color: rgba(255,200,120,.3);
+  color: #ffd9a8;
+}
+.pwd-status.off .dot-ok { background: #ffb86b; box-shadow: 0 0 10px #ffb86b; }
+
+.hotkey-row {
+  display: flex; align-items: center; gap: 18px;
+  padding: 14px 0;
+  border-top: 1px dashed rgba(255,255,255,.07);
+}
+.hotkey-row:first-of-type { border-top: 0; }
+.hotkey-label { flex: 1; min-width: 0; }
+.hotkey-title { font-size: 14px; font-weight: 800; color: #f2f6ff; letter-spacing: 1px; }
+.hotkey-sub { margin-top: 4px; font-size: 12px; font-weight: 500; color: rgba(233,239,255,.5); line-height: 1.5; }
+
+.hotkey-input-wrap { position: relative; }
+.hotkey-input {
+  width: 220px; height: 42px; padding: 0 38px 0 14px;
+  border-radius: 12px; font-size: 13px; text-align: center; cursor: pointer;
+  letter-spacing: 1px;
+}
+.hotkey-input.recording {
+  border-color: rgba(255,107,203,.7);
+  box-shadow: 0 0 0 4px rgba(255,107,203,.18), 0 8px 22px -8px rgba(255,107,203,.5);
+  color: #ffd6ee;
+}
+.hotkey-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; border-radius: 8px;
+  border: 0; cursor: pointer;
+  background: rgba(255,255,255,.08);
+  color: rgba(233,239,255,.7);
+  font-size: 18px; line-height: 1;
+  transition: background .15s, color .15s;
+}
+.hotkey-clear:hover { background: rgba(255,90,120,.2); color: #ffd0d8; }
+
+.about-meta {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.about-meta > div {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.1);
+  font-size: 12.5px;
+}
+.about-meta span { color: rgba(233,239,255,.5); font-weight: 600; }
+.about-meta b { color: #e9efff; font-weight: 800; letter-spacing: 1px; }
+
+.setup-actions { justify-content: flex-end; }
+
+.rewrite-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.rewrite-row {
+  display: grid; grid-template-columns: 1fr 24px 1fr 28px; gap: 8px; align-items: center;
+}
+.rewrite-row .glass-input { padding: 0 12px; height: 40px; font-size: 12.5px; }
+.rewrite-arrow { color: rgba(233,239,255,.4); text-align: center; font-size: 16px; }
+.rewrite-del {
+  width: 28px; height: 28px; border-radius: 8px; border: 0; cursor: pointer;
+  background: rgba(255,255,255,.06); color: rgba(233,239,255,.65); font-size: 16px;
+}
+.rewrite-del:hover { background: rgba(255,90,120,.2); color: #ffd0d8; }
+
+.switch-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-radius: 12px;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+  cursor: pointer;
+}
+.switch-row input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 44px; height: 24px; border-radius: 12px;
+  background: rgba(255,255,255,.12);
+  position: relative; cursor: pointer; transition: background .2s;
+}
+.switch-row input[type="checkbox"]::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  transition: left .2s;
+}
+.switch-row input[type="checkbox"]:checked { background: linear-gradient(135deg,#3d7bff,#7a5cff); }
+.switch-row input[type="checkbox"]:checked::after { left: 23px; }
+
+.accent-dot {
+  width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent; transition: border-color .15s, transform .15s;
+}
+.accent-dot:hover { transform: scale(1.15); }
+.accent-dot.active { border-color: #fff; box-shadow: 0 0 12px rgba(255,255,255,.3); }
+
+/* v1.16.2：统一 select 玻璃样式，避免出现系统原生白色下拉菜单 */
+select,
+select.glass-input,
+.hotkey-input.glass-input:is(select),
+.auto-lock-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding: 10px 36px 10px 12px !important;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.14);
+  background:
+    linear-gradient(45deg, transparent 50%, rgba(255,255,255,.7) 50%) calc(100% - 18px) 50%/6px 6px no-repeat,
+    linear-gradient(135deg, rgba(255,255,255,.7) 50%, transparent 50%) calc(100% - 13px) 50%/6px 6px no-repeat,
+    rgba(255,255,255,.06);
+  color: rgba(233,239,255,.92);
+  font-size: 14px;
+  line-height: 1.4;
+  min-width: 130px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color .15s, background-color .15s, box-shadow .15s;
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+select:hover {
+  border-color: rgba(255,255,255,.28);
+  background-color: rgba(255,255,255,.1);
+}
+select:focus {
+  border-color: rgba(120,160,255,.65);
+  box-shadow: 0 0 0 3px rgba(80,130,255,.18);
+}
+select option,
+select optgroup {
+  background-color: rgba(20,24,34,.98);
+  color: rgba(233,239,255,.92);
+  border: 0;
+  padding: 8px 12px;
+}
+select option:checked,
+select option:hover {
+  background: linear-gradient(135deg, rgba(80,130,255,.45), rgba(120,90,255,.45));
+  color: #fff;
+}
+select:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/* 玻璃质感自定义下拉（替代原生 select，统一整体风格） */
+.glass-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  min-width: 130px;
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.16);
+  background: rgba(255,255,255,.07);
+  color: rgba(233,239,255,.92);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  box-shadow: 0 4px 16px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.08);
+  transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+.glass-select:hover {
+  border-color: rgba(255,255,255,.3);
+  background: rgba(255,255,255,.11);
+}
+.glass-select:focus,
+.glass-select.open {
+  border-color: rgba(120,160,255,.7);
+  box-shadow: 0 0 0 3px rgba(80,130,255,.22), 0 6px 20px rgba(0,0,0,.22);
+  z-index: 200;
+}
+/* 打开时父级行也抬升，避免被后续按钮/行遮挡 */
+.hotkey-row:has(.glass-select.open),
+.form-field:has(.glass-select.open) {
+  position: relative;
+  z-index: 200;
+}
+.glass-select-value {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.glass-select-arrow {
+  flex: 0 0 auto;
+  color: rgba(255,255,255,.7);
+  transition: transform .2s ease;
+}
+.glass-select.open .glass-select-arrow {
+  transform: rotate(180deg);
+}
+.glass-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.16);
+  background: rgba(28,30,42,.78);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  box-shadow: 0 12px 36px rgba(0,0,0,.42);
+  opacity: 0;
+  transform: translateY(-6px) scale(.98);
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+.glass-select.open .glass-select-menu {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+.glass-select-option {
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: rgba(233,239,255,.88);
+  font-size: 14px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color .14s ease, color .14s ease;
+}
+.glass-select-option:hover {
+  background: rgba(255,255,255,.1);
+  color: #fff;
+}
+.glass-select-option.selected {
+  background: linear-gradient(135deg, rgba(80,130,255,.42), rgba(120,90,255,.42));
+  color: #fff;
+}

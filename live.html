@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data: blob: http://127.0.0.1:* http://* https://*; media-src * blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src * data: blob:; connect-src * data: blob:;" />
+<title>FNOS · 电视直播</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#13171f; --panel2:#1a2029; --line:#262d3a;
+    --txt:#e6edf3; --muted:#8b949e; --brand:#3377ff; --brand2:#5a93ff;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;width:100%;overflow:hidden;background:var(--bg);color:var(--txt);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  #app{display:flex;height:100%;width:100%}
+
+  /* 左侧频道栏 */
+  #sidebar{width:300px;min-width:300px;display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--line)}
+  #sideHead{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+  #sideHead .title{font-size:15px;font-weight:700;letter-spacing:.3px;display:flex;align-items:center;gap:8px}
+  #lineTabs{display:flex;gap:4px}
+  #lineTabs .ltab{flex:1;text-align:center;padding:5px 0;font-size:12px;border-radius:6px;cursor:pointer;color:var(--muted);background:var(--panel2);border:1px solid var(--line)}
+  #lineTabs .ltab.active{color:#fff;border-color:var(--brand);background:#1b2a45}
+  #search{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:7px 10px;font-size:13px;outline:none}
+  #search:focus{border-color:var(--brand)}
+  #chScroll{flex:1;overflow-y:auto}
+  .group{border-bottom:1px solid var(--line)}
+  .group>h3{padding:9px 14px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;position:sticky;top:0;background:var(--panel)}
+  .group>h3 .cnt{margin-left:auto;font-weight:400;opacity:.7}
+  .group>h3 .arrow{transition:transform .15s}
+  .group.collapsed .chlist{display:none}
+  .group.collapsed h3 .arrow{transform:rotate(-90deg)}
+  .chlist{max-height:340px;overflow-y:auto}
+  .ch{display:flex;align-items:center;gap:9px;padding:8px 14px;cursor:pointer;border-left:3px solid transparent}
+  .ch:hover{background:var(--panel2)}
+  .ch.active{background:#16233d;border-left-color:var(--brand)}
+  .ch .logo{width:26px;height:26px;border-radius:5px;object-fit:contain;background:var(--panel2);flex:0 0 auto}
+  .ch .logo-ph{width:26px;height:26px;border-radius:5px;background:var(--panel2);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;flex:0 0 auto}
+  .ch .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px}
+  .ch .fav{color:var(--warn);font-size:13px;opacity:.5;cursor:pointer;flex:0 0 auto}
+  .ch .fav.on{opacity:1}
+  .empty{padding:30px 16px;text-align:center;color:var(--muted);font-size:13px}
+
+  /* 右侧播放区 */
+  #stage{flex:1;display:flex;flex-direction:column;min-width:0;background:#000}
+  #playerWrap{flex:1;position:relative;display:flex;flex-direction:column;min-height:0;min-width:0;background:#000}
+  /* v1.23.7：视频区与 EPG 节目单横向并排，EPG 打开时视频区自动缩窄，互不遮挡 */
+  #videoRow{flex:1;display:flex;flex-direction:row;min-height:0;min-width:0}
+  #videoArea{flex:1;position:relative;display:flex;align-items:center;justify-content:center;min-width:0;background:#000;overflow:hidden}
+  video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
+  #placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);gap:12px;text-align:center;padding:24px}
+  #placeholder .big{font-size:17px;color:#c9d1d9;font-weight:600}
+  #placeholder .sub{font-size:13px;max-width:420px;line-height:1.7}
+  #placeholder .err{color:var(--err)}
+  .spinner{width:30px;height:30px;border:3px solid rgba(255,255,255,.15);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* 播放控制条 */
+  #ctrlBar{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);padding:10px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  #nowPlaying{flex:1;min-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:14px}
+  #nowPlaying .grp{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
+  .ctl-group{display:flex;align-items:center;gap:6px}
+  .ctl-group label{color:var(--muted);font-size:12px}
+  select,button.ctl{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:6px 10px;font-size:12.5px;cursor:pointer;outline:none}
+  button.ctl:hover{border-color:var(--brand)}
+  button.ctl:disabled{opacity:.45;cursor:not-allowed}
+  #fsBtn{font-size:15px;padding:6px 12px}
+  button.ctl.on{border-color:var(--err);color:#ff8080;background:#2a1416}
+  button.ctl.active{border-color:var(--brand);color:#fff;background:#16233d}
+
+  /* v1.23.0：侧边栏折叠 */
+  #sidebar{transition:width .18s ease,min-width .18s ease;overflow:hidden}
+  #app.sb-collapsed #sidebar{width:0;min-width:0;border-right:0}
+  #sideToggle{position:absolute;top:10px;left:10px;z-index:30;background:rgba(19,23,31,.92);
+    border:1px solid var(--line);color:var(--txt);border-radius:7px;width:34px;height:34px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;line-height:1}
+  #sideToggle:hover{border-color:var(--brand)}
+
+  /* v1.23.0：EPG 节目单面板（v1.23.7：右侧全高停靠，与视频横向并排，不遮挡画面） */
+  #epgPanel{flex:0 0 0;width:0;background:rgba(13,16,22,.98);
+    border-left:1px solid var(--line);display:none;flex-direction:column;
+    overflow:hidden;min-height:0;transition:flex-basis .18s ease,width .18s ease}
+  #epgPanel.open{display:flex;flex:0 0 340px;width:340px}
+  @media (max-width:1100px){ #epgPanel.open{flex:0 0 300px;width:300px} }
+  @media (max-width:720px){ #epgPanel.open{flex:0 0 78%;width:78%} }
+  #epgHead{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  #epgHead .t{font-weight:700;font-size:14px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #epgHead .x{background:transparent;border:0;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;padding:0 4px}
+  #epgHead .x:hover{color:var(--txt)}
+  #epgList{flex:1;overflow-y:auto;padding:6px}
+  .epg-item{padding:9px 11px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:4px}
+  .epg-item:hover{background:var(--panel2)}
+  .epg-item.now{background:#16233d;border-color:var(--brand)}
+  .epg-item.past{opacity:.5}
+  .epg-item .ti{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);margin-bottom:3px}
+  .epg-item .nm{font-size:13.5px;color:var(--txt);white-space:normal;line-height:1.4}
+  .epg-item .re{font-size:11px;color:var(--brand2);margin-top:4px}
+  #epgFoot{padding:8px 14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
+  #epgEmpty{padding:30px 16px;text-align:center;color:var(--muted);font-size:12.5px;line-height:1.7}
+
+  /* v1.23.0：录制状态 */
+  #recList{font-size:11.5px;color:var(--muted);max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rec-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--err);margin-right:6px;
+    animation:recpulse 1.2s ease-in-out infinite;vertical-align:middle}
+  @keyframes recpulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+  /* 状态栏 */
+  #statusBar{flex:0 0 auto;background:#0e1117;border-top:1px solid var(--line);padding:7px 16px;display:flex;align-items:center;gap:16px;font-size:11.5px;color:var(--muted);flex-wrap:wrap}
+  .stat{display:flex;align-items:center;gap:6px}
+  .stat .k{color:var(--muted)}
+  .stat .v{color:#c9d1d9;font-variant-numeric:tabular-nums}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .dot.on{background:var(--ok);box-shadow:0 0 7px var(--ok)}
+  .dot.off{background:var(--err)}
+  #proxyHint{margin-left:auto;display:flex;gap:10px;align-items:center}
+  #proxyHint button{background:transparent;border:0;color:var(--brand);cursor:pointer;font-size:11.5px;text-decoration:underline}
+
+  /* 滚动条 */
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:rgba(120,130,150,.35);border-radius:6px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(120,130,150,.55)}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div id="sideHead">
+      <div class="title">📺 电视直播</div>
+      <div id="lineTabs">
+        <div class="ltab active" data-line="inner">内网</div>
+        <div class="ltab" data-line="ipv6">IPv6</div>
+        <div class="ltab" data-line="frp">FRP</div>
+        <div class="ltab" id="autoTab" data-line="auto" title="自动选择延迟最低的可用线路">自动</div>
+      </div>
+      <div id="autoStatus" style="font-size:11px;color:var(--muted);min-height:16px"></div>
+      <input id="search" type="text" placeholder="搜索频道 / 分组…" />
+    </div>
+    <div id="chScroll"><div class="empty" id="chEmpty">加载中…</div></div>
+  </aside>
+
+  <main id="stage">
+    <div id="playerWrap">
+      <div id="videoRow">
+        <div id="videoArea">
+          <button id="sideToggle" title="显示/隐藏频道栏">☰</button>
+          <video id="video" controls autoplay playsinline muted></video>
+          <div id="placeholder">
+            <div class="spinner" id="phSpin" style="display:none"></div>
+            <div class="big" id="phTitle">选择频道开始观看</div>
+            <div class="sub" id="phSub">从左侧列表选择频道，内置播放器将直连 NAS 源站加载直播流，优先保障低延迟播放。</div>
+          </div>
+        </div>
+        <aside id="epgPanel">
+          <div id="epgHead">
+            <span class="t" id="epgChName">节目单</span>
+            <button class="x" id="epgClose" title="关闭">×</button>
+          </div>
+          <div id="epgList"></div>
+          <div id="epgFoot">EPG 数据缓存 6 小时 · 点击往期节目回看</div>
+        </aside>
+      </div>
+    </div>
+    <div id="ctrlBar">
+      <div id="nowPlaying"><span id="npName">未播放</span><span class="grp" id="npGroup"></span><span id="npEngine" style="display:none;font-size:11px;padding:1px 7px;border-radius:8px;background:rgba(244,107,149,.18);color:#f46b95;margin-left:8px;vertical-align:middle">网页播放器</span></div>
+      <div class="ctl-group">
+        <label>倍速</label>
+        <select id="rateSel">
+          <option value="0.75">0.75x</option>
+          <option value="1" selected>1x</option>
+          <option value="1.25">1.25x</option>
+          <option value="1.5">1.5x</option>
+          <option value="2">2x</option>
+        </select>
+      </div>
+      <div class="ctl-group" id="audioGroup" style="display:none">
+        <label>音轨</label>
+        <select id="audioSel"></select>
+      </div>
+      <div id="recList" title="正在录制"></div>
+      <button class="ctl" id="extBtn" title="用内置 MPV 打开当前直播（解码失败 / 4K / HEVC 时使用）">🎬 MPV 打开</button>
+      <button class="ctl" id="recBtn" title="录制当前频道（保存为 TS）">● 录制</button>
+      <button class="ctl" id="recFolderBtn" title="打开录制保存目录">录制目录</button>
+      <button class="ctl" id="epgBtn" title="节目单 / 回看">节目单</button>
+      <button class="ctl" id="fsBtn" title="全屏">⛶</button>
+    </div>
+    <!-- v1.17.5：内置播放器强制直连 NAS 源站，不经过本地代理；移除代理状态栏整行，避免与「直连」语义混淆 -->
+  </main>
+</div>
+
+<script src="vendor/hls.min.js"></script>
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const api = window.fnosLive;
+
+let ctx = { baseUrl: '', line: 'inner', favorites: [], proxyBase: '', proxyListening: false, defaultPlayer: 'native' };
+let channels = [];
+let filtered = [];
+let currentCh = null;
+let hls = null;
+let collapsed = {};
+let statusTimer = null;
+// v1.16.1：自动选线状态
+//   manualLocked=true 表示用户手动选了某条线路，不再自动切换
+//   activeLine 是当前实际加载的线路
+let manualLocked = false;
+let activeLine = 'inner';
+let isProbing = false;
+// 缓存最近一次探测结果（主进程返回），loadPlaylist 成功后据此修正状态
+let g_lineProbeCache = null;
+const LINE_LABELS = { inner: '内网 IPv4', ipv6: 'IPv6 DDNS', frp: 'FRP 中转', auto: '自动' };
+
+// v1.23.0：EPG / 录制状态
+let g_epgUrl = '';
+let g_epgProgrammes = [];
+let g_epgByChannel = {};
+let g_epgLoadedFor = '';
+let g_activeRecId = null;
+let g_recBytes = 0;
+let g_recSegs = 0;
+
+// v1.23.1：检测系统是否支持 HEVC/H.265 硬解（4K 直播常见编码）
+function detectHevcSupport() {
+  try {
+    const v = document.createElement('video');
+    // canPlayType 返回 '' | 'maybe' | 'probably'
+    const types = [
+      'video/mp4; codecs="hvc1.2.4.L153.B0"',
+      'video/mp4; codecs="hev1.2.4.L153.B0"',
+      'video/mp4; codecs="hvc1.1.6.L120.B0"',
+    ];
+    for (const t of types) {
+      const r = v.canPlayType(t);
+      if (r === 'probably' || r === 'maybe') return true;
+    }
+    // MediaSource 扩展检测
+    if (window.MediaSource && typeof MediaSource.isTypeSupported === 'function') {
+      if (MediaSource.isTypeSupported('video/mp4; codecs="hvc1.2.4.L153.B0"')) return true;
+      if (MediaSource.isTypeSupported('video/mp4; codecs="hev1.2.4.L153.B0"')) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+const HEVC_SUPPORTED = detectHevcSupport();
+
+// ===== v1.24.0：libVLC 内核播放（优先），失败/不可用回退 hls.js =====
+const vlc = {
+  available: false,     // VLC 是否可用于播放（含设置开关）
+  engine: '',           // 'vlc' | 'hls'，当前实际使用的引擎
+  checked: false,
+  _ro: null,
+  _rectTimer: null,
+};
+
+// 查询 VLC 状态（一次）
+async function vlcInit() {
+  // v1.25.0：libVLC 已移除，始终使用网页播放器（hls.js）
+  vlc.checked = true;
+  vlc.available = false;
+  return false;
+}
+
+// VLC 事件 → 更新占位提示
+function vlcBindEvents() {
+  try {
+    api.onVlcEvent((info) => {
+      if (!info) return;
+      const t = info.type;
+      if (t === 'playing') {
+        setPh('', '');
+        // VLC 已出图，隐藏 HTML 视频（VLC 覆盖层在其上方）
+        const vid = $('#video');
+        if (vid) vid.style.visibility = 'hidden';
+        const badge = $('#npEngine');
+        if (badge) { badge.style.display = 'inline-block'; badge.textContent = 'VLC 内核'; badge.style.color = '#f46b95'; }
+      } else if (t === 'opening') {
+        setPh('VLC 正在加载流…', currentCh ? currentCh.name : '', false, true);
+      } else if (t === 'buffering') {
+        const c = info.data && info.data.cache;
+        if (typeof c === 'number' && c < 100) setPh('缓冲中 ' + Math.round(c) + '%…', currentCh ? currentCh.name : '', false, true);
+      } else if (t === 'error') {
+        // VLC 致命错误：回退到 hls.js
+        setPh('VLC 播放失败，回退内置播放器…', currentCh ? currentCh.name : '', false, true);
+        vlc.engine = '';
+        if (currentCh) { try { playWithHls(currentCh); } catch (_) {} }
+      } else if (t === 'ended' || t === 'stopped') {
+        api.vlcVisible(false).catch(() => {});
+      }
+    });
+  } catch (_) {}
+}
+
+// 用 VLC 播放；返回 true 表示已交给 VLC（失败由 error 事件回退）
+async function playWithVlc(ch) {
+  // v1.25.0：libVLC 方案已移除，内置直播统一使用 hls.js 网页播放器；
+  // 需要外部播放器时用工具栏「MPV 打开」。这里始终回退到 hls。
+  return false;
+}
+
+// 视频区矩形上报（已随 VLC 覆盖层移除，保留空实现避免调用报错）
+function vlcReportRect() {
+  try {
+    const area = $('#videoArea');
+    if (!area) return;
+    const r = area.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) return;
+    api.vlcRect({
+      x: r.left, y: r.top, width: r.width, height: r.height,
+      visible: r.width > 8 && r.height > 8,
+    }).catch(() => {});
+  } catch (_) {}
+}
+function vlcStartRectReporting() {
+  if (vlc._rectTimer) return;
+  vlcReportRect();
+  vlc._rectTimer = setInterval(() => { if (vlc.engine === 'vlc') vlcReportRect(); }, 800);
+  try {
+    window.addEventListener('resize', vlcReportRect);
+    if (typeof ResizeObserver !== 'undefined' && !vlc._ro) {
+      vlc._ro = new ResizeObserver(() => { if (vlc.engine === 'vlc') vlcReportRect(); });
+      vlc._ro.observe($('#videoArea'));
+      const epg = $('#epgPanel');
+      if (epg) vlc._ro.observe(epg);
+    }
+  } catch (_) {}
+}
+
+function fmtHM(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function fmtSize(bytes) {
+  if (!bytes) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB'];
+  let i = 0; let v = bytes;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + ' ' + u[i];
+}
+
+// 匹配频道与 EPG channel id：tvg-id > tvg-name > 频道名
+function matchEpgKey(ch) {
+  if (!ch) return '';
+  if (ch.tvgId) return ch.tvgId;
+  const name = (ch.tvgName || ch.name || '').trim().toLowerCase();
+  return name;
+}
+function epgProgrammesFor(ch) {
+  const keys = new Set();
+  if (ch.tvgId) keys.add(ch.tvgId);
+  if (ch.tvgName) keys.add(ch.tvgName.trim().toLowerCase());
+  if (ch.name) keys.add(ch.name.trim().toLowerCase());
+  // g_epgByChannel 以 channel id 与小写名称双索引
+  const out = [];
+  const seen = new Set();
+  for (const k of keys) {
+    const arr = g_epgByChannel[k];
+    if (Array.isArray(arr)) {
+      for (const p of arr) { if (!seen.has(p)) { seen.add(p); out.push(p); } }
+    }
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+async function loadEpg(ch) {
+  const list = $('#epgList');
+  $('#epgChName').textContent = (ch && ch.name) || '节目单';
+  if (!g_epgUrl) { list.innerHTML = '<div id="epgEmpty">当前直播源未提供节目单地址。<br>可在「设置 → EPG 节目单地址」中填写 XMLTV 地址，<br>支持多个地址（用英文逗号分隔，将自动合并）。</div>'; return; }
+  list.innerHTML = '<div id="epgEmpty">正在加载节目单…</div>';
+  try {
+    const res = await api.fetchEpg(g_epgUrl);
+    if (!res || !res.ok) throw new Error((res && res.error) || '加载失败');
+    g_epgProgrammes = res.programmes || [];
+    // 建立索引（channel id 与小写显示名）
+    g_epgByChannel = {};
+    const chans = res.channels || {};
+    const addIdx = (key, p) => {
+      if (!key) return;
+      const k = String(key).trim().toLowerCase();
+      (g_epgByChannel[k] = g_epgByChannel[k] || []).push(p);
+    };
+    for (const p of g_epgProgrammes) {
+      addIdx(p.channel, p);
+      const cn = p._channelName || (chans[p.channel] && chans[p.channel].name);
+      if (cn) addIdx(cn, p);
+    }
+    g_epgLoadedFor = ch ? (ch.url || ch.name) : '';
+    renderEpg(ch);
+  } catch (e) {
+    list.innerHTML = '<div id="epgEmpty">节目单加载失败：' + (e && e.message ? e.message : e) + '</div>';
+  }
+}
+
+function renderEpg(ch) {
+  const list = $('#epgList');
+  if (!ch) { list.innerHTML = '<div id="epgEmpty">选择频道后查看节目单</div>'; return; }
+  $('#epgChName').textContent = ch.name || '节目单';
+  const progs = epgProgrammesFor(ch);
+  if (!progs.length) {
+    list.innerHTML = '<div id="epgEmpty">该频道暂无节目单数据。<br>请确认 EPG 中的频道标识（tvg-id/tvg-name）与直播源一致。</div>';
+    return;
+  }
+  const now = Date.now();
+  list.innerHTML = '';
+  // 只展示过去 1 天到未来 2 天
+  const win = progs.filter((p) => p.stop > now - 24 * 3600 * 1000 && p.start < now + 2 * 24 * 3600 * 1000);
+  const show = win.length ? win : progs;
+  for (const p of show) {
+    const div = document.createElement('div');
+    const isPast = p.stop <= now;
+    const isNow = p.start <= now && p.stop > now;
+    div.className = 'epg-item' + (isNow ? ' now' : '') + (isPast ? ' past' : '');
+    const ti = document.createElement('div'); ti.className = 'ti';
+    ti.innerHTML = '<span>' + fmtHM(p.start) + ' - ' + fmtHM(p.stop) + '</span>' + (isNow ? '<span style="color:var(--ok)">正在播出</span>' : '');
+    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = p.title;
+    div.appendChild(ti); div.appendChild(nm);
+    if (isPast && p.stop > now - 7 * 24 * 3600 * 1000) {
+      const re = document.createElement('div'); re.className = 're'; re.textContent = '▷ 点击回看';
+      div.appendChild(re);
+      div.onclick = async () => {
+        try {
+          const r = await api.catchupUrl(ch, p.start, p.stop);
+          if (r && r.ok && r.url) {
+            play({ ...ch, url: r.url, name: ch.name + '（回看 ' + fmtHM(p.start) + '）' });
+          }
+        } catch (e) {}
+      };
+    }
+    list.appendChild(div);
+  }
+}
+
+function updateRecUi() {
+  const btn = $('#recBtn');
+  const info = $('#recList');
+  if (g_activeRecId) {
+    btn.textContent = '■ 停止';
+    btn.classList.add('on');
+    info.innerHTML = '<span class="rec-dot"></span>录制中 ' + fmtSize(g_recBytes) + (g_recSegs ? ' · ' + g_recSegs + ' 段' : '');
+  } else {
+    btn.textContent = '● 录制';
+    btn.classList.remove('on');
+    info.textContent = '';
+  }
+}
+
+function setAutoStatus(text, isErr) {
+  const el = $('#autoStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = isErr ? 'var(--err)' : 'var(--muted)';
+}
+
+function setLineTabs(line) {
+  document.querySelectorAll('.ltab').forEach((t) => {
+    t.classList.toggle('active', t.dataset.line === line);
+  });
+}
+
+async function runAutoProbe(opts) {
+  if (isProbing) return null;
+  if (!ctx.baseUrl) return null;
+  isProbing = true;
+  setAutoStatus('正在检测最优线路…');
+  try {
+    const r = await api.probeLines(!!(opts && opts.force));
+    g_lineProbeCache = r; // 缓存，供 loadPlaylist 成功后修正状态
+    const best = r && r.best;
+    if (!best) {
+      setAutoStatus('无可用线路，请检查网络与 NAS 服务状态', true);
+      return null;
+    }
+    const label = LINE_LABELS[best] || best;
+    return { line: best, label, results: r && r.results };
+  } catch (e) {
+    setAutoStatus('线路探测失败：' + (e && e.message ? e.message : e), true);
+    return null;
+  } finally {
+    isProbing = false;
+  }
+}
+
+async function autoSelectAndLoad() {
+  if (manualLocked) return; // 用户已手动锁定
+  const r = await runAutoProbe();
+  if (!r) {
+    // 全部失败：兜底用 inner 触发错误展示
+    try { await loadPlaylist('inner'); } catch (_) {}
+    return;
+  }
+  if (r.line !== activeLine) {
+    setAutoStatus('已自动切换至 ' + r.label + ' 线路');
+  } else {
+    setAutoStatus('当前使用 ' + r.label + ' 线路（延迟最低）');
+  }
+  activeLine = r.line;
+  // 同步保存到设置（下次启动默认走该线路；但不锁定，仍允许自动）
+  try { await api.setLine(r.line); } catch (_) {}
+  await loadPlaylist(r.line);
+}
+
+function setPh(title, sub, isErr, loading) {
+  $('#phTitle').textContent = title;
+  $('#phSub').textContent = sub || '';
+  $('#phSub').className = 'sub' + (isErr ? ' err' : '');
+  $('#phSpin').style.display = loading ? 'block' : 'none';
+  $('#placeholder').style.display = title ? 'flex' : 'none';
+}
+
+// v1.17.1：内置播放器始终直连 NAS 源（保持低延迟直连特性），不走本地 8340 代理。
+// 本地代理只服务于飞牛影视 webview（由 main.js iptvMaybeRedirect 拦截）。
+// 这样彻底避免「代理规则变动连带内置播放器失效」，也与 FPK 2.1.0 时代的链路一致。
+// 如需临时排查代理问题，可在控制台执行：window.__FORCE_PROXY__ = true
+function proxiedUrl(origUrl) {
+  try {
+    if (window.__FORCE_PROXY__ === true && ctx.proxyBase && ctx.proxyListening && /\.m3u8($|\?)/i.test(origUrl)) {
+      return ctx.proxyBase + '/proxy/m3u8?url=' + encodeURIComponent(origUrl);
+    }
+  } catch (_) {}
+  return origUrl;
+}
+
+function renderChannels() {
+  const q = $('#search').value.trim().toLowerCase();
+  const groups = new Map();
+  filtered = channels.filter((c) => {
+    if (!q) return true;
+    return (c.name || '').toLowerCase().includes(q) || (c.group || '').toLowerCase().includes(q);
+  });
+  // 收藏置顶为一个虚拟分组
+  const favs = filtered.filter((c) => ctx.favorites.includes(c.name));
+  if (favs.length) groups.set('★ 收藏', favs);
+  for (const c of filtered) {
+    const g = c.group || '未分组';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(c);
+  }
+  const box = $('#chScroll'); box.innerHTML = '';
+  if (!filtered.length) {
+    box.innerHTML = '<div class="empty">无频道。请确认 NAS 地址与已导入的直播源。</div>';
+    return;
+  }
+  for (const [g, list] of groups) {
+    const gdiv = document.createElement('div');
+    gdiv.className = 'group' + (collapsed[g] ? ' collapsed' : '');
+    const h = document.createElement('h3');
+    h.innerHTML = `<span class="arrow">▾</span>${g}<span class="cnt">${list.length}</span>`;
+    h.onclick = () => { collapsed[g] = !collapsed[g]; gdiv.classList.toggle('collapsed'); };
+    const ul = document.createElement('div'); ul.className = 'chlist';
+    for (const c of list) {
+      const row = document.createElement('div');
+      row.className = 'ch' + (currentCh && currentCh.url === c.url ? ' active' : '');
+      const isFav = ctx.favorites.includes(c.name);
+      if (c.logo) {
+        const im = document.createElement('img'); im.className = 'logo'; im.src = c.logo; im.loading = 'lazy';
+        im.onerror = () => { const ph = document.createElement('div'); ph.className='logo-ph'; ph.textContent=(c.name||'?').slice(0,1); row.replaceChild(ph, im); };
+        row.appendChild(im);
+      } else {
+        const ph = document.createElement('div'); ph.className='logo-ph'; ph.textContent=(c.name||'?').slice(0,1); row.appendChild(ph);
+      }
+      const nm = document.createElement('div'); nm.className='nm'; nm.textContent=c.name; row.appendChild(nm);
+      const fv = document.createElement('div'); fv.className='fav'+(isFav?' on':''); fv.textContent='★'; fv.title='收藏';
+      fv.onclick = async (e) => { e.stopPropagation(); ctx.favorites = await api.toggleFavorite(c.name); renderChannels(); };
+      row.appendChild(fv);
+      row.onclick = () => play(c);
+      ul.appendChild(row);
+    }
+    gdiv.appendChild(h); gdiv.appendChild(ul);
+    box.appendChild(gdiv);
+  }
+}
+
+async function loadPlaylist(line) {
+  const which = ['inner','ipv6','frp','all'].includes(line) ? line : 'inner';
+  activeLine = which;
+  setLineTabs(which);
+  setPh('正在加载频道列表…', ctx.baseUrl || '', false, true);
+  try {
+    const res = await api.fetchPlaylist(which);
+    channels = res.channels || [];
+    g_epgUrl = res.epgUrl || '';
+    ctx.line = which;
+    setPh('', '');
+    // v1.16.3：列表拉取成功即代表当前线路实际可用——用真实数据同步状态，
+    // 清掉之前自动探测可能留下的「无可用线路」错误提示。
+    if (channels.length > 0) {
+      const label = LINE_LABELS[which] || which;
+      if (manualLocked) {
+        setAutoStatus('已手动锁定 ' + label + ' · 频道 ' + channels.length + ' 个');
+      } else {
+        setAutoStatus('当前使用 ' + label + ' 线路 · 频道 ' + channels.length + ' 个');
+      }
+      // 把探测结果里当前线路标记为可用，避免网络变化事件触发时再次误报
+      if (g_lineProbeCache && Array.isArray(g_lineProbeCache.results)) {
+        const it = g_lineProbeCache.results.find((x) => x && x.line === which);
+        if (it && !it.ok) { it.ok = true; it.error = null; }
+        if (!g_lineProbeCache.best) g_lineProbeCache.best = which;
+      }
+    } else {
+      setAutoStatus('当前线路返回 0 个频道，请检查 XTE 频道配置', true);
+    }
+    renderChannels();
+  } catch (e) {
+    channels = []; renderChannels();
+    const msg = (e && e.message) ? e.message : String(e);
+    // 404 / 连接失败明确提示
+    const friendly = /404/.test(msg)
+      ? '频道列表加载失败：请检查 NAS 侧 XTE.fpk 是否已安装并启动（路径 /m3u/' + which + '.m3u8 返回 404）'
+      : ('频道列表加载失败：' + msg);
+    setPh('频道列表加载失败', friendly, true, false);
+    setAutoStatus(LINE_LABELS[which] + ' 线路不可用：' + msg, true);
+  }
+}
+
+function destroyHls() {
+  if (hls) { try { hls.destroy(); } catch (_) {} hls = null; }
+  const v = $('#video');
+  try { v.pause(); v.removeAttribute('src'); v.load(); } catch (_) {}
+  try { v.style.visibility = 'visible'; } catch (_) {}
+}
+
+// v1.24.0：播放调度 —— 优先 VLC 内核（通吃 H.264/HEVC/4K），不可用/失败回退 hls.js
+async function play(ch) {
+  if (!ch || !ch.url) return;
+  currentCh = ch;
+  $('#npName').textContent = ch.name || '直播中';
+  $('#npGroup').textContent = ch.group ? '· ' + ch.group : '';
+  renderChannels();
+  if ($('#epgPanel').classList.contains('open')) { loadEpg(ch); }
+  // 先停掉上一路（两个引擎都清）
+  destroyHls();
+  try { await api.vlcControl('stop'); } catch (_) {}
+  try { await api.vlcVisible(false); } catch (_) {}
+  setPh('正在加载直播流…', ch.name, false, true);
+  const _badge = $('#npEngine');
+  if (_badge) _badge.style.display = 'none';
+
+  const usedVlc = await playWithVlc(ch);
+  if (!usedVlc) {
+    vlc.engine = 'hls';
+    playWithHls(ch);
+  }
+}
+
+function playWithHls(ch) {
+  if (!ch || !ch.url) return;
+  // v1.17.2：性能埋点起点 — 记录 play() 入口到首帧的各阶段耗时
+  const perfStart = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  let stageTs = { init: perfStart, manifest: 0, firstFrame: 0 };
+  let stallCount = 0;
+  let stallTotalMs = 0;
+  let stallSince = 0;
+  // v1.17.3：致命错误自愈次数封顶，避免无限重试形成风暴
+  const fatalRecovery = { net: 0, media: 0 };
+  // v1.17.7：连续非致命解码错误计数，达到阈值后触发一次非致命 recoverMediaError
+  let nonFatalDecodeStreak = 0;
+  const src = proxiedUrl(ch.url);
+  const video = $('#video');
+
+  // v1.17.1：播放错误埋点 — 记录请求地址、HTTP 状态、hls.js 错误码/描述，
+  // 区分网络不通 / 404·403 / m3u8 解析失败 / TS 解码失败，写入 fnos-diag.log
+  // v1.17.2：增加首屏耗时/卡顿埋点，便于对比 FPK 2.1.0 vs 新版
+  const logPlay = (level, msg, extra) => {
+    try {
+      const payload = Object.assign({ t: new Date().toISOString(), url: src, ch: ch.name || ch.id || '' }, extra || {});
+      const line = `[LIVE:${level}] ${msg} ${JSON.stringify(payload)}`;
+      console[level === 'ERROR' ? 'error' : 'log'](line);
+      if (window.fnosLive && typeof window.fnosLive.diagLog === 'function') {
+        window.fnosLive.diagLog(line);
+      }
+    } catch (_) {}
+  };
+  const elapsed = () => Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - perfStart);
+  logPlay('INFO', 'play start', { viaProxy: src !== ch.url, t0: 0 });
+
+  // 卡顿检测：waiting / playing 事件配对，累计卡顿次数与总时长
+  const onWaiting = () => {
+    if (stallSince) return;
+    stallSince = Date.now();
+  };
+  const onPlayingAfterStall = () => {
+    if (!stallSince) return;
+    const d = Date.now() - stallSince;
+    stallSince = 0;
+    // 50ms 以下忽略（通常是浏览器内部调度）
+    if (d < 50) return;
+    stallCount++;
+    stallTotalMs += d;
+    logPlay('WARN', 'stall', { n: stallCount, durMs: d, totalMs: stallTotalMs, elapsedMs: elapsed() });
+  };
+  video.addEventListener('waiting', onWaiting);
+  video.addEventListener('playing', onPlayingAfterStall);
+
+  // 首帧事件（timeupdate 第一次触发即认为已出图）
+  const onFirstFrame = () => {
+    if (stageTs.firstFrame) return;
+    stageTs.firstFrame = Date.now();
+    const e2e = elapsed();
+    // 推断卡顿类型：首帧 > 3s 视为网络/服务端慢；解码耗时过高由 MEDIA_ERROR 单独记录
+    let slow = 'fast';
+    if (e2e > 3000) slow = 'slow-network-or-server';
+    else if (e2e > 1500) slow = 'moderate';
+    logPlay('INFO', 'first-frame', {
+      elapsedMs: e2e,
+      manifestMs: stageTs.manifest ? Math.round(stageTs.manifest - perfStart) : 0,
+      stallCount,
+      stallTotalMs,
+      verdict: slow,
+    });
+    video.removeEventListener('timeupdate', onFirstFrame);
+  };
+  video.addEventListener('timeupdate', onFirstFrame);
+
+  const onPlaying = () => {
+    if (!stageTs.firstFrame) onFirstFrame();
+    logPlay('INFO', 'playing', { elapsedMs: elapsed() });
+    setPh('', '');
+    const badge = $('#npEngine');
+    if (badge) { badge.style.display = 'inline-block'; badge.textContent = '网页播放器'; badge.style.color = '#8ab4f8'; }
+  };
+  const onError = (msg) => {
+    logPlay('ERROR', 'play fatal', { reason: msg || '', elapsedMs: elapsed(), hevc: HEVC_SUPPORTED });
+    // v1.23.1：若错误与解码相关且系统不支持 HEVC，给出明确的修复提示
+    const isDecode = /decode|media error|bufferAddCodecError|MEDIA|TS_DECODE|demux|codec|fragParsing/i.test(String(msg || ''));
+    if (isDecode) {
+      // v1.23.2：fragParsingError 通常是 TS 里含 E-AC-3/特殊编码，hls.js demuxer 解不了
+      setPh('内置播放器无法解码该频道',
+        '该 4K/高清频道的编码（可能是 E-AC-3 音轨或特殊 H.265 编码）在内置播放器中无法解码。\n\n' +
+        (HEVC_SUPPORTED ? '' : '· 你的系统未安装「HEVC 视频扩展」，Chromium 无法硬解 HEVC。\n') +
+        '· 可点下方「🎬 MPV 打开」，用内置 MPV 播放器播放（自带全部解码器，支持 HEVC/4K/E-AC-3）。\n' +
+        '· 或在 NAS 侧对该频道选择转码播放（转 H.264/AAC）。',
+        true, false);
+      return;
+    }
+    setPh('播放失败', msg || '无法加载该直播流，请检查网络或切换线路。', true, false);
+  };
+  video.addEventListener('playing', onPlaying, { once: true });
+
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({
+      // v1.23.0：缓冲时长读取用户设置（默认 30s），应对网络抖动
+      maxBufferLength: Math.max(10, ctx.cacheSeconds || 30),
+      maxMaxBufferLength: Math.max(30, (ctx.cacheSeconds || 30) * 3),
+      maxBufferSize: 120 * 1000 * 1000,
+      maxBufferHole: 0.5,
+      backBufferLength: 60,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 10,
+      lowLatencyMode: false,
+      enableWorker: true,
+      startFragPrefetch: true,
+      progressive: false,
+      // 分片/清单加载：指数退避重试，网络不稳定时自动续接
+      manifestLoadingTimeOut: 12000,
+      manifestLoadingMaxRetry: 4,
+      manifestLoadingRetryDelay: 600,
+      levelLoadingTimeOut: 12000,
+      levelLoadingMaxRetry: 5,
+      levelLoadingRetryDelay: 600,
+      fragLoadingTimeOut: 20000,
+      fragLoadingMaxRetry: 8,
+      fragLoadingRetryDelay: 700,
+      fragLoadingMaxRetryTimeout: 8000,
+      // 启动时优先选合适码率，避免频繁 ABRE 切换造成抖动
+      abrEwmaDefaultEstimate: 1_000_000,
+      abrBandWidthFactor: 0.95,
+      abrBandWidthUpFactor: 0.7,
+    });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    // v1.17.1：关键事件埋点，便于定位问题节点
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      stageTs.manifest = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      logPlay('INFO', 'manifest parsed', {
+        levels: (hls.levels || []).length,
+        elapsedMs: elapsed(),
+      });
+      fatalRecovery.net = 0;
+      fatalRecovery.media = 0;
+      nonFatalDecodeStreak = 0;
+      buildAudioTracks();
+      video.play().catch((e) => { logPlay('WARN', 'autoplay blocked', { err: e && e.message }); });
+    });
+    hls.on(Hls.Events.ERROR, (_e, data) => {
+      if (!data) return;
+      // 分类诊断
+      const t = data.type || '';
+      const details = data.details || '';
+      const httpCode = data.response && data.response.code;
+      const errType =
+        /manifestParseError|levelParseError/i.test(details) ? 'M3U8_PARSE'
+        : /fragParseError|fragDecryptError|bufferAppendError|bufferStalledError|bufferAddCodecError/i.test(details) ? 'TS_DECODE'
+        : (httpCode === 404 || httpCode === 403) ? 'HTTP_' + httpCode
+        : (t === Hls.ErrorTypes.NETWORK_ERROR) ? 'NETWORK'
+        : (t === Hls.ErrorTypes.MEDIA_ERROR) ? 'MEDIA'
+        : details || 'OTHER';
+      // 单分片失败：不致命，hls.js 内部会重试 maxRetry 次后跳到下一片；这里只记录
+      if (!data.fatal) {
+        logPlay('WARN', 'recoverable: ' + errType, { details, httpCode: httpCode || 0, elapsedMs: elapsed() });
+        if (errType === 'TS_DECODE') {
+          nonFatalDecodeStreak++;
+          if (nonFatalDecodeStreak >= 3 && hls) {
+            logPlay('WARN', 'non-fatal decode streak >=3, trigger recoverMediaError');
+            try { hls.recoverMediaError(); } catch (_) {}
+            nonFatalDecodeStreak = 0;
+          }
+        } else {
+          nonFatalDecodeStreak = 0;
+        }
+        if (details && details.indexOf('fragLoadError') === 0) return;
+        return;
+      }
+      logPlay('ERROR', 'fatal: ' + errType, { details, httpCode: httpCode || 0, reason: data.reason && data.reason.message, elapsedMs: elapsed() });
+      // v1.17.3：致命恢复次数封顶（每种类型最多 3 次），避免错误自愈逻辑本身形成请求风暴
+      if (t === Hls.ErrorTypes.NETWORK_ERROR) {
+        fatalRecovery.net = (fatalRecovery.net || 0) + 1;
+        if (fatalRecovery.net > 3) {
+          logPlay('ERROR', 'network recovery cap reached, giving up');
+          let msg = data.details || '网络异常';
+          if (data.response && data.response.code) msg += ' (HTTP ' + data.response.code + ')';
+          return onError(msg);
+        }
+        // 指数退避 500/1000/2000 ms，不立即重试
+        const backoff = 500 * Math.pow(2, fatalRecovery.net - 1);
+        logPlay('WARN', 'network recovery attempt ' + fatalRecovery.net + ' in ' + backoff + 'ms');
+        setTimeout(() => { try { hls && hls.startLoad(); } catch (_) {} }, backoff);
+        return;
+      }
+      if (t === Hls.ErrorTypes.MEDIA_ERROR) {
+        fatalRecovery.media = (fatalRecovery.media || 0) + 1;
+        if (fatalRecovery.media > 3) {
+          logPlay('ERROR', 'media recovery cap reached, giving up');
+          return onError('解码失败，请切换线路或重试');
+        }
+        const backoff = 500 * Math.pow(2, fatalRecovery.media - 1);
+        // 前 2 次优先用 recoverMediaError 续接；连续失败则 swapNode 重建
+        // <video> 元素彻底重置 MSE，避免解码器卡死在坏状态。
+        const useSwap = fatalRecovery.media >= 3;
+        logPlay('WARN', 'media recovery attempt ' + fatalRecovery.media + ' in ' + backoff + 'ms' + (useSwap ? ' (swap media element)' : ''));
+        setTimeout(() => {
+          try {
+            if (!hls) return;
+            if (useSwap) {
+              hls.swapMediaElement();
+              hls.recoverMediaError();
+            } else {
+              hls.recoverMediaError();
+            }
+          } catch (_) {}
+        }, backoff);
+        return;
+      }
+      let msg = data.details || '';
+      if (data.response && data.response.code) msg += ' (HTTP ' + data.response.code + ')';
+      onError(msg);
+    });
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari 原生 HLS
+    video.src = src;
+    video.play().catch(() => {});
+    video.addEventListener('error', () => {
+      const ve = video.error;
+      logPlay('ERROR', 'native hls error', { code: ve ? ve.code : 0, message: ve ? ve.message : '', elapsedMs: elapsed() });
+      onError(ve ? ('错误码 ' + ve.code) : '');
+    }, { once: true });
+  } else {
+    onError('当前环境不支持 HLS 播放');
+  }
+}
+
+function buildAudioTracks() {
+  if (!hls) return;
+  const tracks = hls.audioTracks || [];
+  const sel = $('#audioSel'); sel.innerHTML = '';
+  if (tracks.length <= 1) { $('#audioGroup').style.display = 'none'; return; }
+  $('#audioGroup').style.display = '';
+  tracks.forEach((t, i) => {
+    const o = document.createElement('option'); o.value = i; o.textContent = t.name || ('音轨 ' + (i + 1)); sel.appendChild(o);
+  });
+  sel.onchange = () => { hls.audioTrack = parseInt(sel.value, 10); };
+}
+
+async function refreshStatus() {
+  // v1.17.5：内置播放器强制直连，代理状态栏已移除；仅保留上下文元数据读取，不操作 DOM
+  try {
+    const r = await api.getStatus();
+    const st = r.status || {};
+    ctx.proxyBase = (st.port ? 'http://127.0.0.1:' + st.port : '') || ctx.proxyBase;
+    ctx.proxyListening = !!st.listening;
+  } catch (_) {}
+}
+
+async function init() {
+  try {
+    ctx = await api.getContext();
+  } catch (e) { ctx = { baseUrl: '', line: 'inner', favorites: [], proxyBase: '', proxyListening: false }; }
+
+  // 线路高亮 + 点击行为：内网/IPv6/FRP 点击→锁定手动；「自动」点击→解锁自动并立即探测
+  setLineTabs(activeLine);
+  document.querySelectorAll('.ltab').forEach((t) => {
+    t.onclick = async () => {
+      const ln = t.dataset.line;
+      if (ln === 'auto') {
+        // 切回自动模式
+        manualLocked = false;
+        document.querySelectorAll('.ltab').forEach((x) => x.classList.remove('active'));
+        t.classList.add('active');
+        await autoSelectAndLoad();
+        return;
+      }
+      // 用户手动选择 → 锁定，不再自动切换
+      manualLocked = true;
+      activeLine = ln;
+      setLineTabs(ln);
+      setAutoStatus('已手动锁定 ' + (LINE_LABELS[ln] || ln) + '（点「自动」恢复自动选线）');
+      await loadPlaylist(ln);
+      try { await api.setLine(ln); } catch (_) {}
+    };
+  });
+
+  // v1.16.1：网络变化自动重新探测（仅自动模式），不中断当前播放
+  try {
+    api.onNetworkChanged(() => {
+      if (manualLocked) return;
+      // 仅更新频道列表线路，不触碰 currentCh / hls
+      autoSelectAndLoad();
+    });
+  } catch (_) {}
+
+  let st;
+  $('#search').addEventListener('input', () => { clearTimeout(st); st = setTimeout(renderChannels, 200); });
+
+  $('#rateSel').onchange = () => {
+    const rate = parseFloat($('#rateSel').value);
+    $('#video').playbackRate = rate;
+    if (vlc.engine === 'vlc') { try { api.vlcSet({ rate }); } catch (_) {} }
+  };
+  $('#fsBtn').onclick = () => {
+    const v = $('#video');
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (v.requestFullscreen) v.requestFullscreen();
+  };
+
+  // v1.23.0：隐藏/显示频道栏
+  const sideToggle = $('#sideToggle');
+  if (sideToggle) {
+    sideToggle.onclick = () => {
+      const collapsed = document.getElementById('app').classList.toggle('sb-collapsed');
+      sideToggle.textContent = collapsed ? '☰' : '✕';
+      try { api.liveLog('info', 'sidebar.toggle', { collapsed }); } catch (_) {}
+    };
+  }
+
+  // v1.23.0：节目单面板
+  const epgPanel = $('#epgPanel');
+  $('#epgBtn').onclick = () => {
+    const open = epgPanel.classList.toggle('open');
+    $('#epgBtn').classList.toggle('active', open);
+    if (open) loadEpg(currentCh);
+  };
+  $('#epgClose').onclick = () => {
+    epgPanel.classList.remove('open');
+    $('#epgBtn').classList.remove('active');
+  };
+
+  // v1.26.0：内置直播窗口用 hls.js 播放；遇到解码不了的 4K/特殊编码频道时，
+  // 用内置 MPV（自带 ffmpeg）在应用内嵌入播放（覆盖视频区，不弹外部窗口），通吃 HEVC/4K。
+  const openInExternalBrowser = async () => {
+    try {
+      const ch = currentCh;
+      const url = ch && ch.url;
+      if (!url) { setPh('未选择频道', '请先选择要在 MPV 中播放的频道', true, false); return; }
+      const name = (ch && ch.name) || '';
+      const title = name ? '直播 · ' + name : 'FNOS 直播';
+      // 视频区矩形（相对直播窗视口；直播窗无标题栏偏移）
+      const videoEl = document.getElementById('video');
+      const rect = (() => {
+        if (!videoEl) return { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+        const r = videoEl.getBoundingClientRect();
+        return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+      })();
+      const res = await api.mpvEmbed({ url, title, isLive: true, scope: 'live', rect, origin: location.origin });
+      if (res && res.ok) {
+        setPh('已用 MPV 应用内播放', '频道：' + name + '（HEVC/4K 兼容）', false, false);
+        try { api.liveLog('info', 'mpv.click', { ch: name }); } catch (_) {}
+        // 关键：MPV 接管后立即销毁网页 hls.js 并释放 <video>，避免网页与 MPV 同时解码同一路 4K（N100 双路解码会卡）
+        try { destroyHls(); } catch (_) {}
+        // 持续跟随视频区尺寸（降频到 1s，减少 IPC/布局开销）
+        if (window.__mpvRectTimer) clearInterval(window.__mpvRectTimer);
+        window.__mpvRectTimer = setInterval(() => {
+          const v = document.getElementById('video'); if (!v) return;
+          const r = v.getBoundingClientRect();
+          try { api.mpvEmbedRect({ scope: 'live', x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }); } catch (_) {}
+        }, 1000);
+        try {
+          api.onMpvEmbedClosed && api.onMpvEmbedClosed(() => {
+            if (window.__mpvRectTimer) { clearInterval(window.__mpvRectTimer); window.__mpvRectTimer = null; }
+            // MPV 关闭后自动恢复网页播放器继续播放当前频道，避免黑屏
+            try { if (currentCh) { playWithHls(currentCh); } } catch (_) {}
+          });
+        } catch (_) {}
+      } else {
+        setPh('MPV 播放失败', (res && (res.reason || res.error)) ? (res.reason || res.error) : '无法启动 MPV 播放器', true, false);
+      }
+    } catch (e) {
+      setPh('打开失败', e && e.message ? e.message : String(e), true, false);
+    }
+  };
+  if ($('#extBtn')) $('#extBtn').onclick = openInExternalBrowser;
+
+  // v1.23.0：录制
+  $('#recFolderBtn').onclick = async () => {
+    try { await api.recordOpenFolder(g_activeRecId); } catch (e) {}
+  };
+  $('#recBtn').onclick = async () => {
+    try {
+      if (g_activeRecId) {
+        await api.recordStop(g_activeRecId);
+        return;
+      }
+      if (!currentCh) { setPh('未选择频道', '请先选择要录制的频道', true, false); return; }
+      $('#recBtn').disabled = true;
+      const r = await api.recordStart(currentCh);
+      $('#recBtn').disabled = false;
+      if (r && r.ok) {
+        g_activeRecId = r.id; g_recBytes = 0; g_recSegs = 0; updateRecUi();
+      } else {
+        setPh('录制启动失败', (r && r.error) || '未知错误', true, false);
+      }
+    } catch (e) {
+      $('#recBtn').disabled = false;
+      setPh('录制启动失败', e && e.message ? e.message : String(e), true, false);
+    }
+  };
+  try {
+    api.onRecordingState((info) => {
+      if (!info) return;
+      if (info.running) {
+        g_activeRecId = info.id; g_recBytes = info.bytes || 0; g_recSegs = info.segmentCount || 0;
+      } else if (info.id === g_activeRecId || !info.running) {
+        g_activeRecId = null; g_recBytes = 0; g_recSegs = 0;
+      }
+      updateRecUi();
+    });
+    api.onRecordingProgress((info) => {
+      if (!info || info.id !== g_activeRecId) return;
+      g_recBytes = info.bytes || 0; g_recSegs = info.segmentCount || 0; updateRecUi();
+    });
+  } catch (_) {}
+  // v1.17.5：代理状态栏已移除（内置播放器直连），相关按钮绑定一并清理
+  if ($('#refreshStatus')) $('#refreshStatus').onclick = refreshStatus;
+  if ($('#clearCache')) $('#clearCache').onclick = async () => { await api.clearCache(); refreshStatus(); };
+  if ($('#openSettings')) $('#openSettings').onclick = () => {
+    setPh('请在主窗口设置中配置', '顶部菜单 → 设置 → 偏好设置，可开启/配置本地内存代理与 NAS 直播基地址。', false, false);
+  };
+
+  // 外部唤起播放
+  api.onPlay((ch) => { if (ch && ch.url) play(ch); });
+
+  // v1.17.5：内置播放器强制直连，不再定时拉取代理状态；仅首次读取上下文
+  setTimeout(() => { refreshStatus(); }, 1500);
+  if (ctx.baseUrl) {
+    activeLine = ctx.line || 'inner';
+    // 默认进入自动模式：探测三线路，选延迟最低可用线路
+    await autoSelectAndLoad();
+  } else {
+    setPh('未配置 NAS 地址', '请先在主窗口连接服务器，或在设置中填写直播基地址。', true, false);
+  }
+}
+
+window.addEventListener('beforeunload', () => {
+  if (statusTimer) clearInterval(statusTimer);
+  destroyHls();
+  try { api.vlcDestroy(); } catch (_) {}
+});
+
+init();
+</script>
+</body>
+</html>

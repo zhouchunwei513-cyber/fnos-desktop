@@ -1,0 +1,82 @@
+{
+  "name": "fnos-client",
+  "version": "1.27.1",
+  "description": "FNOS 桌面客户端",
+  "main": "main.js",
+  "author": "FNOS",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "dist": "electron-builder --win portable --x64",
+    "build": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "22.3.27",
+    "electron-builder": "24.13.3"
+  },
+  "build": {
+    "appId": "com.fnos.client",
+    "productName": "FNOS",
+    "copyright": "FNOS",
+    "compression": "normal",
+    "asar": true,
+    "files": [
+      "main.js",
+      "mpv-player.js",
+      "mpv-surface.js",
+      "preload.js",
+      "dialog-preload.js",
+      "download-preload.js",
+      "live-preload.js",
+      "lock-preload.js",
+      "settings-preload.js",
+      "shell-preload.js",
+      "login.html",
+      "login.css",
+      "login.js",
+      "help.html",
+      "dialog.html",
+      "dialog.css",
+      "dialog.js",
+      "lock.html",
+      "lock.css",
+      "lock.js",
+      "settings.html",
+      "settings.css",
+      "settings.js",
+      "download.html",
+      "download.js",
+      "shell.html",
+      "shell.js",
+      "live.html",
+      "player.html",
+      "vendor/**/*",
+      "extensions/**/*",
+      "assets/**/*",
+      "icon.ico",
+      "icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "mpv",
+        "to": "mpv"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico"
+    },
+    "portable": {
+      "artifactName": "FNOS-${version}-portable.exe"
+    }
+  }
+}

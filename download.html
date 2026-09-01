@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>下载中</title>
+  <link rel="stylesheet" href="dialog.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: transparent;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+      user-select: none;
+    }
+    body { display: flex; align-items: center; justify-content: center; padding: 14px; }
+    .card {
+      width: 100%;
+      padding: 20px 22px 18px;
+      border-radius: 18px;
+      background: linear-gradient(155deg, rgba(20,24,38,.86), rgba(10,12,20,.78));
+      border: 1px solid rgba(255,255,255,.14);
+      box-shadow: 0 20px 50px -12px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.15);
+      backdrop-filter: blur(28px) saturate(160%);
+      -webkit-backdrop-filter: blur(28px) saturate(160%);
+      color: #e9efff;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .row { display: flex; align-items: center; gap: 12px; }
+    .icon {
+      width: 40px; height: 40px; border-radius: 11px;
+      background: linear-gradient(135deg, #7cecff, #7c83ff, #ff6bcb);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 8px 20px -6px rgba(124,131,255,.6);
+      flex: 0 0 auto;
+    }
+    .icon svg { width: 20px; height: 20px; color: #0b0e18; }
+    .meta { flex: 1; min-width: 0; }
+    .title {
+      font-size: 14px; font-weight: 700; letter-spacing: .3px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      line-height: 1.35;
+    }
+    .sub {
+      font-size: 11px; color: rgba(233,239,255,.58);
+      margin-top: 3px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      line-height: 1.35;
+    }
+    .bar {
+      height: 8px; border-radius: 999px;
+      background: rgba(255,255,255,.08); overflow: hidden;
+      border: 1px solid rgba(255,255,255,.06);
+    }
+    .fill {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, #7cecff, #7c83ff, #ff6bcb);
+      background-size: 200% 100%;
+      border-radius: 999px;
+      transition: width .25s ease;
+      animation: shift 2.5s linear infinite;
+    }
+    @keyframes shift { from { background-position: 0 0; } to { background-position: 200% 0; } }
+    .foot {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px;
+      font-size: 11.5px; color: rgba(233,239,255,.68);
+      line-height: 1.4;
+      flex-wrap: nowrap;
+    }
+    .stats {
+      flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .pct { font-weight: 800; color: #aef0ff; letter-spacing: .5px; }
+    .actions { display: flex; gap: 6px; flex: 0 0 auto; }
+    .btn {
+      background: rgba(255,255,255,.08);
+      border: 1px solid rgba(255,255,255,.18);
+      color: #e9efff;
+      padding: 5px 11px; border-radius: 8px;
+      font-size: 11px; font-weight: 700; cursor: pointer;
+      transition: background .15s, border-color .15s;
+      white-space: nowrap;
+    }
+    .btn:hover { background: rgba(255,255,255,.15); border-color: rgba(255,255,255,.3); }
+    .done .title { color: #7cf0b0; }
+    .done .bar { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="row">
+      <div class="icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+      </div>
+      <div class="meta">
+        <div class="title" id="title">正在下载…</div>
+        <div class="sub" id="sub">—</div>
+      </div>
+    </div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
+    <div class="foot">
+      <span class="stats" id="status"><span class="pct" id="pct">0%</span> · <span id="speed">0 KB/s</span> · <span id="size">0 MB</span><span id="eta-wrap" hidden> · 剩余 <span id="eta">--</span></span></span>
+      <span class="actions">
+        <button class="btn" id="bg-btn">后台运行</button>
+        <button class="btn" id="open-btn" hidden>打开文件夹</button>
+        <button class="btn" id="cancel-btn">取消下载</button>
+        <button class="btn" id="close-btn" hidden>关闭</button>
+      </span>
+    </div>
+  </div>
+  <script src="download.js"></script>
+</body>
+</html>

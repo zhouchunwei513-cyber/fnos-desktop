@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
+<title>FNOS</title>
+<style>
+  :root {
+    --tb-height: 38px;
+    --tb-bg: rgba(18, 22, 30, 0.72);
+    --tb-fg: #e7ecf3;
+    --tb-accent: #3377ff;
+    --tb-btn-hover: rgba(255,255,255,0.10);
+    --tb-btn-active: rgba(255,255,255,0.16);
+    --tb-close-hover: #e81123;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; width: 100%; overflow: hidden; background: #0b0d12; }
+  body { font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+
+  /* 自定义标题栏 */
+  #titlebar {
+    height: var(--tb-height);
+    flex: 0 0 var(--tb-height);
+    display: flex;
+    align-items: stretch;
+    background: var(--tb-bg);
+    backdrop-filter: blur(18px) saturate(1.4);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    color: var(--tb-fg);
+    user-select: none;
+    -webkit-user-select: none;
+    position: relative;
+    z-index: 10;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  #drag-region {
+    flex: 1 1 auto;
+    -webkit-app-region: drag;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    min-width: 0;
+    height: 100%;
+  }
+  #app-icon { width: 18px; height: 18px; margin-right: 8px; flex: 0 0 auto; border-radius: 5px; object-fit: cover; }
+  #app-title { font-size: 12.5px; letter-spacing: .3px; opacity: .92; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 菜单栏（自绘） */
+  #menubar { display: flex; align-items: stretch; height: 100%; -webkit-app-region: no-drag; }
+  .menu-item {
+    position: relative;
+    display: flex; align-items: center;
+    padding: 0 10px;
+    font-size: 12.5px;
+    cursor: default;
+    height: 100%;
+    border-radius: 0;
+  }
+  .menu-item:hover, .menu-item.open { background: var(--tb-btn-hover); }
+  .menu-item:active { background: var(--tb-btn-active); }
+
+  /* 窗口控制按钮 */
+  #win-controls { display: flex; align-items: stretch; height: 100%; -webkit-app-region: no-drag; flex: 0 0 auto; }
+  .win-btn {
+    width: 46px; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--tb-fg);
+    cursor: default;
+    transition: background .12s ease;
+  }
+  .win-btn:hover { background: var(--tb-btn-hover); }
+  .win-btn:active { background: var(--tb-btn-active); }
+  .win-btn.close:hover { background: var(--tb-close-hover); color: #fff; }
+  .win-btn svg { width: 11px; height: 11px; }
+
+  /* 内容区：承载 webview */
+  #content { flex: 1 1 auto; position: relative; min-height: 0; background: #0b0d12; }
+  webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; outline: none; }
+
+  /* 加载遮罩 */
+  #loader {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: var(--tb-bg); backdrop-filter: blur(6px); z-index: 5;
+    color: #9aa6b6; font-size: 13px; letter-spacing: .5px;
+  }
+  #loader.hidden { display: none; }
+  .spinner {
+    width: 22px; height: 22px; border: 2px solid rgba(255,255,255,.18);
+    border-top-color: var(--tb-accent); border-radius: 50%;
+    animation: spin .8s linear infinite; margin-right: 10px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  body[data-maximized="true"] #titlebar { padding-top: 0; }
+</style>
+</head>
+<body>
+  <div id="titlebar">
+    <div id="drag-region">
+      <img id="app-icon" src="icon.png" alt="" />
+      <span id="app-title">FNOS</span>
+    </div>
+    <div id="menubar">
+      <div class="menu-item" data-menu="file">文件</div>
+      <div class="menu-item" data-menu="downloads">下载</div>
+      <div class="menu-item" data-menu="edit">编辑</div>
+      <div class="menu-item" data-menu="view">视图</div>
+      <div class="menu-item" data-menu="tools">工具</div>
+      <div class="menu-item" data-menu="settings">设置</div>
+      <div class="menu-item" data-menu="help">帮助</div>
+    </div>
+    <div id="win-controls">
+      <div class="win-btn" id="btn-min" title="最小化">
+        <svg viewBox="0 0 12 12"><rect x="2" y="5.6" width="8" height="1" fill="currentColor"/></svg>
+      </div>
+      <div class="win-btn" id="btn-max" title="最大化/还原">
+        <svg id="icon-max" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+      </div>
+      <div class="win-btn close" id="btn-close" title="关闭">
+        <svg viewBox="0 0 12 12"><path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+    </div>
+  </div>
+  <div id="content">
+    <div id="loader"><div class="spinner"></div><span id="loader-text">正在连接…</span></div>
+  </div>
+<script src="shell.js"></script>
+</body>
+</html>

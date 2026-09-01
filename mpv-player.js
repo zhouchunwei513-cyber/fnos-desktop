@@ -74,6 +74,16 @@ function getMpvConfigArgs() {
 // ---------- 网络缓存/预读档位（用于消除局域网/在线播放卡顿）----------
 // 数值均为 mpv 原生参数；demuxer-readahead-secs 越大缓冲越多越抗抖动。
 const CACHE_PRESETS = {
+  live: {     // 直播轻量：约 16MB / 20s 预读（N100 双路场景给直播用，demuxer 负担/内存占用最低，够抗短抖动即可）
+    cache: 'yes',
+    'demuxer-max-bytes': '16MiB',
+    'demuxer-max-back-bytes': '8MiB',
+    'demuxer-readahead-secs': '20',
+    'cache-secs': '20',
+    'cache-pause': 'yes',
+    'cache-pause-initial': 'yes',
+    'cache-pause-wait': '1.2'
+  },
   standard: { // 均衡：约 32MB / 60s 预读
     cache: 'yes',
     'demuxer-max-bytes': '32MiB',
@@ -137,7 +147,11 @@ function perfArgs() {
     '--cscale=bilinear',
     '--dscale=bilinear',
     '--tone-mapping=bt.2390',
-    '--hdr-compute-peak=no'
+    '--hdr-compute-peak=no',
+    // N100 双路 4K 弱机减负：音频统一按立体声处理，避免多声道上混/重采样的额外 CPU 开销；
+    // 关闭视频滤镜链默认处理，解码器输出直接上显。
+    '--audio-channels=stereo',
+    '--vf=clr'
   ];
 }
 
@@ -174,6 +188,13 @@ class MpvPlayer extends EventEmitter {
     this._seekStartedAt = 0;   // 本次 seek 开始时间戳
     this._onNeedFreshUrl = null; // 点播断流时由主进程注入：重新签名取新鲜播放地址
     this._refreshing = false; // 是否正在重新取流（防重入）
+    this._eofReached = false;  // mpv eof-reached 属性
+    this._buffering = 100;     // cache-buffering-state（<100 表示正在缓冲）
+    this._userPause = false;   // 是否为"用户主动暂停"（区别于 keep-open 提前 EOF 的自动暂停）
+    this._fileLoadedAt = 0;    // 最近一次 file-loaded 时间戳（起播宽限基准）
+    this._loadStartAt = 0;     // loadfile 发起时间戳（file-loaded 前的宽限基准）
+    this._earlyEofTries = 0;   // 点播提前 EOF 恢复次数
+    this._lastRecoverAt = 0;   // 最近一次自动恢复时间戳（恢复冷却，防重复触发）
     this._logFilePath = '';   // mpv 自身详细日志文件（fnos-mpv.log）
   }
 
@@ -226,7 +247,9 @@ class MpvPlayer extends EventEmitter {
     // 该目录下的 mpv.conf + scripts/fnos-menu.lua 提供中文右键菜单，不读用户全局配置）
     args.push(...getMpvConfigArgs());
     // 直播/HTTP 断流自动重连（交给 ffmpeg 内建重试，覆盖短抖动；长期断链仍由应用层重新取流兜底）
-    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=10,reconnect_on_network_error=1');
+    // reconnect_retries/on_http_error：NAS 中途断开长连接（partial file）时让 ffmpeg 多试几次断点续传，
+    // 而不是很快放弃触发"提前 EOF"。
+    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
 
     // 形态 A：mpv 原生无边框窗口，覆盖在应用视频区（fntv 同款，最稳，OSC/拖动/键盘全可用）
     //   geometry 使用【屏幕物理像素】坐标（与 Electron getContentBounds()*scaleFactor 一致）。
@@ -242,8 +265,8 @@ class MpvPlayer extends EventEmitter {
         // keep-open=yes：网络抖动/读取出错/播完时停在最后一帧，绝不退回 "Drop files" 待机画面
         '--keep-open=yes', '--force-window=yes');
       if (opts.geometry && opts.geometry.width > 0) {
-        // mpv --geometry=WxH+X+Y（屏幕像素）。不用 --autofit：它会在运行时限制窗口尺寸、
-        // 导致跟随主窗口缩放时被钳制，联动交给 setGeometry 的 window-resize/move 命令。
+        // mpv --geometry=WxH+X+Y（屏幕像素）。运行时跟随主窗口移动/缩放统一用 set_property
+        // geometry（shinchiro 构建没有 window-resize/window-move 命令）。
         const g = opts.geometry;
         args.push(`--geometry=${Math.round(g.width)}x${Math.round(g.height)}+${Math.round(g.x)}+${Math.round(g.y)}`);
       }
@@ -258,8 +281,10 @@ class MpvPlayer extends EventEmitter {
     // 低功耗/低开销（N100 双路 4K 关键）
     args.push(...perfArgs());
 
-    // 缓存/预读（消卡顿核心）
-    args.push(...buildCacheArgs(opts.cacheLevel));
+    // 缓存/预读（消卡顿核心）。嵌入共用进程：点播用用户档位（默认 smooth），
+    // 直播用轻量 live 档（N100 双路时直播 demuxer 负担/内存最低，20s 缓冲足够抗运营商抖动）。
+    const effectiveCache = (opts.isLive && !opts.cacheLevel) ? 'live' : (opts.cacheLevel || 'smooth');
+    args.push(...buildCacheArgs(effectiveCache));
 
     // 网络健壮性（直播长时间运行易遇运营商断流/抖动，放宽超时）
     args.push('--network-timeout=120');
@@ -407,7 +432,13 @@ class MpvPlayer extends EventEmitter {
     if (msg.event === 'property-change') {
       const id = msg.id;
       const val = msg.data;
-      if (id === 1) { this._paused = !!val; this.emit('pause', this._paused); if (!val) this._lastProgressAt = Date.now(); }
+      if (id === 1) {
+        this._paused = !!val;
+        // 区分用户暂停与 keep-open 自动暂停：若暂停时已 eof（提前 EOF 自动暂停），不算用户意图。
+        if (val) { if (!this._eofReached) this._userPause = true; }
+        else { this._userPause = false; this._lastProgressAt = Date.now(); }
+        this.emit('pause', this._paused);
+      }
       else if (id === 2) {
         if (typeof val === 'number') {
           this._timePosVal = val;
@@ -419,24 +450,34 @@ class MpvPlayer extends EventEmitter {
         }
       }
       else if (id === 3) { if (typeof val === 'number' && val > 0) { this._duration = val; this.emit('duration', val); } }
-      else if (id === 4) { if (val) this.emit('ended'); }
+      else if (id === 4) {
+        this._eofReached = !!val;
+        if (val) {
+          this._userPause = false; // 提前 EOF 时的暂停是 keep-open 自动暂停，非用户主动
+          this.emit('ended');
+          this._handlePrematureEof();
+        }
+      }
       else if (id === 5) { this._coreIdle = !!val; }
       else if (id === 6) { if (typeof val === 'number') { this._vol = val; this.emit('volume', val); } }
-      else if (id === 7) { if (typeof val === 'number') this.emit('buffering', val); }
+      else if (id === 7) { this._buffering = (typeof val === 'number') ? val : 0; this.emit('buffering', this._buffering); }
       else if (id === 8) {
-        // seeking：拖动进度条时为 true，定位完成回 false。seek 后长时间不结束 = 目标位置拉不到数据
-        // （常见于点播签名失效），交给卡死看护快速触发"重新取流 + 在目标位置续播"。
+        // seeking：拖动进度条时为 true。仅记录状态，卡顿统一交给 watchdog 的
+        // "core-idle + 无进度 + 过了起播宽限"判定，避免起播缓冲误报 seek stuck。
         const was = !!this._seeking;
         this._seeking = !!val;
-        if (this._seeking && !was) { this._seekStartedAt = Date.now(); this._lastProgressAt = Date.now(); }
-        if (!this._seeking) { this._seekStartedAt = 0; this._lastProgressAt = Date.now(); }
+        if (this._seeking && !was) this._seekStartedAt = Date.now();
+        if (!this._seeking) this._seekStartedAt = 0;
       }
       return;
     }
     if (msg.event === 'file-loaded') {
       this._reloadTries = 0; this._restartTries = 0;
       this._lastLoadedAt = Date.now();
+      this._fileLoadedAt = Date.now(); // 起播宽限计时基准（loadfile 时也会重置）
       this._lastTimePos = -1; this._lastProgressAt = Date.now(); this._coreIdle = false;
+      this._eofReached = false; this._seeking = false; this._seekStartedAt = 0;
+      this._buffering = 100; this._recoveringStall = false; this._earlyEofTries = 0;
       // 点播续播：崩溃自愈/重新取流后续播到断点
       if (typeof this._resumePos === 'number' && this._resumePos > 1 && !this._isLive) {
         const pos = this._resumePos;
@@ -503,29 +544,43 @@ class MpvPlayer extends EventEmitter {
   _onWatchdogTick() {
     try {
       if (!this.connected || this._dead || this._quitByUser || this._manualStop || this._refreshing) return;
-      if (this._paused) { this._lastProgressAt = Date.now(); return; }
-      // 起播头 30 秒（正常缓冲）不判卡死
-      if (Date.now() - this._startTime < 30000) { this._lastProgressAt = Date.now(); return; }
-      // 拖动进度条后长时间定位不结束（seeking 持续 true）：目标位置拉不到数据（签名失效），
-      // 用更短阈值触发重新取流；恢复时 _timePosVal 已被 mpv 设为目标 seek 位置，正好续到该处。
-      if (this._seeking) {
-        const seekMs = Date.now() - (this._seekStartedAt || Date.now());
-        const seekThreshold = this._isLive ? 12000 : 15000;
-        if (seekMs < seekThreshold) return;
-        this._reloadTries++;
-        this.emit('log', 'seek stuck for ' + Math.round(seekMs / 1000) + 's (retry #' + this._reloadTries + '), re-signing + resume at '
-          + (typeof this._timePosVal === 'number' ? Math.round(this._timePosVal) + 's' : '?'));
-        this._reloadStream();
-        return;
+      // 用户主动暂停（点了暂停按钮/菜单项）才算健康暂停；
+      // 注意：--keep-open=yes 在提前 EOF/断流时会让 mpv "自动暂停"（用户没点过暂停），
+      // 这种暂停绝不能当作健康，否则卡死永不恢复。
+      if (this._paused && this._userPause) return;
+      // 起播宽限：以 file-loaded 时刻为基准（loadfile 即重置），避开正常缓冲误判。
+      const anchor = this._fileLoadedAt || this._loadStartAt || this._startTime;
+      if (anchor && Date.now() - anchor < (this._isLive ? 25000 : 30000)) { this._lastProgressAt = Date.now(); return; }
+      // 播放位置在推进（解码在跑）：一切正常，刷新健康时间戳。
+      // 拖进度条定位完成后 time-pos 会跳到目标位置，同样算"有进展"，不再做脆弱的 seeking 时长判断。
+      if (typeof this._timePosVal === 'number' && this._lastTimePos >= 0 && this._timePosVal > this._lastTimePos) {
+        this._lastProgressAt = Date.now();
       }
-      if (!this._coreIdle) return; // 核心非空闲（正常解码/渲染）
+      if (!this._coreIdle) { this._lastProgressAt = Date.now(); return; } // 核心非空闲（正常解码/渲染）
       if (this._reloadTries >= (this._isLive ? 30 : 8)) return;
       const frozenMs = Date.now() - this._lastProgressAt;
-      const threshold = this._isLive ? 20000 : 45000; // 直播 20s、点播 45s 无推进
+      const threshold = this._isLive ? 20000 : 40000; // 直播 20s、点播 40s 无推进
       if (frozenMs < threshold) return;
       this._reloadTries++;
       this.emit('log', 'playback stalled for ' + Math.round(frozenMs / 1000) + 's'
-        + ' (retry #' + this._reloadTries + '), forcing recover');
+        + ' (paused=' + this._paused + ',eof=' + this._eofReached + ',retry #' + this._reloadTries + '), forcing recover');
+      this._reloadStream();
+    } catch (_) {}
+  }
+
+  // 点播提前 EOF：HTTP 长连接被服务端中途断开、lavf 重连耗尽后，mpv 在远未到片尾时
+  // 触发 eof-reached（配合 keep-open 自动暂停）。表现为"播着播着停住、点播放没反应、
+  // 拖进度条画面只动一下"。此时若进度明显未到 duration，则重新签名取流并续播到断点。
+  _handlePrematureEof() {
+    try {
+      if (this._isLive || this._quitByUser || this._manualStop || this._refreshing) return;
+      if (this._earlyEofTries >= 5) return;
+      const pos = (typeof this._timePosVal === 'number') ? this._timePosVal : 0;
+      // duration 已知且离片尾还差 10s 以上 = 非正常播完；duration 未知则交给卡死看护兜底。
+      if (!(this._duration > 0 && pos < this._duration - 10)) return;
+      this._earlyEofTries++;
+      this.emit('log', 'premature EOF at ' + Math.round(pos) + 's / ' + Math.round(this._duration)
+        + 's (retry #' + this._earlyEofTries + '), re-signing + resume');
       this._reloadStream();
     } catch (_) {}
   }
@@ -535,10 +590,17 @@ class MpvPlayer extends EventEmitter {
   async _reloadStream() {
     try {
       if (this._quitByUser || this._manualStop) return;
+      // 恢复冷却：提前 EOF 事件与卡死看护可能在同一时段先后触发，8s 内只恢复一次。
+      const now = Date.now();
+      if (now - (this._lastRecoverAt || 0) < 8000) return;
+      this._lastRecoverAt = now;
       // 记住断点（点播），file-loaded 后续播
       if (!this._isLive && typeof this._timePosVal === 'number' && this._timePosVal > 1) {
         this._resumePos = this._timePosVal;
       }
+      // 重新取流期间强制让 mpv 退出自动暂停态（keep-open 在 EOF 时会暂停），
+      // 否则新流加载后仍暂停，表现为"点播放没反应"。
+      this._userPause = false;
       if (this._isLive || !this._onNeedFreshUrl) {
         // 直播或无重新取流回调：回放原地址（直播分片刷新；点播兜底）
         await this.loadfile(this._lastUrl, this._lastHeaders, { isLive: this._isLive });
@@ -572,6 +634,9 @@ class MpvPlayer extends EventEmitter {
     this._refreshing = false;
     this._resumePos = undefined;
     this._lastTimePos = -1; this._lastProgressAt = Date.now(); this._coreIdle = false;
+    this._eofReached = false; this._userPause = false; this._seeking = false; this._seekStartedAt = 0;
+    this._loadStartAt = Date.now(); this._fileLoadedAt = 0; this._earlyEofTries = 0;
+    this._buffering = 100;
     const waitReady = this.connected ? Promise.resolve() :
       new Promise(res => this.once('ipc-ready', res));
     await waitReady;
@@ -591,16 +656,15 @@ class MpvPlayer extends EventEmitter {
     try { await this.command(['set_property', 'pause', false]); } catch (_) {}
   }
 
-  play() { return this.command(['set_property', 'pause', false]).catch(() => {}); }
-  pause() { return this.command(['set_property', 'pause', true]).catch(() => {}); }
+  play() { this._userPause = false; return this.command(['set_property', 'pause', false]).catch(() => {}); }
+  pause() { this._userPause = true; return this.command(['set_property', 'pause', true]).catch(() => {}); }
   seek(sec) { return this.command(['seek', Number(sec) || 0, 'absolute']).catch(() => {}); }
   setVolume(v) { return this.command(['set_property', 'volume', Math.max(0, Math.min(130, Number(v) || 0))]).catch(() => {}); }
 
   // 运行时移动/缩放 mpv 原生窗口（屏幕物理像素坐标）
-  // 联动三重保障（全部参数为字符串数字）：
-  //   1) set_property geometry：mpv 运行时可移动+缩放窗口
-  //   2) window-resize W H
-  //   3) window-move X Y（注意：mpv window-move 只接受 <x> <y>，没有 absolute 子命令——多传会报 invalid parameter）
+  // 注意：shinchiro Windows 构建（gpu-next）【没有】 window-resize / window-move 命令，
+  // 调用只会刷 "Command not found" 错误日志。运行时统一用可写的 geometry 属性
+  // （格式 WxH+X+Y，屏幕像素），--geometry 与它一致，窗口位置/尺寸都能联动。
   setGeometry(g) {
     if (!g) return;
     this._geometry = g;
@@ -608,12 +672,11 @@ class MpvPlayer extends EventEmitter {
       const x = String(Math.round(g.x)), y = String(Math.round(g.y));
       const w = String(Math.max(160, Math.round(g.width))), h = String(Math.max(90, Math.round(g.height)));
       const geoStr = `${w}x${h}+${x}+${y}`;
+      // 与上次实际下发的几何一致就不重复发 IPC（500ms 轮询会频繁调用，去抖减少主线程/IPC 负担）
+      if (this._lastGeoStr === geoStr) return;
+      this._lastGeoStr = geoStr;
       this.command(['set_property', 'geometry', geoStr])
         .catch(e => this.emit('log', 'geometry set fail: ' + (e && e.message)));
-      this.command(['window-resize', w, h])
-        .catch(() => {});
-      this.command(['window-move', x, y])
-        .catch(() => {});
     };
     if (!this.connected) { this.once('ipc-ready', apply); return; }
     apply();
@@ -671,7 +734,7 @@ function openMpv(url, headers, options = {}) {
     args.push(...perfArgs());
     args.push(...buildCacheArgs(options.cacheLevel || 'smooth'));
     args.push('--network-timeout=60');
-    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=10,reconnect_on_network_error=1');
+    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
     if (options.title) args.push(`--title=${options.title}`);
 
     // 外部窗口鉴权头：统一合并（UA/Referer/Cookie + 自定义 headers），避免重复 --http-header-fields 互相覆盖
@@ -733,7 +796,7 @@ function play(url, options = {}) {
   const res = openMpv(url, Object.keys(headers).length ? headers : null, {
     title: options.title || '飞牛影视',
     hwDecode: options.hwDecode || 'auto',
-    cacheLevel: options.isLive ? 'smooth' : 'unlimited',
+    cacheLevel: options.isLive ? 'live' : 'unlimited',
     extraArgs
   });
   return res;

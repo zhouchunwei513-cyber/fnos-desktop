@@ -58,7 +58,6 @@ class MpvSurface {
   }
 
   _emit(ev, ...a) { try { this.player.emit(ev, ...a); } catch (_) {} }
-
   // 视频区屏幕几何（DIP）。
   // 坐标链路：内容区屏幕坐标(getContentBounds) + webview 在内容区内偏移(viewOffset)
   //           + 视频 <video> 在 webview 视口内坐标(dipRect)。
@@ -94,8 +93,11 @@ class MpvSurface {
         // 点播断流（签名链接时效失效）时，由主进程注入回调重新签名取新鲜地址
         onNeedFreshUrl: this._onNeedFreshUrl || null
       });
-      // 用户点 mpv 窗口自带关闭按钮：冒泡给 main.js 回收嵌入层（否则崩溃自愈会重启）
-      this.player.on('user-closed', () => { this._dead = true; this._emit('user-closed'); });
+      // 用户点 mpv 窗口自带关闭按钮：仅标记本嵌入层死亡。
+      // 注意：绝不能再把 'user-closed' 通过 this.player.emit 回抛出去——该事件的监听者
+      // 正是 player 自身，回抛会再次触发本处理器形成无限递归（事件风暴，主线程卡死/日志刷爆）。
+      // main.js 直接在 player 上监听 'user-closed'/'exit' 做回收与通知网页，这里不中转。
+      this.player.on('user-closed', () => { this._dead = true; });
       this._started = true;
     } catch (e) {
       this._emit('log', 'surface start failed: ' + (e && e.message));

@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
   platform: process.platform,
-  version: '1.28.2',
+  version: '1.28.3',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),

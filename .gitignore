@@ -22,7 +22,6 @@ Thumbs.db
 *.yaml
 !pnpm-lock.yaml
 
-# 内置 mpv 播放器二进制（约 120MB，超过 GitHub 100MB 单文件限制）。
-# 不入库，由 .github/workflows/build.yml 在构建时自动从官方下载。
+# 内置 mpv 播放器二进制（约 120MB，超过 GitHub 单文件限制），不入库，CI 自动下载。
 /mpv/*.exe
 /mpv/*.dll

@@ -214,9 +214,10 @@ class MpvPlayer extends EventEmitter {
       }
     } catch (_) {}
 
-    // 界面语言：中文（OSC 控制条/右键菜单/对话框）
+    // 界面语言：shinchiro Windows 构建无 gettext 翻译、也没有 --lang 选项，
+    // 传 --lang 会被当成未知命令行选项导致 mpv 启动即退出(exit 1)。中文界面改由
+    // --config-dir 加载 scripts/fnos-menu.lua（中文右键菜单）实现，这里不传 --lang。
     const args = ['--force-window=yes', '--idle=yes', '--terminal=no', '--msg-level=all=info',
-      '--lang=zh_CN',
       `--log-file=${this._logFilePath}`,
       // mpv 自身详细日志级别（写入 fnos-mpv.log）：网络/解封装相关调高，便于定位 HTTP 403/401/超时
       '--msg-level=ffmpeg=v,stream=v,demuxer=v,stream-lavf=v,lua=warn,ass=warn'
@@ -663,7 +664,8 @@ function openMpv(url, headers, options = {}) {
   try {
     if (_externalProc) { try { _externalProc.kill(); } catch (_) {} _externalProc = null; }
 
-    const args = ['--force-window=yes', '--lang=zh_CN'];
+    // 不传 --lang：shinchiro Windows 构建无该选项，传了会启动即退出(exit 1)。中文菜单走 config-dir 脚本。
+    const args = ['--force-window=yes'];
     args.push(...getMpvConfigArgs());
     args.push(...hwDecodeArgs(options.hwDecode || 'auto'));
     args.push(...perfArgs());

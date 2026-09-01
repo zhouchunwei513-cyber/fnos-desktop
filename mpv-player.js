@@ -148,10 +148,10 @@ function perfArgs() {
     '--dscale=bilinear',
     '--tone-mapping=bt.2390',
     '--hdr-compute-peak=no',
-    // N100 双路 4K 弱机减负：音频统一按立体声处理，避免多声道上混/重采样的额外 CPU 开销；
-    // 关闭视频滤镜链默认处理，解码器输出直接上显。
-    '--audio-channels=stereo',
-    '--vf=clr'
+    // N100 双路 4K 弱机减负：音频统一按立体声处理，避免多声道上混/重采样的额外 CPU 开销。
+    // 注意：不要加 --vf=clr —— "clr" 只能作为运行时命令(vf clr)，写在命令行里会被当成滤镜名，
+    // mpv 报 "Option vf: 'clr' isn't supported" 致命错误、启动即 exit 1（默认本就无滤镜链，无需清）。
+    '--audio-channels=stereo'
   ];
 }
 
@@ -249,7 +249,9 @@ class MpvPlayer extends EventEmitter {
     // 直播/HTTP 断流自动重连（交给 ffmpeg 内建重试，覆盖短抖动；长期断链仍由应用层重新取流兜底）
     // reconnect_retries/on_http_error：NAS 中途断开长连接（partial file）时让 ffmpeg 多试几次断点续传，
     // 而不是很快放弃触发"提前 EOF"。
-    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
+    // 注意：reconnect_on_http_error 的值(如 4xx,5xx)含逗号，会被 mpv 当成 demuxer-lavf-o 的
+    // 选项分隔符，这里不传（默认已覆盖 404/429/500/503）。其余键值用逗号分隔即可。
+    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
 
     // 形态 A：mpv 原生无边框窗口，覆盖在应用视频区（fntv 同款，最稳，OSC/拖动/键盘全可用）
     //   geometry 使用【屏幕物理像素】坐标（与 Electron getContentBounds()*scaleFactor 一致）。
@@ -734,7 +736,9 @@ function openMpv(url, headers, options = {}) {
     args.push(...perfArgs());
     args.push(...buildCacheArgs(options.cacheLevel || 'smooth'));
     args.push('--network-timeout=60');
-    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
+    // 注意：reconnect_on_http_error 的值(如 4xx,5xx)含逗号，会被 mpv 当成 demuxer-lavf-o 的
+    // 选项分隔符，这里不传（默认已覆盖 404/429/500/503）。其余键值用逗号分隔即可。
+    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
     if (options.title) args.push(`--title=${options.title}`);
 
     // 外部窗口鉴权头：统一合并（UA/Referer/Cookie + 自定义 headers），避免重复 --http-header-fields 互相覆盖

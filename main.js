@@ -90,7 +90,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.28.5';
+const APP_VERSION = '1.28.6';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4338,7 +4338,34 @@ try { global.__mpvSettings = getMpvSettings(); } catch (_) {}
 
 // 设置页 / 对话框等应用级子窗口激活时，mpv 是无边框置顶独立窗，会盖住这些窗口。
 // 这里统一在"应用子弹窗打开"时把所有 mpv 降为非置顶，子弹窗全部关闭后恢复置顶。
+// 另外：用户切到微信等【外部程序】时，宿主主窗口会失焦，此时也必须取消 mpv 置顶，
+// 否则 --ontop=yes 的独立 mpv 窗会一直浮在所有窗口之上、盖住微信。回到飞牛主窗再恢复置顶。
 let _mpvSuppressed = false;
+const _mpvHostWins = new Set(); // 挂载了 mpv 的宿主主窗口（用于跟随其 blur/focus 切层级）
+
+// 任一宿主主窗口当前是否处于前台（focused）。主窗失焦（切到外部 App）即视为应降层。
+function _anyHostFocused() {
+  try {
+    for (const w of _mpvHostWins) {
+      try { if (w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && w.isFocused()) return true; } catch (_) {}
+    }
+    return false;
+  } catch (_) { return false; }
+}
+// 给宿主主窗口挂 blur/focus 监听（仅挂一次），切换到外部程序/回到飞牛时自动调层级。
+function attachMpvHostFocusTracking(hostWin) {
+  try {
+    if (!hostWin || hostWin.__mpvFocusTracked) return;
+    hostWin.__mpvFocusTracked = true;
+    _mpvHostWins.add(hostWin);
+    const onChange = () => { try { refreshMpvLayer(); } catch (_) {} };
+    hostWin.on('blur', onChange);
+    hostWin.on('focus', onChange);
+    hostWin.on('minimize', onChange);
+    hostWin.on('restore', onChange);
+    hostWin.on('closed', () => { try { _mpvHostWins.delete(hostWin); } catch (_) {} });
+  } catch (_) {}
+}
 function setAllMpvOntop(on) {
   try {
     for (const surf of mpvSurfaces.values()) {
@@ -4367,7 +4394,14 @@ function _blockingWindowsExist() {
 //       无阻挡窗时——恢复 mpv 置顶、阻挡窗取消置顶。双向置顶确保设置页一定压得住 mpv。
 function refreshMpvLayer() {
   try {
-    const shouldSuppress = _blockingWindowsExist();
+    // 应取消置顶的两种情况：
+    //  1) 应用内阻挡窗（设置页/玻璃对话框/更新检查窗）存在；
+    //  2) 所有宿主主窗口都不在前台（用户切到了微信等外部程序）——否则 mpv 会盖住外部窗口。
+    const hasBlocking = _blockingWindowsExist();
+    const hostFocused = _anyHostFocused();
+    // 已挂 mpv 的宿主窗存在时才考虑"前台跟随"；还没播过（无宿主）时不误降。
+    const hasHost = _mpvHostWins.size > 0;
+    const shouldSuppress = hasBlocking || (hasHost && !hostFocused);
     if (shouldSuppress !== _mpvSuppressed) {
       _mpvSuppressed = shouldSuppress;
       setAllMpvOntop(!shouldSuppress);
@@ -4381,7 +4415,10 @@ function refreshMpvLayer() {
           }
         } catch (_) {}
       });
-      dlog('info', 'mpv.layer', { ontop: !shouldSuppress, reason: shouldSuppress ? 'app-dialog-open' : 'app-dialog-closed' });
+      dlog('info', 'mpv.layer', {
+        ontop: !shouldSuppress,
+        reason: hasBlocking ? 'app-dialog-open' : (hasHost && !hostFocused ? 'host-blurred-external' : 'host-focused')
+      });
     } else if (shouldSuppress) {
       // 状态未变但仍有阻挡窗（如新弹窗替换旧弹窗）：确保它们处于置顶
       _forEachBlockingWindow((w) => {
@@ -4570,6 +4607,8 @@ async function embedMpvPlay(hostWin, payload) {
   });
 
   const hostId = hostWin.id;
+  // 宿主主窗口前后台跟踪：切到微信等外部程序时 blur → 取消 mpv 置顶；回到飞牛 focus → 恢复置顶。
+  try { attachMpvHostFocusTracking(hostWin); } catch (_) {}
   // guest（飞牛网页 webContents）：用于"点播断流时重新签名取新鲜地址"与"通知网页恢复显示"
   const guestWc = payload._sender || hostWin.webContents;
   let surf = mpvSurfaces.get(hostId);

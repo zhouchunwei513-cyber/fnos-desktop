@@ -305,7 +305,15 @@ class MpvPlayer extends EventEmitter {
     if (opts.extraArgs) args.push(...opts.extraArgs);
 
     try {
-      this.proc = spawn(exe, args, { windowsHide: false });
+      // 把本地助手服务地址经环境变量透传给 mpv 内的 lua（中文右键菜单在线字幕/本地字幕/画中画用）。
+      // lua 用 os.getenv 读取，再经 Windows 自带 curl.exe 调用 127.0.0.1，仅回环、带 token。
+      const childEnv = Object.assign({}, process.env);
+      try {
+        const g = (typeof global !== 'undefined') ? global : {};
+        if (g.__mpvHelperPort) childEnv.FNOS_MPV_HELPER_PORT = String(g.__mpvHelperPort);
+        if (g.__mpvHelperToken) childEnv.FNOS_MPV_HELPER_TOKEN = String(g.__mpvHelperToken);
+      } catch (_) {}
+      this.proc = spawn(exe, args, { windowsHide: false, env: childEnv });
     } catch (e) {
       this._dead = true;
       throw e;
@@ -798,10 +806,16 @@ function openMpv(url, headers, options = {}) {
     if (options.extraArgs) args.push(...options.extraArgs);
     args.push(url);
 
+    const _extEnv = Object.assign({}, process.env);
+    try {
+      if (global.__mpvHelperPort) _extEnv.FNOS_MPV_HELPER_PORT = String(global.__mpvHelperPort);
+      if (global.__mpvHelperToken) _extEnv.FNOS_MPV_HELPER_TOKEN = String(global.__mpvHelperToken);
+    } catch (_) {}
     _externalProc = spawn(exe, args, {
       detached: true,
       stdio: 'ignore',
-      windowsHide: false
+      windowsHide: false,
+      env: _extEnv
     });
     _externalProc.unref();
     _externalProc.on('exit', () => { _externalProc = null; });

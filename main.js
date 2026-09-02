@@ -27,6 +27,10 @@ let MpvPlayerMod = null;
 try { MpvPlayerMod = require('./mpv-player.js'); } catch (e) { MpvPlayerMod = null; try { liveLog('error', 'mpv.module.load.fail', { err: String(e && e.message || e) }); } catch (_) {} }
 let MpvSurfaceMod = null;
 try { MpvSurfaceMod = require('./mpv-surface.js'); } catch (e) { MpvSurfaceMod = null; try { liveLog('error', 'mpv.surface.load.fail', { err: String(e && e.message || e) }); } catch (_) {} }
+// 内置 MPV 的本地助手服务（在线字幕搜索/下载解压、本地字幕文件对话框、画中画），
+// 仅监听 127.0.0.1，mpv 内中文右键菜单 lua 经 Windows 自带 curl.exe 调用。
+let MpvHelperMod = null;
+try { MpvHelperMod = require('./mpv-helper.js'); } catch (e) { MpvHelperMod = null; try { liveLog('error', 'mpv.helper.load.fail', { err: String(e && e.message || e) }); } catch (_) {} }
 
 // v1.17.7：彻底移除本地代理模块（proxy.js/8340 端口/webRequest 拦截），
 // 所有直播流（内置播放器 + 飞牛影视网页）直连 FPK 服务端，链路最短化。
@@ -90,7 +94,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.28.7';
+const APP_VERSION = '1.29.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4357,6 +4361,40 @@ ipcMain.handle('mpv:play', async (_e, payload) => {
 const mpvSurfaces = new Map(); // key(hostWinId) -> MpvSurface
 try { global.__mpvSettings = getMpvSettings(); } catch (_) {}
 
+// ---- 内置 MPV 本地助手（mpv-helper.js）需要的全局钩子 ----
+// mpv 内中文右键菜单 lua 经 curl 调本地助手完成"在线字幕/本地字幕/画中画"。
+// 助手需要：取当前活动 mpv（用于 sub-add 等命令）、切画中画、写诊断日志。
+try {
+  global.__mpvHelperLog = (level, event, data) => { try { dlog(level || 'info', event, data); } catch (_) {} };
+  // 当前活动的播放层：优先非 PiP、最近使用的存活 surface
+  global.__mpvHelperGetActivePlayer = () => {
+    try {
+      let best = null;
+      for (const surf of mpvSurfaces.values()) {
+        try { if (!surf || !surf.isAlive || !surf.isAlive()) continue; } catch (_) { continue; }
+        if (!best) best = surf;
+        else { try { if (!best.isPip || !best.isPip()) best = surf; } catch (_) {} }
+      }
+      return best && best.player ? best.player : null;
+    } catch (_) { return null; }
+  };
+  global.__mpvHelperPip = false;
+  global.__mpvHelperTogglePip = async () => {
+    try {
+      let target = null;
+      for (const surf of mpvSurfaces.values()) {
+        try { if (surf && surf.isAlive && surf.isAlive()) { target = surf; break; } } catch (_) {}
+      }
+      if (!target) return { ok: false, error: '播放器未运行', pip: false };
+      const r = await target.togglePiP();
+      global.__mpvHelperPip = !!(r && r.pip);
+      dlog('info', 'mpv.pip', { pip: global.__mpvHelperPip });
+      try { refreshMpvLayer(); } catch (_) {}
+      return r;
+    } catch (e) { return { ok: false, error: String(e && e.message || e), pip: false }; }
+  };
+} catch (_) {}
+
 // 设置页 / 对话框等应用级子窗口激活时，mpv 是无边框置顶独立窗，会盖住这些窗口。
 // 这里统一在"应用子弹窗打开"时把所有 mpv 降为非置顶，子弹窗全部关闭后恢复置顶。
 // 另外：用户切到微信等【外部程序】时，宿主主窗口会失焦，此时也必须取消 mpv 置顶，
@@ -4390,6 +4428,8 @@ function attachMpvHostFocusTracking(hostWin) {
 function setAllMpvOntop(on) {
   try {
     for (const surf of mpvSurfaces.values()) {
+      // 画中画小窗始终置顶（即便切到外部 App 也浮着），不降层。
+      try { if (surf && surf.isPip && surf.isPip()) { surf.setOntop && surf.setOntop(true); continue; } } catch (_) {}
       try { surf && surf.setOntop && surf.setOntop(on); } catch (_) {}
     }
   } catch (_) {}
@@ -4988,6 +5028,20 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(() => {
+  // 启动内置 MPV 的本地助手服务（在线字幕/本地字幕/画中画），仅 127.0.0.1。
+  // 端口与令牌写入 global，mpv-player.js spawn mpv 时经环境变量注入给中文菜单 lua。
+  try {
+    if (MpvHelperMod && process.platform === 'win32') {
+      MpvHelperMod.start().then((info) => {
+        try {
+          global.__mpvHelperPort = info && info.port;
+          global.__mpvHelperToken = info && info.token;
+          dlog('info', 'mpv.helper.start', { port: info && info.port });
+        } catch (_) {}
+      }).catch((e) => { dlog('warn', 'mpv.helper.start.fail', { err: String(e && e.message || e) }); });
+    }
+  } catch (e) { try { dlog('warn', 'mpv.helper.start.err', { err: String(e && e.message || e) }); } catch (_) {} }
+
   // v1.17.7：记录 GPU/渲染进程崩溃，便于 Win11 绿屏问题定位。
   // 这里不自动切换 disableGpu（Chromium 没有像素级检测 API），
   // 仅写日志 + 下次启动若连续崩溃可在设置中开启 GPU 兼容模式。

@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      adm-zip:
+        specifier: ^0.6.0
+        version: 0.6.0
     devDependencies:
       electron:
         specifier: 22.3.27
@@ -113,6 +117,10 @@ packages:
   '@xmldom/xmldom@0.9.12':
     resolution: {integrity: sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A==}
     engines: {node: '>=14.6'}
+
+  adm-zip@0.6.0:
+    resolution: {integrity: sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg==}
+    engines: {node: '>=14.0'}
 
   agent-base@6.0.2:
     resolution: {integrity: sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==}
@@ -1197,6 +1205,8 @@ snapshots:
     optional: true
 
   '@xmldom/xmldom@0.9.12': {}
+
+  adm-zip@0.6.0: {}
 
   agent-base@6.0.2:
     dependencies:

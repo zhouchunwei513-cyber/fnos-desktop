@@ -23,6 +23,9 @@ class MpvSurface {
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
     this._pollTimer = null;
     this._lastBoundsKey = '';
+    // 画中画状态：小窗时脱离视频区几何跟随，固定右下角小尺寸、保持置顶、可自由拖动。
+    this._pip = false;
+    this._pipSavedGeo = null;
     // 注：log/end-file/exit 监听由 main.js（embedMpvPlay）统一绑定，这里不重复绑定。
 
     // 父窗移动/缩放/最小化时跟随
@@ -106,9 +109,45 @@ class MpvSurface {
 
   _applyGeometry() {
     if (this._dead) return;
+    // 画中画小窗期间脱离视频区跟随（窗口已固定为右下角小尺寸并可被用户自由拖动），
+    // 不再随宿主窗移动/滚动重定位。
+    if (this._pip) return;
     const geo = this._computeScreenGeometry();
     if (geo && this._started) { try { this.player.setGeometry(geo); } catch (_) {} }
   }
+
+  // 画中画：true=进入小窗（记录当前几何，缩到宿主内容区右下角 420px 宽、保持置顶、可拖动）；
+  //        false=还原（重新贴合视频区并跟随）。返回进入后的 PiP 状态。
+  async togglePiP() {
+    if (this._dead) return { ok: false, error: '播放器已关闭', pip: false };
+    try {
+      this._pip = !this._pip;
+      const p = this.player;
+      if (this._pip) {
+        // 小窗始终置顶（即便宿主窗失焦/切到外部 App 也不被 refreshMpvLayer 降层，画中画就该浮着）
+        try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
+        // 基于视频区几何（与正常播放同一坐标链路）缩小到右下角 420px 宽，保持正确位置/缩放
+        const full = this._computeScreenGeometry();
+        if (full && full.width > 0) {
+          const w = 420;
+          const h = Math.round(w * 9 / 16);
+          const x = Math.round(full.x + full.width - w - 24);
+          const y = Math.round(full.y + full.height - h - 24);
+          try { await p.setGeometry({ x, y, width: w, height: h }); } catch (_) {}
+        }
+      } else {
+        // 还原：先解除几何钉住，下一帧按视频区重新贴合
+        try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
+        this._lastBoundsKey = '';
+        this._applyGeometry();
+      }
+      return { ok: true, pip: this._pip };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e), pip: !!this._pip };
+    }
+  }
+
+  isPip() { return !!this._pip; }
 
   // 更新视频区 DIP 坐标（guest 持续上报 / 网页滚动 / 缩放）
   setRect(dipRect, viewOffset) {

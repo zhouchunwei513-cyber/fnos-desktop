@@ -90,7 +90,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.28.6';
+const APP_VERSION = '1.28.7';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2368,13 +2368,34 @@ function registerWindow(win, opts = {}) {
   // 回到前台/获得焦点恢复 60fps。开多个应用窗口时可显著降低 CPU/GPU 占用。
   // 仅影响 requestAnimationFrame，不暂停音频/下载/定时器/投屏，对 NAS 业务透明。
   try {
-    const throttle = () => { try { win.webContents.setFrameRate(15); } catch (_) {} };
-    const unthrottle = () => { try { win.webContents.setFrameRate(60); } catch (_) {} };
+    // 关键：blur 会被"短暂焦点抢占"高频触发（如弹窗/菜单/网页 video 控件/输入法/MPV 原生窗抢焦）。
+    // 若 blur 立刻降到 15fps、focus 立刻恢复 60fps，网页原生 <video> 播放时帧率会在 15↔60 之间
+    // 反复横跳，肉眼即表现为"画面抖动"（MPV 走自己的渲染循环不受影响）。
+    // 因此 blur 降帧加防抖：只有持续失焦超过 2s（真的切后台/切到别的 App）才降到 15fps；
+    // focus 立即恢复 60fps 并取消待触发的降帧。minimize/hide 仍然立即降帧（确属不可见）。
+    let blurThrottleTimer = null;
+    const clearBlurTimer = () => {
+      if (blurThrottleTimer) { try { clearTimeout(blurThrottleTimer); } catch (_) {} blurThrottleTimer = null; }
+    };
+    const doThrottle = () => { try { win.webContents.setFrameRate(15); } catch (_) {} };
+    const throttle = doThrottle; // minimize/hide：立即降帧
+    const throttleBlur = () => {
+      clearBlurTimer();
+      try {
+        if (win.isMinimized() || !win.isVisible()) { doThrottle(); return; }
+      } catch (_) {}
+      blurThrottleTimer = setTimeout(() => {
+        blurThrottleTimer = null;
+        try { if (!win.isDestroyed() && !win.isFocused() && win.isVisible() && !win.isMinimized()) doThrottle(); } catch (_) {}
+      }, 2000);
+      if (blurThrottleTimer && blurThrottleTimer.unref) blurThrottleTimer.unref();
+    };
+    const unthrottle = () => { clearBlurTimer(); try { win.webContents.setFrameRate(60); } catch (_) {} };
     win.on('minimize', throttle);
     win.on('restore', unthrottle);
     win.on('hide', throttle);
     win.on('show', unthrottle);
-    win.on('blur', throttle);
+    win.on('blur', throttleBlur);
     win.on('focus', unthrottle);
   } catch (_) {}
   win.webContents.on('did-navigate', (_e, url) => {
@@ -4373,6 +4394,22 @@ function setAllMpvOntop(on) {
     }
   } catch (_) {}
 }
+// 当前是否存在"活着"（已启动且未死亡）的 mpv 播放层。
+// 用户关掉 mpv 后对应 surface 已销毁，此时宿主窗失焦与 mpv 无关，不应再做任何置顶跟随。
+function _hasLiveMpvSurface() {
+  try {
+    for (const surf of mpvSurfaces.values()) {
+      try { if (surf && surf.isAlive && surf.isAlive()) return true; } catch (_) {}
+    }
+    return false;
+  } catch (_) { return false; }
+}
+// 外部失焦降层防抖句柄：只有宿主窗"持续失焦"超过阈值才取消 mpv 置顶，
+// 避免瞬时焦点抢占（弹窗/菜单/网页控件/mpv 自有窗抢焦）让 ontop 在 true/false 间快速横跳。
+let _mpvBlurLayerTimer = null;
+function _clearMpvBlurLayerTimer() {
+  if (_mpvBlurLayerTimer) { try { clearTimeout(_mpvBlurLayerTimer); } catch (_) {} _mpvBlurLayerTimer = null; }
+}
 // 遍历"应浮于 mpv 之上"的应用窗口（设置页/玻璃对话框/更新检查窗），返回是否存在且可见。
 function _forEachBlockingWindow(cb) {
   try {
@@ -4389,41 +4426,73 @@ function _blockingWindowsExist() {
   _forEachBlockingWindow(() => { found = true; });
   return found;
 }
-// 依据当前是否存在"应浮于 mpv 之上"的应用窗口（设置窗、对话框等），自动切换层级。
+// 依据当前是否存在"应浮于 mpv 之上"的应用窗口（设置页、对话框等），自动切换层级。
 // 做法：有阻挡窗时——mpv 取消置顶(ontop=no) + 阻挡窗置顶(alwaysOnTop, screen-saver 级高于 mpv 的 ontop)；
 //       无阻挡窗时——恢复 mpv 置顶、阻挡窗取消置顶。双向置顶确保设置页一定压得住 mpv。
+//
+// v1.28.7：
+//  - 仅当存在"活着"的 mpv 播放层时才做"外部失焦跟随"；mpv 已关闭后宿主窗失焦与 mpv 无关，
+//    不再反复判定（此前会无意义地刷 host-blurred/host-focused）。
+//  - 外部失焦降层加防抖：宿主窗 blur 后需持续失焦 ~500ms 才真正 ontop=no；focus 立即恢复并取消。
+//    避免弹窗/菜单/网页 video 控件/mpv 自有窗等"瞬时焦点抢占"让置顶态高频横跳（连带帧率抖动）。
+function _applyMpvLayer(shouldSuppress, reason) {
+  _clearMpvBlurLayerTimer();
+  _mpvSuppressed = shouldSuppress;
+  setAllMpvOntop(!shouldSuppress);
+  _forEachBlockingWindow((w) => {
+    try {
+      if (shouldSuppress) {
+        // 'screen-saver' 层级高于 mpv 普通 ontop(=floating)，确保设置窗在最上
+        if (!w.isAlwaysOnTop()) w.setAlwaysOnTop(true, 'screen-saver');
+      } else {
+        if (w.isAlwaysOnTop()) w.setAlwaysOnTop(false);
+      }
+    } catch (_) {}
+  });
+  dlog('info', 'mpv.layer', { ontop: !shouldSuppress, reason });
+}
 function refreshMpvLayer() {
   try {
-    // 应取消置顶的两种情况：
-    //  1) 应用内阻挡窗（设置页/玻璃对话框/更新检查窗）存在；
-    //  2) 所有宿主主窗口都不在前台（用户切到了微信等外部程序）——否则 mpv 会盖住外部窗口。
     const hasBlocking = _blockingWindowsExist();
+
+    // 1) 应用内阻挡窗（设置页/对话框）：立即降层，且保持阻挡窗置顶。这是最高优先级。
+    if (hasBlocking) {
+      if (!_mpvSuppressed) _applyMpvLayer(true, 'app-dialog-open');
+      else {
+        // 状态未变但仍有阻挡窗（如新弹窗替换旧弹窗）：确保它们处于置顶
+        _forEachBlockingWindow((w) => {
+          try { if (!w.isAlwaysOnTop()) w.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
+        });
+      }
+      return;
+    }
+
+    // 2) 外部失焦跟随：仅在有"活着"的 mpv 播放层时才介入。
+    const liveMpv = _hasLiveMpvSurface();
+    if (!liveMpv) {
+      // 没有活动 mpv：清掉失焦防抖，若处于降层态（此前误判）则恢复一次。
+      _clearMpvBlurLayerTimer();
+      if (_mpvSuppressed) _applyMpvLayer(false, 'no-live-mpv');
+      return;
+    }
+
     const hostFocused = _anyHostFocused();
-    // 已挂 mpv 的宿主窗存在时才考虑"前台跟随"；还没播过（无宿主）时不误降。
-    const hasHost = _mpvHostWins.size > 0;
-    const shouldSuppress = hasBlocking || (hasHost && !hostFocused);
-    if (shouldSuppress !== _mpvSuppressed) {
-      _mpvSuppressed = shouldSuppress;
-      setAllMpvOntop(!shouldSuppress);
-      _forEachBlockingWindow((w) => {
-        try {
-          if (shouldSuppress) {
-            // 'screen-saver' 层级高于 mpv 普通 ontop(=floating)，确保设置窗在最上
-            if (!w.isAlwaysOnTop()) w.setAlwaysOnTop(true, 'screen-saver');
-          } else {
-            if (w.isAlwaysOnTop()) w.setAlwaysOnTop(false);
+    if (hostFocused) {
+      // 回到前台：立即取消防抖并恢复置顶。
+      _clearMpvBlurLayerTimer();
+      if (_mpvSuppressed) _applyMpvLayer(false, 'host-focused');
+    } else {
+      // 宿主窗当前失焦：防抖后再降层，滤掉瞬时焦点抢占。
+      if (!_mpvSuppressed && !_mpvBlurLayerTimer) {
+        _mpvBlurLayerTimer = setTimeout(() => {
+          _mpvBlurLayerTimer = null;
+          // 防抖窗口结束后重新判定：仍无任何宿主窗在前台、也没有阻挡窗，才真正降层。
+          if (!_blockingWindowsExist() && !_anyHostFocused()) {
+            _applyMpvLayer(true, 'host-blurred-external');
           }
-        } catch (_) {}
-      });
-      dlog('info', 'mpv.layer', {
-        ontop: !shouldSuppress,
-        reason: hasBlocking ? 'app-dialog-open' : (hasHost && !hostFocused ? 'host-blurred-external' : 'host-focused')
-      });
-    } else if (shouldSuppress) {
-      // 状态未变但仍有阻挡窗（如新弹窗替换旧弹窗）：确保它们处于置顶
-      _forEachBlockingWindow((w) => {
-        try { if (!w.isAlwaysOnTop()) w.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
-      });
+        }, 500);
+        if (_mpvBlurLayerTimer.unref) _mpvBlurLayerTimer.unref();
+      }
     }
   } catch (e) { dlog('warn', 'mpv.layer.err', { err: String(e && e.message || e) }); }
 }

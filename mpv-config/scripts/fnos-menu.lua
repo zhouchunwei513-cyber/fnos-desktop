@@ -31,7 +31,9 @@ end
 local function open_context_menu()
     pcall(function()
         refresh_menu_data()
-        mp.commandv("script-message", "context_menu", "open")
+        -- 内置 context_menu.lua 注册的脚本名是 "context_menu"、消息名是 "open"，
+        -- 必须用 script-message-to 指定目标脚本；写成全局 broadcast 不会被它接收（菜单打不开）。
+        mp.commandv("script-message-to", "context_menu", "open")
     end)
 end
 

@@ -13,7 +13,6 @@ local opt = require 'mp.options'
 ]]
 
 local FN = {}
-FN.apikey = nil  -- 由下方 opt.read_options 从 script-opts/osc-zh-cn.conf 读取
 -- Windows 中文字体回退（微软雅黑/黑体），确保 ASS 标签内的中文能正常渲染
 FN.cjk_font = "Microsoft YaHei, SimHei, sans-serif"
 -- 中文标签用的 ASS 样式（继承 OSC 字号语义，仅覆盖字体为中文字体）
@@ -23,10 +22,12 @@ function FN.zh(style_str)
     return (style_str:gsub("}%s*$", "\\fn" .. FN.cjk_font .. "}"))
 end
 
--- 打开上下文菜单：先把菜单数据写入 menu-data，再通知内置 context_menu 弹出
+-- 打开上下文菜单：先把菜单数据写入 menu-data，再通知内置 context_menu 弹出。
+-- 注意：内置 context_menu.lua 的脚本名是 "context_menu"、注册的消息名是 "open"，
+-- 必须用 script-message-to 指定目标脚本（全局 broadcast 不会被它接收）。
 function FN.open_menu(menu_items)
     mp.set_property_native("menu-data", menu_items)
-    mp.commandv("script-message", "context_menu", "open")
+    mp.commandv("script-message-to", "context_menu", "open")
 end
 
 -- 读取轨道列表，返回 {audio={...}, sub={...}}
@@ -125,15 +126,13 @@ function FN.menu_sub()
         }
     end
     items[#items + 1] = { type = "separator" }
-    items[#items + 1] = { title = "加载本地字幕…", cmd = "script-message fnosc-sub-load-local" }
-    -- 在线字幕搜索（子菜单）
+    items[#items + 1] = { title = "加载本地字幕…", cmd = "script-message fnos-sub-local" }
+    -- 在线字幕搜索（子菜单；走本地 helper，内置免 Key，无需任何配置）
     local online = {
-        { title = "在线搜索字幕（OpenSubtitles）", state = { "disabled" }, cmd = "osd-msg show-text 在线字幕" },
+        { title = "在线搜索字幕（内置，免设置）", state = { "disabled" }, cmd = "osd-msg show-text 在线字幕" },
         { type = "separator" },
-        { title = "用影片名搜索…", cmd = "script-message fnosc-sub-search-by-name" },
-        { title = "用文件名搜索…", cmd = "script-message fnosc-sub-search-by-file" },
-        { title = "说明：首次需在 mpv.conf 配置 opensubtitles_apikey", state = { "disabled" },
-          cmd = "osd-msg show-text 需配置 apikey" },
+        { title = "按当前影片搜索…", cmd = "script-message fnos-sub-search title" },
+        { title = "按文件名搜索…", cmd = "script-message fnos-sub-search file" },
     }
     items[#items + 1] = { title = "在线字幕搜索 ▸", submenu = online }
     items[#items + 1] = { type = "separator" }
@@ -164,200 +163,12 @@ function FN.menu_sub()
 end
 
 -- 画中画开关：mpv 侧最小实现——切换 ontop 并缩小窗口（窗口几何仍由 Electron 端统一管理）
-function FN.toggle_pip()
-    local pip = FN._pip or false
-    pip = not pip
-    FN._pip = pip
-    if pip then
-        mp.commandv("set", "ontop", "yes")
-        mp.commandv("set", "border", "no")
-        mp.osd_message("画中画：开启（窗口始终置顶）", 2)
-    else
-        mp.commandv("set", "ontop", "yes")
-        mp.osd_message("画中画：关闭", 2)
-    end
-end
-
--- ======================= 在线字幕搜索（OpenSubtitles v1 REST） =======================
--- 需要在 mpv.conf 设置 script-opts 或属性 opensubtitles_apikey；无 key 时给出中文提示。
-function FN.get_apikey()
-    -- 1) mpv 属性（用户可 script-opts-append=osc-zh-cn-apikey=xxx 由 opt 读取）
-    local k = FN.apikey
-    if k and k ~= "" and k ~= "YOUR_API_KEY" then return k end
-    return nil
-end
-
-function FN.http_get(url, extra_headers, cb)
-    local args = { "curl", "-sL", "-m", "30", "-H", "Accept: application/json", "-H",
-        "Content-Type: application/json", "-H", "User-Agent: fnOS-Desktop v1" }
-    if extra_headers then
-        for _, h in ipairs(extra_headers) do args[#args + 1] = "-H"; args[#args + 1] = h end
-    end
-    args[#args + 1] = url
-    return mp.command_native_async({ name = "subprocess", args = args, capture_stdout = true, capture_stderr = true },
-        function(res, val)
-            if cb then cb(val and val.stdout, val and val.status) end
-        end)
-end
-
--- 简易 JSON 取值（不引第三方库）：从 OpenSubtitles 返回里抽取字幕条目
-function FN.parse_subtitles(json)
-    if not json then return {} end
-    local out = {}
-    -- data 数组内每个对象至少含 attributes 与 file_id；用 file_id 作为条目锚点逐个切分
-    local idx = 0
-    local pos = 1
-    while true do
-        local s, e, file_id = json:find('"file_id"%s*:%s*(%d+)', pos)
-        if not s then break end
-        -- 该 file_id 附近（向前取一段窗口）检索对应属性
-        local win_start = math.max(1, s - 4000)
-        local win = json:sub(win_start, e + 200)
-        local item = {}
-        item.file_id = file_id
-        -- 在窗口内找最后一次出现的 language/release/link/ai_translated（尽量贴近本条目）
-        local lang = nil
-        for l in win:gmatch('"language"%s*:%s*"([^"]+)"') do lang = l end
-        item.language = lang or "?"
-        local release = nil
-        for r in win:gmatch('"release"%s*:%s*"([^"]+)"') do release = r end
-        item.release = release
-        local ai = nil
-        for a in win:gmatch('"ai_translated"%s*:%s*"([^"]+)"') do ai = a end
-        item.ai_translated = ai
-        local link = nil
-        for lk in win:gmatch('"link"%s*:%s*"(https://[^"]+)"') do link = lk end
-        item.download = link
-        out[#out + 1] = item
-        pos = e + 1
-        idx = idx + 1
-        if idx > 60 then break end
-    end
-    return out
-end
-
-function FN.search_subtitles(query)
-    local key = FN.get_apikey()
-    if not key then
-        mp.osd_message("在线字幕：请先在 mpv.conf 配置 OpenSubtitles API Key\n（script-opts-append 或 fnOS 设置）", 5)
-        FN.open_menu({
-            { title = "在线字幕未配置", state = { "disabled" }, cmd = "osd-msg show-text 未配置" },
-            { type = "separator" },
-            { title = "请到 opensubtitles.com 免费注册 API Key 后填入 mpv.conf", state = { "disabled" },
-              cmd = "osd-msg show-text 配置说明" },
-        })
-        return
-    end
-    mp.osd_message("正在搜索在线字幕：" .. query .. " …", 4)
-    local qenc = query:gsub("([^%w%-_.~])", function(c)
-        return string.format("%%%02X", string.byte(c))
-    end)
-    local url = "https://api.opensubtitles.com/api/v1/subtitles?languages=zh-CN,zh-TW,en&query=" .. qenc
-    FN.http_get(url, { "Api-Key: " .. key }, function(body, status)
-        local items = FN.parse_subtitles(body)
-        local menu = {
-            { title = "在线字幕（“" .. query .. "”共 " .. #items .. " 条）", state = { "disabled" },
-              cmd = "osd-msg show-text 搜索结果" },
-            { type = "separator" },
-        }
-        if #items == 0 or status ~= 0 then
-            menu[#menu + 1] = { title = (status ~= 0) and "搜索失败（网络错误）" or "未找到字幕", state = { "disabled" },
-                cmd = "osd-msg show-text 无结果" }
-        else
-            local limit = math.min(#items, 25)
-            for i = 1, limit do
-                local it = items[i]
-                local tag = it.ai_translated == "true" and "[AI]" or ""
-                local title = "[" .. it.language .. "]" .. tag .. " " ..
-                    (it.release and it.release:sub(1, 60) or ("字幕 " .. i))
-                menu[#menu + 1] = {
-                    title = title,
-                    cmd = "script-message fnosc-sub-download " .. tostring(it.file_id or "")
-                }
-            end
-        end
-        FN.open_menu(menu)
-    end)
-end
-
--- 读取在线字幕 API Key：script-opts-append=osc-zh-cn-apikey=XXX 或 script-opts/osc-zh-cn.conf 里 apikey=XXX
-do
-    local ok, mpopts = pcall(function()
-        local o = { apikey = "" }
-        require 'mp.options'.read_options(o, "osc-zh-cn")
-        return o
-    end)
-    if ok and mpopts and mpopts.apikey and mpopts.apikey ~= "" then
-        FN.apikey = mpopts.apikey
-    end
-end
-
-mp.register_script_message("fnosc-sub-load-local", function()
-    local res = mp.command_native({ name = "subprocess", args = {
-        "powershell", "-NoProfile", "-Command",
-        "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')|Out-Null;" ..
-        "$d=New-Object System.Windows.Forms.OpenFileDialog;" ..
-        "$d.Filter='字幕文件|*.srt;*.ass;*.ssa;*.sub;*.vtt;*.idx|所有文件|*.*';" ..
-        "if($d.ShowDialog() -eq 'OK'){Write-Output $d.FileName}"
-    }, capture_stdout = true, capture_stderr = true })
-    local path = res and res.stdout and res.stdout:match("^(.-)%s*$")
-    if path and path ~= "" then
-        mp.commandv("sub-add", path)
-        mp.osd_message("已加载字幕：" .. path, 3)
-    end
-end)
-
-mp.register_script_message("fnosc-sub-search-by-name", function()
-    local title = mp.get_property("media-title") or mp.get_property("filename/no-ext") or "video"
-    FN.search_subtitles(title:gsub("%.mkv$|%.mp4$|%.avi$|%.mov$", ""))
-end)
-
-mp.register_script_message("fnosc-sub-search-by-file", function()
-    local fn = mp.get_property("filename/no-ext") or "video"
-    FN.search_subtitles(fn)
-end)
-
-mp.register_script_message("fnosc-sub-download", function(file_id)
-    local apikey = FN.get_apikey()
-    if not file_id or file_id == "" or file_id == "nil" or not apikey then
-        mp.osd_message("该字幕缺少下载标识或未配置 API Key", 3); return
-    end
-    mp.osd_message("正在下载字幕…", 3)
-    -- 1) 请求下载链接
-    local body_json = '{"file_id":' .. file_id .. '}'
-    local args = { "curl", "-sL", "-m", "30", "-X", "POST",
-        "-H", "Api-Key: " .. tostring(apikey),
-        "-H", "Content-Type: application/json",
-        "-H", "User-Agent: fnOS-Desktop v1",
-        "-d", body_json,
-        "https://api.opensubtitles.com/api/v1/download" }
-    mp.command_native_async({ name = "subprocess", args = args, capture_stdout = true }, function(_res, val)
-        local out = val and val.stdout or ""
-        local link = out:match('"link"%s*:%s*"(https://[^"]+)"')
-        if not link then
-            mp.osd_message("获取字幕下载链接失败", 3); return
-        end
-        -- 2) 下载到临时目录
-        local fname = (mp.get_property("filename/no-ext") or "sub") .. "_" .. tostring(file_id) .. ".srt"
-        local tmp = os.getenv("TEMP") or os.getenv("TMP") or "."
-        local dest = tmp .. "\\fnos_sub_" .. tostring(os.time()) .. "_" .. fname
-        local dargs = { "curl", "-sL", "-m", "60", "-o", dest, link }
-        mp.command_native_async({ name = "subprocess", args = dargs, capture_stdout = false }, function(_, dv)
-            if dv and dv.status == 0 then
-                mp.commandv("sub-add", dest)
-                mp.osd_message("在线字幕已加载", 3)
-            else
-                mp.osd_message("字幕下载失败", 3)
-            end
-        end)
-    end)
-end)
-
--- OSC 按钮 → 菜单的 script-message（供按钮 command 字符串调用）
-mp.register_script_message("fnosc-menu-speed", FN.menu_speed)
-mp.register_script_message("fnosc-menu-audio", FN.menu_audio)
-mp.register_script_message("fnosc-menu-sub", FN.menu_sub)
-mp.register_script_message("fnosc-pip", FN.toggle_pip)
+-- ============ 在线字幕 / 加载本地字幕 / 画中画（走本地 helper，免 API Key，与右键菜单共用） ============
+-- mpv-helper.js 已内置：OpenSubtitles 搜索/下载/解压/加载、本地文件选择对话框、画中画。
+-- OSC 字幕菜单里的「加载本地字幕/在线搜索」与画中画按钮，均直接以
+--   script-message fnos-sub-local / fnos-sub-search ... / fnos-pip
+-- 转发到 fnos-menu.lua 注册的处理器（再经 HTTP 调本地 helper），本文件不重复实现网络逻辑。
+_G.FN = FN  -- 暴露到全局，便于本文件内按钮直接调用与外部自检（不影响 mpv 运行）
 
 --
 -- Parameters
@@ -2338,7 +2149,7 @@ local function osc_init()
         return icons.audio .. osc_styles.smallButtonsLlabel .. " 音轨 " ..
                mp.get_property_number("aid", "-") .. "/" .. audio_track_count
     end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnosc-menu-audio") end
+    ne.eventresponder["mbtn_left_up"] = function () FN.menu_audio() end
     ne.eventresponder["mbtn_right_up"] = function () mp.command("cycle audio") end
     ne.eventresponder["wheel_down_press"] = function () mp.command("cycle audio") end
     ne.eventresponder["wheel_up_press"] = function () mp.command("cycle audio down") end
@@ -2352,7 +2163,7 @@ local function osc_init()
         return icons.subtitle .. osc_styles.smallButtonsLlabel .. " 字幕 " ..
                (cur == -1 and "0" or cur) .. "/" .. sub_track_count
     end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnosc-menu-sub") end
+    ne.eventresponder["mbtn_left_up"] = function () FN.menu_sub() end
     ne.eventresponder["mbtn_right_up"] = function () mp.command("cycle sub") end
     ne.eventresponder["wheel_down_press"] = function () mp.command("cycle sub") end
     ne.eventresponder["wheel_up_press"] = function () mp.command("cycle sub down") end
@@ -2373,15 +2184,15 @@ local function osc_init()
         if math.abs(s - 1.0) < 0.001 then txt = "倍速" else txt = string.format("%.2gx", s) end
         return osc_styles.vidtitleBar .. " " .. txt .. " "
     end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnosc-menu-speed") end
+    ne.eventresponder["mbtn_left_up"] = function () FN.menu_speed() end
 
-    --fnOS 新增：画中画按钮
+    --fnOS 新增：画中画按钮（走本地 helper，与 Electron 协同）
     ne = new_element("fnos_pip", "button")
     ne.enabled = true
     ne.content = function ()
         return osc_styles.vidtitleBar .. " 画中画 "
     end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnosc-pip") end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-pip") end
 
     --seekbar
     ne = new_element("seekbar", "slider")

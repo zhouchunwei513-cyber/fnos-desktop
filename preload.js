@@ -317,8 +317,11 @@ contextBridge.exposeInMainWorld('fnos', {
         try {
           if (typeof input === 'string') url = input;
           else if (input && input.url) url = input.url;
-          captureAuth((init && init.headers) || (input && input.headers));
-          rememberPlayLink((init && init.headers) || (input && input.headers));
+          // 仅对同源（本机 fNOS 服务）请求捕获鉴权信息，避免被劫持/跨域请求导致 token 泄露给攻击者服务器
+          if (state.baseOrigin && String(url).indexOf(state.baseOrigin) === 0) {
+            captureAuth((init && init.headers) || (input && input.headers));
+            rememberPlayLink((init && init.headers) || (input && input.headers));
+          }
           rememberFromUrl(url);
           rememberStreamUrl(url);
         } catch (_) {}

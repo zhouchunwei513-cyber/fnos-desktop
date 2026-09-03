@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
   platform: process.platform,
-  version: '1.32.1',
+  version: '1.32.2',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),
@@ -119,6 +119,7 @@ contextBridge.exposeInMainWorld('fnos', {
       mediaGuid: '',     // 当前视频流 MediaGUID
       liveStreamUrl: '', // 网页内直播/流媒体实际播放地址（.m3u8/.flv/.../wp/m3u8 等），用于无 itemGuid 的直播页
       playLink: '',      // 飞牛直播转码网关要求的 Play-Link 头值（hls.js/flv.js 透传给 mpv）
+      mediaTitle: '',    // 从飞牛业务接口/页面提取到的真实片名（force-media-title / 字幕 / 弹幕匹配用）
       baseOrigin: location.origin,
       handled: false,
       resolving: false
@@ -309,6 +310,58 @@ contextBridge.exposeInMainWorld('fnos', {
       return '';
     }
 
+    // 从飞牛业务接口 JSON 里尽力提取真实片名（点播 play/info、stream/list、media 详情、直播频道信息）。
+    // 页面 document.title 常固定为"飞牛影视"，而这些接口的 data 里通常带 name/title 字段。
+    function extractMediaTitle(json) {
+      try {
+        if (!json || typeof json !== 'object') return '';
+        const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+        const good = (s) => {
+          const t = norm(s);
+          if (t.length < 2 || t.length > 80) return false;
+          if (/^(飞牛影视|飞牛|fnos|FNOS|登录|首页|加载中|loading|null|undefined)$/i.test(t)) return false;
+          return true;
+        };
+        // 收集候选：键名含 name/title（排除 guid/url 等无关键），值为非空字符串
+        const KEY_RE = /(^|_)(name|title|showname|seriesname|videoname|media_name|media_title|display_name|episode_name|channel_name|program_name)$/i;
+        const hits = [];
+        const walk = (obj, depth) => {
+          if (!obj || typeof obj !== 'object' || depth > 5) return;
+          if (Array.isArray(obj)) { for (const it of obj) walk(it, depth + 1); return; }
+          for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (typeof v === 'string') {
+              if (KEY_RE.test(k) && good(v)) hits.push({ key: k, val: norm(v) });
+            } else if (v && typeof v === 'object') {
+              walk(v, depth + 1);
+            }
+          }
+        };
+        const d = (json.Data || json.data) ? (json.Data || json.data) : json;
+        walk(d, 0);
+        if (!hits.length) return '';
+        // 优先级：精确键名 > 包含 media/video/series/episode > 其它；取最靠前的高优先级候选
+        const score = (k) => {
+          if (/^(name|title|showname|display_name)$/i.test(k)) return 5;
+          if (/media_(name|title)|video_name|series_?name|episode_?name|video_?title/i.test(k)) return 4;
+          if (/channel_?name|program_?name|live/i.test(k)) return 3;
+          return 2;
+        };
+        hits.sort((a, b) => score(b.key) - score(a.key));
+        return hits[0].val;
+      } catch (_) { return ''; }
+    }
+
+    // 记住从接口响应里抓到的片名（去站点后缀后存入 state，供 embed payload 使用）
+    function rememberMediaTitle(json) {
+      try {
+        const t = extractMediaTitle(json);
+        if (t) {
+          state.mediaTitle = t.replace(/\s*[-_|–—·]\s*(飞牛影视|飞牛|fnos|FNOS).*$/i, '').trim() || t;
+        }
+      } catch (_) {}
+    }
+
     function hookFetch() {
       const origFetch = window.fetch;
       if (!origFetch || origFetch.__mpvHooked) return;
@@ -335,15 +388,17 @@ contextBridge.exposeInMainWorld('fnos', {
                   || (j && (j.url || j.play_url || j.play_link));
                 if (cand && isPlayableStreamUrl(cand)) { state.liveStreamUrl = cand; log('stream.liveurl', { u: String(cand).slice(0, 120) }); }
                 if (d && (d.play_link || d.playLink) && typeof (d.play_link || d.playLink) === 'string') { state.playLink = d.play_link || d.playLink; }
+                rememberMediaTitle(j);
               } catch (_) {}
             }).catch(() => {});
           }
-          if (/\/v\/api\/v1\/(stream\/list|stream|play\/info|play\/quality|media)\b/.test(url)) {
+          if (/\/v\/api\/v1\/(stream\/list|stream|play\/info|play\/quality|media|detail|item|live|tv|channel)\b/.test(url)) {
             p.then(r => r.clone().text()).then(txt => {
               try {
                 const j = JSON.parse(txt);
                 const mg = extractMediaGuid(j);
                 if (mg) { state.mediaGuid = mg; log('stream.guid', { itemGuid: state.itemGuid, mediaGuid: mg }); }
+                rememberMediaTitle(j);
               } catch (_) {}
             }).catch(() => {});
           }
@@ -373,12 +428,13 @@ contextBridge.exposeInMainWorld('fnos', {
           const url = this.__mpvUrl || '';
           rememberFromUrl(url);
           rememberStreamUrl(url);
-          if (/\/v\/api\/v1\/(stream\/list|stream|play\/info|media)\b/.test(url)) {
+          if (/\/v\/api\/v1\/(stream\/list|stream|play\/info|play\/quality|media|detail|item|live|tv|channel)\b/.test(url)) {
             this.addEventListener('load', () => {
               try {
                 const j = JSON.parse(this.responseText);
                 const mg = extractMediaGuid(j);
                 if (mg) { state.mediaGuid = mg; log('stream.guid.xhr', { itemGuid: state.itemGuid, mediaGuid: mg }); }
+                rememberMediaTitle(j);
               } catch (_) {}
             });
           }
@@ -603,6 +659,8 @@ contextBridge.exposeInMainWorld('fnos', {
         if (/^(飞牛影视|飞牛|fnos|FNOS|登录|首页|加载中|loading)$/i.test(t)) return false;
         return true;
       };
+      // 0) 最高优先：从飞牛业务接口（play/info、stream/list、media 详情、直播频道）响应里抓到的真实片名
+      if (isGood(state.mediaTitle)) return clean(state.mediaTitle);
       // 1) Open Graph / meta 标题
       try {
         const og = document.querySelector('meta[property="og:title"],meta[name="twitter:title"],meta[itemprop="name"]');
@@ -613,10 +671,11 @@ contextBridge.exposeInMainWorld('fnos', {
       if (isLive) {
         try {
           const liveSel = ['.channel-name', '.live-title', '.room-name', '.player-title',
-            '[class*="channel"] [class*="name"]', '[class*="live"] [class*="title"]', 'h1'];
+            '[class*="channel"] [class*="name"]', '[class*="live"] [class*="title"]',
+            '[class*="channel-name"]', '[class*="channelName"]', 'h1'];
           for (const sel of liveSel) {
             const el = document.querySelector(sel);
-            const t = el && (el.getAttribute('title') || el.innerText || el.textContent);
+            const t = el && (el.getAttribute('title') || el.getAttribute('aria-label') || el.innerText || el.textContent);
             if (isGood(t)) return clean(t);
           }
         } catch (_) {}
@@ -625,11 +684,36 @@ contextBridge.exposeInMainWorld('fnos', {
       try {
         const sels = ['h1.detail-title', 'h1.video-title', 'h1.play-title', '.detail-title',
           '.video-info .title', '.player-title', '[class*="detail"] h1', '[class*="player"] h1',
-          'h1', '[class*="title"][class*="main"]', '[class*="videoTitle"]'];
+          '[class*="videoTitle"]', '[class*="video-title"]', '[class*="mediaTitle"]', '[class*="media-title"]',
+          '[class*="title"][class*="main"]', '[class*="title"][class*="name"]', 'h1'];
         for (const sel of sels) {
           const el = document.querySelector(sel);
-          const t = el && (el.getAttribute('title') || el.innerText || el.textContent);
+          const t = el && (el.getAttribute('title') || el.getAttribute('aria-label') || el.innerText || el.textContent);
           if (isGood(t)) return clean(t);
+        }
+      } catch (_) {}
+      // 3.5) 兜底扫描：在 <video>/播放器容器附近找最短的可见标题文本节点（排除按钮/菜单文案）
+      try {
+        const BAD = /^(播放|暂停|全屏|音量|选集|详情|更多|登录|首页|返回|下一集|上一集|倍速|弹幕|设置|缓存|下载|收藏|分享|清晰度|秒)$/;
+        const cand = [];
+        document.querySelectorAll('h1,h2,h3,[class*="title"],[class*="name"],[class*="Title"],[class*="Name"]').forEach(el => {
+          try {
+            const t = (el.getAttribute('title') || el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!isGood(t)) return;
+            if (BAD.test(t)) return;
+            // 只取单行短文本（标题），排除长段落/列表容器
+            const single = t.split('\n')[0].trim();
+            if (single.length < 2 || single.length > 60) return;
+            const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            const visible = !rect || (rect.width > 0 && rect.height > 0);
+            if (visible) cand.push(single);
+          } catch (_) {}
+        });
+        if (cand.length) {
+          // 取出现的、最短且非站点名的候选（标题通常比导航文案更像片名）
+          cand.sort((a, b) => a.length - b.length);
+          for (const c of cand) { if (isGood(c) && !/飞牛|fnos/i.test(c)) return clean(c); }
+          return clean(cand[0]);
         }
       } catch (_) {}
       // 4) 回退：document.title（去掉站点后缀），再不行才用兜底名

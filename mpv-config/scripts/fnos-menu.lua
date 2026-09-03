@@ -72,6 +72,44 @@ local function media_keyword()
     return (name ~= "" and name) or "video"
 end
 
+-- ---------------- 播放统计信息（码率/分辨率/帧率/硬解/格式/丢帧/缓存）----------------
+-- 用属性实时拼出中文统计 OSD，替代旧版英文 stats 页（shinchiro 构建不带中文翻译）。
+local function fmt_kbps(v)
+    local n = tonumber(v)
+    if not n or n <= 0 then return "—" end
+    if n >= 1000000 then return string.format("%.2f Mbps", n / 1000000) end
+    if n >= 1000 then return string.format("%.1f Mbps", n / 1000) end
+    return string.format("%d Kbps", n)
+end
+
+local function show_playback_stats()
+    pcall(function()
+        local g = function(p, d) local v = mp.get_property(p); if v == nil or v == "" then return d end; return v end
+        local gn = function(p, d) local v = mp.get_property_number(p); if v == nil then return d end; return v end
+        local lines = {}
+        local title = g("media-title", "")
+        table.insert(lines, "『" .. tostring(title) .. "』")
+        table.insert(lines, "分辨率: " .. tostring(gn("width", 0)) .. "×" .. tostring(gn("height", 0))
+            .. "   帧率: " .. string.format("%.2f", gn("estimated-vf-fps", gn("container-fps", 0))) .. " fps")
+        table.insert(lines, "视频: " .. tostring(g("video-codec", "—")) .. "   音频: " .. tostring(g("audio-codec", "—")))
+        table.insert(lines, "总码率: " .. fmt_kbps(gn("packet-bitrate", gn("video-bitrate", 0)))
+            .. "   视频码率: " .. fmt_kbps(gn("video-bitrate", 0)))
+        table.insert(lines, "音频码率: " .. fmt_kbps(gn("audio-bitrate", 0)))
+        local hw = g("hwdec-current", "")
+        table.insert(lines, "硬解: " .. tostring(hw ~= "" and hw or g("hwdec", "—")))
+        table.insert(lines, "丢帧: " .. tostring(gn("frame-drop-count", 0)) .. "   误帧: " .. tostring(gn("frame-mistimed-count", 0))
+            .. "   显示同步: " .. tostring(g("display-sync-active", "no") == "yes" and "开" or "关"))
+        table.insert(lines, "缓存: " .. string.format("%.1f", gn("demuxer-cache-time", 0)) .. " 秒 / "
+            .. string.format("%.1f", gn("demuxer-cache-duration", 0)) .. " 秒   缓冲: "
+            .. string.format("%d", gn("cache-buffering-state", 100)) .. "%")
+        local spd = gn("avsync", 0)
+        table.insert(lines, "A/V 同步偏差: " .. string.format("%.3f", spd) .. " 秒   音量: "
+            .. string.format("%d", gn("volume", 100)) .. "%")
+        mp.osd_message(table.concat(lines, "\n"), 8000)
+    end)
+end
+mp.register_script_message("fnos-playback-stats", show_playback_stats)
+
 -- 动态列出轨道（kind=audio/sub；prop=aid/sid）
 local function track_items(kind, prop)
     local list = {}
@@ -229,7 +267,7 @@ build_menu = function()
         }},
         sep(),
 
-        item("显示当前播放信息", "show-text '${media-title}\n音轨: ${track-list/count} 条 · 视频: ${width}x${height}\n缓存: ${demuxer-cache-time} 秒' 5000", "i"),
+        item("播放统计信息（码率 / 分辨率 / 帧率 / 硬解）", "script-message fnos-playback-stats", "i"),
         item("循环播放（开 / 关）", "cycle loop-file", "L"),
         sep(),
         item("FNOS 内置 MPV 显卡硬解内核", "show-text 'FNOS 桌面客户端 · 内置 MPV 显卡硬解内核' 3000"),

@@ -284,6 +284,8 @@ function FN.menu_main()
         { title = "播放列表 ▸", submenu = FN.build_playlist_items() },
         { title = "章节跳转 ▸", submenu = FN.build_chapter_items() },
         { title = "音频输出设备 ▸", submenu = FN.build_device_items() },
+        { type = "separator" },
+        { title = "播放统计信息（码率/分辨率/帧率/硬解）", cmd = "script-message fnos-playback-stats" },
     }
     FN.open_menu(items)
 end

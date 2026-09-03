@@ -135,22 +135,28 @@ class MpvSurface {
         }
         this._pip = true;
         try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
-        try { await p.command(['set_property', 'border', 'yes']); } catch (_) {} // 小窗带边框便于拖动/缩放
+        // v1.32.2：画中画小窗【始终保持无边框】。运行时把 border 切到 yes 会让 Windows/d3d11
+        //   的 mpv 重建窗口，重置几何与位置，出现带标题栏的全画面大窗（用户反馈的根因）。
+        //   窗口本就 --window-dragging=yes，无边框小窗同样可自由拖动。
+        try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
         const full = this._pipSavedGeo || this._computeScreenGeometry();
         if (full && full.width > 0) {
           const w = Math.min(this._pipSize, Math.round(full.width * 0.9));
           const h = Math.round(w * 9 / 16);
           const x = Math.round(full.x + full.width - w - 24);
           const y = Math.round(full.y + full.height - h - 24);
+          // 清掉去抖缓存，强制下发小窗几何（避免与全屏几何被判为"未变化"而不缩小）
+          p._lastGeoStr = '';
           try { await p.setGeometry({ x, y, width: w, height: h }); } catch (_) {}
         }
         try { this._emit("log", "pip enter size=" + this._pipSize); } catch (_) {}
       } else {
-        // 退出画中画：恢复无边框、还原全屏几何并重新跟随视频区
+        // 退出画中画：保持无边框、还原全屏几何并重新跟随视频区（点播/直播共用）
         this._pip = false;
         try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
         try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
         this._lastBoundsKey = '';
+        p._lastGeoStr = ''; // 强制重新下发全屏几何，确保退出后精确贴合并恢复跟随
         this._applyGeometry();
         try { this._emit("log", "pip exit"); } catch (_) {}
       }

@@ -389,7 +389,9 @@ class MpvPlayer extends EventEmitter {
             // 等 IPC 就绪后续播上一个流（保留直播标记与鉴权头）
             const replay = () => {
               if (this._manualStop || this._quitByUser) return;
-              this.loadfile(this._lastUrl, this._lastHeaders, { isLive: this._isLive })
+              const replayOpts = { isLive: this._isLive };
+              if (this._mediaTitle) replayOpts.title = this._mediaTitle;
+              this.loadfile(this._lastUrl, this._lastHeaders, replayOpts)
                 .then(() => { this._restartTries = 0; })
                 .catch(() => {});
             };
@@ -726,6 +728,7 @@ class MpvPlayer extends EventEmitter {
       // 否则新流加载后仍暂停，表现为"点播放没反应"。
       this._userPause = false;
       const recoverOpts = { isLive: this._isLive, recover: true };
+      if (this._mediaTitle) recoverOpts.title = this._mediaTitle; // 续播重发片名（force-media-title 不跨 loadfile 保留）
       if (this._isLive || !this._onNeedFreshUrl) {
         // 直播或无重新取流回调：回放原地址（直播分片刷新；点播兜底）。recover=true 保留断点。
         await this.loadfile(this._lastUrl, this._lastHeaders, recoverOpts);
@@ -742,7 +745,9 @@ class MpvPlayer extends EventEmitter {
       const isLive = fresh ? !!fresh.isLive : this._isLive;
       this.emit('log', 're-signed url ' + (fresh && fresh.url ? 'ok' : 'failed(fallback old)'));
       // recover=true：保留 _resumePos，让新流 file-loaded 后 seek 回断点（否则从头播=循环）。
-      await this.loadfile(url, headers, { isLive, recover: true, resumePos: this._resumePos });
+      const freshOpts = { isLive, recover: true, resumePos: this._resumePos };
+      if (this._mediaTitle) freshOpts.title = this._mediaTitle;
+      await this.loadfile(url, headers, freshOpts);
     } catch (e) {
       this._refreshing = false;
       this.emit('log', 'reload stream failed: ' + (e && e.message));

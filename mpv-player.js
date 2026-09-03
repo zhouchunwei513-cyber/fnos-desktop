@@ -68,7 +68,18 @@ function getMpvConfigArgs() {
   const dir = findMpvConfigDir();
   if (!dir) return [];
   // --config-dir 指定配置根目录（mpv.conf + scripts/ 均在其下）
-  return [`--config-dir=${dir}`];
+  const args = [`--config-dir=${dir}`];
+  // v1.30.0：关闭内置英文 OSC，加载中文定制 OSC（osc-zh-cn.lua 自带全中文界面 +
+  // 倍速/音轨/字幕/画中画/在线字幕）。用 --no-osc 只关内置 osc.lua，不影响同样内置的
+  // @context_menu.lua（中文右键菜单仍可用）；定制脚本用 --script 显式加载，不放进
+  // scripts/ 自动加载目录，避免与内置 osc 双份注册。
+  try {
+    const oscScript = path.join(dir, 'scripts', 'osc-zh-cn.lua');
+    if (fs.existsSync(oscScript)) {
+      args.push('--no-osc', `--script=${oscScript}`);
+    }
+  } catch (_) {}
+  return args;
 }
 
 // ---------- 网络缓存/预读档位（用于消除局域网/在线播放卡顿）----------
@@ -269,10 +280,11 @@ class MpvPlayer extends EventEmitter {
     if (opts.wid) {
       const hwnd = Buffer.isBuffer(opts.wid) ? opts.wid.readBigUInt64LE(0).toString() : String(opts.wid);
       args.push(`--wid=${hwnd}`);
-      args.push('--border=no', '--no-window-dragging', '--osc=yes', '--osd-bar=yes');
+      // OSC 由 getMpvConfigArgs() 的 --no-osc + --script=osc-zh-cn.lua 接管（中文 OSC），这里不再传 --osc
+      args.push('--border=no', '--no-window-dragging', '--osd-bar=yes');
     } else {
-      // 无边框 + 始终置顶 + 可拖动 + 自带 OSC 控制条 + 不在任务栏重复显示
-      args.push('--border=no', '--ontop=yes', '--osc=yes', '--osd-bar=yes',
+      // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）+ 不在任务栏重复显示
+      args.push('--border=no', '--ontop=yes', '--osd-bar=yes',
         '--window-dragging=yes', '--title=FNOS-MPV',
         // keep-open=yes：网络抖动/读取出错/播完时停在最后一帧，绝不退回 "Drop files" 待机画面
         '--keep-open=yes', '--force-window=yes');

@@ -230,6 +230,9 @@ class MpvPlayer extends EventEmitter {
     this._manualStop = false;
     this._quitByUser = false;
     this._refreshing = false;
+    // 是否使用 --wid 嵌入（默认形态不用：走无边框置顶覆盖窗）。wid 嵌入时不做首帧隐藏，
+    // 否则 visibility=no 会让嵌入窗口不渲染。
+    this._useWid = !!opts.wid;
     // 重置 IPC 就绪 promise（新进程/新管道）
     this.connected = false;
     this._readyPromise = null;
@@ -283,8 +286,9 @@ class MpvPlayer extends EventEmitter {
       // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）+ 不在任务栏重复显示
       args.push('--border=no', '--ontop=yes', '--osd-bar=yes',
         '--window-dragging=yes', '--title=FNOS-MPV',
-        // v1.32.0：启动即隐藏，首帧解码就绪后由 video-params 揭示（避免启动/切台时的黑窗与待机画面）
-        '--visibility=no',
+        // v1.32.1：visibility 只是【运行时可写属性】，不是合法 CLI 选项（写成 --visibility=no
+        //   会让 mpv 启动解析失败、exit 1 崩溃循环）。启动隐藏改为 IPC 连接后 set_property 实现，
+        //   首帧解码就绪(video-params)后再揭示。
         // keep-open=yes：网络抖动/读取出错/播完时停在最后一帧，绝不退回 "Drop files" 待机画面
         '--keep-open=yes', '--force-window=yes');
       if (opts.geometry && opts.geometry.width > 0) {
@@ -408,7 +412,9 @@ class MpvPlayer extends EventEmitter {
   _whenReady() {
     if (this.connected) return Promise.resolve();
     if (!this._readyPromise) {
-      this._readyPromise = new Promise(resolve => { this._resolveReady = res; });
+      // v1.32.1 修复：执行器参数名必须与函数体内引用一致（原写成 resolve 却用 res，
+      //   mpv 崩溃/未连接时 loadfile 走到这里会抛 "res is not defined"，导致 mpv.embed.fail）。
+      this._readyPromise = new Promise(res => { this._resolveReady = res; });
     }
     return this._readyPromise;
   }
@@ -426,6 +432,15 @@ class MpvPlayer extends EventEmitter {
       // 缓存的 ready promise 先 resolve，再发事件，避免调用方晚于事件注册监听而永久挂起
       if (this._resolveReady) { try { this._resolveReady(); } catch (_) {} this._resolveReady = null; }
       this.emit('ipc-ready');
+      // v1.32.1：IPC 一连上立即隐藏窗口（替代非法的 --visibility=no CLI）。
+      //   此时尚未 loadfile，mpv 会停在 "Drop files" 待机画面；隐藏后露出网页自身加载界面，
+      //   等 video-params 首帧就绪再揭示，观感更快且无黑窗/待机闪屏。
+      //   仅无边框覆盖窗形态做此隐藏；--wid 嵌入保持默认可见。
+      if (!this._useWid) {
+        this._forceVisible = false;
+        this._firstFrameShown = false;
+        try { this.command(['set_property', 'visibility', 'no']).catch(() => {}); } catch (_) {}
+      }
       // 开启属性事件观察
       this.command(['observe_property', 1, 'pause']);
       this.command(['observe_property', 2, 'time-pos']);
@@ -829,6 +844,7 @@ class MpvPlayer extends EventEmitter {
   // loadfile 时先隐藏 mpv 窗口（露出网页自身的加载/封面界面），等首帧解码就绪(video-params)
   // 再显示，避免用户看到黑窗/"Drop files"待机画面；起播观感更快、更干净。
   _armFirstFrameHide() {
+    if (this._useWid) return; // --wid 嵌入形态保持可见，不做首帧隐藏
     this._forceVisible = false;
     this._firstFrameShown = false;
     if (this._revealFallback) { clearTimeout(this._revealFallback); this._revealFallback = null; }

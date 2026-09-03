@@ -50,10 +50,14 @@ if (process.platform === 'win32') {
     // v1.23.0：开启 Windows 平台 HEVC/H.265 硬解，修复 4K 直播/影视无法播放
     // PlatformHEVCDecoderSupport：启用系统 HEVC 解码器（需安装 HEVC 视频扩展）
     // D3D11VideoDecoder：D3D11 硬解；MojoVideoDecoder：新版视频解码管线
-    app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,PlatformHEVCDecoderSupport,D3D11VideoDecoder,MojoVideoDecoder,PlatformEncryptedVerification');
+    // v1.23.0：开启 Windows 平台 HEVC/H.265 硬解。Chromium 同名 --enable-features 只保留最后一次
+    // 值，因此这些项已并入下方唯一的 --enable-features 列表（v1.29.2），这里不再单独 append。
+    // PlatformHEVCDecoderSupport：启用系统 HEVC 解码器（需安装 HEVC 视频扩展）
+    // D3D11VideoDecoder：D3D11 硬解；MojoVideoDecoder：新版视频解码管线
     // 允许 MSE 承载 HEVC/FLAC 等扩展编码；关闭自动降级到纯软件解码（部分 4K HEVC 软解会卡死）
     app.commandLine.appendSwitch('enable-blink-features', 'MediaSourceInlinePainting,EncryptedMediaHardwareSecureCodecs');
-    app.commandLine.appendSwitch('disable-features', 'UseChromeOSDirectVideoDecoder,HardwareMediaKeyHandling');
+    // v1.29.2：Chromium 对同名 --disable-features 只保留最后一次值，故不在此再 append；
+    // UseChromeOSDirectVideoDecoder / HardwareMediaKeyHandling 已并入下方唯一的 --disable-features 列表。
     // 增大媒体缓存与网络缓冲，应对网络抖动
     app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
     app.commandLine.appendSwitch('disk-cache-size', String(200 * 1024 * 1024));
@@ -94,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.29.1';
+const APP_VERSION = '1.29.2';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -184,9 +188,14 @@ if (process.platform === 'win32') {
 // GlobalMediaControls / HardwareMediaKeyHandling 等服务，这些会影响飞牛影视的投屏、
 // 媒体控制、硬件多媒体键等功能，v1.10.5 全部恢复，只保留与 NAS 业务无关、纯性能向的开关。
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+// v1.29.2：放宽第三方 Cookie / SameSite 限制（合并进下方唯一的 --disable-features 列表，
+// 见 SameSiteByDefaultCookies 等项）。FN ID 登录(FN Connect)跨 fnos.net/static2.fnnas.com 跨站
+// 带凭据请求，Chromium108 默认较严格会导致登录 cookie 写不回 → "FN ID 无法登录"。
 // 注意：Chromium 对同名 --disable-features 只保留最后一次的值，所有要禁用的特性
 // 必须合并到这一个列表里，否则前面的设置会被覆盖（曾导致 Win11 绿屏修复失效）。
 app.commandLine.appendSwitch('disable-features', [
+  // v1.23.0：保留硬件媒体键关闭（原先单独 append 会被本列表覆盖，现并入此处）
+  'HardwareMediaKeyHandling',
   'CalculateNativeWinOcclusion',    // 减少窗口遮挡检测开销（不影响业务）
   'DCRendererIsolation',            // 关闭 DirectComposition 后台层（Win11 登录页绿屏主要诱因）
   'Translate',                      // 不需要网页翻译
@@ -239,6 +248,12 @@ app.commandLine.appendSwitch('disable-features', [
   'IdleDetection',                  // 空闲检测 API，飞牛不用
   'PeriodicBackgroundSync',         // 周期性后台同步，飞牛不用
   'ComputePressure',                // 设备压力上报，飞牛不用
+  // v1.29.2：放宽第三方 Cookie / SameSite（FN ID 登录 FN Connect 跨 fnos.net/static2.fnnas.com
+  // 跨站带凭据请求，默认严格策略会导致登录 cookie 写不回 → "FN ID 无法登录"）
+  'SameSiteByDefaultCookies',
+  'CookiesWithoutSameSiteMustBeSecure',
+  'SchemefulSameSite',
+  'ThirdPartyCookieBlocking',
 ].join(','));
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
@@ -250,6 +265,11 @@ app.commandLine.appendSwitch('enable-features', [
   'CanvasOopRasterization',
   'VaapiVideoDecoder',
   'VaapiVideoEncoder',
+  // v1.29.2：HEVC/H.265 硬解（原在 win32 块里单独 append 会被本列表覆盖，现并入这里生效）
+  'PlatformHEVCDecoderSupport',
+  'D3D11VideoDecoder',
+  'MojoVideoDecoder',
+  'PlatformEncryptedVerification',
   'MediaFoundationVideoCapture',
   'RawDraw',
   'ScrollPredictorSmoothness',
@@ -2599,8 +2619,37 @@ function createAppWindow(url, opts = {}) {
     }
   }
 
-  win.once('ready-to-show', () => win.show());
-  setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 300);
+  // v1.29.2：起播/加载健壮性——
+  // 1) 黑/白屏优化：ready-to-show 后再展示窗口（首帧已绘制），避免"登录后黑屏"；
+  //    兜底展示从 300ms 放宽到 6s（NAS 首次响应/隧道握手较慢时也不至于先弹一个黑窗）。
+  // 2) did-fail-load 自动重试：仅对主框架网络错误（-3 中止/-137 命名解析等）重试，避免偶发
+  //    隧道/内网抖动导致应用区停在错误页/黑屏；子资源失败不重试，且 404/鉴权跳转不触发。
+  let _loadFailTries = 0;
+  try {
+    win.webContents.on('did-fail-load', (_e, errorCode, errorDesc, failUrl, isMainFrame) => {
+      try {
+        if (!isMainFrame) return;
+        // -3 = ABORTED（我们自己 setWindowOpenHandler 取消/导航中被替换），不当错误
+        if (errorCode === -3 || errorCode === 0) return;
+        if (failUrl && /^file:/.test(failUrl)) return; // 本地页面失败交给各自逻辑
+        if (_loadFailTries >= 4) return;
+        _loadFailTries++;
+        dlog && dlog('warn', 'appwin.fail-load.retry', { errorCode, errorDesc, try: _loadFailTries, url: String(failUrl).slice(0, 90) });
+        setTimeout(() => {
+          try {
+            if (win.isDestroyed()) return;
+            const cur = win.webContents.getURL();
+            const target = (cur && /^https?:/.test(cur)) ? cur : url;
+            if (/^https?:/i.test(target)) win.loadURL(target, { userAgent: getNasUA() }).catch(() => {});
+          } catch (_) {}
+        }, Math.min(4000, 600 * _loadFailTries + 600));
+      } catch (_) {}
+    });
+  } catch (_) {}
+
+  win.once('ready-to-show', () => { try { win.show(); } catch (_) {} });
+  // 兜底：极端情况下 ready-to-show 未触发（如隧道握手卡住），6s 后也展示窗口，避免"看不见窗口"
+  setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 6000);
 
   return win;
 }
@@ -2809,6 +2858,28 @@ function createMainWindow(partition, loadTarget) {
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed() && !isLocked) mainWindow.show();
   });
+
+  // v1.29.2：主窗口主框架加载失败（隧道/内网抖动、-137 解析失败、连接重置等）自动重试，
+  // 避免"登录后黑屏/错误页"。-3(中止，导航被替换)与本地连接页不重试；最多 4 次、退避。
+  let _mainFailTries = 0;
+  try {
+    mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDesc, failUrl, isMainFrame) => {
+      try {
+        if (!isMainFrame || errorCode === -3 || errorCode === 0) return;
+        if (failUrl && /^file:/.test(failUrl)) return;
+        if (_mainFailTries >= 4) return;
+        _mainFailTries++;
+        dlog && dlog('warn', 'main.fail-load.retry', { errorCode, errorDesc, try: _mainFailTries, url: String(failUrl).slice(0, 90) });
+        setTimeout(() => {
+          try {
+            if (!mainWindow || mainWindow.isDestroyed()) return;
+            const target = lastConnectHref || mainWindow.webContents.getURL();
+            if (target && /^https?:/i.test(target)) mainWindow.loadURL(target, { userAgent: getNasUA() }).catch(() => {});
+          } catch (_) {}
+        }, Math.min(4000, 600 * _mainFailTries + 600));
+      } catch (_) {}
+    });
+  } catch (_) {}
 
   // 菜单栏自动隐藏开关
   const mainAutoHide = !!loadSettings().autoHideMenuBar;

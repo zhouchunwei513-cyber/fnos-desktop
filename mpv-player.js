@@ -222,6 +222,10 @@ class MpvPlayer extends EventEmitter {
     this._manualStop = false;
     this._quitByUser = false;
     this._refreshing = false;
+    // 重置 IPC 就绪 promise（新进程/新管道）
+    this.connected = false;
+    this._readyPromise = null;
+    this._resolveReady = null;
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
     this._dead = false;
     this.pipePath = `\\\\.\\pipe\\fnos-mpv-${process.pid}-${Date.now()}`;
@@ -240,13 +244,18 @@ class MpvPlayer extends EventEmitter {
     // 传 --lang 会被当成未知命令行选项导致 mpv 启动即退出(exit 1)。中文界面改由
     // --config-dir 加载 scripts/fnos-menu.lua（中文右键菜单）实现，这里不传 --lang。
     const args = ['--force-window=yes', '--idle=yes', '--terminal=no', '--msg-level=all=info',
-      `--log-file=${this._logFilePath}`,
-      // mpv 自身详细日志级别（写入 fnos-mpv.log）：网络/解封装相关调高，便于定位 HTTP 403/401/超时
-      '--msg-level=ffmpeg=v,stream=v,demuxer=v,stream-lavf=v,lua=warn,ass=warn'
+      `--log-file=${this._logFilePath}`
     ];
     // 内置中文右键菜单 / 配置（--config-dir 指向随包隔离目录，替代 --no-config；
     // 该目录下的 mpv.conf + scripts/fnos-menu.lua 提供中文右键菜单，不读用户全局配置）
     args.push(...getMpvConfigArgs());
+    // v1.29.2 关键：Windows 构建默认【不加载】内置 @context_menu.lua（Windows 走原生 menu.conf，
+    // 而我们没有提供 menu.conf，原生菜单为空），导致 fnos-menu.lua 发出的
+    // 'script-message context_menu open' 没有任何监听者——右键绑定触发了却无菜单可弹。
+    // 这里强制加载内置 OSD 上下文菜单脚本（它会监听 context_menu open 并读取 menu-data 渲染中文菜单）。
+    args.push('--load-context-menu=yes');
+    // 把 lua 日志级别从 warn 提到 info，便于在 fnos-mpv.log 里确认菜单脚本/内置脚本是否成功加载
+    args.push('--msg-level=ffmpeg=v,stream=v,demuxer=v,stream-lavf=v,lua=info,ass=warn');
     // 直播/HTTP 断流自动重连（交给 ffmpeg 内建重试，覆盖短抖动；长期断链仍由应用层重新取流兜底）
     // reconnect_retries/on_http_error：NAS 中途断开长连接（partial file）时让 ffmpeg 多试几次断点续传，
     // 而不是很快放弃触发"提前 EOF"。
@@ -383,6 +392,16 @@ class MpvPlayer extends EventEmitter {
     return true;
   }
 
+  // 返回一个在 IPC 就绪后 resolve 的 Promise；用缓存 promise 而非 once('ipc-ready')，
+  // 避免"事件已触发、监听才注册"的竞态导致 loadfile 永不发送（mpv 停在待机画面）。
+  _whenReady() {
+    if (this.connected) return Promise.resolve();
+    if (!this._readyPromise) {
+      this._readyPromise = new Promise(resolve => { this._resolveReady = res; });
+    }
+    return this._readyPromise;
+  }
+
   _connectPipe(attempt) {
     if (this._dead || attempt > 40) {
       if (attempt > 40) this.emit('log', 'mpv ipc connect timeout');
@@ -393,6 +412,8 @@ class MpvPlayer extends EventEmitter {
     let buf = '';
     sock.on('connect', () => {
       this.connected = true;
+      // 缓存的 ready promise 先 resolve，再发事件，避免调用方晚于事件注册监听而永久挂起
+      if (this._resolveReady) { try { this._resolveReady(); } catch (_) {} this._resolveReady = null; }
       this.emit('ipc-ready');
       // 开启属性事件观察
       this.command(['observe_property', 1, 'pause']);
@@ -490,6 +511,8 @@ class MpvPlayer extends EventEmitter {
     }
     if (msg.event === 'file-loaded') {
       this._reloadTries = 0; this._restartTries = 0;
+      this._startupTries = 0; // 起播确认成功，清掉 startup watchdog 计数
+      if (this._startupTimer) { clearTimeout(this._startupTimer); this._startupTimer = null; }
       this._lastLoadedAt = Date.now();
       this._fileLoadedAt = Date.now(); // 起播宽限计时基准（loadfile 时也会重置）
       this._lastTimePos = -1; this._lastProgressAt = Date.now(); this._coreIdle = false;
@@ -565,6 +588,39 @@ class MpvPlayer extends EventEmitter {
   // 现象：点播签名链接约 10 分钟后失效，mpv 可能卡在缓冲态而不触发 end-file(error)，
   //       表现为"画面/进度不动、点播放没反应"。这里定时采样播放位置：长时间不推进且
   //       core 空闲(在缓冲)且非暂停/起播初期，则判定卡死，触发重新取流恢复。
+  // ---------- 起播确认看护（修复"打开 MKV 停在 mpv 待机画面（Drop files or URLs）"）----------
+  // 现象：loadfile 已发出，但因首包 4xx/解封装失败/地址未就绪等原因 mpv 没能 file-loaded，
+  //       end-file(error) 在极少数情况下也未触发自动恢复，mpv 保持 idle 待机画面（看似"没播放"）。
+  // 这里在起播宽限窗口结束后若仍未 file-loaded，则按断流恢复流程重试（点播会重新签名取地址）。
+  _armStartupWatchdog() {
+    try {
+      if (this._startupTimer) { clearTimeout(this._startupTimer); this._startupTimer = null; }
+      this._startupTries = this._startupTries || 0;
+      // 起播宽限：网络较慢/大文件解封装，给 20s；超过仍未 loaded 才介入
+      const graceMs = (this._isLive ? 18000 : 20000);
+      this._startupTimer = setTimeout(() => {
+        this._startupTimer = null;
+        try {
+          if (this._dead || this._quitByUser || this._manualStop || this._refreshing) return;
+          // 已经成功加载（file-loaded 触发后会置 _fileLoadedAt）或已经在播放有位置推进：健康
+          if (this._fileLoadedAt) return;
+          // 直播允许更多重试（m3u8 偶发首包失败）；点播 3 次
+          const max = this._isLive ? 6 : 3;
+          if (this._startupTries >= max) {
+            this.emit('log', 'startup watchdog gave up after ' + max + ' tries (no file-loaded)');
+            return;
+          }
+          this._startupTries++;
+          this._userPause = false;
+          this.emit('log', 'startup watchdog: no file-loaded after ' + Math.round(graceMs / 1000)
+            + 's (idle screen?), recover retry #' + this._startupTries);
+          this._reloadStream();
+        } catch (_) {}
+      }, graceMs);
+      if (this._startupTimer.unref) this._startupTimer.unref();
+    } catch (_) {}
+  }
+
   _startWatchdog() {
     this._stopWatchdog();
     this._watchdogTimer = setInterval(() => this._onWatchdogTick(), 2000);
@@ -681,8 +737,8 @@ class MpvPlayer extends EventEmitter {
     this._eofReached = false; this._userPause = false; this._seeking = false; this._seekStartedAt = 0;
     this._loadStartAt = Date.now(); this._fileLoadedAt = 0;
     this._buffering = 100;
-    const waitReady = this.connected ? Promise.resolve() :
-      new Promise(res => this.once('ipc-ready', res));
+    this._armStartupWatchdog();
+    const waitReady = this.connected ? Promise.resolve() : this._whenReady();
     await waitReady;
     // 媒体级 http 头：通过 per-file option 传入（loadfile 的 options 仅支持部分，故用 property 兜底）
     if (headers && Object.keys(headers).length) {

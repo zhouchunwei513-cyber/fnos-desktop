@@ -414,13 +414,14 @@ local function set_osc_styles()
     osc_styles = {
         bigButtons = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\3c&HFFFFFF\\fs50\\fn" .. icon_font .. "}",
         smallButtonsL = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.small_buttonsL_color) .. "\\3c&HFFFFFF\\fs19\\fn" .. icon_font .. "}",
-        smallButtonsLlabel = "{\\fscx105\\fscy105\\fn" .. mp.get_property("options/osd-font") .. "}",
+        -- fnOS 统一：所有中文功能标签（音轨/字幕/倍速/画中画）使用同一字体、字号 fs19
+        smallButtonsLlabel = "{\\fscx105\\fscy105\\fs19\\fn" .. FN.cjk_font .. "}",
         smallButtonsR = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.small_buttonsR_color) .. "\\3c&HFFFFFF\\fs30\\fn" .. icon_font .. "}",
         topButtons = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.top_buttons_color) .. "\\3c&HFFFFFF\\fs12\\fn" .. icon_font .. "}",
 
         elementDown = "{\\1c&H" .. osc_color_convert(user_opts.held_element_color) .."}",
         timecodes = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .. "\\3c&HFFFFFF\\fs20\\fn" .. FN.cjk_font .. "}",
-        vidtitle = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs14\\q2}",
+        vidtitle = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs14\\q2\\fn" .. FN.cjk_font .. "}",
         box = "{\\rDefault\\blur0\\bord1\\1c&H" .. osc_color_convert(user_opts.background_color) .. "\\3c&HFFFFFF}",
 
         topButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.top_buttons_color) .. "\\3c&HFFFFFF\\fs18\\fn" .. icon_font .. "}",
@@ -2227,15 +2228,15 @@ local function osc_init()
         local s = mp.get_property_number("speed", 1)
         local txt
         if math.abs(s - 1.0) < 0.001 then txt = "倍速" else txt = string.format("%.2gx", s) end
-        return osc_styles.vidtitleBar .. " " .. txt .. " "
+        return osc_styles.smallButtonsLlabel .. " " .. txt .. " "
     end
     ne.eventresponder["mbtn_left_up"] = function () FN.menu_speed() end
 
-    --fnOS 新增：画中画按钮（走本地 helper，与 Electron 协同）
+    --fnOS 新增：画中画按钮（与音轨/字幕标签统一字号字体；功能走本地 helper）
     ne = new_element("fnos_pip", "button")
     ne.enabled = true
     ne.content = function ()
-        return osc_styles.vidtitleBar .. " 画中画 "
+        return osc_styles.smallButtonsLlabel .. " 画中画 "
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-pip") end
 

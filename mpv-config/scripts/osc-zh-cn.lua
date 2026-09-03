@@ -188,13 +188,45 @@ end
 
 -- ============ 在线字幕 / 加载本地字幕 / 画中画（走本地 helper，免 API Key，与右键菜单共用） ============
 
+-- 弹幕子菜单（走本地 helper：B站弹幕免 Key；渲染由 fnos-danmaku.lua 负责）
+function FN.build_danmaku_items()
+    return {
+        { title = "搜索并加载弹幕…", cmd = "script-message fnos-danmaku-search" },
+        { title = "弹幕 开/关", cmd = "script-message fnos-danmaku-toggle" },
+        { type = "separator" },
+        { title = "字号 大", cmd = "script-message fnos-danmaku-opts size 42" },
+        { title = "字号 中", cmd = "script-message fnos-danmaku-opts size 34" },
+        { title = "字号 小", cmd = "script-message fnos-danmaku-opts size 26" },
+        { title = "速度 慢", cmd = "script-message fnos-danmaku-opts speed 0.7" },
+        { title = "速度 正常", cmd = "script-message fnos-danmaku-opts speed 1.0" },
+        { title = "速度 快", cmd = "script-message fnos-danmaku-opts speed 1.4" },
+        { title = "透明度 高", cmd = "script-message fnos-danmaku-opts opacity 1.0" },
+        { title = "透明度 半透", cmd = "script-message fnos-danmaku-opts opacity 0.6" },
+        { type = "separator" },
+        { title = "关闭弹幕", cmd = "script-message fnos-danmaku-off" },
+    }
+end
+
+-- 画中画子菜单：默认全屏；进入小窗后可调节大小、可明确关闭回到全屏
+function FN.build_pip_items()
+    return {
+        { title = "进入画中画（小窗）", cmd = "script-message fnos-pip-enter" },
+        { title = "关闭画中画（恢复全屏）", cmd = "script-message fnos-pip-exit" },
+        { type = "separator" },
+        { title = "小窗大小：小（320）", cmd = "script-message fnos-pip-size 320" },
+        { title = "小窗大小：中（480）", cmd = "script-message fnos-pip-size 480" },
+        { title = "小窗大小：大（680）", cmd = "script-message fnos-pip-size 720" },
+    }
+end
+
 -- ☰ 主菜单：全中文，覆盖内置 select/menu 的英文菜单。命令均为 mpv 原生 script-binding。
 function FN.menu_main()
     local items = {
         { title = "音轨选择 ▸", submenu = FN.build_audio_items() },
         { title = "字幕设置 ▸", submenu = FN.build_sub_items() },
+        { title = "弹幕 ▸", submenu = FN.build_danmaku_items() },
         { title = "播放倍速 ▸", submenu = FN.build_speed_items() },
-        { title = "画中画模式", cmd = "script-message fnos-pip" },
+        { title = "画中画 ▸", submenu = FN.build_pip_items() },
         { type = "separator" },
         { title = "播放列表", cmd = "script-binding select/select-playlist" },
         { title = "章节", cmd = "script-binding select/select-chapter" },
@@ -1965,6 +1997,11 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.vidtitleBar
 
+    geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
+    lo = add_layout("fnos_danmaku")
+    lo.geometry = geo
+    lo.style = osc_styles.vidtitleBar
+
 
     geo = { x = geo.x - padX - tcW - 10, y = geo.y, an = geo.an,
             w = tcW, h = geo.h }
@@ -2232,13 +2269,23 @@ local function osc_init()
     end
     ne.eventresponder["mbtn_left_up"] = function () FN.menu_speed() end
 
-    --fnOS 新增：画中画按钮（与音轨/字幕标签统一字号字体；功能走本地 helper）
+    --fnOS 新增：弹幕按钮（搜索/开关弹幕，走本地 helper）
+    ne = new_element("fnos_danmaku", "button")
+    ne.enabled = true
+    ne.content = function ()
+        return osc_styles.smallButtonsLlabel .. " 弹幕 "
+    end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-danmaku-search") end
+    ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-danmaku-toggle") end
+
+    --fnOS 新增：画中画按钮（左键进入小窗，右键恢复全屏；与音轨/字幕标签统一字号字体）
     ne = new_element("fnos_pip", "button")
     ne.enabled = true
     ne.content = function ()
         return osc_styles.smallButtonsLlabel .. " 画中画 "
     end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-pip") end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-pip-enter") end
+    ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-pip-exit") end
 
     --seekbar
     ne = new_element("seekbar", "slider")

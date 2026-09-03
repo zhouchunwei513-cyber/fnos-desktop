@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.30.3';
+const APP_VERSION = '1.31.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4464,6 +4464,32 @@ try {
       return r;
     } catch (e) { return { ok: false, error: String(e && e.message || e), pip: false }; }
   };
+
+  // 画中画：明确进入/退出/切换 + 尺寸调节（供 helper 调用）
+  global.__mpvHelperSetPiP = async (mode, sizePx) => {
+    try {
+      let target = null;
+      for (const surf of mpvSurfaces.values()) {
+        try { if (surf && surf.isAlive && surf.isAlive()) { target = surf; break; } } catch (_) {}
+      }
+      if (!target) return { ok: false, error: '播放器未运行', pip: false };
+      const r = await target.setPiP(mode || 'toggle', sizePx);
+      global.__mpvHelperPip = !!(r && r.pip);
+      dlog('info', 'mpv.pip', { mode: mode || 'toggle', size: sizePx, pip: global.__mpvHelperPip });
+      try { refreshMpvLayer(); } catch (_) {}
+      return r;
+    } catch (e) { return { ok: false, error: String(e && e.message || e), pip: false }; }
+  };
+
+  // 给当前活动 mpv 发送任意命令（用于弹幕脚本消息等）
+  global.__mpvHelperSendPlayerCommand = async (cmdArr) => {
+    try {
+      const player = global.__mpvHelperGetActivePlayer && global.__mpvHelperGetActivePlayer();
+      if (!player || !player.command) return { ok: false, error: 'no player' };
+      await player.command(cmdArr);
+      return { ok: true };
+    } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+  };
 } catch (_) {}
 
 // 设置页 / 对话框等应用级子窗口激活时，mpv 是无边框置顶独立窗，会盖住这些窗口。
@@ -4855,7 +4881,7 @@ async function embedMpvPlay(hostWin, payload) {
   headers['User-Agent'] = getNasUA();
 
   try {
-    await surf.play(url, headers, { isLive: !!payload.isLive || payload.scope === 'live' });
+    await surf.play(url, headers, { isLive: !!payload.isLive || payload.scope === 'live', title: payload.title || '' });
     dlog('info', 'mpv.embed.ok', { host: hostId, hasCookie: !!headers['Cookie'], hasAuth: !!headers['Authorization'], isLive: !!payload.isLive || payload.scope === 'live' });
     return { ok: true };
   } catch (err) {

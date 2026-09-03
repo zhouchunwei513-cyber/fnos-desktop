@@ -764,6 +764,17 @@ class MpvPlayer extends EventEmitter {
         if (ua) { try { await this.command(['set_property', 'user-agent', ua]); } catch (_) {} }
       }
     }
+    // 强制使用网页真实片名（document.title）作为媒体标题，避免 mpv 把签名 URL 末尾的
+    // 哈希 ID（如 59356e5e...）当作标题显示；同时供在线字幕/弹幕按片名匹配。
+    const mediaTitle = (opts && typeof opts.title === 'string' ? opts.title : '').trim();
+    if (mediaTitle) {
+      try {
+        // 去掉站点后缀（"片名 - 飞牛影视" → "片名"），保留核心名供字幕/弹幕搜索
+        const clean = mediaTitle.replace(/\s*[-_|–—]\s*飞牛.*$/, '').replace(/\s*[-_|–—]\s*fnos.*$/i, '').trim();
+        this._mediaTitle = clean || mediaTitle;
+        await this.command(['set_property', 'force-media-title', this._mediaTitle]);
+      } catch (_) {}
+    }
     await this.command(['loadfile', url, 'replace']);
     try { await this.command(['set_property', 'pause', false]); } catch (_) {}
   }

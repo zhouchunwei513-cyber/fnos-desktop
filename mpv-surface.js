@@ -118,34 +118,50 @@ class MpvSurface {
 
   // 画中画：true=进入小窗（记录当前几何，缩到宿主内容区右下角 420px 宽、保持置顶、可拖动）；
   //        false=还原（重新贴合视频区并跟随）。返回进入后的 PiP 状态。
-  async togglePiP() {
+  // 画中画：进入小窗（记录全屏几何，缩到右下角小窗，置顶可拖动）；退出即还原全屏贴合。
+  // mode: 'enter' | 'exit' | 'toggle'；sizePx 为小窗宽度（可调节大小）。
+  async setPiP(mode, sizePx) {
     if (this._dead) return { ok: false, error: '播放器已关闭', pip: false };
     try {
-      this._pip = !this._pip;
+      const want = mode === 'enter' ? true : mode === 'exit' ? false : !this._pip;
       const p = this.player;
-      if (this._pip) {
-        // 小窗始终置顶（即便宿主窗失焦/切到外部 App 也不被 refreshMpvLayer 降层，画中画就该浮着）
+      if (want) {
+        // 进入画中画前，保存当前全屏几何，便于退出时精确还原
+        if (!this._pip) {
+          this._pipSavedGeo = this._computeScreenGeometry();
+          this._pipSize = sizePx || this._pipSize || 420;
+        } else if (sizePx) {
+          this._pipSize = sizePx; // 已在画中画时调节大小
+        }
+        this._pip = true;
         try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
-        // 基于视频区几何（与正常播放同一坐标链路）缩小到右下角 420px 宽，保持正确位置/缩放
-        const full = this._computeScreenGeometry();
+        try { await p.command(['set_property', 'border', 'yes']); } catch (_) {} // 小窗带边框便于拖动/缩放
+        const full = this._pipSavedGeo || this._computeScreenGeometry();
         if (full && full.width > 0) {
-          const w = 420;
+          const w = Math.min(this._pipSize, Math.round(full.width * 0.9));
           const h = Math.round(w * 9 / 16);
           const x = Math.round(full.x + full.width - w - 24);
           const y = Math.round(full.y + full.height - h - 24);
           try { await p.setGeometry({ x, y, width: w, height: h }); } catch (_) {}
         }
+        try { this._emit("log", "pip enter size=" + this._pipSize); } catch (_) {}
       } else {
-        // 还原：先解除几何钉住，下一帧按视频区重新贴合
+        // 退出画中画：恢复无边框、还原全屏几何并重新跟随视频区
+        this._pip = false;
+        try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
         try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
         this._lastBoundsKey = '';
         this._applyGeometry();
+        try { this._emit("log", "pip exit"); } catch (_) {}
       }
       return { ok: true, pip: this._pip };
     } catch (e) {
       return { ok: false, error: String(e && e.message || e), pip: !!this._pip };
     }
   }
+
+  // 兼容旧入口
+  async togglePiP() { return this.setPiP('toggle'); }
 
   isPip() { return !!this._pip; }
 

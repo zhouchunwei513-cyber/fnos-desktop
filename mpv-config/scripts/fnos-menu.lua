@@ -63,9 +63,13 @@ local function helper_async(route, bodyJson, onDone)
 end
 
 local function media_keyword()
-    local f = mp.get_property("filename/no-ext") or "video"
-    f = tostring(f):gsub("^.*[\\/]", ""):gsub("%?.*$", "")
-    return f
+    -- 优先用真实片名（force-media-title / media-title，由客户端按网页 document.title 设置）；
+    -- 否则退到文件名。去掉站点后缀与年份/分辨率等噪音，提升字幕/弹幕命中率。
+    local name = mp.get_property("media-title") or ""
+    if name == "" then name = mp.get_property("filename/no-ext") or "video" end
+    name = tostring(name):gsub("^.*[\\/]", ""):gsub("%?.*$", "")
+    name = name:gsub("%s*[-_|–—]%s*飞牛.*$", ""):gsub("%s*[-_|–—]%s*fnos.*$", "")
+    return (name ~= "" and name) or "video"
 end
 
 -- 动态列出轨道（kind=audio/sub；prop=aid/sid）
@@ -274,6 +278,37 @@ mp.register_script_message("fnos-pip", function()
             end
         end)
     end)
+end)
+
+-- 进入画中画（可选 size 参数：320/480/720）
+local function pip_enter(sizePx)
+    pcall(function()
+        local body = sizePx and ('{"mode":"enter","size":' .. tostring(sizePx) .. '}') or '{"mode":"enter"}'
+        helper_async("/pip/toggle", body, function(data)
+            if data and data.ok then
+                mp.osd_message("已进入画中画（小窗置顶，可拖动/缩放，右键按钮恢复全屏）", 3500)
+            else
+                mp.osd_message("切换画中画失败：" .. ((data and data.error) or "未知错误"), 3000)
+            end
+        end)
+    end)
+end
+
+mp.register_script_message("fnos-pip-enter", function() pip_enter(nil) end)
+mp.register_script_message("fnos-pip-exit", function()
+    pcall(function()
+        helper_async("/pip/toggle", '{"mode":"exit"}', function(data)
+            if data and data.ok then
+                mp.osd_message("已退出画中画，恢复正常画面", 3000)
+            else
+                mp.osd_message("退出画中画失败：" .. ((data and data.error) or "未知错误"), 3000)
+            end
+        end)
+    end)
+end)
+mp.register_script_message("fnos-pip-size", function(px)
+    local n = tonumber(px)
+    if n then pip_enter(n) end
 end)
 
 -- ---------------- 安装 ----------------

@@ -71,7 +71,17 @@ function httpGet(urlStr, headers, redirects) {
       if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode)); }
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('end', () => {
+        let buf = Buffer.concat(chunks);
+        // 自动解压 gzip/deflate/br（B站弹幕 xml 等接口按 Accept-Encoding 返回压缩流）
+        const enc = String(res.headers['content-encoding'] || '').toLowerCase();
+        try {
+          if (enc === 'gzip') buf = zlib.gunzipSync(buf);
+          else if (enc === 'deflate') buf = zlib.inflateSync(buf);
+          else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
+        } catch (_) { /* 解压失败就用原始缓冲 */ }
+        resolve(buf);
+      });
     });
     req.on('timeout', () => { try { req.destroy(new Error('请求超时')); } catch (_) {} });
     req.on('error', reject);
@@ -263,12 +273,162 @@ async function loadSubtitlesIntoMpv(absPaths) {
   return okCount;
 }
 
-// 画中画：切换小窗/还原。实际窗口几何由主进程负责（要与 Electron 几何跟随协调）。
-function togglePip() {
+// ----------------------------- 弹幕：B站数据源（免 Key，公开接口） -----------------------------
+const BILI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+const BILI_HEADERS = { 'User-Agent': BILI_UA, 'Referer': 'https://www.bilibili.com/', 'Accept': 'application/json, text/xml, */*' };
+
+function biliGetText(urlStr) {
+  return httpGet(urlStr, BILI_HEADERS, 2).then(b => b.toString('utf8'));
+}
+
+// 用片名搜索 B 站视频，返回候选（bvid/标题/时长/作者），弹幕通常聚集在完整正片/合集
+async function searchBiliVideos(keyword) {
+  const url = 'https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&order=totalrank&page=1&' +
+    'keyword=' + encodeURIComponent(keyword);
+  const txt = await biliGetText(url);
+  let j; try { j = JSON.parse(txt); } catch (e) { j = null; }
+  const out = [];
+  const arr = (j && j.data && Array.isArray(j.data.result)) ? j.data.result : [];
+  for (const it of arr) {
+    if (!it || !it.bvid) continue;
+    const title = String(it.title || '').replace(/<[^>]+>/g, '');
+    const dur = String(it.duration || '');
+    // 时长 "HH:MM:SS" / "MM:SS" 转秒
+    let sec = 0; const parts = dur.split(':').map(Number);
+    for (const p of parts) { if (!isNaN(p)) sec = sec * 60 + p; }
+    out.push({ bvid: it.bvid, cid: it.cid ? Number(it.cid) : 0, aid: it.aid ? Number(it.aid) : 0,
+      title, author: it.author || '', duration: sec, play: Number(it.play) || 0 });
+    if (out.length >= 25) break;
+  }
+  return out;
+}
+
+// 取某视频的分页列表（bvid -> cid）
+async function biliPagelist(bvid, aid) {
+  const url = aid
+    ? 'https://api.bilibili.com/x/player/pagelist?aid=' + aid
+    : 'https://api.bilibili.com/x/player/pagelist?bvid=' + encodeURIComponent(bvid);
+  const txt = await biliGetText(url);
+  let j; try { j = JSON.parse(txt); } catch (e) { j = null; }
+  const arr = (j && Array.isArray(j.data)) ? j.data : [];
+  return arr.map(p => ({ cid: Number(p.cid), page: p.page, part: p.part || '', duration: Number(p.duration) || 0 }));
+}
+
+// 最小 protobuf 读取器（仅解码 B 站弹幕 seg.so 需要的字段）
+function parseBiliSegProto(buf) {
+  const out = [];
+  let i = 0;
+  const readVarint = () => { let s = 0, r = 0; while (true) { const b = buf[i++]; r |= (b & 0x7f) << s; if (!(b & 0x80)) break; s += 7; } return r >>> 0; };
+  while (i < buf.length) {
+    const tag = readVarint(); const field = tag >> 3, wt = tag & 7;
+    if (wt === 0) { readVarint(); }
+    else if (wt === 2) {
+      const len = readVarint(); const val = buf.slice(i, i + len); i += len;
+      if (field === 1) { // DanmakuElem
+        let j = 0; let prog = 0, mode = 1, fs = 25, color = 0xffffff, content = '';
+        const rv = () => { let s = 0, r = 0; while (true) { const b = val[j++]; r |= (b & 0x7f) << s; if (!(b & 0x80)) break; s += 7; } return r >>> 0; };
+        let safe = 0;
+        while (j < val.length && safe++ < 200) {
+          const t = rv(); const f = t >> 3, w = t & 7;
+          if (w === 0) { const v = rv(); if (f === 2) prog = v; else if (f === 3) mode = v; else if (f === 4) fs = v; else if (f === 5) color = v; }
+          else if (w === 2) { const l = rv(); const s2 = j; j += l; if (f === 7) { try { content = val.slice(s2, j).toString('utf8'); } catch (_) {} } }
+          else break;
+        }
+        content = String(content || '').replace(/\s+/g, ' ').trim();
+        if (content) {
+          if (content.length > 80) content = content.slice(0, 80);
+          out.push({ t: Math.round((prog / 1000) * 1000) / 1000, text: content, color, size: fs, type: mode });
+        }
+      }
+    } else break;
+  }
+  return out;
+}
+
+// 拉取并解析某 cid 的弹幕：seg.so 按每 6 分钟一段，遍历全片分段（protobuf）
+// light=true 时只拉前几段用于搜索预览计数（轻量），否则拉全片。
+async function fetchBiliDanmaku(cid, light) {
+  const out = [];
+  const maxSeg = light ? 3 : 60; // 预览取前 3 段（约 18 分钟）估算密度
+  for (let seg = 1; seg <= maxSeg; seg++) {
+    let batch;
+    try {
+      const url = 'https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=' + cid + '&segment_index=' + seg;
+      const buf = await httpGet(url, BILI_HEADERS, 2);
+      batch = parseBiliSegProto(buf);
+    } catch (e) { break; }
+    if (!batch || !batch.length) { break; }
+    for (const d of batch) out.push(d);
+    if (light && out.length > 400) break; // 预览足够
+    if (!light && batch.length < 5) break; // 末段通常很少
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
+// 搜索弹幕：返回候选视频（含弹幕数预览，便于用户选择最匹配正片）
+async function danmakuSearch(keyword) {
+  const videos = await searchBiliVideos(keyword);
+  // 正片判定：时长 ≥ 40 分钟优先；其次按时长、再按播放量。避免把"解说/混剪"排在完整正片前。
+  const isFull = (s) => s >= 2400;
+  const ranked = videos.slice().sort((a, b) => {
+    const fa = isFull(a.duration) ? 1 : 0, fb = isFull(b.duration) ? 1 : 0;
+    if (fa !== fb) return fb - fa;
+    if (a.duration >= 600 && b.duration >= 600 && Math.abs(a.duration - b.duration) > 600) return b.duration - a.duration;
+    return b.play - a.play;
+  });
+  const top = ranked.slice(0, 12);
+  const results = [];
+  for (const v of top) {
+    try {
+      let cid = v.cid;
+      if (!cid) {
+        const pages = await biliPagelist(v.bvid, v.aid);
+        // 正片取最长分页
+        pages.sort((a, b) => b.duration - a.duration);
+        cid = pages.length ? pages[0].cid : 0;
+      }
+      if (!cid) continue;
+      const dm = await fetchBiliDanmaku(cid, true);
+      if (!dm.length) continue;
+      results.push({
+        id: String(cid), // 用 cid 作为下载键
+        bvid: v.bvid, cid,
+        name: v.title + (v.author ? ' · ' + v.author : '') + '（约' + dm.length + '+条弹幕）',
+        title: v.title, count: dm.length, duration: v.duration
+      });
+      if (results.length >= 8) break;
+    } catch (_) {}
+  }
+  return results;
+}
+
+async function danmakuDownload(cid) {
+  const list = await fetchBiliDanmaku(Number(cid));
+  if (!list.length) throw new Error('该视频暂无弹幕');
+  return { ok: true, count: list.length, danmaku: list };
+}
+
+// 画中画：mode='enter'|'exit'|'toggle'，sizePx 小窗宽度。几何/窗口由主进程负责。
+function togglePip(mode, sizePx) {
   try {
-    if (typeof global.__mpvHelperTogglePip === 'function') return global.__mpvHelperTogglePip();
+    if (typeof global.__mpvHelperSetPiP === 'function') return global.__mpvHelperSetPiP(mode || 'toggle', sizePx);
+    if (typeof global.__mpvHelperTogglePip === 'function') return global.__mpvHelperTogglePip(mode, sizePx);
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
   return { ok: false, error: '画中画不可用' };
+}
+
+// 把弹幕 JSON 通过 mpv IPC 推给弹幕渲染脚本
+async function pushDanmakuToMpv(danmaku, key) {
+  try {
+    if (typeof global.__mpvHelperSendPlayerCommand === 'function') {
+      const payload = JSON.stringify({ danmaku });
+      return await global.__mpvHelperSendPlayerCommand([
+        'script-message', 'fnos-danmaku-data', payload, String(key || '')
+      ]);
+    }
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+  return { ok: false, error: '弹幕通道不可用' };
 }
 
 // ----------------------------- HTTP 服务 -----------------------------
@@ -305,7 +465,18 @@ function start() {
           return sendJson(res, 200, { ok: true, loaded: [], cancelled: true });
         }
         if (route === '/pip/toggle') {
-          return sendJson(res, 200, togglePip());
+          return sendJson(res, 200, togglePip(body.mode || 'toggle', body.size));
+        }
+        if (route === '/danmaku/search') {
+          const list = await danmakuSearch(body.keyword || body.filename || body.query || '');
+          return sendJson(res, 200, { ok: true, results: list });
+        }
+        if (route === '/danmaku/download') {
+          const r = await danmakuDownload(body.cid || body.id);
+          if (r.ok && r.danmaku && r.danmaku.length) {
+            await pushDanmakuToMpv(r.danmaku, body.cid || body.id);
+          }
+          return sendJson(res, 200, { ok: r.ok, count: r.count });
         }
         return sendJson(res, 404, { ok: false, error: 'not found' });
       } catch (e) {

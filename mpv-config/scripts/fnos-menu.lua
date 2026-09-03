@@ -1,21 +1,16 @@
 -- FNOS 内置 MPV · 全中文右键菜单
 -- 背景：mpv 官方 Windows（shinchiro）构建不随包提供 gettext 中文翻译，也没有 --lang 选项，
---       默认右键菜单是英文。这里用 Lua 直接构造原生菜单（menu-data 属性），任何版本都可用。
--- v1.29 新增：
---   1) 音轨 / 内置字幕轨 按"名称 + 语言"动态列出（不再只能循环切换）；
---   2) 在线字幕搜索（OpenSubtitles，主进程经本地助手完成搜索·下载·解压·sub-add）；
---   3) 加载本地字幕文件（主进程弹文件对话框，回传绝对路径 sub-add）；
---   4) 画中画（小窗置顶）。
+--       默认右键菜单是英文。这里用 Lua 构造菜单数据（menu-data 属性），交给 mpv 内置
+--       context_menu 脚本以 OSD 方式渲染中文菜单，任何 0.36+ 版本都可用。
+-- 打开方式：给内置脚本发 script-message "context_menu open"（等价于 script-binding context_menu/open）。
+-- v1.29 增强：音轨/内置字幕轨按名称选择、在线字幕搜索下载、加载本地字幕、画中画。
 -- 安全：全部逻辑包在 pcall 里，任何 API 不兼容/异常都只影响菜单本身，绝不影响播放。
--- 通信：网络/文件对话框/解压全部在 Electron 主进程的本地助手(127.0.0.1)完成，
---       lua 只通过 Windows 自带 curl.exe 发请求，端口/令牌来自环境变量（spawn 时注入）。
 
 local g_results = nil       -- 最近一次在线字幕搜索结果
-local g_searching = nil     -- 正在搜索的语言标记，避免重复点击
+local g_searching = nil     -- 正在搜索的语言标记
+local build_menu            -- 前向声明（open_context_menu 会先用到，真正赋值在后面）
 
--- 前向声明（build_menu 会被 refresh_menu 与右键打开时引用）
-local build_menu, refresh_menu, do_search, helper_async, media_keyword
-
+-- ---------------- 基础工具 ----------------
 local function item(title, cmd, shortcut)
     local it = { ["title"] = title }
     if cmd then it["cmd"] = cmd end
@@ -24,8 +19,24 @@ local function item(title, cmd, shortcut)
 end
 local function sep() return { ["type"] = "separator" } end
 
--- 调主进程本地助手（异步，不阻塞播放）。route 形如 /subtitle/search。
-function helper_async(route, bodyJson, onDone)
+-- 刷新菜单数据：把中文菜单写入 mpv 的 menu-data 属性（内置 context_menu / 原生右键菜单都会读它）
+local function refresh_menu_data()
+    pcall(function() mp.set_property_native("menu-data", build_menu()) end)
+end
+
+-- 打开右键菜单。Windows 无原生右键菜单，mpv 走内置 @context_menu.lua（OSD 渲染）：
+--   该脚本只暴露 script-message "context_menu open"，读取 menu-data 属性后绘制中文菜单。
+-- 注意：内置命令 "context-menu" 在 Windows 上是 VOCTRL_SHOW_MENU，无原生菜单后端=空操作，
+--       因此这里直接发 script-message 打开。每次打开前刷新 menu-data（音轨/字幕轨/搜索结果均为动态）。
+local function open_context_menu()
+    pcall(function()
+        refresh_menu_data()
+        mp.commandv("script-message", "context_menu", "open")
+    end)
+end
+
+-- 调主进程本地助手（异步 subprocess 调 curl，绝不阻塞播放）。route 形如 /subtitle/search。
+local function helper_async(route, bodyJson, onDone)
     pcall(function()
         local port = os.getenv and os.getenv("FNOS_MPV_HELPER_PORT")
         local token = (os.getenv and os.getenv("FNOS_MPV_HELPER_TOKEN")) or ""
@@ -41,7 +52,7 @@ function helper_async(route, bodyJson, onDone)
         mp.command_native_async({
             ["name"] = "subprocess", ["args"] = args,
             ["capture_stdout"] = true, ["capture_stderr"] = true, ["playback_only"] = false
-        }, function(success, res, _err)
+        }, function(_success, res, _err)
             local out = (res and res.stdout) or ""
             local ok, data = pcall(function() return mp.utils.parse_json(out) end)
             if ok and type(data) == "table" then onDone(data) else onDone(nil) end
@@ -49,7 +60,7 @@ function helper_async(route, bodyJson, onDone)
     end)
 end
 
-function media_keyword()
+local function media_keyword()
     local f = mp.get_property("filename/no-ext") or "video"
     f = tostring(f):gsub("^.*[\\/]", ""):gsub("%?.*$", "")
     return f
@@ -79,6 +90,20 @@ local function track_items(kind, prop)
     return list
 end
 
+local function online_results_submenu()
+    if not g_results or #g_results == 0 then return nil end
+    local t = {}
+    for i, r in ipairs(g_results) do
+        if i <= 25 then
+            local label = string.format("%s  [%s] 下载%s", r.name or ("字幕 " .. i), r.lang or "", tostring(r.downloads or 0))
+            table.insert(t, item(label, "script-message fnos-sub-dl " .. tostring(r.id)))
+        end
+    end
+    return { ["title"] = "▶ 在线搜索结果（点击下载）", ["type"] = "submenu", ["submenu"] = t }
+end
+
+-- ---------------- 菜单子构建器 ----------------
+
 local function audio_submenu()
     local t = track_items("audio", "aid")
     if #t == 0 then t = { item("（暂无多音轨）") } end
@@ -98,84 +123,8 @@ local function builtin_sub_submenu()
     return t
 end
 
-local function online_results_submenu()
-    if not g_results or #g_results == 0 then return nil end
-    local t = {}
-    for i, r in ipairs(g_results) do
-        if i <= 25 then
-            local label = string.format("%s  [%s] 下载%s", r.name or ("字幕 " .. i), r.lang or "", tostring(r.downloads or 0))
-            table.insert(t, item(label, "script-message fnos-sub-dl " .. tostring(r.id)))
-        end
-    end
-    return { ["title"] = "▶ 在线搜索结果（点击下载）", ["type"] = "submenu", ["submenu"] = t }
-end
-
-function refresh_menu()
-    pcall(function() mp.set_property_native("menu-data", build_menu()) end)
-end
-
-function do_search(lang, lang_label)
-    if g_searching then return end
-    g_searching = lang
-    mp.osd_message("正在搜索在线字幕（" .. lang_label .. "）…", 4000)
-    local body = mp.utils.format_json({ filename = media_keyword(), lang = lang })
-    helper_async("/subtitle/search", body, function(data)
-        g_searching = nil
-        if not data or not data.ok then
-            mp.osd_message("在线字幕搜索失败（可能被限流，请稍后再试）", 4000); return
-        end
-        g_results = data.results or {}
-        if #g_results == 0 then mp.osd_message("未找到匹配字幕，可换关键词重试", 4000); return end
-        refresh_menu()
-        mp.osd_message("找到 " .. tostring(#g_results) .. " 条字幕，请在『字幕→在线搜索结果』选择", 4000)
-        pcall(function() mp.command("menu") end)
-    end)
-end
-
-mp.register_script_message("fnos-sub-search", function(lang)
-    pcall(function() do_search(lang, lang == "en" and "英文" or "中文") end)
-end)
-
-mp.register_script_message("fnos-sub-dl", function(id)
-    local target = nil
-    if g_results then
-        for _, r in ipairs(g_results) do if tostring(r.id) == tostring(id) then target = r.item or r end end
-    end
-    if not target then mp.osd_message("字幕条目已过期，请重新搜索", 3000); return end
-    mp.osd_message("正在下载并加载字幕…", 4000)
-    helper_async("/subtitle/download", mp.utils.format_json({ item = target }), function(data)
-        if data and data.ok then
-            mp.osd_message("字幕已加载（" .. tostring(data.count or 1) .. " 个）", 3000)
-        else
-            mp.osd_message("字幕下载失败：" .. ((data and data.error) or "网络错误"), 4000)
-        end
-    end)
-end)
-
-mp.register_script_message("fnos-sub-local", function()
-    mp.osd_message("请在弹出的对话框选择字幕文件…", 4000)
-    helper_async("/subtitle/open-dialog", "{}", function(data)
-        if data and data.ok and not data.cancelled then
-            mp.osd_message("本地字幕已加载", 3000)
-        elseif data and data.cancelled then
-            mp.osd_message("已取消选择字幕", 2000)
-        else
-            mp.osd_message("加载本地字幕失败：" .. ((data and data.error) or "未知错误"), 4000)
-        end
-    end)
-end)
-
-mp.register_script_message("fnos-pip", function()
-    helper_async("/pip/toggle", "{}", function(data)
-        if data and data.ok then
-            mp.osd_message(data.pip and "已进入画中画（小窗置顶，可拖动）" or "已退出画中画", 3000)
-        else
-            mp.osd_message("画中画切换失败", 2500)
-        end
-    end)
-end)
-
-function build_menu()
+-- 真正的菜单构建
+build_menu = function()
     local sub_menu = {
         item("显示 / 隐藏字幕", "cycle sub-visibility", "v"),
         item("加载本地字幕文件…", "script-message fnos-sub-local"),
@@ -200,7 +149,7 @@ function build_menu()
 
     return {
         item("播放 / 暂停", "cycle pause", "空格"),
-        item("停止并返回网页", "quit 0"),
+        item("停止播放 / 关闭", "stop"),
         item("全屏", "cycle fullscreen", "f"),
         item("画中画（小窗置顶）", "script-message fnos-pip"),
         sep(),
@@ -260,14 +209,76 @@ function build_menu()
     }
 end
 
-pcall(function()
-    mp.set_property_native("menu-data", build_menu())
-    -- 右键直接呼出上面的中文菜单（覆盖默认英文 context menu）；每次打开刷新轨道/搜索结果
-    mp.add_forced_key_binding("MBTN_RIGHT", "fnos-context-menu", function()
-        pcall(function()
-            mp.set_property_native("menu-data", build_menu())
-            mp.command("menu")
+-- ---------------- 脚本消息：字幕搜索/下载/本地/画中画 ----------------
+mp.register_script_message("fnos-sub-search", function(lang)
+    pcall(function()
+        if g_searching then return end
+        g_searching = lang
+        mp.osd_message("正在搜索在线字幕（" .. (lang == "en" and "英文" or "中文") .. "）…", 4000)
+        local body = mp.utils.format_json({ filename = media_keyword(), lang = lang })
+        helper_async("/subtitle/search", body, function(data)
+            g_searching = nil
+            if not data or not data.ok then
+                mp.osd_message("在线字幕搜索失败（可能被限流，请稍后再试）", 4000); return
+            end
+            g_results = data.results or {}
+            if #g_results == 0 then mp.osd_message("未找到匹配字幕，可换关键词重试", 4000); return end
+            mp.osd_message("找到 " .. tostring(#g_results) .. " 条字幕，请在『字幕→在线搜索结果』选择", 4000)
+            open_context_menu()
         end)
     end)
+end)
+
+mp.register_script_message("fnos-sub-dl", function(id)
+    pcall(function()
+        local target = nil
+        if g_results then
+            for _, r in ipairs(g_results) do if tostring(r.id) == tostring(id) then target = r end end
+        end
+        if not target then mp.osd_message("字幕条目已过期，请重新搜索", 3000); return end
+        mp.osd_message("正在下载并加载字幕…", 4000)
+        helper_async("/subtitle/download", mp.utils.format_json({ item = target }), function(data)
+            if data and data.ok then
+                mp.osd_message("字幕已加载（" .. tostring(data.count or 1) .. " 个）", 3000)
+            else
+                mp.osd_message("字幕下载失败：" .. ((data and data.error) or "网络错误"), 4000)
+            end
+        end)
+    end)
+end)
+
+mp.register_script_message("fnos-sub-local", function()
+    pcall(function()
+        mp.osd_message("请在弹出的对话框选择字幕文件…", 4000)
+        helper_async("/subtitle/open-dialog", "{}", function(data)
+            if data and data.ok and not data.cancelled then
+                mp.osd_message("本地字幕已加载", 3000)
+            elseif data and data.cancelled then
+                mp.osd_message("已取消选择字幕", 2000)
+            else
+                mp.osd_message("加载本地字幕失败：" .. ((data and data.error) or "未知错误"), 4000)
+            end
+        end)
+    end)
+end)
+
+mp.register_script_message("fnos-pip", function()
+    pcall(function()
+        helper_async("/pip/toggle", "{}", function(data)
+            if data and data.ok then
+                mp.osd_message(data.pip and "已进入画中画（小窗置顶，可拖动）" or "已退出画中画", 3000)
+            else
+                mp.osd_message("画中画切换失败", 2500)
+            end
+        end)
+    end)
+end)
+
+-- ---------------- 安装 ----------------
+pcall(function()
+    -- 先预置一次中文菜单数据（此刻轨道可能还没加载，打开时 open_context_menu 会再刷新）
+    refresh_menu_data()
+    -- 右键直接呼出中文菜单（覆盖默认右键行为）；每次打开都重建 menu-data（刷新音轨/字幕轨/搜索结果）
+    mp.add_forced_key_binding("MBTN_RIGHT", "fnos-context-menu", open_context_menu)
     mp.msg.info("FNOS 中文右键菜单已加载（含在线字幕/本地字幕/画中画）")
 end)

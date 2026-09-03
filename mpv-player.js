@@ -233,6 +233,9 @@ class MpvPlayer extends EventEmitter {
     // 是否使用 --wid 嵌入（默认形态不用：走无边框置顶覆盖窗）。wid 嵌入时不做首帧隐藏，
     // 否则 visibility=no 会让嵌入窗口不渲染。
     this._useWid = !!opts.wid;
+    // 独立播放器窗口（菜单"用 mpv 打开"）：无边框但不置顶、不绑定父窗、可自由移动/缩放/全屏，
+    // 任务栏可见；仍走 IPC，画中画/字幕/弹幕等中文菜单功能均可用。
+    this._standalone = !!opts.standalone;
     // 重置 IPC 就绪 promise（新进程/新管道）
     this.connected = false;
     this._readyPromise = null;
@@ -282,6 +285,13 @@ class MpvPlayer extends EventEmitter {
       args.push(`--wid=${hwnd}`);
       // OSC 由 getMpvConfigArgs() 的 --no-osc + --script=osc-zh-cn.lua 接管（中文 OSC），这里不再传 --osc
       args.push('--border=no', '--no-window-dragging', '--osd-bar=yes');
+    } else if (this._standalone) {
+      // 独立播放器窗口：无边框 + 可拖动 + OSC 控制条 + keep-open；【不置顶】（不挡其他程序）、
+      // 可自由缩放/全屏，任务栏正常显示，初始居中宽屏。画中画时再临时 ontop、退出还原。
+      args.push('--border=no', '--ontop=no', '--osd-bar=yes',
+        '--window-dragging=yes', '--window-resizable=yes', '--title=飞牛播放器',
+        '--keep-open=yes', '--force-window=yes', '--autofit-larger=82%x78%');
+      // standalone 不按 opts.geometry 固定位置（允许自由摆放）
     } else {
       // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）+ 不在任务栏重复显示
       args.push('--border=no', '--ontop=yes', '--osd-bar=yes',

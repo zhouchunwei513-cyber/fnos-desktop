@@ -12,12 +12,17 @@ const mpvMod = require('./mpv-player');
 
 class MpvSurface {
   // parentWin: 宿主 BrowserWindow；dipRect: 视频区（相对内容区 DIP）
+  // opts.standalone: true 表示【独立播放器窗口】（菜单"用 mpv 打开"）。与嵌入覆盖窗不同：
+  //   - 窗口无边框但【不置顶、不绑定父窗几何、可自由移动/缩放/双击全屏】，任务栏可见；
+  //   - 仍走 IPC，故画中画/字幕/弹幕/倍速等中文菜单功能全部可用；
+  //   - 画中画时缩到屏幕右下角并置顶，退出时还原到画中画前的窗口几何（而不是贴合视频区）。
   constructor(parentWin, dipRect, opts = {}) {
     this.parent = parentWin;
     this._dead = false;
+    this._standalone = !!opts.standalone;
     this.viewOffset = { x: opts.viewOffsetX || 0, y: opts.viewOffsetY || 0 };
     this.dipRect = dipRect || { x: 0, y: 0, width: 800, height: 450 };
-    this.player = new mpvMod.MpvPlayer();
+    this.player = new mpvMod.MpvPlayer({ standalone: this._standalone });
     this._started = false;
     this._startSettings = opts.settings || {};
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
@@ -26,7 +31,12 @@ class MpvSurface {
     // 画中画状态：小窗时脱离视频区几何跟随，固定右下角小尺寸、保持置顶、可自由拖动。
     this._pip = false;
     this._pipSavedGeo = null;
+    // 独立窗口画中画：保存进入小窗前 mpv 自身的窗口几何（屏幕 DIP），退出时精确还原
+    this._pipSavedWin = null;
     // 注：log/end-file/exit 监听由 main.js（embedMpvPlay）统一绑定，这里不重复绑定。
+
+    // 独立窗口：不跟随父窗、不绑定父窗生命周期（由 main.js 在 mpv 退出时回收）
+    if (this._standalone) { this._start(); return; }
 
     // 父窗移动/缩放/最小化时跟随
     if (parentWin && !parentWin.isDestroyed()) {
@@ -120,44 +130,75 @@ class MpvSurface {
   //        false=还原（重新贴合视频区并跟随）。返回进入后的 PiP 状态。
   // 画中画：进入小窗（记录全屏几何，缩到右下角小窗，置顶可拖动）；退出即还原全屏贴合。
   // mode: 'enter' | 'exit' | 'toggle'；sizePx 为小窗宽度（可调节大小）。
+  // 计算画中画小窗几何（屏幕 DIP）。独立窗口用屏幕工作区，嵌入覆盖窗用宿主内容区。
+  _computePiPBase() {
+    if (this._standalone) {
+      try {
+        const { screen } = require('electron');
+        const wa = screen.getPrimaryDisplay().workArea; // {x,y,width,height}
+        return { x: wa.x, y: wa.y, width: wa.width, height: wa.height };
+      } catch (_) { return { x: 0, y: 0, width: 1920, height: 1080 }; }
+    }
+    return this._computeScreenGeometry();
+  }
+
   async setPiP(mode, sizePx) {
     if (this._dead) return { ok: false, error: '播放器已关闭', pip: false };
     try {
       const want = mode === 'enter' ? true : mode === 'exit' ? false : !this._pip;
       const p = this.player;
       if (want) {
-        // 进入画中画前，保存当前全屏几何，便于退出时精确还原
         if (!this._pip) {
-          this._pipSavedGeo = this._computeScreenGeometry();
           this._pipSize = sizePx || this._pipSize || 420;
+          if (this._standalone) {
+            // 独立窗口：先退出全屏，再保存 mpv 自身窗口几何（x/y/width/height）
+            try { await p.command(['set_property', 'fullscreen', 'no']); } catch (_) {}
+            try {
+              const [x, y, w, h] = await Promise.all([
+                p.getProperty('x'), p.getProperty('y'), p.getProperty('width'), p.getProperty('height')
+              ]);
+              if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h) && w > 0) {
+                this._pipSavedWin = { x, y, width: w, height: h };
+              }
+            } catch (_) {}
+          } else {
+            this._pipSavedGeo = this._computeScreenGeometry();
+          }
         } else if (sizePx) {
           this._pipSize = sizePx; // 已在画中画时调节大小
         }
         this._pip = true;
         try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
-        // v1.32.2：画中画小窗【始终保持无边框】。运行时把 border 切到 yes 会让 Windows/d3d11
-        //   的 mpv 重建窗口，重置几何与位置，出现带标题栏的全画面大窗（用户反馈的根因）。
-        //   窗口本就 --window-dragging=yes，无边框小窗同样可自由拖动。
+        // 两种形态都保持无边框（运行时切 border 会让 Windows/d3d11 重建窗口、重置几何）
         try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
-        const full = this._pipSavedGeo || this._computeScreenGeometry();
+        const full = this._standalone ? this._computePiPBase() : (this._pipSavedGeo || this._computeScreenGeometry());
         if (full && full.width > 0) {
           const w = Math.min(this._pipSize, Math.round(full.width * 0.9));
           const h = Math.round(w * 9 / 16);
           const x = Math.round(full.x + full.width - w - 24);
           const y = Math.round(full.y + full.height - h - 24);
-          // 清掉去抖缓存，强制下发小窗几何（避免与全屏几何被判为"未变化"而不缩小）
-          p._lastGeoStr = '';
+          p._lastGeoStr = ''; // 清掉去抖缓存，强制下发小窗几何
           try { await p.setGeometry({ x, y, width: w, height: h }); } catch (_) {}
         }
         try { this._emit("log", "pip enter size=" + this._pipSize); } catch (_) {}
       } else {
-        // 退出画中画：保持无边框、还原全屏几何并重新跟随视频区（点播/直播共用）
+        // 退出画中画
         this._pip = false;
+        try { await p.command(['set_property', 'fullscreen', 'no']); } catch (_) {}
         try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
-        try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
-        this._lastBoundsKey = '';
-        p._lastGeoStr = ''; // 强制重新下发全屏几何，确保退出后精确贴合并恢复跟随
-        this._applyGeometry();
+        if (this._standalone) {
+          // 独立窗口：恢复置顶策略（不常驻置顶），并还原到进入画中画前的窗口几何
+          try { await p.command(['set_property', 'ontop', 'no']); } catch (_) {}
+          p._lastGeoStr = '';
+          if (this._pipSavedWin) { try { await p.setGeometry(this._pipSavedWin); } catch (_) {} }
+          this._pipSavedWin = null;
+        } else {
+          // 嵌入覆盖窗：保持置顶，重新贴合视频区并恢复跟随
+          try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
+          this._lastBoundsKey = '';
+          p._lastGeoStr = '';
+          this._applyGeometry();
+        }
         try { this._emit("log", "pip exit"); } catch (_) {}
       }
       return { ok: true, pip: this._pip };

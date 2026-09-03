@@ -8,6 +8,7 @@
 
 local g_results = nil       -- 最近一次在线字幕搜索结果
 local g_searching = nil     -- 正在搜索的语言标记
+local g_pip_active = false  -- 是否处于画中画小窗（lua 侧跟踪，用于双击退出/标题切换）
 local build_menu            -- 前向声明（open_context_menu 会先用到，真正赋值在后面）
 
 -- ---------------- 基础工具 ----------------
@@ -134,16 +135,19 @@ local function track_items(kind, prop)
     return list
 end
 
-local function online_results_submenu()
-    if not g_results or #g_results == 0 then return nil end
-    local t = {}
+local function online_result_items()
+    -- 搜索结果直接平铺进字幕菜单（不套二级子菜单）；无结果返回空
+    if not g_results or #g_results == 0 then return {} end
+    local t = { sep(), { ["title"] = "在线搜索结果（点击下载加载）", ["type"] = "separator" } }
     for i, r in ipairs(g_results) do
-        if i <= 25 then
-            local label = string.format("%s  [%s] 下载%s", r.name or ("字幕 " .. i), r.lang or "", tostring(r.downloads or 0))
+        if i <= 20 then
+            local src = r.source and (r.source .. " · ") or ""
+            local label = string.format("%s%s  [%s]  下载%s", src, r.name or ("字幕 " .. i), r.lang or "", tostring(r.downloads or 0))
+            if #label > 92 then label = label:sub(1, 92) .. "…" end
             table.insert(t, item(label, "script-message fnos-sub-dl " .. tostring(r.id)))
         end
     end
-    return { ["title"] = "▶ 在线搜索结果（点击下载）", ["type"] = "submenu", ["submenu"] = t }
+    return t
 end
 
 -- ---------------- 菜单子构建器 ----------------
@@ -173,11 +177,12 @@ build_menu = function()
         item("显示 / 隐藏字幕", "cycle sub-visibility", "v"),
         item("加载本地字幕文件…", "script-message fnos-sub-local"),
         sep(),
-        item("在线搜索字幕（中文）", "script-message fnos-sub-search zh"),
-        item("在线搜索字幕（英文）", "script-message fnos-sub-search en"),
+        g_searching
+            and item("正在搜索在线字幕…")
+            or  item("在线搜索字幕（点击直接出结果）", "script-message fnos-sub-search zh"),
     }
-    local res = online_results_submenu()
-    if res then table.insert(sub_menu, sep()); table.insert(sub_menu, res) end
+    local online = online_result_items()
+    for _, it in ipairs(online) do table.insert(sub_menu, it) end
     table.insert(sub_menu, sep())
     local builtin = builtin_sub_submenu()
     if #builtin > 1 then
@@ -247,13 +252,19 @@ build_menu = function()
             item("关闭弹幕", "script-message fnos-danmaku-off"),
         }},
 
-        { ["title"] = "画中画", ["type"] = "submenu", ["submenu"] = {
-            item("进入画中画（小窗）", "script-message fnos-pip-enter"),
-            item("关闭画中画（恢复全屏并跟随窗口）", "script-message fnos-pip-exit"),
+        { ["title"] = g_pip_active and "画中画（开启中·点此退出）" or "画中画", ["type"] = "submenu", ["submenu"] = g_pip_active and {
+            item("▶ 退出画中画（恢复跟随飞牛窗口）", "script-message fnos-pip-exit"),
+            item("小提示：小窗中双击画面也可退出", nil),
             sep(),
             item("小窗大小：小（320）", "script-message fnos-pip-size 320"),
             item("小窗大小：中（480）", "script-message fnos-pip-size 480"),
-            item("小窗大小：大（680）", "script-message fnos-pip-size 720"),
+            item("小窗大小：大（720）", "script-message fnos-pip-size 720"),
+        } or {
+            item("进入画中画（小窗置顶）", "script-message fnos-pip-enter"),
+            sep(),
+            item("小窗大小：小（320）", "script-message fnos-pip-size 320"),
+            item("小窗大小：中（480）", "script-message fnos-pip-size 480"),
+            item("小窗大小：大（720）", "script-message fnos-pip-size 720"),
         }},
 
         { ["title"] = "进度跳转", ["type"] = "submenu", ["submenu"] = {
@@ -267,7 +278,7 @@ build_menu = function()
         }},
         sep(),
 
-        item("播放统计信息（码率 / 分辨率 / 帧率 / 硬解）", "script-message fnos-playback-stats", "i"),
+        item("播放信息", "script-message fnos-playback-stats", "i"),
         item("循环播放（开 / 关）", "cycle loop-file", "L"),
         sep(),
         item("FNOS 内置 MPV 显卡硬解内核", "show-text 'FNOS 桌面客户端 · 内置 MPV 显卡硬解内核' 3000"),
@@ -287,8 +298,8 @@ mp.register_script_message("fnos-sub-search", function(lang)
                 mp.osd_message("在线字幕搜索失败（可能被限流，请稍后再试）", 4000); return
             end
             g_results = data.results or {}
-            if #g_results == 0 then mp.osd_message("未找到匹配字幕，可换关键词重试", 4000); return end
-            mp.osd_message("找到 " .. tostring(#g_results) .. " 条字幕，请在『字幕→在线搜索结果』选择", 4000)
+            if #g_results == 0 then mp.osd_message("未找到匹配字幕，可尝试『在线搜索字幕（英文）』或更换片名", 4000); return end
+            mp.osd_message("找到 " .. tostring(#g_results) .. " 条字幕，已在字幕菜单中列出，请选择", 3500)
             open_context_menu()
         end)
     end)
@@ -327,11 +338,48 @@ mp.register_script_message("fnos-sub-local", function()
     end)
 end)
 
+-- 画中画状态同步：进入时强制退出全屏（小窗不应全屏）并把视频区双击改为"退出画中画"；
+-- 退出时还原双击为默认行为。解决"小窗双击变成最大化全屏、且没有退出入口"。
+local function sync_pip_bindings()
+    pcall(function()
+        if g_pip_active then
+            mp.set_property_bool("fullscreen", false)
+            -- 小窗双击 = 退出画中画（PiP 绑定优先级最高，覆盖 standalone 的双击全屏）
+            mp.add_forced_key_binding("MBTN_LEFT_DBL", "fnos-pip-dbl", function()
+                pcall(function()
+                    helper_async("/pip/toggle", '{"mode":"exit"}', function(data)
+                        if data and data.ok then
+                            g_pip_active = false
+                            sync_pip_bindings()
+                            mp.osd_message("已退出画中画", 2500)
+                        end
+                    end)
+                end)
+            end, { complex = true })
+        else
+            mp.remove_key_binding("fnos-pip-dbl")
+            -- 非画中画：独立播放器窗口（ontop=no，即"用 mpv 打开"的窗口）双击=全屏切换；
+            -- 嵌入覆盖窗（ontop=yes，贴合飞牛视频区）不启用双击全屏（mpv 默认全屏会破坏跟随）。
+            local is_standalone = (mp.get_property_native("ontop") == false)
+            if is_standalone then
+                mp.add_forced_key_binding("MBTN_LEFT_DBL", "fnos-dbl-fullscreen", function()
+                    pcall(function() mp.commandv("cycle", "fullscreen") end)
+                end, { complex = true })
+            else
+                mp.remove_key_binding("fnos-dbl-fullscreen")
+            end
+        end
+        refresh_menu_data()
+    end)
+end
+
 mp.register_script_message("fnos-pip", function()
     pcall(function()
         helper_async("/pip/toggle", "{}", function(data)
             if data and data.ok then
-                mp.osd_message(data.pip and "已进入画中画（小窗置顶，可拖动）" or "已退出画中画", 3000)
+                g_pip_active = data.pip and true or false
+                sync_pip_bindings()
+                mp.osd_message(g_pip_active and "已进入画中画（小窗置顶，可拖动；双击画面退出）" or "已退出画中画，恢复跟随飞牛窗口", 3000)
             else
                 mp.osd_message("画中画切换失败", 2500)
             end
@@ -345,7 +393,9 @@ local function pip_enter(sizePx)
         local body = sizePx and ('{"mode":"enter","size":' .. tostring(sizePx) .. '}') or '{"mode":"enter"}'
         helper_async("/pip/toggle", body, function(data)
             if data and data.ok then
-                mp.osd_message("已进入画中画（小窗置顶，可拖动/缩放，右键按钮恢复全屏）", 3500)
+                g_pip_active = true
+                sync_pip_bindings()
+                mp.osd_message("已进入画中画（小窗置顶，可拖动；双击画面退出）", 3500)
             else
                 mp.osd_message("切换画中画失败：" .. ((data and data.error) or "未知错误"), 3000)
             end
@@ -358,7 +408,9 @@ mp.register_script_message("fnos-pip-exit", function()
     pcall(function()
         helper_async("/pip/toggle", '{"mode":"exit"}', function(data)
             if data and data.ok then
-                mp.osd_message("已退出画中画，恢复正常画面", 3000)
+                g_pip_active = false
+                sync_pip_bindings()
+                mp.osd_message("已退出画中画，恢复正常画面", 2500)
             else
                 mp.osd_message("退出画中画失败：" .. ((data and data.error) or "未知错误"), 3000)
             end
@@ -376,5 +428,7 @@ pcall(function()
     refresh_menu_data()
     -- 右键直接呼出中文菜单（覆盖默认右键行为）；每次打开都重建 menu-data（刷新音轨/字幕轨/搜索结果）
     mp.add_forced_key_binding("MBTN_RIGHT", "fnos-context-menu", open_context_menu)
+    -- 启动后绑定双击行为（独立窗口双击全屏 / 嵌入窗双击不动作）。延迟到首帧后，确保 ontop 已按形态生效。
+    mp.observe_property("ontop", "bool", function() sync_pip_bindings() end)
     mp.msg.info("FNOS 中文右键菜单已加载（含在线字幕/本地字幕/画中画）")
 end)

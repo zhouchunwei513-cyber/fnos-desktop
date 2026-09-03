@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.32.2';
+const APP_VERSION = '1.32.3';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4382,7 +4382,7 @@ function gatherCookiesForOrigin(originUrl) {
 async function playMediaWithMpv(mediaUrl, opts) {
   opts = opts || {};
   try {
-    if (!MpvPlayerMod) return { ok: false, reason: 'MPV 模块未加载' };
+    if (!MpvPlayerMod || !MpvSurfaceMod) return { ok: false, reason: 'MPV 模块未加载' };
     const st = getMpvSettings();
     if (!st.enabled) return { ok: false, reason: 'MPV 播放已在设置中关闭' };
     if (process.platform !== 'win32') return { ok: false, reason: 'MPV 外部播放器仅支持 Windows' };
@@ -4396,18 +4396,45 @@ async function playMediaWithMpv(mediaUrl, opts) {
     const cookie = await gatherCookiesForOrigin(url);
     let referer = '';
     try { referer = new URL(url).origin + '/'; } catch (_) {}
-    const res = MpvPlayerMod.play(url, {
-      title: opts.title || '飞牛影视',
-      isLive: !!opts.isLive,
-      volume: opts.volume != null ? opts.volume : 100,
-      hwDecode: st.hwDecode,
-      userAgent: getNasUA(),
-      referer,
-      cookie,
-    });
-    try { liveLog(res.ok ? 'info' : 'warn', 'mpv.play', { ok: res.ok, reason: res.reason || '', isLive: !!opts.isLive }); } catch (_) {}
-    if (!res.ok) { try { glassMessageBox(mainWindow, { type: 'error', title: 'MPV 播放失败', message: res.reason || '启动播放器失败', buttons: ['确定'] }); } catch (_) {} }
-    return res;
+
+    // v1.32.3：独立播放器也走【IPC 受控】的无边框窗口（standalone MpvSurface）。
+    //   旧实现用 detached spawn 的外部 mpv（无 IPC、带系统标题栏），导致画中画/字幕/弹幕/倍速
+    //   等中文菜单请求到本地 helper 时找不到受控播放器 → "画中画切换失败"、字幕/弹幕无结果。
+    //   现在复用 MpvPlayer（IPC）+ MpvSurface(standalone)，菜单功能全部可用，窗口无边框、
+    //   可移动/缩放/双击全屏、任务栏可见；画中画退出可还原窗口几何。
+    const STANDALONE_KEY = '__standalone__';
+    let surf = mpvSurfaces.get(STANDALONE_KEY);
+    if (surf && !surf.isAlive()) { try { surf.destroy(); } catch (_) {} mpvSurfaces.delete(STANDALONE_KEY); surf = null; }
+    if (!surf) {
+      surf = new MpvSurfaceMod.MpvSurface(null, null, { standalone: true, settings: st });
+      mpvSurfaces.set(STANDALONE_KEY, surf);
+      surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
+      surf.player.on('end-file', reason => dlog('info', 'mpv.player.end', { reason: String(reason) }));
+      const onExit = (code, _sig, userClosed) => {
+        dlog('info', 'mpv.player.exit', { code, userClosed: !!userClosed, standalone: true });
+        try { if (mpvSurfaces.get(STANDALONE_KEY) === surf) mpvSurfaces.delete(STANDALONE_KEY); } catch (_) {}
+      };
+      surf.player.on('exit', onExit);
+      surf.player.on('user-closed', () => {
+        try { dlog('info', 'mpv.player.userclosed', { standalone: true }); surf.destroy(); if (mpvSurfaces.get(STANDALONE_KEY) === surf) mpvSurfaces.delete(STANDALONE_KEY); } catch (_) {}
+      });
+    }
+
+    const headers = {};
+    if (cookie) headers['Cookie'] = cookie;
+    if (referer) headers['Referer'] = referer;
+    headers['User-Agent'] = getNasUA();
+
+    try {
+      await surf.play(url, headers, { isLive: !!opts.isLive, title: opts.title || '飞牛影视', hwDecode: st.hwDecode });
+      try { liveLog('info', 'mpv.play', { ok: true, reason: '', isLive: !!opts.isLive, standalone: true }); } catch (_) {}
+      return { ok: true };
+    } catch (e) {
+      const reason = String(e && e.message || e);
+      try { liveLog('warn', 'mpv.play', { ok: false, reason, isLive: !!opts.isLive }); } catch (_) {}
+      try { glassMessageBox(mainWindow, { type: 'error', title: 'MPV 播放失败', message: reason, buttons: ['确定'] }); } catch (_) {}
+      return { ok: false, reason };
+    }
   } catch (e) {
     return { ok: false, reason: e && e.message ? e.message : String(e) };
   }

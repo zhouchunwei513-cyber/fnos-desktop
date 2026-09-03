@@ -285,7 +285,7 @@ function FN.menu_main()
         { title = "章节跳转 ▸", submenu = FN.build_chapter_items() },
         { title = "音频输出设备 ▸", submenu = FN.build_device_items() },
         { type = "separator" },
-        { title = "播放统计信息（码率/分辨率/帧率/硬解）", cmd = "script-message fnos-playback-stats" },
+        { title = "播放信息", cmd = "script-message fnos-playback-stats" },
     }
     FN.open_menu(items)
 end
@@ -509,12 +509,16 @@ local function set_osc_styles()
 
         topButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.top_buttons_color) .. "\\3c&HFFFFFF\\fs18\\fn" .. icon_font .. "}",
         smallButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\3c&HFFFFFF\\fs28\\fn" .. icon_font .. "}",
-        timecodesBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .."\\3c&HFFFFFF\\fs27}",
-        timePosBar = "{\\blur0\\bord".. user_opts.tooltipborder .."\\1c&H" .. osc_color_convert(user_opts.time_pos_color) .. "\\3c&H" .. osc_color_convert(user_opts.time_pos_outline_color) .. "\\fs30}",
-        vidtitleBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs18\\q2}",
+        -- 中文文字按钮（弹幕/倍速/画中画）容器样式：与 smallButtonsLlabel(fs19 中文字体) 匹配，
+        -- 保证和左侧图标按钮（fs28 图标字体）在同一垂直基线上，不再高低不齐。
+        -- v1.32.3 字体统一：所有文字/数字 Bar 一律使用微软雅黑（图标 Bar 仍用 mpv-osd-symbols 符号字体）
+        fnTextButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\3c&HFFFFFF\\fs19\\fscx105\\fscy105\\fn" .. FN.cjk_font .. "}",
+        timecodesBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .."\\3c&HFFFFFF\\fs27\\fn" .. FN.cjk_font .. "}",
+        timePosBar = "{\\blur0\\bord".. user_opts.tooltipborder .."\\1c&H" .. osc_color_convert(user_opts.time_pos_color) .. "\\3c&H" .. osc_color_convert(user_opts.time_pos_outline_color) .. "\\fs30\\fn" .. FN.cjk_font .. "}",
+        vidtitleBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs18\\q2\\fn" .. FN.cjk_font .. "}",
 
         wcButtons = "{\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\fs24\\fn" .. icon_font .. "}",
-        wcTitle = "{\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\fs24\\q2}",
+        wcTitle = "{\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\fs24\\q2\\fn" .. FN.cjk_font .. "}",
         wcBar = "{\\1c&H" .. osc_color_convert(user_opts.background_color) .. "}",
     }
 end
@@ -1780,9 +1784,9 @@ layouts["slimbox"] = function ()
         box = "{\\rDefault\\blur0\\bord1\\1c&H" ..
               osc_color_convert(user_opts.background_color) .. "\\3c&HFFFFFF}",
         timecodes = "{\\1c&H" .. osc_color_convert(user_opts.timecode_color) .. "\\3c&H" ..
-                    osc_color_convert(user_opts.time_pos_outline_color) .. "\\fs20\\bord2\\blur1}",
+                    osc_color_convert(user_opts.time_pos_outline_color) .. "\\fs20\\bord2\\blur1\\fn" .. FN.cjk_font .. "}",
         tooltip = "{\\1c&H" .. osc_color_convert(user_opts.time_pos_color).. "\\3c&H" ..
-                  osc_color_convert(user_opts.time_pos_outline_color) .. "\\fs12\\bord1\\blur0.5}",
+                  osc_color_convert(user_opts.time_pos_outline_color) .. "\\fs12\\bord1\\blur0.5\\fn" .. FN.cjk_font .. "}",
     }
 
 
@@ -2036,22 +2040,22 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.smallButtonsBar
 
-    -- fnOS 新增：倍速 / 画中画 中文文字按钮（放在轨道按钮左侧）
-    local fnBtnW = 66
+    -- fnOS 新增：倍速 / 画中画 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
+    local fnBtnW = 70
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
     lo = add_layout("fnos_pip")
     lo.geometry = geo
-    lo.style = osc_styles.vidtitleBar
+    lo.style = osc_styles.fnTextButtonsBar
 
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
     lo = add_layout("fnos_speed")
     lo.geometry = geo
-    lo.style = osc_styles.vidtitleBar
+    lo.style = osc_styles.fnTextButtonsBar
 
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
     lo = add_layout("fnos_danmaku")
     lo.geometry = geo
-    lo.style = osc_styles.vidtitleBar
+    lo.style = osc_styles.fnTextButtonsBar
 
 
     geo = { x = geo.x - padX - tcW - 10, y = geo.y, an = geo.an,
@@ -2329,13 +2333,13 @@ local function osc_init()
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-danmaku-search") end
     ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-danmaku-toggle") end
 
-    --fnOS 新增：画中画按钮（左键进入小窗，右键恢复全屏；与音轨/字幕标签统一字号字体）
+    --fnOS 新增：画中画按钮（左键切换进入/退出小窗，右键也退出；与音轨/字幕标签统一字号字体）
     ne = new_element("fnos_pip", "button")
     ne.enabled = true
     ne.content = function ()
         return osc_styles.smallButtonsLlabel .. " 画中画 "
     end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-pip-enter") end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-pip") end
     ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-pip-exit") end
 
     --seekbar

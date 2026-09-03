@@ -29,6 +29,29 @@ try { AdmZip = require('adm-zip'); } catch (_) { AdmZip = null; }
 
 const SUB_EXTS = ['.srt', '.ass', '.ssa', '.vtt', '.sub'];
 const HTTP_OPENSUB_UA = 'FNOS Desktop Player';
+const SHOOTER_UA = 'SubDownloader/1.5.7';
+
+// 在线字幕搜索结果内存缓存（key: query|lang -> {ts,list}），10 分钟内复用，二次打开菜单秒出
+const SUB_SEARCH_CACHE = new Map();
+const SUB_CACHE_TTL = 10 * 60 * 1000;
+
+// 清洗片名，提升在线命中率：去掉扩展名、年份、分辨率、压制组、来源/编码、季集标记中的杂质
+function cleanTitle(raw) {
+  let t = String(raw || '').replace(/\.(mkv|mp4|avi|ts|m2ts|iso|rmvb|flv|mov|webm|ass|srt)$/i, '');
+  // 点/下划线/常见分隔统一为空格
+  t = t.replace(/[._\-–]+/g, ' ');
+  // 去掉分辨率
+  t = t.replace(/\b(2160p|1080p|720p|480p|4k|8k|uhd|hdr|hdr10|dolby|remux)\b/gi, ' ');
+  // 去掉来源/压制/编码
+  t = t.replace(/\b(bluray|blu-ray|bdrip|bd|web-?dl|webrip|web|dvdrip|dvd|hdtv|hdcam|cam|x264|x265|h264|h265|hevc|aac|ac3|dts|ddp?5?1?|10bit|8bit|6ch|2ch)\b/gi, ' ');
+  // 去掉常见站点/压制组括号（[xxx]、【xxx】）
+  t = t.replace(/[\[\【].*?[\]\】]/g, ' ');
+  // 季集标记：S01E02 / 第x集 / E02，保留主名，去掉 SxxExx（射手按文件名+hash，整名也行；这里仅去掉噪声）
+  t = t.replace(/\bs\d{1,2}e\d{1,3}\b/gi, ' ').replace(/第\s*\d+\s*[季集]/g, ' ').replace(/\be\d{1,3}\b/gi, ' ');
+  // 年份可保留（帮助匹配），但去掉多余空格
+  t = t.replace(/\s+/g, ' ').trim();
+  return t || String(raw || '').trim();
+}
 
 // ----------------------------- 小工具 -----------------------------
 function log(level, event, data) {
@@ -96,6 +119,42 @@ function sendJson(res, code, obj) {
   } catch (_) {}
 }
 
+// POST application/json，返回响应体（自动处理 gzip/deflate）
+function httpPostJson(urlStr, payload, headers) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(urlStr); } catch (e) { return reject(new Error('无效链接')); }
+    const lib = u.protocol === 'http:' ? http : https;
+    const bodyBuf = Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload), 'utf8');
+    const req = lib.request(urlStr, {
+      method: 'POST',
+      headers: Object.assign({
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': bodyBuf.length,
+        'Accept-Encoding': 'gzip, deflate'
+      }, headers || {}),
+      timeout: 25000
+    }, (resp) => {
+      if (resp.statusCode !== 200) { resp.resume(); return reject(new Error('HTTP ' + resp.statusCode)); }
+      const chunks = [];
+      resp.on('data', (c) => chunks.push(c));
+      resp.on('end', () => {
+        let buf = Buffer.concat(chunks);
+        const enc = String(resp.headers['content-encoding'] || '').toLowerCase();
+        try {
+          if (enc === 'gzip') buf = zlib.gunzipSync(buf);
+          else if (enc === 'deflate') buf = zlib.inflateSync(buf);
+        } catch (_) {}
+        resolve(buf);
+      });
+    });
+    req.on('timeout', () => { try { req.destroy(new Error('请求超时')); } catch (_) {} });
+    req.on('error', reject);
+    req.write(bodyBuf);
+    req.end();
+  });
+}
+
 function readBody(req) {
   return new Promise((resolve) => {
     let data = '';
@@ -106,7 +165,63 @@ function readBody(req) {
 }
 
 // ----------------------------- 字幕：在线搜索 -----------------------------
-async function searchOnlineSubtitle(query, lang) {
+// 射手网字幕搜索（中文主力源）。返回与 OpenSubtitles 统一的条目结构。
+async function searchShooterSubtitle(title, lang) {
+  const langArg = lang === 'en' ? 'eng' : 'chn';
+  const payload = {
+    fileext: '.mkv',
+    pathname: title,
+    lang: langArg,
+    video_size: 0,
+    v2: 1
+  };
+  let body;
+  try {
+    body = await httpPostJson('https://www.shooter.cn/api/subapi.php', payload, {
+      'User-Agent': SHOOTER_UA,
+      'Referer': 'https://www.shooter.cn/'
+    });
+  } catch (e) {
+    log('warn', 'shooter.search.fail', String(e && e.message || e));
+    return [];
+  }
+  let j;
+  try { j = JSON.parse(body.toString('utf8')); } catch (e) { j = null; }
+  if (!Array.isArray(j)) return [];
+  const out = [];
+  for (const r of j) {
+    if (!r || !Array.isArray(r.Files) || !r.Files.length) continue;
+    // 挑可用下载链接：优先 ass/srt，跳过 rar（adm-zip 无法解压 rar）
+    const files = r.Files
+      .map(f => f && f.Link ? { link: f.Link, ext: String(f.Ext || '').toLowerCase().replace(/^\./, '') } : null)
+      .filter(Boolean)
+      .filter(f => f.ext !== 'rar')
+      .sort((a, b) => {
+        const rank = (e) => (e === 'ass' ? 0 : e === 'srt' ? 1 : e === 'ssa' ? 2 : 3);
+        return rank(a.ext) - rank(b.ext);
+      });
+    if (!files.length) continue;
+    const f = files[0];
+    const fmt = f.ext || 'srt';
+    const name = String(r.FileName || title || '字幕') + (r.Desc ? ' · ' + r.Desc : '');
+    out.push({
+      id: 'shooter_' + crypto.createHash('md5').update(f.link).digest('hex').slice(0, 12),
+      name: name.slice(0, 90),
+      lang: lang === 'en' ? 'English' : '简体/繁体中文',
+      langCode: lang === 'en' ? 'eng' : 'chn',
+      rating: Number(r.Score) || 0,
+      downloads: 999999 - out.length, // 射手结果整体排在前，内部按返回顺序
+      format: fmt,
+      downloadUrl: f.link,
+      zipLink: '',
+      source: '射手网'
+    });
+    if (out.length >= 30) break;
+  }
+  return out;
+}
+
+async function searchOpenSubtitle(query, lang) {
   const q = safeName(query).replace(/_/g, '-');
   const isEn = lang === 'en';
   // 中文先查繁体(zht)，为空再回退简体(chi)；英文直接 eng。
@@ -114,12 +229,14 @@ async function searchOnlineSubtitle(query, lang) {
   let arr = null;
   for (const code of codeSeq) {
     const url = 'https://rest.opensubtitles.org/search/query-' + encodeURIComponent(q) + '/sublanguageid-' + code;
-    const body = await httpGet(url, { 'User-Agent': HTTP_OPENSUB_UA, 'Accept': 'application/json' });
-    let parsed;
-    try { parsed = JSON.parse(body.toString('utf8')); } catch (e) { parsed = null; }
+    let parsed = null;
+    try {
+      const body = await httpGet(url, { 'User-Agent': HTTP_OPENSUB_UA, 'Accept': 'application/json' });
+      try { parsed = JSON.parse(body.toString('utf8')); } catch (e) { parsed = null; }
+    } catch (e) { parsed = null; }
     if (Array.isArray(parsed) && parsed.length) { arr = parsed; break; }
   }
-  if (!arr) arr = [];
+  if (!arr) return [];
   const out = [];
   for (const r of arr) {
     if (!r || !r.IDSubtitleFile) continue;
@@ -134,13 +251,48 @@ async function searchOnlineSubtitle(query, lang) {
       downloads: r.SubDownloadsCnt != null ? Number(r.SubDownloadsCnt) : 0,
       format: (r.SubFormat || '').toLowerCase(),
       downloadUrl: link,
-      zipLink: r.ZipDownloadLink || ''
+      zipLink: r.ZipDownloadLink || '',
+      source: 'OpenSubtitles'
     });
     if (out.length >= 30) break;
   }
-  // 下载量高的优先
   out.sort((a, b) => b.downloads - a.downloads);
   return out;
+}
+
+async function searchOnlineSubtitle(rawQuery, lang) {
+  const title = cleanTitle(rawQuery);
+  const ck = (lang || 'zh') + '|' + title;
+  const hit = SUB_SEARCH_CACHE.get(ck);
+  if (hit && Date.now() - hit.ts < SUB_CACHE_TTL) return hit.list;
+
+  // 射手网（中文主力）优先；OpenSubtitles 作为回退/补充。两源都失败才返回空。
+  const out = [];
+  try {
+    const shooter = await searchShooterSubtitle(title, lang);
+    for (const it of shooter) out.push(it);
+  } catch (_) {}
+  if (out.length < 3) {
+    try {
+      const opensub = await searchOpenSubtitle(title, lang);
+      // 去重：同名已存在则跳过
+      for (const it of opensub) {
+        if (!out.some(o => String(o.name).replace(/\s+/g, '') === String(it.name).replace(/\s+/g, ''))) {
+          out.push(it);
+        }
+        if (out.length >= 40) break;
+      }
+    } catch (_) {}
+  }
+
+  const result = out.slice(0, 40);
+  SUB_SEARCH_CACHE.set(ck, { ts: Date.now(), list: result });
+  // 简单控量
+  if (SUB_SEARCH_CACHE.size > 60) {
+    const oldest = SUB_SEARCH_CACHE.keys().next().value;
+    SUB_SEARCH_CACHE.delete(oldest);
+  }
+  return result;
 }
 
 // ----------------------------- 字幕：下载 + 解压 + 加载 -----------------------------
@@ -281,10 +433,55 @@ function biliGetText(urlStr) {
   return httpGet(urlStr, BILI_HEADERS, 2).then(b => b.toString('utf8'));
 }
 
+// ---- B 站 wbi 签名（search/type 等 wbi 端点必须签名，否则风控返回空）----
+const WBI_MIXIN_TAB = [
+  46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,
+  12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,
+  57,62,11,36,20,34,44,52
+];
+let _wbiKeys = null; // {imgKey, subKey, ts}
+async function getWbiKeys() {
+  const now = Date.now();
+  if (_wbiKeys && now - _wbiKeys.ts < 30 * 60 * 1000) return _wbiKeys;
+  const txt = await biliGetText('https://api.bilibili.com/x/web-interface/nav');
+  let j; try { j = JSON.parse(txt); } catch (e) { j = null; }
+  const wbi = j && j.data && j.data.wbi_img;
+  if (!wbi || !wbi.img_url) throw new Error('wbi keys unavailable');
+  const base = (u) => String(u || '').split('/').pop().split('.')[0];
+  _wbiKeys = { imgKey: base(wbi.img_url), subKey: base(wbi.sub_url), ts: now };
+  return _wbiKeys;
+}
+async function biliSignedUrl(baseUrl, params) {
+  const keys = await getWbiKeys();
+  const mixinRaw = keys.imgKey + keys.subKey;
+  let mixin = '';
+  for (const i of WBI_MIXIN_TAB) mixin += mixinRaw[i];
+  mixin = mixin.slice(0, 32);
+  const q = Object.assign({}, params);
+  q.wts = Math.round(Date.now() / 1000);
+  const keys2 = Object.keys(q).sort();
+  const parts = [];
+  for (const k of keys2) {
+    const v = String(q[k] == null ? '' : q[k]).replace(/[!'()*]/g, '');
+    parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(v));
+  }
+  const w_rid = crypto.createHash('md5').update(parts.join('&') + mixin).digest('hex');
+  parts.push('w_rid=' + w_rid);
+  return baseUrl + '?' + parts.join('&');
+}
+
 // 用片名搜索 B 站视频，返回候选（bvid/标题/时长/作者），弹幕通常聚集在完整正片/合集
 async function searchBiliVideos(keyword) {
-  const url = 'https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&order=totalrank&page=1&' +
-    'keyword=' + encodeURIComponent(keyword);
+  let url;
+  try {
+    url = await biliSignedUrl('https://api.bilibili.com/x/web-interface/wbi/search/type', {
+      search_type: 'video', order: 'totalrank', page: 1, keyword: keyword
+    });
+  } catch (e) {
+    // wbi 取不到 key 时回退旧 URL（尽力而为）
+    url = 'https://api.bilibili.com/x/web-interface/search/type?search_type=video&order=totalrank&page=1&' +
+      'keyword=' + encodeURIComponent(keyword);
+  }
   const txt = await biliGetText(url);
   let j; try { j = JSON.parse(txt); } catch (e) { j = null; }
   const out = [];

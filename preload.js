@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
   platform: process.platform,
-  version: '1.31.0',
+  version: '1.32.0',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),
@@ -589,6 +589,55 @@ contextBridge.exposeInMainWorld('fnos', {
       } catch (_) {}
     }
 
+    // 智能提取真实媒体名：播放页 document.title 常是固定的"飞牛影视"，需要从页面
+    // 标题节点/og 标签/直播间信息里找真正的影片/频道名，供 mpv force-media-title 与字幕/弹幕匹配。
+    function pickMediaTitle(isLive) {
+      const clean = (s) => String(s || '')
+        .replace(/\s+/g, ' ').trim()
+        .replace(/\s*[-_|–—·]\s*(飞牛影视|飞牛|fnos|FNOS).*$/i, '')
+        .trim();
+      const isGood = (s) => {
+        if (!s) return false;
+        const t = clean(s);
+        if (t.length < 2 || t.length > 80) return false;
+        if (/^(飞牛影视|飞牛|fnos|FNOS|登录|首页|加载中|loading)$/i.test(t)) return false;
+        return true;
+      };
+      // 1) Open Graph / meta 标题
+      try {
+        const og = document.querySelector('meta[property="og:title"],meta[name="twitter:title"],meta[itemprop="name"]');
+        const v = og && (og.getAttribute('content') || og.getAttribute('value'));
+        if (isGood(v)) return clean(v);
+      } catch (_) {}
+      // 2) 直播页：常见频道名容器（兼容不同站点 class 命名）
+      if (isLive) {
+        try {
+          const liveSel = ['.channel-name', '.live-title', '.room-name', '.player-title',
+            '[class*="channel"] [class*="name"]', '[class*="live"] [class*="title"]', 'h1'];
+          for (const sel of liveSel) {
+            const el = document.querySelector(sel);
+            const t = el && (el.getAttribute('title') || el.innerText || el.textContent);
+            if (isGood(t)) return clean(t);
+          }
+        } catch (_) {}
+      }
+      // 3) 点播：详情/播放页主标题节点
+      try {
+        const sels = ['h1.detail-title', 'h1.video-title', 'h1.play-title', '.detail-title',
+          '.video-info .title', '.player-title', '[class*="detail"] h1', '[class*="player"] h1',
+          'h1', '[class*="title"][class*="main"]', '[class*="videoTitle"]'];
+        for (const sel of sels) {
+          const el = document.querySelector(sel);
+          const t = el && (el.getAttribute('title') || el.innerText || el.textContent);
+          if (isGood(t)) return clean(t);
+        }
+      } catch (_) {}
+      // 4) 回退：document.title（去掉站点后缀），再不行才用兜底名
+      const dt = clean(document.title);
+      if (isGood(dt)) return dt;
+      return isLive ? '直播频道' : '飞牛影视';
+    }
+
     async function triggerEmbed(v, reason) {
       if (state.handled || state.resolving) return;
       // 视频区坐标：优先网页 <video>；没有（如 MKV 菜单直调）时用铺满内容区的兜底矩形
@@ -624,6 +673,7 @@ contextBridge.exposeInMainWorld('fnos', {
         });
       } catch (_) {}
       const wpLive = /\/wp\/(m3u8|flv|live)/i.test(direct.url);
+      const isLiveNow = /\/v\/live\//.test(location.pathname) || wpLive || /\.(m3u8|flv)(\?|$)/i.test(direct.url) || /\/play\//i.test(direct.url);
       const payload = {
         url: direct.url,
         mediaGuid: direct.mediaGuid,
@@ -631,8 +681,8 @@ contextBridge.exposeInMainWorld('fnos', {
         token: state.token,
         playLink: state.playLink || '',
         origin: state.baseOrigin,
-        title: document.title || '飞牛影视',
-        isLive: /\/v\/live\//.test(location.pathname) || wpLive || /\.(m3u8|flv)(\?|$)/i.test(direct.url) || /\/play\//i.test(direct.url),
+        title: pickMediaTitle(isLiveNow),
+        isLive: isLiveNow,
         scope: 'movie',
         source: direct.source,
         rect

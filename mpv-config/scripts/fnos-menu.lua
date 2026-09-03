@@ -196,6 +196,28 @@ build_menu = function()
             item("2.0 倍速", "set speed 2.0"),
         }},
 
+        { ["title"] = "弹幕", ["type"] = "submenu", ["submenu"] = {
+            item("搜索并加载弹幕…", "script-message fnos-danmaku-search"),
+            item("弹幕 开 / 关", "script-message fnos-danmaku-toggle"),
+            sep(),
+            item("字号 大", "script-message fnos-danmaku-opts size 42"),
+            item("字号 中", "script-message fnos-danmaku-opts size 34"),
+            item("字号 小", "script-message fnos-danmaku-opts size 26"),
+            item("速度 慢", "script-message fnos-danmaku-opts speed 0.7"),
+            item("速度 正常", "script-message fnos-danmaku-opts speed 1.0"),
+            item("速度 快", "script-message fnos-danmaku-opts speed 1.4"),
+            item("关闭弹幕", "script-message fnos-danmaku-off"),
+        }},
+
+        { ["title"] = "画中画", ["type"] = "submenu", ["submenu"] = {
+            item("进入画中画（小窗）", "script-message fnos-pip-enter"),
+            item("关闭画中画（恢复全屏并跟随窗口）", "script-message fnos-pip-exit"),
+            sep(),
+            item("小窗大小：小（320）", "script-message fnos-pip-size 320"),
+            item("小窗大小：中（480）", "script-message fnos-pip-size 480"),
+            item("小窗大小：大（680）", "script-message fnos-pip-size 720"),
+        }},
+
         { ["title"] = "进度跳转", ["type"] = "submenu", ["submenu"] = {
             item("后退 5 秒", "seek -5", "←"),
             item("前进 5 秒", "seek 5", "→"),
@@ -207,11 +229,10 @@ build_menu = function()
         }},
         sep(),
 
-        item("播放信息 / 统计", "script-binding stats/display-stats", "i"),
-        item("播放列表", "show-text ${playlist} 4000", "F8"),
-        item("循环播放", "cycle loop-file", "L"),
+        item("显示当前播放信息", "show-text '${media-title}\n音轨: ${track-list/count} 条 · 视频: ${width}x${height}\n缓存: ${demuxer-cache-time} 秒' 5000", "i"),
+        item("循环播放（开 / 关）", "cycle loop-file", "L"),
         sep(),
-        item("FNOS 内置 MPV 硬解内核", "show-text 'FNOS 桌面客户端 · 内置 MPV 显卡硬解内核' 3000"),
+        item("FNOS 内置 MPV 显卡硬解内核", "show-text 'FNOS 桌面客户端 · 内置 MPV 显卡硬解内核' 3000"),
     }
 end
 

@@ -69,31 +69,28 @@ function getMpvConfigArgs() {
   if (!dir) return [];
   // --config-dir 指定配置根目录（mpv.conf + scripts/ 均在其下）
   const args = [`--config-dir=${dir}`];
-  // v1.30.0：关闭内置英文 OSC，加载中文定制 OSC（osc-zh-cn.lua 自带全中文界面 +
-  // 倍速/音轨/字幕/画中画/在线字幕）。用 --no-osc 只关内置 osc.lua，不影响同样内置的
-  // @context_menu.lua（中文右键菜单仍可用）；定制脚本用 --script 显式加载，不放进
-  // scripts/ 自动加载目录，避免与内置 osc 双份注册。
-  try {
-    const oscScript = path.join(dir, 'scripts', 'osc-zh-cn.lua');
-    if (fs.existsSync(oscScript)) {
-      args.push('--no-osc', `--script=${oscScript}`);
-    }
-  } catch (_) {}
+  // v1.32.0 关键修复：关闭内置英文 OSC（--no-osc）。中文定制 OSC（osc-zh-cn.lua）
+  // 【物理文件就在 scripts/ 目录内】，mpv 会自动加载 scripts/*.lua；如果再用
+  // --script= 显式加载一次，同一份 OSC 会被加载两份（osc_zh_cn + osc_zh_cn2），
+  // 两者都用 force 重复定义同名全局输入区(input/showhide/window-controls)互相覆盖，
+  // 导致控制条按钮/彩电菜单“点不动”。因此这里【绝不能】再加 --script，
+  // 让 osc-zh-cn.lua / fnos-menu.lua / fnos-danmaku.lua 都由 scripts/ 自动加载一次即可。
+  args.push('--no-osc');
   return args;
 }
 
 // ---------- 网络缓存/预读档位（用于消除局域网/在线播放卡顿）----------
 // 数值均为 mpv 原生参数；demuxer-readahead-secs 越大缓冲越多越抗抖动。
 const CACHE_PRESETS = {
-  live: {     // 直播轻量：约 16MB / 20s 预读（N100 双路场景给直播用，demuxer 负担/内存占用最低，够抗短抖动即可）
+  live: {     // 直播极速起播：小缓冲、不等待初始缓冲填满、尽快出首帧（频道切换从 7~8s 降到 1~2s）
     cache: 'yes',
     'demuxer-max-bytes': '16MiB',
-    'demuxer-max-back-bytes': '8MiB',
-    'demuxer-readahead-secs': '20',
-    'cache-secs': '20',
-    'cache-pause': 'yes',
-    'cache-pause-initial': 'yes',
-    'cache-pause-wait': '1.2'
+    'demuxer-max-back-bytes': '4MiB',
+    'demuxer-readahead-secs': '8',
+    'cache-secs': '8',
+    'cache-pause': 'no',          // 直播：数据一到立即播，不等缓冲，明显加快首帧
+    'cache-pause-initial': 'no',  // 关键：不在起播时等待缓冲填满（直播缓存满是滞后主要原因）
+    'cache-pause-wait': '0.5'
   },
   standard: { // 均衡：约 32MB / 60s 预读
     cache: 'yes',
@@ -286,6 +283,8 @@ class MpvPlayer extends EventEmitter {
       // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）+ 不在任务栏重复显示
       args.push('--border=no', '--ontop=yes', '--osd-bar=yes',
         '--window-dragging=yes', '--title=FNOS-MPV',
+        // v1.32.0：启动即隐藏，首帧解码就绪后由 video-params 揭示（避免启动/切台时的黑窗与待机画面）
+        '--visibility=no',
         // keep-open=yes：网络抖动/读取出错/播完时停在最后一帧，绝不退回 "Drop files" 待机画面
         '--keep-open=yes', '--force-window=yes');
       if (opts.geometry && opts.geometry.width > 0) {
@@ -436,6 +435,9 @@ class MpvPlayer extends EventEmitter {
       this.command(['observe_property', 6, 'volume']);
       this.command(['observe_property', 7, 'cache-buffering-state']);
       this.command(['observe_property', 8, 'seeking']);
+      // v1.32.0：观察视频参数（首帧解码就绪信号）与轨道列表，用于"首帧前隐藏窗口"
+      this.command(['observe_property', 9, 'video-params']);
+      this.command(['observe_property', 10, 'track-list/count']);
       this._startWatchdog();
     });
     sock.on('data', chunk => {
@@ -518,6 +520,14 @@ class MpvPlayer extends EventEmitter {
         this._seeking = !!val;
         if (this._seeking && !was) this._seekStartedAt = Date.now();
         if (!this._seeking) this._seekStartedAt = 0;
+      }
+      else if (id === 9) {
+        // video-params：首帧解码就绪（有画面尺寸）→ 显示窗口（首帧前已隐藏，露出网页加载界面）
+        if (val && val.w && val.h) this._revealOnFirstFrame();
+      }
+      else if (id === 10) {
+        // 轨道列表：至少有视频轨道时也可揭示（兼容某些源 video-params 稍晚）
+        if (typeof val === 'number' && val > 0) this._maybeRevealByTracks();
       }
       return;
     }
@@ -752,6 +762,8 @@ class MpvPlayer extends EventEmitter {
     this._armStartupWatchdog();
     const waitReady = this.connected ? Promise.resolve() : this._whenReady();
     await waitReady;
+    // 首帧前隐藏窗口：切片/切台瞬间露出网页自身加载界面，避免黑窗/待机画面（观感更快）
+    try { this._armFirstFrameHide(); } catch (_) {}
     // 媒体级 http 头：通过 per-file option 传入（loadfile 的 options 仅支持部分，故用 property 兜底）
     if (headers && Object.keys(headers).length) {
       const fields = [];
@@ -806,10 +818,42 @@ class MpvPlayer extends EventEmitter {
   }
   hideWindow() { return this.command(['set_property', 'visibility', 'no']).catch(() => {}); }
   showWindow() {
-    if (!this.connected) return Promise.resolve();
+    this._forceVisible = true;
+    if (!this.connected) { Promise.resolve().then(() => this.once('ipc-ready', () => this.showWindow())); return Promise.resolve(); }
     return Promise.resolve()
       .then(() => this.command(['set_property', 'visibility', 'yes']).catch(() => {}))
       .then(() => { if (this._geometry) this.setGeometry(this._geometry); });
+  }
+
+  // ---- v1.32.0 首帧前隐藏窗口（黑屏/待机闪屏修复）----
+  // loadfile 时先隐藏 mpv 窗口（露出网页自身的加载/封面界面），等首帧解码就绪(video-params)
+  // 再显示，避免用户看到黑窗/"Drop files"待机画面；起播观感更快、更干净。
+  _armFirstFrameHide() {
+    this._forceVisible = false;
+    this._firstFrameShown = false;
+    if (this._revealFallback) { clearTimeout(this._revealFallback); this._revealFallback = null; }
+    try { this.command(['set_property', 'visibility', 'no']).catch(() => {}); } catch (_) {}
+    // 兜底：若长时间没有 video-params（纯音频/异常源），最多 6s 后强制显示，避免永久黑窗
+    this._revealFallback = setTimeout(() => { try { this._revealOnFirstFrame(); } catch (_) {} }, 6000);
+    if (this._revealFallback.unref) this._revealFallback.unref();
+  }
+  _revealOnFirstFrame() {
+    if (this._firstFrameShown || this._forceVisible) return;
+    this._firstFrameShown = true;
+    if (this._revealFallback) { clearTimeout(this._revealFallback); this._revealFallback = null; }
+    try { this.command(['set_property', 'visibility', 'yes']).catch(() => {}); } catch (_) {}
+    try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {}
+    this.emit('log', 'first-frame revealed');
+  }
+  async _maybeRevealByTracks() {
+    try {
+      const n = await this.command(['get_property', 'track-list/count']);
+      const cnt = parseInt(n, 10) || 0;
+      for (let i = 1; i <= cnt; i++) {
+        const t = await this.command(['get_property', `track-list/${i - 1}/type`]).catch(() => null);
+        if (t === 'video') { this._revealOnFirstFrame(); return; }
+      }
+    } catch (_) {}
   }
 
   // 置顶开关：偏好设置/对话框等应用子窗口激活时取消 mpv 置顶（否则无边框置顶窗会盖住设置页），

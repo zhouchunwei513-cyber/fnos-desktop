@@ -219,7 +219,60 @@ function FN.build_pip_items()
     }
 end
 
--- ☰ 主菜单：全中文，覆盖内置 select/menu 的英文菜单。命令均为 mpv 原生 script-binding。
+-- 播放列表（全中文，替代内置英文 select/select-playlist）
+function FN.build_playlist_items()
+    local items = {}
+    local n = mp.get_property_number("playlist/count", 0)
+    if n < 1 then return { { title = "（播放列表为空）", selectable = false } } end
+    local cur = mp.get_property_number("playlist-pos-1", 0)
+    for i = 1, n do
+        local title = mp.get_property("playlist/" .. (i - 1) .. "/title") or ""
+        local file = mp.get_property("playlist/" .. (i - 1) .. "/filename") or ("条目 " .. i)
+        if title == "" then title = file end
+        -- 只取文件名，去掉路径与后缀，避免签名 URL 噪音
+        title = tostring(title):gsub("^.*[\\/]", ""):gsub("%.%w+$", ""):gsub("%?.*$", "")
+        if #title > 40 then title = title:sub(1, 40) .. "…" end
+        local label = (i == cur) and ("▶ " .. title .. "（当前）") or title
+        items[#items + 1] = { title = label, cmd = "set playlist-pos-1 " .. i }
+    end
+    return items
+end
+
+-- 章节（全中文，替代内置英文 select/select-chapter）
+function FN.build_chapter_items()
+    local items = {}
+    local n = mp.get_property_number("chapter-list/count", 0)
+    if n < 1 then return { { title = "（无章节信息）", selectable = false } } end
+    local cur = mp.get_property_number("chapter", -1) + 1
+    for i = 1, n do
+        local t = mp.get_property("chapter-list/" .. (i - 1) .. "/title") or ("章节 " .. i)
+        if t == "" then t = "章节 " .. i end
+        if #t > 40 then t = t:sub(1, 40) .. "…" end
+        local label = (i == cur) and ("▶ " .. t .. "（当前）") or t
+        items[#items + 1] = { title = label, cmd = "set chapter " .. (i - 1) }
+    end
+    return items
+end
+
+-- 音频输出设备（全中文，替代内置英文 select/select-audio-device）
+function FN.build_device_items()
+    local items = {}
+    local devs = mp.get_property_native("audio-device-list", {}) or {}
+    if #devs < 1 then return { { title = "（未检测到音频设备）", selectable = false } } end
+    local cur = mp.get_property("audio-device") or ""
+    for _, d in ipairs(devs) do
+        local name = d.name or ""
+        local label = d.description or name
+        label = tostring(label):gsub("^%s*", "")
+        local isCur = (name == cur)
+        local st = {}
+        if isCur then st = { "checked" } end
+        items[#items + 1] = { title = label, cmd = "set audio-device \"" .. name .. "\"", state = st }
+    end
+    return items
+end
+
+-- ☰ 主菜单：全中文（含播放列表/章节/音频设备子菜单，全部自建中文，不跳英文 select）。
 function FN.menu_main()
     local items = {
         { title = "音轨选择 ▸", submenu = FN.build_audio_items() },
@@ -228,13 +281,9 @@ function FN.menu_main()
         { title = "播放倍速 ▸", submenu = FN.build_speed_items() },
         { title = "画中画 ▸", submenu = FN.build_pip_items() },
         { type = "separator" },
-        { title = "播放列表", cmd = "script-binding select/select-playlist" },
-        { title = "章节", cmd = "script-binding select/select-chapter" },
-        { title = "音频输出设备", cmd = "script-binding select/select-audio-device" },
-        { type = "separator" },
-        { title = "画面统计信息", cmd = "script-binding stats/display-page-1-toggle" },
-        { title = "文件信息", cmd = "script-binding stats/display-page-5-toggle" },
-        { title = "快捷键帮助", cmd = "script-binding stats/display-page-4-toggle" },
+        { title = "播放列表 ▸", submenu = FN.build_playlist_items() },
+        { title = "章节跳转 ▸", submenu = FN.build_chapter_items() },
+        { title = "音频输出设备 ▸", submenu = FN.build_device_items() },
     }
     FN.open_menu(items)
 end
@@ -2899,7 +2948,7 @@ tick = function()
             ass:new_event()
             ass:pos(display_w / 2, icon_y + 65)
             ass:an(8)
-            ass:append("Drop files or URLs to play here.")
+            ass:append("{\\fn微软雅黑\\fs32\\1c&HFFFFFF&\\bord2}飞牛播放器 · 视频加载中…")
         end
         set_osd(display_w, display_h, ass.text, -1000)
 

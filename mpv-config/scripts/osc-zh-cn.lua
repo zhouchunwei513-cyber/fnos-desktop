@@ -49,6 +49,22 @@ function FN.lang_of(t)
     return lang .. title
 end
 
+-- 播放倍速菜单项（供倍速菜单与 ☰ 主菜单子菜单共用）
+function FN.build_speed_items()
+    local cur = mp.get_property_number("speed", 1)
+    local function is_c(v) return math.abs(cur - v) < 0.001 end
+    local items = {}
+    for _, s in ipairs({ 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 }) do
+        local label = math.abs(s - 1.0) < 0.001 and "1.0x（正常）" or string.format("%.2gx", s)
+        items[#items + 1] = {
+            title = label,
+            state = is_c(s) and { "checked" } or nil,
+            cmd = "set speed " .. s .. "; osd-msg show-text 倍速 " .. string.format("%.2g", s) .. "x"
+        }
+    end
+    return items
+end
+
 -- 播放倍速菜单
 function FN.menu_speed()
     local cur = mp.get_property_number("speed", 1)
@@ -73,45 +89,48 @@ function FN.menu_speed()
     FN.open_menu(items)
 end
 
--- 音轨选择菜单
-function FN.menu_audio()
-    local tracks = FN.get_tracks().audio
+-- 音轨选择菜单项（供音轨菜单与 ☰ 主菜单子菜单共用）
+function FN.build_audio_items(tracks)
+    tracks = tracks or FN.get_tracks().audio
     local cur = mp.get_property_number("aid", -1)
-    local items = {
-        { title = "音轨选择（共 " .. #tracks .. " 条）", state = { "disabled" }, cmd = "osd-msg show-text 音轨选择" },
-        { type = "separator" },
-    }
+    local items = {}
     if #tracks == 0 then
         items[#items + 1] = { title = "（无音轨）", state = { "disabled" }, cmd = "osd-msg show-text 无音轨" }
     else
         for _, t in ipairs(tracks) do
-            local states = (t.id == cur) and { "checked" } or nil
             items[#items + 1] = {
                 title = "音轨 " .. t.id .. " · " .. FN.lang_of(t) .. ((t.id == cur) and "  [当前]" or ""),
-                state = states,
+                state = (t.id == cur) and { "checked" } or nil,
                 cmd = "set aid " .. t.id .. "; osd-msg show-text 切换到音轨 " .. t.id
             }
         end
     end
+    return items
+end
+
+-- 音轨选择菜单
+function FN.menu_audio()
+    local tracks = FN.get_tracks().audio
+    local items = {
+        { title = "音轨选择（共 " .. #tracks .. " 条）", state = { "disabled" }, cmd = "osd-msg show-text 音轨选择" },
+        { type = "separator" },
+    }
+    for _, it in ipairs(FN.build_audio_items(tracks)) do items[#items + 1] = it end
     FN.open_menu(items)
 end
 
--- 字幕设置菜单
-function FN.menu_sub()
-    local tracks = FN.get_tracks().sub
+-- 字幕设置菜单项（供字幕菜单与 ☰ 主菜单子菜单共用）
+function FN.build_sub_items(tracks)
+    tracks = tracks or FN.get_tracks().sub
     local cur = mp.get_property_number("sid", -1)
     local sub_visible = mp.get_property_bool("sub-visibility", true)
-    local items = {
-        { title = "字幕设置", state = { "disabled" }, cmd = "osd-msg show-text 字幕设置" },
-        { type = "separator" },
-    }
+    local items = {}
     items[#items + 1] = {
         title = "字幕显示开关",
         state = sub_visible and { "checked" } or nil,
         cmd = "cycle sub-visibility; osd-msg show-text 字幕显示切换"
     }
     items[#items + 1] = { type = "separator" }
-    -- 内置字幕轨（含“关闭字幕”）
     items[#items + 1] = {
         title = (cur == -1 or not sub_visible) and "关闭字幕  [当前]" or "关闭字幕",
         state = (cur == -1) and { "checked" } or nil,
@@ -127,7 +146,6 @@ function FN.menu_sub()
     end
     items[#items + 1] = { type = "separator" }
     items[#items + 1] = { title = "加载本地字幕…", cmd = "script-message fnos-sub-local" }
-    -- 在线字幕搜索（子菜单；走本地 helper，内置免 Key，无需任何配置）
     local online = {
         { title = "在线搜索字幕（内置，免设置）", state = { "disabled" }, cmd = "osd-msg show-text 在线字幕" },
         { type = "separator" },
@@ -136,17 +154,13 @@ function FN.menu_sub()
     }
     items[#items + 1] = { title = "在线字幕搜索 ▸", submenu = online }
     items[#items + 1] = { type = "separator" }
-    -- 字幕偏移
     local shift = mp.get_property_number("sub-delay", 0) or 0
-    items[#items + 1] = {
-        title = "字幕偏移（当前 " .. string.format("%.1f", shift) .. "s）", state = { "disabled" },
-        cmd = "osd-msg show-text 字幕偏移"
-    }
+    items[#items + 1] = { title = "字幕偏移（当前 " .. string.format("%.1f", shift) .. "s）", state = { "disabled" },
+        cmd = "osd-msg show-text 字幕偏移" }
     items[#items + 1] = { title = "提前 0.5 秒", cmd = "add sub-delay -0.5; osd-msg show-text 字幕提前 0.5s" }
     items[#items + 1] = { title = "延后 0.5 秒", cmd = "add sub-delay 0.5; osd-msg show-text 字幕延后 0.5s" }
     items[#items + 1] = { title = "重置偏移", cmd = "set sub-delay 0; osd-msg show-text 字幕偏移已重置" }
     items[#items + 1] = { type = "separator" }
-    -- 字幕大小/位置调节
     local scale = mp.get_property_number("sub-scale", 1) or 1
     items[#items + 1] = { title = "字幕大小（当前 " .. string.format("%.2f", scale) .. "x）", state = { "disabled" },
         cmd = "osd-msg show-text 字幕大小" }
@@ -159,11 +173,40 @@ function FN.menu_sub()
     items[#items + 1] = { title = "字幕上移", cmd = "add sub-margin-y 30; osd-msg show-text 字幕上移" }
     items[#items + 1] = { title = "字幕下移", cmd = "add sub-margin-y -30; osd-msg show-text 字幕下移" }
     items[#items + 1] = { title = "字幕位置重置", cmd = "set sub-margin-y 25; osd-msg show-text 字幕位置已重置" }
+    return items
+end
+
+-- 字幕设置菜单
+function FN.menu_sub()
+    local items = {
+        { title = "字幕设置", state = { "disabled" }, cmd = "osd-msg show-text 字幕设置" },
+        { type = "separator" },
+    }
+    for _, it in ipairs(FN.build_sub_items()) do items[#items + 1] = it end
     FN.open_menu(items)
 end
 
--- 画中画开关：mpv 侧最小实现——切换 ontop 并缩小窗口（窗口几何仍由 Electron 端统一管理）
 -- ============ 在线字幕 / 加载本地字幕 / 画中画（走本地 helper，免 API Key，与右键菜单共用） ============
+
+-- ☰ 主菜单：全中文，覆盖内置 select/menu 的英文菜单。命令均为 mpv 原生 script-binding。
+function FN.menu_main()
+    local items = {
+        { title = "音轨选择 ▸", submenu = FN.build_audio_items() },
+        { title = "字幕设置 ▸", submenu = FN.build_sub_items() },
+        { title = "播放倍速 ▸", submenu = FN.build_speed_items() },
+        { title = "画中画模式", cmd = "script-message fnos-pip" },
+        { type = "separator" },
+        { title = "播放列表", cmd = "script-binding select/select-playlist" },
+        { title = "章节", cmd = "script-binding select/select-chapter" },
+        { title = "音频输出设备", cmd = "script-binding select/select-audio-device" },
+        { type = "separator" },
+        { title = "画面统计信息", cmd = "script-binding stats/display-page-1-toggle" },
+        { title = "文件信息", cmd = "script-binding stats/display-page-5-toggle" },
+        { title = "快捷键帮助", cmd = "script-binding stats/display-page-4-toggle" },
+    }
+    FN.open_menu(items)
+end
+
 -- mpv-helper.js 已内置：OpenSubtitles 搜索/下载/解压/加载、本地文件选择对话框、画中画。
 -- OSC 字幕菜单里的「加载本地字幕/在线搜索」与画中画按钮，均直接以
 --   script-message fnos-sub-local / fnos-sub-search ... / fnos-pip
@@ -2062,6 +2105,8 @@ local function osc_init()
     ne = new_element("menu", "button")
     ne.content = icons.menu
     bind_mouse_buttons("menu")
+    -- fnOS：覆盖☰按钮，弹全中文主菜单（替代内置 select/menu 的英文菜单）
+    ne.eventresponder["mbtn_left_up"] = function () FN.menu_main() end
 
     -- playlist buttons
 

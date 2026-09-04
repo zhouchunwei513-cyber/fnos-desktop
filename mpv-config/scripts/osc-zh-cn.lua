@@ -497,14 +497,14 @@ local function set_osc_styles()
     osc_styles = {
         bigButtons = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\3c&HFFFFFF\\fs50\\fn" .. icon_font .. "}",
         smallButtonsL = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.small_buttonsL_color) .. "\\3c&HFFFFFF\\fs19\\fn" .. icon_font .. "}",
-        -- fnOS 统一：所有中文功能标签（音轨/字幕/倍速/画中画）使用同一字体、字号 fs19
-        smallButtonsLlabel = "{\\fscx105\\fscy105\\fs19\\fn" .. FN.cjk_font .. "}",
+        -- fnOS 统一：所有中文功能标签（音轨/字幕/倍速/画中画）使用同一字体、字号 fs22（与时间码一致）
+        smallButtonsLlabel = "{\\fscx100\\fscy100\\fs22\\fn" .. FN.cjk_font .. "}",
         smallButtonsR = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.small_buttonsR_color) .. "\\3c&HFFFFFF\\fs30\\fn" .. icon_font .. "}",
         topButtons = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.top_buttons_color) .. "\\3c&HFFFFFF\\fs12\\fn" .. icon_font .. "}",
 
         elementDown = "{\\1c&H" .. osc_color_convert(user_opts.held_element_color) .."}",
-        timecodes = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .. "\\3c&HFFFFFF\\fs20\\fn" .. FN.cjk_font .. "}",
-        vidtitle = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs14\\q2\\fn" .. FN.cjk_font .. "}",
+        timecodes = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .. "\\3c&HFFFFFF\\fs22\\fn" .. FN.cjk_font .. "}",
+        vidtitle = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs22\\q2\\fn" .. FN.cjk_font .. "}",
         box = "{\\rDefault\\blur0\\bord1\\1c&H" .. osc_color_convert(user_opts.background_color) .. "\\3c&HFFFFFF}",
 
         topButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.top_buttons_color) .. "\\3c&HFFFFFF\\fs18\\fn" .. icon_font .. "}",
@@ -512,10 +512,10 @@ local function set_osc_styles()
         -- 中文文字按钮（弹幕/倍速/画中画）容器样式：与 smallButtonsLlabel(fs19 中文字体) 匹配，
         -- 保证和左侧图标按钮（fs28 图标字体）在同一垂直基线上，不再高低不齐。
         -- v1.32.3 字体统一：所有文字/数字 Bar 一律使用微软雅黑（图标 Bar 仍用 mpv-osd-symbols 符号字体）
-        fnTextButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\3c&HFFFFFF\\fs19\\fscx105\\fscy105\\fn" .. FN.cjk_font .. "}",
-        timecodesBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .."\\3c&HFFFFFF\\fs27\\fn" .. FN.cjk_font .. "}",
+        fnTextButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\3c&HFFFFFF\\fs22\\fscx100\\fscy100\\fn" .. FN.cjk_font .. "}",
+        timecodesBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .."\\3c&HFFFFFF\\fs22\\fn" .. FN.cjk_font .. "}",
         timePosBar = "{\\blur0\\bord".. user_opts.tooltipborder .."\\1c&H" .. osc_color_convert(user_opts.time_pos_color) .. "\\3c&H" .. osc_color_convert(user_opts.time_pos_outline_color) .. "\\fs30\\fn" .. FN.cjk_font .. "}",
-        vidtitleBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs18\\q2\\fn" .. FN.cjk_font .. "}",
+        vidtitleBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs22\\q2\\fn" .. FN.cjk_font .. "}",
 
         wcButtons = "{\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\fs24\\fn" .. icon_font .. "}",
         wcTitle = "{\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\fs24\\q2\\fn" .. FN.cjk_font .. "}",

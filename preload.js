@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
   platform: process.platform,
-  version: '1.32.3',
+  version: '1.32.4',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),
@@ -122,7 +122,8 @@ contextBridge.exposeInMainWorld('fnos', {
       mediaTitle: '',    // 从飞牛业务接口/页面提取到的真实片名（force-media-title / 字幕 / 弹幕匹配用）
       baseOrigin: location.origin,
       handled: false,
-      resolving: false
+      resolving: false,
+      lastTitle: ''
     };
 
     // 飞牛业务 API（取信息/上报类，绝不是可播放流）。直播真流要么是跨域运营商 m3u8，
@@ -772,8 +773,34 @@ contextBridge.exposeInMainWorld('fnos', {
         rect
       };
       log('embed.invoke', { source: direct.source, url: direct.url.slice(0, 96) });
-      try { await ipcRenderer.invoke('mpv:embed', payload); }
+      try {
+        await ipcRenderer.invoke('mpv:embed', payload);
+        // 首次接管时飞牛详情/playinfo 接口可能尚未返回，片名先取到兜底名。
+        // 接管后轮询重查，一旦拿到真实片名即实时推送给 MPV 更新标题/字幕/弹幕匹配。
+        state.lastTitle = payload.title;
+        scheduleTitleRefresh(isLiveNow);
+      }
       catch (e) { state.handled = false; log('embed.invoke.err', { err: String(e && e.message || e) }); }
+    }
+
+    // 片名异步就绪后实时更新（解决 MKV 首次打开标题栏/状态栏显示"飞牛影视"）
+    function scheduleTitleRefresh(isLive) {
+      let tries = 0;
+      const tick = () => {
+        if (!state.handled) return;          // 已退出接管则停止
+        tries++;
+        try {
+          const t = pickMediaTitle(isLive);
+          const valid = t && !/^(飞牛影视|飞牛nas|直播频道|fnos)$/i.test(String(t).trim()) && String(t).trim().length >= 2;
+          if (valid && t !== state.lastTitle) {
+            state.lastTitle = t;
+            log('embed.title.update', { title: t });
+            ipcRenderer.invoke('mpv:update-title', { title: t }).catch(() => {});
+          }
+        } catch (_) {}
+        if (tries < 8) setTimeout(tick, 1000);
+      };
+      setTimeout(tick, 900);
     }
 
     function restoreVideoDisplay() {

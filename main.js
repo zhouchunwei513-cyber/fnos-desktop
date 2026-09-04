@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.32.3';
+const APP_VERSION = '1.32.4';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4916,6 +4916,26 @@ async function embedMpvPlay(hostWin, payload) {
     return { ok: false, reason: String(err && err.message || err) };
   }
 }
+
+// 片名异步就绪后实时更新：把真实片名推给当前存活的 MPV 播放器
+// （解决 MKV 首次打开时 playinfo 尚未返回、标题栏/状态栏先显示"飞牛影视"的问题）
+ipcMain.handle('mpv:update-title', async (_e, args) => {
+  try {
+    const title = args && args.title ? String(args.title).trim() : '';
+    if (!title) return { ok: false };
+    for (const surf of mpvSurfaces.values()) {
+      try {
+        if (surf && surf.isAlive && surf.isAlive() && surf.player && surf.player.setMediaTitle) {
+          await surf.player.setMediaTitle(title);
+        }
+      } catch (_) {}
+    }
+    dlog('info', 'mpv.title.update', { title });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+});
 
 ipcMain.handle('mpv:embed', async (e, payload) => {
   try {

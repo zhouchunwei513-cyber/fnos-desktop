@@ -165,60 +165,78 @@ function readBody(req) {
 }
 
 // ----------------------------- 字幕：在线搜索 -----------------------------
-// 射手网字幕搜索（中文主力源）。返回与 OpenSubtitles 统一的条目结构。
+// 射手网字幕搜索（中文主力源）。射手 subapi 按文件哈希匹配、纯片名返回空，
+// 改用射手"搜索页 HTML"按片名检索，再进详情页解析下载地址（ass/srt 直链）。
 async function searchShooterSubtitle(title, lang) {
-  const langArg = lang === 'en' ? 'eng' : 'chn';
-  const payload = {
-    fileext: '.mkv',
-    pathname: title,
-    lang: langArg,
-    video_size: 0,
-    v2: 1
-  };
-  let body;
+  const out = [];
+  // 1) 搜索页：https://www.shooter.cn/search/<片名>/  （GBK 编码）
+  let searchHtml = '';
   try {
-    body = await httpPostJson('https://www.shooter.cn/api/subapi.php', payload, {
-      'User-Agent': SHOOTER_UA,
-      'Referer': 'https://www.shooter.cn/'
-    });
+    const buf = await httpGet(
+      'https://www.shooter.cn/search/' + encodeURIComponent(title) + '/',
+      { 'User-Agent': SHOOTER_UA, 'Referer': 'https://www.shooter.cn/' }
+    );
+    searchHtml = buf.toString('latin1'); // 先按字节取，再用 iconv 思路解码 GBK
+    try { searchHtml = decodeGbk(buf); } catch (_) {}
   } catch (e) {
     log('warn', 'shooter.search.fail', String(e && e.message || e));
     return [];
   }
-  let j;
-  try { j = JSON.parse(body.toString('utf8')); } catch (e) { j = null; }
-  if (!Array.isArray(j)) return [];
-  const out = [];
-  for (const r of j) {
-    if (!r || !Array.isArray(r.Files) || !r.Files.length) continue;
-    // 挑可用下载链接：优先 ass/srt，跳过 rar（adm-zip 无法解压 rar）
-    const files = r.Files
-      .map(f => f && f.Link ? { link: f.Link, ext: String(f.Ext || '').toLowerCase().replace(/^\./, '') } : null)
-      .filter(Boolean)
-      .filter(f => f.ext !== 'rar')
-      .sort((a, b) => {
-        const rank = (e) => (e === 'ass' ? 0 : e === 'srt' ? 1 : e === 'ssa' ? 2 : 3);
-        return rank(a.ext) - rank(b.ext);
+  // 详情页链接形如 /subinfo/<数字>/ 或 /xml/<...>/
+  const detailLinks = [];
+  const re = /href="(https?:\/\/www\.shooter\.cn)?(\/(?:subinfo|sub)\/[^"#?]+)"/g;
+  let m, seen = {};
+  while ((m = re.exec(searchHtml)) !== null) {
+    const path = m[2];
+    if (!seen[path]) { seen[path] = 1; detailLinks.push('https://www.shooter.cn' + path); }
+    if (detailLinks.length >= 12) break;
+  }
+  // 2) 逐个详情页解析下载链接
+  for (const link of detailLinks) {
+    try {
+      const dbuf = await httpGet(link, { 'User-Agent': SHOOTER_UA, 'Referer': 'https://www.shooter.cn/' });
+      let dh = dbuf.toString('latin1');
+      try { dh = decodeGbk(dbuf); } catch (_) {}
+      // 下载地址：<a href="...ass/.srt" ...> 或 /api/subapi/...
+      const dl = dh.match(/href="(https?:\/\/[^"]+\.(?:ass|srt|ssa))"/i)
+             || dh.match(/href="(\/[^"]*\.(?:ass|srt|ssa))"/i);
+      if (!dl) continue;
+      let url = dl[1];
+      if (url.startsWith('/')) url = 'https://www.shooter.cn' + url;
+      const nameM = dh.match(/<title>([^<]+)<\/title>/i);
+      const fmt = (String(url).match(/\.(ass|srt|ssa)/i) || [,'srt'])[1].toLowerCase();
+      out.push({
+        id: 'shooter_' + crypto.createHash('md5').update(url).digest('hex').slice(0, 12),
+        name: cleanSubName(nameM ? nameM[1] : title) || (title + ' 字幕'),
+        lang: lang === 'en' ? 'English' : '简体/繁体中文',
+        langCode: lang === 'en' ? 'eng' : 'chn',
+        rating: 0,
+        downloads: 999999 - out.length,
+        format: fmt,
+        downloadUrl: url,
+        zipLink: '',
+        source: '射手网'
       });
-    if (!files.length) continue;
-    const f = files[0];
-    const fmt = f.ext || 'srt';
-    const name = String(r.FileName || title || '字幕') + (r.Desc ? ' · ' + r.Desc : '');
-    out.push({
-      id: 'shooter_' + crypto.createHash('md5').update(f.link).digest('hex').slice(0, 12),
-      name: name.slice(0, 90),
-      lang: lang === 'en' ? 'English' : '简体/繁体中文',
-      langCode: lang === 'en' ? 'eng' : 'chn',
-      rating: Number(r.Score) || 0,
-      downloads: 999999 - out.length, // 射手结果整体排在前，内部按返回顺序
-      format: fmt,
-      downloadUrl: f.link,
-      zipLink: '',
-      source: '射手网'
-    });
-    if (out.length >= 30) break;
+      if (out.length >= 20) break;
+    } catch (_) {}
   }
   return out;
+}
+
+// 极简 GBK→UTF8：优先用系统 iconv-lite（若打包内有），否则返回 latin1 兜底
+function decodeGbk(buf) {
+  try {
+    // Electron/Node 环境无内置 GBK 解码；尝试动态加载，失败则交给 latin1 正则（URL 多为 ASCII 可正常解析）
+    // eslint-disable-next-line
+    const iconv = require('iconv-lite');
+    return iconv.decode(buf, 'gbk');
+  } catch (_) {
+    return buf.toString('utf8');
+  }
+}
+
+function cleanSubName(s) {
+  return String(s || '').replace(/[_\-]?射手网.*$/i, '').replace(/\s*-\s*字幕下载.*/i, '').replace(/\.(ass|srt|ssa)$/i, '').replace(/\s+/g, ' ').trim().slice(0, 90);
 }
 
 async function searchOpenSubtitle(query, lang) {

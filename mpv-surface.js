@@ -168,9 +168,13 @@ class MpvSurface {
           this._pipSize = sizePx; // 已在画中画时调节大小
         }
         this._pip = true;
+        // 进入小窗前必须退出全屏，否则全屏会覆盖几何导致"仍是全画面"
+        try { await p.command(['set_property', 'fullscreen', 'no']); } catch (_) {}
         try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
         // 两种形态都保持无边框（运行时切 border 会让 Windows/d3d11 重建窗口、重置几何）
         try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
+        // 暂停宿主几何跟随，避免小窗被周期 setRect 拉回视频区
+        this._lastBoundsKey = '__pip__';
         const full = this._standalone ? this._computePiPBase() : (this._pipSavedGeo || this._computeScreenGeometry());
         if (full && full.width > 0) {
           const w = Math.min(this._pipSize, Math.round(full.width * 0.9));

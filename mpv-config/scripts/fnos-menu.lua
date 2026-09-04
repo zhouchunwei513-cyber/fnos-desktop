@@ -83,7 +83,15 @@ local function fmt_kbps(v)
     return string.format("%d Kbps", n)
 end
 
+local _stats_visible = false
 local function show_playback_stats()
+    -- 再点一次"播放信息"即关闭（提供明确退出机制）
+    if _stats_visible then
+        _stats_visible = false
+        mp.osd_message("", 0.01)
+        return
+    end
+    _stats_visible = true
     pcall(function()
         local g = function(p, d) local v = mp.get_property(p); if v == nil or v == "" then return d end; return v end
         local gn = function(p, d) local v = mp.get_property_number(p); if v == nil then return d end; return v end
@@ -106,10 +114,33 @@ local function show_playback_stats()
         local spd = gn("avsync", 0)
         table.insert(lines, "A/V 同步偏差: " .. string.format("%.3f", spd) .. " 秒   音量: "
             .. string.format("%d", gn("volume", 100)) .. "%")
-        mp.osd_message(table.concat(lines, "\n"), 8000)
+        table.insert(lines, "————（再次点击菜单「播放信息」或按 x 关闭）")
+        mp.osd_message(table.concat(lines, "\n"), 12000)
+        mp.add_timeout(12.1, function() _stats_visible = false end)
     end)
 end
+-- 按 x 快速关闭播放信息
+mp.add_key_binding("x", "fnos-stats-close", function()
+    if _stats_visible then _stats_visible = false; mp.osd_message("", 0.01) end
+end)
 mp.register_script_message("fnos-playback-stats", show_playback_stats)
+
+-- 画质（输出缩放）：原画=清除 vf 中的 scale；其余把输出高度限制到目标值（宽度按比例 -2 保持偶数）
+mp.register_script_message("fnos-quality", function(q)
+    pcall(function()
+        if not q or q == "original" or q == "原画" then
+            mp.commandv("vf", "remove", "@fnos_q")
+            mp.osd_message("画质：原画（不缩放）", 2000)
+        else
+            local h = tonumber(tostring(q):match("%d+"))
+            if not h then return end
+            -- 强制重建：先移除再加，保证切换生效
+            mp.commandv("vf", "remove", "@fnos_q")
+            mp.commandv("vf", "add", "@fnos_q:lavfi=[scale=-2:'min(" .. h .. ",ih)':flags=lanczos]")
+            mp.osd_message("画质：" .. h .. "p", 2000)
+        end
+    end)
+end)
 
 -- 动态列出轨道（kind=audio/sub；prop=aid/sid）
 local function track_items(kind, prop)
@@ -218,6 +249,14 @@ build_menu = function()
 
         { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = {
             item("切换全屏", "cycle fullscreen", "f"),
+            sep(),
+            -- 画质（输出缩放）：原画=不缩放；其余把输出高度压到目标值，省算力/带宽观感更顺滑
+            item("画质：原画（不缩放）", "script-message fnos-quality original"),
+            item("画质：1080p", "script-message fnos-quality 1080"),
+            item("画质：720p", "script-message fnos-quality 720"),
+            item("画质：480p", "script-message fnos-quality 480"),
+            item("画质：360p", "script-message fnos-quality 360"),
+            sep(),
             item("画面比例 16:9", "set video-aspect-override 16:9"),
             item("画面比例 4:3", "set video-aspect-override 4:3"),
             item("画面比例 自动", "set video-aspect-override -1", "A"),

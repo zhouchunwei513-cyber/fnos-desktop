@@ -764,6 +764,19 @@ class MpvPlayer extends EventEmitter {
     }
   }
 
+  // 运行时更新片名（首次播放时 playinfo 可能尚未返回，拿到真实片名后实时推送）
+  async setMediaTitle(title) {
+    try {
+      const t = String(title || '').trim();
+      if (!t) return;
+      this._mediaTitle = t;
+      await this.command(['set_property', 'force-media-title', t]);
+      log('media-title updated', { title: t.slice(0, 60) });
+    } catch (e) {
+      log('setMediaTitle error', { err: String(e && e.message || e) });
+    }
+  }
+
   // 加载并播放（可带该媒体专属头）。opts: { isLive, recover, resumePos }
   // recover=true 表示这是断流恢复（重新签名/重连）：保留 _resumePos，新流 file-loaded 后 seek 回断点，
   // 不能像"打开新视频"那样把断点清空（否则恢复后会从头播放，表现为播一段时间就回到开头循环）。

@@ -29,7 +29,6 @@ try { AdmZip = require('adm-zip'); } catch (_) { AdmZip = null; }
 
 const SUB_EXTS = ['.srt', '.ass', '.ssa', '.vtt', '.sub'];
 const HTTP_OPENSUB_UA = 'FNOS Desktop Player';
-const SHOOTER_UA = 'SubDownloader/1.5.7';
 
 // 在线字幕搜索结果内存缓存（key: query|lang -> {ts,list}），10 分钟内复用，二次打开菜单秒出
 const SUB_SEARCH_CACHE = new Map();
@@ -165,147 +164,102 @@ function readBody(req) {
 }
 
 // ----------------------------- 字幕：在线搜索 -----------------------------
-// 射手网字幕搜索（中文主力源）。射手 subapi 按文件哈希匹配、纯片名返回空，
-// 改用射手"搜索页 HTML"按片名检索，再进详情页解析下载地址（ass/srt 直链）。
-async function searchShooterSubtitle(title, lang) {
-  const out = [];
-  // 1) 搜索页：https://www.shooter.cn/search/<片名>/  （GBK 编码）
-  let searchHtml = '';
-  try {
-    const buf = await httpGet(
-      'https://www.shooter.cn/search/' + encodeURIComponent(title) + '/',
-      { 'User-Agent': SHOOTER_UA, 'Referer': 'https://www.shooter.cn/' }
-    );
-    searchHtml = buf.toString('latin1'); // 先按字节取，再用 iconv 思路解码 GBK
-    try { searchHtml = decodeGbk(buf); } catch (_) {}
-  } catch (e) {
-    log('warn', 'shooter.search.fail', String(e && e.message || e));
-    return [];
-  }
-  // 详情页链接形如 /subinfo/<数字>/ 或 /xml/<...>/
-  const detailLinks = [];
-  const re = /href="(https?:\/\/www\.shooter\.cn)?(\/(?:subinfo|sub)\/[^"#?]+)"/g;
-  let m, seen = {};
-  while ((m = re.exec(searchHtml)) !== null) {
-    const path = m[2];
-    if (!seen[path]) { seen[path] = 1; detailLinks.push('https://www.shooter.cn' + path); }
-    if (detailLinks.length >= 12) break;
-  }
-  // 2) 逐个详情页解析下载链接
-  for (const link of detailLinks) {
-    try {
-      const dbuf = await httpGet(link, { 'User-Agent': SHOOTER_UA, 'Referer': 'https://www.shooter.cn/' });
-      let dh = dbuf.toString('latin1');
-      try { dh = decodeGbk(dbuf); } catch (_) {}
-      // 下载地址：<a href="...ass/.srt" ...> 或 /api/subapi/...
-      const dl = dh.match(/href="(https?:\/\/[^"]+\.(?:ass|srt|ssa))"/i)
-             || dh.match(/href="(\/[^"]*\.(?:ass|srt|ssa))"/i);
-      if (!dl) continue;
-      let url = dl[1];
-      if (url.startsWith('/')) url = 'https://www.shooter.cn' + url;
-      const nameM = dh.match(/<title>([^<]+)<\/title>/i);
-      const fmt = (String(url).match(/\.(ass|srt|ssa)/i) || [,'srt'])[1].toLowerCase();
-      out.push({
-        id: 'shooter_' + crypto.createHash('md5').update(url).digest('hex').slice(0, 12),
-        name: cleanSubName(nameM ? nameM[1] : title) || (title + ' 字幕'),
-        lang: lang === 'en' ? 'English' : '简体/繁体中文',
-        langCode: lang === 'en' ? 'eng' : 'chn',
-        rating: 0,
-        downloads: 999999 - out.length,
-        format: fmt,
-        downloadUrl: url,
-        zipLink: '',
-        source: '射手网'
-      });
-      if (out.length >= 20) break;
-    } catch (_) {}
-  }
-  return out;
+// 射手网(伪) assrt.net —— 中文主力字幕源（免登录、网页检索、zip 直链下载，实测可用）。
+// 链路：搜索页 /sub/?searchword=<片名>(UTF-8) → 详情页 /xml/sub/<g>/<id>.xml → 下载 /download/<id>/<名>.zip
+// 说明：旧 www.shooter.cn/search/<片名>/ 已 404；射手 subapi 按文件哈希匹配、纯片名返空；
+//       OpenSubtitles 旧 REST(rest.opensubtitles.org) 已 302 失效。故改用 assrt.net 网页检索。
+const ASSRT_BASE = 'https://assrt.net';
+const ASSRT_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+  'Referer': ASSRT_BASE + '/',
+  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+};
+
+function stripHtml(s) {
+  return String(s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// 极简 GBK→UTF8：优先用系统 iconv-lite（若打包内有），否则返回 latin1 兜底
-function decodeGbk(buf) {
+async function searchAssrtSubtitle(title, lang) {
+  const out = [];
+  let searchHtml = '';
   try {
-    // Electron/Node 环境无内置 GBK 解码；尝试动态加载，失败则交给 latin1 正则（URL 多为 ASCII 可正常解析）
-    // eslint-disable-next-line
-    const iconv = require('iconv-lite');
-    return iconv.decode(buf, 'gbk');
-  } catch (_) {
-    return buf.toString('utf8');
+    const buf = await httpGet(ASSRT_BASE + '/sub/?searchword=' + encodeURIComponent(title), ASSRT_HEADERS);
+    searchHtml = buf.toString('utf8');
+  } catch (e) {
+    log('warn', 'assrt.search.fail', { title, err: String(e && e.message || e) });
+    return [];
   }
+  // 详情页链接：/xml/sub/<g>/<id>.xml（锚点文本为字幕标题）
+  const links = [];
+  const seen = {};
+  let m;
+  const re = /href="(\/xml\/sub\/\d+\/\d+\.xml)"[^>]*>([\s\S]*?)<\/a>/g;
+  while ((m = re.exec(searchHtml)) !== null) {
+    const u = m[1];
+    if (!seen[u]) { seen[u] = 1; links.push({ u: u, name: stripHtml(m[2]) }); }
+    if (links.length >= 15) break;
+  }
+  log('info', 'assrt.search', { title, links: links.length });
+  for (const it of links) {
+    try {
+      const dbuf = await httpGet(ASSRT_BASE + it.u, ASSRT_HEADERS);
+      const dh = dbuf.toString('utf8');
+      // 标题：<title>片名 (年份) 字幕 - 射手网(伪)</title>
+      const titleM = dh.match(/<title>([\s\S]*?)<\/title>/i);
+      let pageTitle = titleM ? stripHtml(String(titleM[1]).replace(/字幕[\s\S]*$/, '').replace(/\([0-9]{4}\).*$/, '')) : '';
+      // 下载链接：优先 zip（主进程可解压）；rar 无法解压，跳过
+      const zipM = dh.match(/\/download\/\d+\/[^"'\s]*?\.zip/i);
+      const rarM = dh.match(/\/download\/\d+\/[^"'\s]*?\.rar/i);
+      if (!zipM) { log('info', 'assrt.skip', { page: it.u, reason: rarM ? 'rar-only' : 'no-download' }); continue; }
+      const dlPath = zipM[0].replace(/&amp;/g, '&');
+      const fileM = dh.match(/文件名[：:]\s*([^<\r\n]+)/);
+      const fileName = fileM ? stripHtml(fileM[1]) : '';
+      let name = cleanSubName(fileName || pageTitle || it.name || title) || (title + ' 字幕');
+      // 语言粗判（页面无结构化语言字段，按文件名/标题关键字推断）
+      let langLabel = '简体/繁体中文', langCode = 'chn';
+      if (/english|英文|[\s.\[]en[\s.\]]/i.test(name + ' ' + pageTitle)) { langLabel = 'English'; langCode = 'eng'; }
+      else if (/繁体|繁體|cht|traditional/i.test(name)) { langLabel = '繁体中文'; langCode = 'cht'; }
+      out.push({
+        id: 'assrt_' + ((dlPath.match(/\/download\/(\d+)\//) || [])[1] || 'x') + '_' + crypto.createHash('md5').update(dlPath).digest('hex').slice(0, 6),
+        name,
+        lang: lang === 'en' ? 'English' : langLabel,
+        langCode: lang === 'en' ? 'eng' : langCode,
+        rating: 0,
+        downloads: 999999 - out.length,
+        format: 'zip',
+        downloadUrl: ASSRT_BASE + dlPath,
+        zipLink: '',
+        source: '射手网(伪)'
+      });
+      if (out.length >= 20) break;
+    } catch (e) { /* 单条详情失败忽略，继续下一条 */ }
+  }
+  log('info', 'assrt.result', { title, count: out.length });
+  return out;
 }
 
 function cleanSubName(s) {
-  return String(s || '').replace(/[_\-]?射手网.*$/i, '').replace(/\s*-\s*字幕下载.*/i, '').replace(/\.(ass|srt|ssa)$/i, '').replace(/\s+/g, ' ').trim().slice(0, 90);
+  return String(s || '').replace(/[_\-]?射手网[\s\S]*$/i, '').replace(/\s*-\s*字幕下载[\s\S]*$/i, '').replace(/\.(ass|srt|ssa|zip|rar)$/i, '').replace(/\s+/g, ' ').trim().slice(0, 90);
 }
 
-async function searchOpenSubtitle(query, lang) {
-  const q = safeName(query).replace(/_/g, '-');
-  const isEn = lang === 'en';
-  // 中文先查繁体(zht)，为空再回退简体(chi)；英文直接 eng。
-  const codeSeq = isEn ? ['eng'] : ['zht', 'chi'];
-  let arr = null;
-  for (const code of codeSeq) {
-    const url = 'https://rest.opensubtitles.org/search/query-' + encodeURIComponent(q) + '/sublanguageid-' + code;
-    let parsed = null;
-    try {
-      const body = await httpGet(url, { 'User-Agent': HTTP_OPENSUB_UA, 'Accept': 'application/json' });
-      try { parsed = JSON.parse(body.toString('utf8')); } catch (e) { parsed = null; }
-    } catch (e) { parsed = null; }
-    if (Array.isArray(parsed) && parsed.length) { arr = parsed; break; }
-  }
-  if (!arr) return [];
-  const out = [];
-  for (const r of arr) {
-    if (!r || !r.IDSubtitleFile) continue;
-    const link = r.SubDownloadLink || '';
-    if (!link) continue;
-    out.push({
-      id: String(r.IDSubtitleFile),
-      name: r.SubFileName || ('字幕 ' + r.IDSubtitleFile),
-      lang: r.LanguageName || r.SubLanguageID || '',
-      langCode: r.SubLanguageID || '',
-      rating: (r.SubRating != null ? Number(r.SubRating) : 0) || 0,
-      downloads: r.SubDownloadsCnt != null ? Number(r.SubDownloadsCnt) : 0,
-      format: (r.SubFormat || '').toLowerCase(),
-      downloadUrl: link,
-      zipLink: r.ZipDownloadLink || '',
-      source: 'OpenSubtitles'
-    });
-    if (out.length >= 30) break;
-  }
-  out.sort((a, b) => b.downloads - a.downloads);
-  return out;
-}
-
+// 在线字幕搜索（扁平化：点"在线搜索字幕"直接出结果列表，搜到为空即显示无结果）。
+// 主力源：射手网(伪) assrt.net（免登录网页检索 + zip 直链，中文/英文片均可命中）。
 async function searchOnlineSubtitle(rawQuery, lang) {
   const title = cleanTitle(rawQuery);
   const ck = (lang || 'zh') + '|' + title;
   const hit = SUB_SEARCH_CACHE.get(ck);
   if (hit && Date.now() - hit.ts < SUB_CACHE_TTL) return hit.list;
 
-  // 射手网（中文主力）优先；OpenSubtitles 作为回退/补充。两源都失败才返回空。
-  const out = [];
+  let result = [];
   try {
-    const shooter = await searchShooterSubtitle(title, lang);
-    for (const it of shooter) out.push(it);
-  } catch (_) {}
-  if (out.length < 3) {
-    try {
-      const opensub = await searchOpenSubtitle(title, lang);
-      // 去重：同名已存在则跳过
-      for (const it of opensub) {
-        if (!out.some(o => String(o.name).replace(/\s+/g, '') === String(it.name).replace(/\s+/g, ''))) {
-          out.push(it);
-        }
-        if (out.length >= 40) break;
-      }
-    } catch (_) {}
+    const assrt = await searchAssrtSubtitle(title, lang);
+    result = assrt.slice(0, 40);
+  } catch (e) {
+    log('warn', 'sub.search.err', { title, err: String(e && e.message || e) });
   }
 
-  const result = out.slice(0, 40);
   SUB_SEARCH_CACHE.set(ck, { ts: Date.now(), list: result });
-  // 简单控量
+  log('info', 'sub.search.done', { query: String(rawQuery).slice(0, 80), cleanTitle: title, count: result.length });
   if (SUB_SEARCH_CACHE.size > 60) {
     const oldest = SUB_SEARCH_CACHE.keys().next().value;
     SUB_SEARCH_CACHE.delete(oldest);
@@ -335,7 +289,16 @@ async function downloadSubtitle(item) {
   if (!/^https?:\/\//i.test(url)) throw new Error('缺少字幕下载地址');
   const dir = getSubtitleCacheDir();
   const stamp = Date.now() + '-' + crypto.randomBytes(3).toString('hex');
-  const raw = await httpGet(url, { 'User-Agent': HTTP_OPENSUB_UA, 'Accept-Encoding': 'gzip' });
+  // 按下载域名带 Referer/UA：assrt.net 直链需带站点 Referer，否则可能返回错误页
+  const dlHeaders = { 'Accept-Encoding': 'gzip', 'User-Agent': ASSRT_HEADERS['User-Agent'] };
+  try {
+    const u0 = new URL(url);
+    if (/assrt\.net$/i.test(u0.hostname) || u0.hostname.endsWith('.assrt.net')) {
+      dlHeaders['Referer'] = ASSRT_BASE + '/';
+    }
+  } catch (_) { /* 链接非法时下方会抛错 */ }
+  const raw = await httpGet(url, dlHeaders);
+  log('info', 'sub.download', { source: item && item.source, name: String(item && item.name || '').slice(0, 60), bytes: raw.length, head: raw.slice(0, 2).toString('hex') });
 
   let files = [];
   // 统一字幕文件名：以 item.name（SubFileName 通常已含 .srt/.ass）为基础，缺扩展名才补，避免 .srt.srt
@@ -371,7 +334,12 @@ async function downloadSubtitle(item) {
 
   // 去重 + 仅保留字幕文件
   files = files.filter((f, i) => f && files.indexOf(f) === i && SUB_EXTS.indexOf(path.extname(f).toLowerCase()) >= 0);
-  if (!files.length) throw new Error('字幕包内未识别到 srt/ass/ssa/vtt 文件');
+  if (!files.length) {
+    // assrt 个别条目下载到的是"网盘链接/积分不足"说明包（zip 内只有 txt/url，或为 HTML 页）
+    const isHtml = (raw[0] === 0x3c /* '<' */);
+    log('warn', 'sub.download.empty', { source: item && item.source, name: String(item && item.name || '').slice(0, 60), bytes: raw.length, isHtml });
+    throw new Error(isHtml ? '该字幕需要登录/积分，换一条试试' : '该字幕为网盘外链，换一条试试');
+  }
 
   // 多字幕文件：交给用户在主进程弹窗选择（禁止默认加载第一个）
   let chosen = files;
@@ -583,7 +551,9 @@ async function fetchBiliDanmaku(cid, light) {
 
 // 搜索弹幕：返回候选视频（含弹幕数预览，便于用户选择最匹配正片）
 async function danmakuSearch(keyword) {
+  log('info', 'danmaku.search.req', { keyword: String(keyword || '').slice(0, 80) });
   const videos = await searchBiliVideos(keyword);
+  log('info', 'danmaku.search.videos', { keyword: String(keyword || '').slice(0, 40), videos: Array.isArray(videos) ? videos.length : 0 });
   // 正片判定：时长 ≥ 40 分钟优先；其次按时长、再按播放量。避免把"解说/混剪"排在完整正片前。
   const isFull = (s) => s >= 2400;
   const ranked = videos.slice().sort((a, b) => {
@@ -613,13 +583,15 @@ async function danmakuSearch(keyword) {
         title: v.title, count: dm.length, duration: v.duration
       });
       if (results.length >= 8) break;
-    } catch (_) {}
+    } catch (e) { log('warn', 'danmaku.search.item', { err: String(e && e.message || e) }); }
   }
+  log('info', 'danmaku.search.done', { keyword: String(keyword || '').slice(0, 40), results: results.length });
   return results;
 }
 
 async function danmakuDownload(cid) {
   const list = await fetchBiliDanmaku(Number(cid));
+  log('info', 'danmaku.download', { cid: String(cid), count: list.length });
   if (!list.length) throw new Error('该视频暂无弹幕');
   return { ok: true, count: list.length, danmaku: list };
 }
@@ -638,11 +610,14 @@ async function pushDanmakuToMpv(danmaku, key) {
   try {
     if (typeof global.__mpvHelperSendPlayerCommand === 'function') {
       const payload = JSON.stringify({ danmaku });
-      return await global.__mpvHelperSendPlayerCommand([
+      const r = await global.__mpvHelperSendPlayerCommand([
         'script-message', 'fnos-danmaku-data', payload, String(key || '')
       ]);
+      log('info', 'danmaku.push', { key: String(key || ''), count: Array.isArray(danmaku) ? danmaku.length : 0, ok: !!(r && r.ok), error: (r && r.error) || '' });
+      return r;
     }
-  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+    log('warn', 'danmaku.push', { key: String(key || ''), error: 'no-send-channel' });
+  } catch (e) { log('warn', 'danmaku.push', { key: String(key || ''), error: String(e && e.message || e) }); return { ok: false, error: String(e && e.message || e) }; }
   return { ok: false, error: '弹幕通道不可用' };
 }
 
@@ -664,7 +639,9 @@ function start() {
         if (route === '/ping') return sendJson(res, 200, { ok: true, pip: !!global.__mpvHelperPip });
 
         if (route === '/subtitle/search') {
-          const list = await searchOnlineSubtitle(body.filename || body.query || '', body.lang || 'zh');
+          const q = body.filename || body.title || body.query || body.keyword || '';
+          log('info', 'sub.search.req', { raw: String(q).slice(0, 80), lang: body.lang || 'zh' });
+          const list = await searchOnlineSubtitle(q, body.lang || 'zh');
           return sendJson(res, 200, { ok: true, results: list });
         }
         if (route === '/subtitle/download') {
@@ -680,7 +657,17 @@ function start() {
           return sendJson(res, 200, { ok: true, loaded: [], cancelled: true });
         }
         if (route === '/pip/toggle') {
-          return sendJson(res, 200, togglePip(body.mode || 'toggle', body.size));
+          // togglePip 返回 Promise，必须 await 后再序列化；否则 JSON.stringify(Promise)==='{}'，
+          // lua 端 data.ok 为 nil 会误报"画中画切换失败"（而后端其实已切换成功）。
+          const pipMode = body.mode || 'toggle';
+          let r;
+          try {
+            r = await togglePip(pipMode, body.size);
+          } catch (e) {
+            r = { ok: false, error: String(e && e.message || e), pip: false };
+          }
+          log(r && r.ok ? 'info' : 'warn', 'pip.toggle', { mode: pipMode, size: body.size || 0, ok: !!(r && r.ok), pip: !!(r && r.pip), error: r && r.error || '' });
+          return sendJson(res, 200, r || { ok: false, error: '无结果', pip: false });
         }
         if (route === '/danmaku/search') {
           const list = await danmakuSearch(body.keyword || body.filename || body.query || '');

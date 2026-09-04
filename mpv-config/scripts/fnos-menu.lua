@@ -9,6 +9,8 @@
 local g_results = nil       -- 最近一次在线字幕搜索结果
 local g_searching = nil     -- 正在搜索的语言标记
 local g_pip_active = false  -- 是否处于画中画小窗（lua 侧跟踪，用于双击退出/标题切换）
+local g_dm_results = nil    -- 最近一次弹幕搜索结果（cid/标题）
+local g_dm_searching = false -- 弹幕是否正在搜索
 local build_menu            -- 前向声明（open_context_menu 会先用到，真正赋值在后面）
 
 -- ---------------- 基础工具 ----------------
@@ -126,21 +128,39 @@ end)
 mp.register_script_message("fnos-playback-stats", show_playback_stats)
 
 -- 画质（输出缩放）：原画=清除 vf 中的 scale；其余把输出高度限制到目标值（宽度按比例 -2 保持偶数）
-mp.register_script_message("fnos-quality", function(q)
+local g_quality = "原画"
+local function set_quality(q, h)
     pcall(function()
         if not q or q == "original" or q == "原画" then
             mp.commandv("vf", "remove", "@fnos_q")
-            mp.osd_message("画质：原画（不缩放）", 2000)
+            g_quality = "原画"
         else
-            local h = tonumber(tostring(q):match("%d+"))
-            if not h then return end
-            -- 强制重建：先移除再加，保证切换生效
             mp.commandv("vf", "remove", "@fnos_q")
             mp.commandv("vf", "add", "@fnos_q:lavfi=[scale=-2:'min(" .. h .. ",ih)':flags=lanczos]")
-            mp.osd_message("画质：" .. h .. "p", 2000)
+            g_quality = tostring(h) .. "p"
         end
+        mp.osd_message("画质：" .. g_quality, 2000)
+        pcall(refresh_menu_data)
     end)
+end
+mp.register_script_message("fnos-quality", function(q)
+    if not q or q == "original" or q == "原画" then set_quality("original")
+    else local h = tonumber(tostring(q):match("%d+")); if h then set_quality(h, h) end end
 end)
+
+-- 底部控制栏「画质」按钮：直接弹画质选择菜单（无二级菜单）
+mp.register_script_message("fnos-quality-menu", function()
+    local data = { type = "menu", title = "画质选择", items = {
+        { title = (g_quality == "原画" and "✓ " or "") .. "原画（不缩放）", cmd = "script-message fnos-quality original" },
+        { title = (g_quality == "1080p" and "✓ " or "") .. "1080p", cmd = "script-message fnos-quality 1080" },
+        { title = (g_quality == "720p" and "✓ " or "") .. "720p", cmd = "script-message fnos-quality 720" },
+        { title = (g_quality == "480p" and "✓ " or "") .. "480p", cmd = "script-message fnos-quality 480" },
+        { title = (g_quality == "360p" and "✓ " or "") .. "360p", cmd = "script-message fnos-quality 360" },
+    } }
+    mp.commandv("script-message-to", "context_menu", "update-data", mp.utils.format_json(data))
+    mp.commandv("script-message-to", "context_menu", "open")
+end)
+mp.get_quality_label = function() return g_quality end
 
 -- 动态列出轨道（kind=audio/sub；prop=aid/sid）
 local function track_items(kind, prop)
@@ -176,6 +196,23 @@ local function online_result_items()
             local label = string.format("%s%s  [%s]  下载%s", src, r.name or ("字幕 " .. i), r.lang or "", tostring(r.downloads or 0))
             if #label > 92 then label = label:sub(1, 92) .. "…" end
             table.insert(t, item(label, "script-message fnos-sub-dl " .. tostring(r.id)))
+        end
+    end
+    return t
+end
+
+-- 弹幕搜索结果：平铺进弹幕子菜单（与字幕一致，统一由本脚本持有 menu-data，避免与弹幕脚本竞态写菜单）
+local function danmaku_result_items()
+    if g_dm_searching then
+        return { sep(), { ["title"] = "弹幕搜索中，请稍候再右键打开…", ["selectable"] = false } }
+    end
+    if not g_dm_results or #g_dm_results == 0 then return {} end
+    local t = { sep(), { ["title"] = "弹幕搜索结果（点击加载）", ["type"] = "separator" } }
+    for i, r in ipairs(g_dm_results) do
+        if i <= 12 then
+            local label = r.name or ("弹幕 " .. tostring(r.id))
+            if #label > 90 then label = label:sub(1, 90) .. "…" end
+            table.insert(t, item(label, "script-message fnos-dm-pick " .. tostring(r.id)))
         end
     end
     return t
@@ -278,18 +315,23 @@ build_menu = function()
             item("2.0 倍速", "set speed 2.0"),
         }},
 
-        { ["title"] = "弹幕", ["type"] = "submenu", ["submenu"] = {
-            item("搜索并加载弹幕…", "script-message fnos-danmaku-search"),
-            item("弹幕 开 / 关", "script-message fnos-danmaku-toggle"),
-            sep(),
-            item("字号 大", "script-message fnos-danmaku-opts size 42"),
-            item("字号 中", "script-message fnos-danmaku-opts size 34"),
-            item("字号 小", "script-message fnos-danmaku-opts size 26"),
-            item("速度 慢", "script-message fnos-danmaku-opts speed 0.7"),
-            item("速度 正常", "script-message fnos-danmaku-opts speed 1.0"),
-            item("速度 快", "script-message fnos-danmaku-opts speed 1.4"),
-            item("关闭弹幕", "script-message fnos-danmaku-off"),
-        }},
+        { ["title"] = "弹幕", ["type"] = "submenu", ["submenu"] = (function()
+            local dmenu = {
+                item("🔍 搜索并加载弹幕（自动按片名）", "script-message fnos-dm-search"),
+                item("弹幕 开 / 关", "script-message fnos-danmaku-toggle"),
+            }
+            -- 搜索结果直接平铺（点 fnos-dm-search 后 helper 返回，写入菜单，重新右键即见）
+            for _, it in ipairs(danmaku_result_items()) do table.insert(dmenu, it) end
+            table.insert(dmenu, sep())
+            table.insert(dmenu, item("字号 大", "script-message fnos-danmaku-opts size 42"))
+            table.insert(dmenu, item("字号 中", "script-message fnos-danmaku-opts size 34"))
+            table.insert(dmenu, item("字号 小", "script-message fnos-danmaku-opts size 26"))
+            table.insert(dmenu, item("速度 慢", "script-message fnos-danmaku-opts speed 0.7"))
+            table.insert(dmenu, item("速度 正常", "script-message fnos-danmaku-opts speed 1.0"))
+            table.insert(dmenu, item("速度 快", "script-message fnos-danmaku-opts speed 1.4"))
+            table.insert(dmenu, item("关闭弹幕", "script-message fnos-danmaku-off"))
+            return dmenu
+        end)() },
 
         { ["title"] = g_pip_active and "画中画（开启中·点此退出）" or "画中画", ["type"] = "submenu", ["submenu"] = g_pip_active and {
             item("▶ 退出画中画（恢复跟随飞牛窗口）", "script-message fnos-pip-exit"),
@@ -374,6 +416,38 @@ mp.register_script_message("fnos-sub-local", function()
                 mp.osd_message("加载本地字幕失败：" .. ((data and data.error) or "未知错误"), 4000)
             end
         end)
+    end)
+end)
+
+-- ---------------- 弹幕：搜索/选择（结果平铺进本脚本菜单，避免与弹幕脚本竞态写 menu-data）----------------
+mp.register_script_message("fnos-dm-search", function()
+    pcall(function()
+        if g_dm_searching then return end
+        g_dm_searching = true
+        g_dm_results = nil
+        local kw = media_keyword()
+        mp.osd_message("正在搜索弹幕：" .. kw .. " …", 4000)
+        helper_async("/danmaku/search", mp.utils.format_json({ keyword = kw }), function(data)
+            g_dm_searching = false
+            if not data or not data.ok then
+                mp.osd_message("弹幕搜索失败（网络错误或被限流）", 3500); return
+            end
+            g_dm_results = data.results or {}
+            if #g_dm_results == 0 then
+                mp.osd_message("未找到弹幕，可换片名后重试", 3500); return
+            end
+            mp.osd_message("找到 " .. tostring(#g_dm_results) .. " 组弹幕，请右键『弹幕』菜单选择加载", 3500)
+            refresh_menu_data()
+        end)
+    end)
+end)
+
+-- 选择某组弹幕：转发给弹幕渲染脚本自身的下载处理（它会调 /danmaku/download，helper 经 IPC 回推 fnos-danmaku-data）
+mp.register_script_message("fnos-dm-pick", function(cid)
+    pcall(function()
+        if not cid then return end
+        -- 直接让弹幕渲染脚本去下载（保持其 key 管理逻辑）
+        mp.commandv("script-message", "fnos-danmaku-pick", tostring(cid))
     end)
 end)
 

@@ -240,38 +240,13 @@ mp.register_script_message('fnos-danmaku-toggle', function() set_enabled(not sta
 mp.register_script_message('fnos-danmaku-on', function() set_enabled(true) end)
 mp.register_script_message('fnos-danmaku-off', function() set_enabled(false) end)
 
--- ---- 弹幕搜索/选择（经 helper 拉 B 站弹幕，下载后 helper 经 IPC 回推 fnos-danmaku-data） ----
-local g_dmResults = nil
-local function dm_open_results_menu()
-    pcall(function()
-        local items = { { title = '弹幕搜索：' .. media_keyword(), selectable = false } }
-        if not g_dmResults or #g_dmResults == 0 then
-            items[#items + 1] = { title = '（无结果，可换片名后重新搜索）', selectable = false }
-        else
-            for _, r in ipairs(g_dmResults) do
-                items[#items + 1] = {
-                    title = r.name or ('弹幕 ' .. tostring(r.id)),
-                    cmd = 'script-message fnos-danmaku-pick ' .. tostring(r.id)
-                }
-            end
-        end
-        items[#items + 1] = { type = 'separator' }
-        items[#items + 1] = { title = '重新搜索弹幕', cmd = 'script-message fnos-danmaku-search' }
-        mp.set_property_native('menu-data', { type = 'menu', title = '弹幕', items = items })
-        mp.commandv('script-message-to', 'context_menu', 'open')
-    end)
-end
-
+-- ---- 弹幕搜索/选择 ----
+-- 搜索与结果菜单统一由 fnos-menu.lua（中文右键菜单脚本）持有 menu-data，避免两个脚本竞态写菜单
+-- 导致"弹幕菜单不弹出"。本脚本只负责：下载(cid) → helper 回推 fnos-danmaku-data → 渲染。
 local function dm_search()
     pcall(function()
-        local kw = media_keyword()
-        mp.osd_message('正在搜索弹幕：' .. kw .. ' …', 4000)
-        helper_async('/danmaku/search', utils.format_json({ keyword = kw }), function(data)
-            if not data or not data.ok then mp.osd_message('弹幕搜索失败（网络错误或被限流）', 3500); return end
-            g_dmResults = data.results or {}
-            if #g_dmResults == 0 then mp.osd_message('未找到弹幕，可换片名重试', 3500); return end
-            dm_open_results_menu()
-        end)
+        -- 转发给菜单脚本执行搜索（结果会平铺进右键『弹幕』子菜单）
+        mp.commandv('script-message', 'fnos-dm-search')
     end)
 end
 

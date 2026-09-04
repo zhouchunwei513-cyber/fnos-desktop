@@ -99,7 +99,13 @@ class MpvSurface {
     const geo = this._computeScreenGeometry();
     try {
       this.player.start({
+        // 关键：必须把 standalone 透传给 MpvPlayer.start()，否则 spawn 会误走嵌入覆盖窗分支
+        //（--ontop=yes/--title=FNOS-MPV/--geometry），导致"用 mpv 打开"的独立窗变成带标题栏的置顶窗、
+        // 画中画/自由移动等独立窗逻辑全部失效。
+        standalone: this._standalone,
         geometry: geo || undefined,
+        isLive: !!this._startSettings.isLive,
+        title: this._startSettings.title || '',
         hwDecode: this._startSettings.hwDecode || 'auto',
         cacheLevel: this._startSettings.cacheLevel || 'smooth',
         headers: this._startSettings.headers || null,
@@ -147,6 +153,7 @@ class MpvSurface {
     try {
       const want = mode === 'enter' ? true : mode === 'exit' ? false : !this._pip;
       const p = this.player;
+      try { this._emit("log", "pip request mode=" + mode + " want=" + (want ? "enter" : "exit") + " standalone=" + (this._standalone ? 1 : 0) + " pip=" + (this._pip ? 1 : 0)); } catch (_) {}
       if (want) {
         if (!this._pip) {
           this._pipSize = sizePx || this._pipSize || 420;

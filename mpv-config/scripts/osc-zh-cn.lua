@@ -146,13 +146,8 @@ function FN.build_sub_items(tracks)
     end
     items[#items + 1] = { type = "separator" }
     items[#items + 1] = { title = "加载本地字幕…", cmd = "script-message fnos-sub-local" }
-    local online = {
-        { title = "在线搜索字幕（内置，免设置）", state = { "disabled" }, cmd = "osd-msg show-text 在线字幕" },
-        { type = "separator" },
-        { title = "按当前影片搜索…", cmd = "script-message fnos-sub-search title" },
-        { title = "按文件名搜索…", cmd = "script-message fnos-sub-search file" },
-    }
-    items[#items + 1] = { title = "在线字幕搜索 ▸", submenu = online }
+    -- v1.32.5：扁平化——点击直接按当前片名搜索并弹出结果列表，无二级菜单；搜不到就是空列表。
+    items[#items + 1] = { title = "在线搜索字幕（自动按片名）", cmd = "script-message fnos-sub-search title" }
     items[#items + 1] = { type = "separator" }
     local shift = mp.get_property_number("sub-delay", 0) or 0
     items[#items + 1] = { title = "字幕偏移（当前 " .. string.format("%.1f", shift) .. "s）", state = { "disabled" },
@@ -2029,18 +2024,18 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.smallButtonsBar
 
-    -- Track selection buttons
+    -- Track selection buttons（统一中文文字样式，与弹幕/倍速/画中画同基线）
     geo = { x = geo.x - tsW - padX, y = geo.y, an = geo.an, w = tsW, h = geo.h }
     lo = add_layout("sub_track")
     lo.geometry = geo
-    lo.style = osc_styles.smallButtonsBar
+    lo.style = osc_styles.fnTextButtonsBar
 
     geo = { x = geo.x - geo.w - padX, y = geo.y, an = geo.an, w = geo.w, h = geo.h }
     lo = add_layout("audio_track")
     lo.geometry = geo
-    lo.style = osc_styles.smallButtonsBar
+    lo.style = osc_styles.fnTextButtonsBar
 
-    -- fnOS 新增：倍速 / 画中画 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
+    -- fnOS 新增：画质 / 倍速 / 画中画 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
     local fnBtnW = 70
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
     lo = add_layout("fnos_pip")
@@ -2049,6 +2044,11 @@ local function bar_layout(direction, slim)
 
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
     lo = add_layout("fnos_speed")
+    lo.geometry = geo
+    lo.style = osc_styles.fnTextButtonsBar
+
+    geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
+    lo = add_layout("fnos_quality")
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
@@ -2284,8 +2284,8 @@ local function osc_init()
 
     ne.enabled = audio_track_count > 0
     ne.content = function ()
-        return icons.audio .. osc_styles.smallButtonsLlabel .. " 音轨 " ..
-               mp.get_property_number("aid", "-") .. "/" .. audio_track_count
+        return osc_styles.smallButtonsLlabel .. "音轨 " ..
+               mp.get_property_number("aid", "-") .. "/" .. audio_track_count .. " "
     end
     ne.eventresponder["mbtn_left_up"] = function () FN.menu_audio() end
     ne.eventresponder["mbtn_right_up"] = function () mp.command("cycle audio") end
@@ -2298,8 +2298,8 @@ local function osc_init()
     ne.enabled = true  -- 即使没有内置字幕轨，也允许点开菜单加载本地/在线字幕
     ne.content = function ()
         local cur = mp.get_property_number("sid", "-")
-        return icons.subtitle .. osc_styles.smallButtonsLlabel .. " 字幕 " ..
-               (cur == -1 and "0" or cur) .. "/" .. sub_track_count
+        return osc_styles.smallButtonsLlabel .. "字幕 " ..
+               (cur == -1 and "0" or cur) .. "/" .. sub_track_count .. " "
     end
     ne.eventresponder["mbtn_left_up"] = function () FN.menu_sub() end
     ne.eventresponder["mbtn_right_up"] = function () mp.command("cycle sub") end
@@ -2332,6 +2332,24 @@ local function osc_init()
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-danmaku-search") end
     ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-danmaku-toggle") end
+
+    --fnOS 新增：画质按钮（原画/1080p/720p/480p/360p 输出缩放）
+    ne = new_element("fnos_quality", "button")
+    ne.enabled = true
+    ne.content = function ()
+        local vf = mp.get_property("vf", "") or ""
+        local m = vf:match("min%((%d+)%,ih%)")
+        local label = "画质"
+        if m then
+            local n = tonumber(m)
+            if n >= 1080 then label = "1080p"
+            elseif n >= 700 then label = "720p"
+            elseif n >= 460 then label = "480p"
+            else label = "360p" end
+        end
+        return osc_styles.smallButtonsLlabel .. " " .. label .. " "
+    end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-quality-menu") end
 
     --fnOS 新增：画中画按钮（左键切换进入/退出小窗，右键也退出；与音轨/字幕标签统一字号字体）
     ne = new_element("fnos_pip", "button")

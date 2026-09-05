@@ -44,8 +44,9 @@ contextBridge.exposeInMainWorld('fnos', {
     };
 
     // ---- fNOS API 签名（与参考客户端 fntv 完全一致：MD5(key_url_nonce_ts_md5(body)_secret)）----
-    const FN_API_KEY = 'NDzZTVxnRKP8Z0jXg1VAMonaG8akvh';
-    const FN_API_SECRET = '16CCEB3D-AB42-077D-36A1-F355324E4237';
+    // 允许通过环境变量覆盖，避免将签名凭据硬编码在客户端脚本中（默认值仅为兼容旧版本回退）
+    const FN_API_KEY = process.env.FN_API_KEY || 'NDzZTVxnRKP8Z0jXg1VAMonaG8akvh';
+    const FN_API_SECRET = process.env.FN_API_SECRET || '16CCEB3D-AB42-077D-36A1-F355324E4237';
     // 纯 JS MD5（不依赖 Node 模块，sandbox preload 也可用），标准 RFC1321 实现
     function md5Hex(inputStr) {
       function toUtf8Bytes(str) {

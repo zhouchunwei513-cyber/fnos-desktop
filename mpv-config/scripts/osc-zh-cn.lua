@@ -2041,10 +2041,15 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
-    -- fnOS 新增：画质 / 倍速 / 跳过片头 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
+    -- fnOS 新增：画质 / 倍速 / 跳过片尾 / 跳过片头 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
     local fnBtnW = 70
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
-    lo = add_layout("fnos_skip")
+    lo = add_layout("fnos_skip_outro")
+    lo.geometry = geo
+    lo.style = osc_styles.fnTextButtonsBar
+
+    geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
+    lo = add_layout("fnos_skip_intro")
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
@@ -2357,14 +2362,21 @@ local function osc_init()
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-quality-menu") end
 
-    --fnOS 新增：跳过片头片尾按钮（左键跳过片头，右键跳到片尾前；与音轨/字幕标签统一字号字体）
-    ne = new_element("fnos_skip", "button")
+    --fnOS 新增：跳过片头按钮（跳到片头结束）；与音轨/字幕标签统一字号字体
+    ne = new_element("fnos_skip_intro", "button")
     ne.enabled = true
     ne.content = function ()
         return osc_styles.smallButtonsLlabel .. " 跳片头 "
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-skip", "intro") end
-    ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-skip", "credits") end
+
+    --fnOS 新增：跳过片尾按钮（跳到片尾开始处附近）
+    ne = new_element("fnos_skip_outro", "button")
+    ne.enabled = true
+    ne.content = function ()
+        return osc_styles.smallButtonsLlabel .. " 跳片尾 "
+    end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-skip", "credits") end
 
     --seekbar
     ne = new_element("seekbar", "slider")

@@ -217,6 +217,7 @@ async function dandanSearch(keyword) {
     const eps = anime.episodes || [];
     for (const ep of eps.slice(0, 3)) {
       results.push({
+        id: ep.episodeId,
         source: 'dandanplay',
         animeTitle: anime.animeTitle || anime.title || keyword,
         episodeTitle: ep.episodeTitle || ('第' + ep.episodeNumber + '集'),
@@ -348,6 +349,7 @@ async function biliSearch(keyword) {
     return s;
   };
   const scored = arr.filter((v) => v.bvid).map((v) => ({
+    id: v.bvid,
     source: 'bilibili',
     bvid: v.bvid,
     aid: v.aid,
@@ -506,6 +508,73 @@ function scoreSubtitle(name, core) {
   return score;
 }
 
+// 从英文/混排压制文件名里提取干净片名用于检索，例如
+// "No More Bets.2023.2160p.60fps.HQ.WEB-DL.H265.10bitDDP5.1-BestWEB" -> "No More Bets"
+// 去掉年份、分辨率、帧率、来源/编码/音轨、发布组、扩展名、目录噪声。
+function cleanMovieName(t) {
+  let s = String(t || '').replace(/^.*[\\/]/g, '');
+  s = s.replace(/\.(mkv|mp4|avi|mov|ts|flv|wmv|iso)$/i, '');
+  // 把 . _ 作为分隔符转空格（保留中文/字母数字）
+  s = s.replace(/[._]+/g, ' ').replace(/[-_]+/g, ' ');
+  // 年份（19xx/20xx）及其后所有技术参数截断：片名通常在年份之前
+  const ym = s.match(/^(.*?)[\s\[(（]?(?:19|20)\d{2}\b/);
+  if (ym && ym[1].trim().length >= 2) s = ym[1];
+  // 移除常见技术标签
+  s = s
+    .replace(/\b\d{3,4}p\b|\b[248]k\b|\b\d{2,3}\s*fps\b/gi, ' ')
+    .replace(/\b\d{1,3}\s*fps\b|\bHQ\b|\bWEB[-\s]?DL\b|\bWEBRip\b|\bBlu-?Ray\b|\bBDRip\b|\bHDRip\b/gi, ' ')
+    .replace(/\bx26[45]\b|\bh\.?26[45]\b|\bhevc\b|\bavc\b|\b10bit\b|\b8bit\b|\bHDR10?\b|\bDDP?\d?\.?\d?\b|\bAAC\b|\bAC3\b|\bEAC3\b|\bAtmos\b|\bTrueHD\b/gi, ' ')
+    .replace(/\bBestWEB\b|\bBest\b|-?\b(?:vostfr|chd|fra|ger|jpn|kor|chn|cht|chs)\b/gi, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  // 若截断后过短（片名本身就是数字/单字），回退为去掉技术标签的完整串
+  if (s.length < 2) {
+    s = String(t || '').replace(/[._]+/g, ' ').replace(/\b\d{3,4}p\b|\bx26[45]\b|\bh\.?26[45]\b|\bhevc\b|\bWEB[-\s]?DL\b|\bBlu-?Ray\b|\b\d{2,3}\s*fps\b|\b10bit\b|\bDDP?[\d.]*\b|\bAAC\b|\bBestWEB\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return s;
+}
+
+// 把弹幕结果的时长归一化为秒；dandanplay 返回秒数(number)，B站返回 "mm:ss"/"hh:mm:ss" 字符串。
+function danmakuDurSec(r) {
+  if (!r) return null;
+  if (typeof r.duration === 'number' && isFinite(r.duration) && r.duration > 0) return r.duration;
+  const d = r.duration != null ? String(r.duration) : '';
+  const m = d.match(/(\d+):(\d{1,2})(?::(\d{1,2}))?/);
+  if (!m) return null;
+  if (m[3]) return parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+
+// 按影片时长过滤+排序弹幕结果：影片(>30min)必须与候选时长接近，
+// 否则像"音乐MV/解说切片(59分钟)"这种同名但完全错位的弹幕会被排除。
+// 返回过滤后并按时长贴合度排序的新数组；媒体时长未知或为短片(<=30min)时不做硬过滤。
+function filterDanmakuByDuration(results, mediaDur) {
+  const list = (results || []).slice();
+  const md = Number(mediaDur) || 0;
+  if (md <= 1800) return list; // 短片/未知时长：不硬过滤
+  let tagged = list.map(r => {
+    const d = danmakuDurSec(r);
+    let fit = 0; // 越小越贴合；null 表示无时长信息
+    if (d && d > 0) {
+      const ratio = d / md;
+      // 正片容忍 0.7~1.4 倍（不同片源/片头片尾差异）；明显不符的标记剔除
+      if (ratio < 0.55 || ratio > 1.7) fit = -1; // 剔除
+      else fit = Math.abs(1 - ratio);
+    }
+    return { r, d, fit };
+  });
+  // 有时长且贴合的优先；无时长信息的其次(dandanplay 通常已按剧集匹配)；被剔除的最后
+  tagged.sort((a, b) => {
+    const rank = x => (x.fit === -1 ? 2 : (x.fit > 0 ? 0 : 1));
+    const ra = rank(a), rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (ra === 0) return a.fit - b.fit;
+    // 同档时保留原有相关度顺序（稳定）
+    return 0;
+  });
+  const kept = tagged.filter(x => x.fit !== -1).map(x => x.r);
+  return kept;
+}
+
 async function searchAssrt(title) {
   const core = coreTitleOf(title);
   const h = await httpGet('https://assrt.net/sub/?searchword=' + encodeURIComponent(title), { 'User-Agent': UA, 'Referer': 'https://assrt.net/', 'Accept-Language': 'zh-CN' });
@@ -630,7 +699,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）：附带本机地址，方便客户端三通道填写
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.2.1', port: PORT, addrs: localAddrs() });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.2.2', port: PORT, addrs: localAddrs() });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {
@@ -710,22 +779,35 @@ const server = http.createServer(async (req, res) => {
 
     // 弹幕搜索（内存+磁盘持久化缓存，TTL 7 天；再次打开同片秒返回）
     if (route === '/danmaku/search') {
-      const kw = body.keyword || body.title || body.filename || '';
-      log('danmaku search', kw);
-      const ck = 'dmsearch_' + String(kw).replace(/\s+/g, '').toLowerCase();
+      const rawKw = body.keyword || body.title || body.filename || '';
+      const mediaDur = Number(body.duration) || 0;
+      // 清洗出干净片名（英文压制名也能用于中文弹幕源检索）
+      const kw = cleanMovieName(rawKw);
+      log('danmaku search', JSON.stringify(rawKw), '->', JSON.stringify(kw), 'dur=', mediaDur);
+      // 缓存键：片名 + 时长档（按 10 分钟分桶），避免不同时长结果互相污染
+      const durBucket = mediaDur > 1800 ? Math.round(mediaDur / 600) : 0;
+      const ck = 'dmsearch_v2_' + String(kw).replace(/\s+/g, '').toLowerCase() + '_' + durBucket;
       let results = persistentGet(ck, TTL_SEARCH);
       let cached = !!results;
       if (!results) {
         results = [];
-        // 弹弹play 优先
+        // 弹弹play 优先（影视正片库，剧集级匹配）
         try { results = await dandanSearch(kw); } catch (e) { log('dandan search fail', e.message); }
-        // B站兜底
+        // B站兜底（正片优先排序，已剔除解说/预告/混剪）
         if ((!results.length) && config.enableBiliFallback) {
           try { results = await biliSearch(kw); } catch (e) { log('bili search fail', e.message); }
         }
         if (results.length) diskSet(ck, results);
       }
-      return sendJson(res, 200, { ok: true, results, cached });
+      // 时长过滤：每次都按本次影片时长过滤+排序（即便命中缓存也重筛，
+      // 这样历史缓存里混入的错片/MV 会被直接排除，不会再"缓存是错的"）
+      const filtered = filterDanmakuByDuration(results, mediaDur);
+      if (cached && filtered.length < results.length) {
+        log('danmaku duration filter:', results.length, '->', filtered.length);
+        // 用过滤后的正确结果回写缓存，供下次秒返
+        if (filtered.length) diskSet(ck, filtered);
+      }
+      return sendJson(res, 200, { ok: true, results: filtered, cached, keyword: kw });
     }
 
     // 弹幕下载（内容缓存 30 天，按 episodeId/cid 唯一）
@@ -756,16 +838,22 @@ const server = http.createServer(async (req, res) => {
 
     // 字幕搜索（持久化缓存 7 天）
     if (route === '/subtitle/search') {
-      const title = body.title || body.filename || body.query || body.keyword || '';
-      log('subtitle search', title);
-      const ck = 'sub_' + String(title).replace(/\s+/g, '').toLowerCase();
+      const rawTitle = body.title || body.filename || body.query || body.keyword || '';
+      // 清洗片名（英文压制名 -> 干净片名），同时保留原始名做一次兜底检索
+      const title = cleanMovieName(rawTitle);
+      log('subtitle search', JSON.stringify(rawTitle), '->', JSON.stringify(title));
+      const ck = 'sub_v2_' + String(title).replace(/\s+/g, '').toLowerCase();
       let results = persistentGet(ck, TTL_SEARCH);
       let cached = !!results;
       if (!results) {
         try { results = await searchAssrt(title); } catch (e) { log('assrt fail', e.message); results = []; }
+        // 清洗后没搜到，再用原始片名兜底一次
+        if (!results.length && rawTitle && rawTitle !== title) {
+          try { results = await searchAssrt(rawTitle); } catch (e) { log('assrt raw fail', e.message); }
+        }
         if (results.length) diskSet(ck, results);
       }
-      return sendJson(res, 200, { ok: true, results, cached });
+      return sendJson(res, 200, { ok: true, results, cached, keyword: title });
     }
 
     // 字幕下载（返回 zip 流）

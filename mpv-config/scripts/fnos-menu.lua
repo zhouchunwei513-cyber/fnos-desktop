@@ -442,8 +442,9 @@ mp.register_script_message("fnos-dm-search", function()
         g_dm_searching = true
         g_dm_results = nil
         local kw = media_keyword()
+        local sdur = mp.get_property_number("duration", 0) or 0
         mp.osd_message("正在搜索弹幕：" .. kw .. " …", 4000)
-        helper_async("/danmaku/search", utils.format_json({ keyword = kw }), function(data)
+        helper_async("/danmaku/search", utils.format_json({ keyword = kw, duration = sdur }), function(data)
             g_dm_searching = false
             if not data or not data.ok then
                 mp.osd_message("弹幕搜索失败（网络错误）", 1800); return
@@ -641,11 +642,12 @@ local function auto_fetch_skip(kw)
 end
 
 local function auto_fetch_danmaku(kw)
-    helper_async("/danmaku/search", utils.format_json({ keyword = kw }), function(data)
+    local dur = mp.get_property_number("duration", 0) or 0
+    helper_async("/danmaku/search", utils.format_json({ keyword = kw, duration = dur }), function(data)
         if not data or not data.ok or not data.results or #data.results == 0 then return end
         g_dm_results = data.results
-        -- 自动加载第一项（ZDY 已按相关度排序；弹幕无"错片"副作用，可放心自动上）。
-        -- 用本脚本的 fnos-dm-pick（携带完整条目 source/bvid/episodeId），由 helper 转发 ZDY 下载。
+        -- ZDY 已按片名清洗 + 时长贴合度过滤排序（同名 MV/解说切片已剔除）。
+        -- 自动加载第一项；用 fnos-dm-pick（携带完整条目 source/bvid/episodeId）由 helper 转发 ZDY 下载。
         local best = data.results[1]
         if best then
             local key = best.id or best.episodeId or best.cid or best.bvid

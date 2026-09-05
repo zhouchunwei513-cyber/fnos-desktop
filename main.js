@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.36.1';
+const APP_VERSION = '1.37.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3356,7 +3356,18 @@ function pingZdyChannel(baseUrl, token, timeoutMs) {
     const lib = parsed.protocol === 'https:' ? require('https') : require('http');
     const headers = { Accept: 'application/json' };
     if (token) headers.Authorization = 'Bearer ' + token;
-    const req = lib.get(u, { headers, timeout: timeoutMs || 6000 }, (res) => {
+    // 用 options 对象而非中文域名原始串：URL.hostname 已自动转为 punycode（xn--），
+    // 否则中文域名(DDNS 国际化域名)会被 Node 当作非法主机直接失败。
+    const reqOptions = {
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      headers,
+      timeout: timeoutMs || 6000,
+    };
+    const req = lib.get(reqOptions, (res) => {
       const ch = [];
       res.on('data', (c) => ch.push(c));
       res.on('end', () => {

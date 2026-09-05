@@ -36,7 +36,7 @@ rm -rf "$WORK/apppkg"
 
 # 4) 打包 fpk
 mkdir -p dist
-OUT="dist/zdy-1.0.0-${SUFFIX}.fpk"
+OUT="dist/zdy-1.1.0-${SUFFIX}.fpk"
 tar --format=ustar -czf "$OUT" -C "$WORK" manifest ICON.PNG ICON_256.PNG cmd config app.tgz
 rm -rf "$WORK"
 echo "built: $OUT"

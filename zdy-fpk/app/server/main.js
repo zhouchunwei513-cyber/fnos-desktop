@@ -6,7 +6,9 @@
  *   弹幕  - 弹弹play 开源 API（名称+季+集精确匹配），B站兜底
  *   字幕  - assrt.net / 射手 网页聚合检索与下载
  *   片头片尾 - SkipIntro 时间戳库（按片名/季/集返回 intro/outro 秒数）
- *   认证  - 授权码（Authorization: Bearer <code> 或 ?token=）
+ *   认证  - 两层：
+ *           ① 授权码 authCode：服务端自动生成，客户端填入后即可调用弹幕/字幕/片头片尾服务 API
+ *           ② 管理密码 adminPwd：登录管理网页、查看/重置授权码、修改配置（PBKDF2 加盐哈希）
  *
  * 运行于飞牛 fnOS（FPK），端口由 manifest service_port / TRIM_SERVICE_PORT 注入。
  */
@@ -40,8 +42,11 @@ try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
 // ---------------------------------------------------------------------------
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const DEFAULT_CONFIG = {
-  // 默认授权码：首次启动随机生成并写入配置文件；用户可在设置页修改
+  // 授权码：服务端首次启动随机生成，客户端填入后开通服务；管理员可在管理页重置
   authCode: '',
+  // 管理密码（PBKDF2 加盐哈希）；默认未设置（null），首次进入管理页时引导设置
+  adminSalt: null,
+  adminHash: null,
   // 片头片尾默认时长（秒），可被 SkipIntro 精确时间戳覆盖
   defaultIntro: 90,
   defaultOutro: 60,
@@ -52,15 +57,16 @@ const DEFAULT_CONFIG = {
 let config = loadConfig();
 
 function loadConfig() {
+  let c;
   try {
-    const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    return Object.assign({}, DEFAULT_CONFIG, c);
+    c = Object.assign({}, DEFAULT_CONFIG, JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')));
   } catch (e) {
-    const c = Object.assign({}, DEFAULT_CONFIG);
-    c.authCode = genAuthCode();
-    try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(c, null, 2)); } catch (e2) {}
-    return c;
+    c = Object.assign({}, DEFAULT_CONFIG);
   }
+  let dirty = false;
+  if (!c.authCode) { c.authCode = genAuthCode(); dirty = true; }
+  if (dirty) { try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(c, null, 2)); } catch (e2) {} }
+  return c;
 }
 
 function saveConfig() {
@@ -69,6 +75,35 @@ function saveConfig() {
 
 function genAuthCode() {
   return 'ZDY-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+}
+
+// ---- 管理密码（PBKDF2）与会话 ----
+function hashPassword(password, salt) {
+  const s = salt || crypto.randomBytes(16).toString('hex');
+  const h = crypto.pbkdf2Sync(String(password), s, 50000, 32, 'sha256').toString('hex');
+  return { salt: s, hash: h };
+}
+function verifyPassword(password) {
+  if (!config.adminHash || !config.adminSalt) return false;
+  const h = crypto.pbkdf2Sync(String(password), config.adminSalt, 50000, 32, 'sha256').toString('hex');
+  // 恒定时间比较
+  const a = Buffer.from(h, 'hex'), b = Buffer.from(config.adminHash, 'hex');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+// 管理会话 token：{ token: expireTs }，2 小时有效
+const ADMIN_SESSIONS = new Map();
+function makeAdminSession() {
+  const t = crypto.randomBytes(24).toString('hex');
+  ADMIN_SESSIONS.set(t, Date.now() + 2 * 3600 * 1000);
+  return t;
+}
+function isAdmin(req, url) {
+  const auth = req.headers['authorization'] || '';
+  const t = (auth.match(/Bearer\s+(\S+)/i) || [])[1] || url.searchParams.get('admin') || url.searchParams.get('token') || '';
+  const exp = ADMIN_SESSIONS.get(t);
+  if (exp && exp > Date.now()) return true;
+  return false;
 }
 
 // 简单内存缓存（5 分钟）
@@ -424,11 +459,11 @@ function readBody(req) {
   });
 }
 
-function authorized(req, url) {
+// 服务 API（客户端调用）：用授权码
+function serviceAuthorized(req, url) {
   const auth = req.headers['authorization'] || '';
   const token = (auth.match(/Bearer\s+(\S+)/i) || [])[1] || url.searchParams.get('token') || '';
-  // 健康检查与设置页静态资源免认证（设置页自身会要求输入授权码）
-  return token === config.authCode;
+  return !!config.authCode && token === config.authCode;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -441,35 +476,83 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.0.0' });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.1.0' });
 
-  // 设置页静态资源（免认证，页面内再校验）
+  // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(SETTINGS_HTML);
   }
 
-  // 其余 API 需要授权码
-  if (!authorized(req, url)) {
-    log('auth failed', route, (req.headers['authorization'] || '').slice(0, 12));
-    return sendJson(res, 401, { ok: false, error: '授权码无效或缺失' });
+  // ============ 管理 API（管理密码） ============
+  if (route === '/admin/info' && req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, hasAdminPassword: !!config.adminHash });
+  }
+
+  if (route === '/admin/login' && req.method === 'POST') {
+    const body = await readBody(req);
+    const pwd = String(body.password || '');
+    // 未设置过管理密码：首次提交即设置
+    if (!config.adminHash) {
+      if (pwd.length < 4) return sendJson(res, 400, { ok: false, error: '管理密码至少 4 位' });
+      const { salt, hash } = hashPassword(pwd);
+      config.adminSalt = salt; config.adminHash = hash;
+      saveConfig();
+      log('admin password initialized');
+      return sendJson(res, 200, { ok: true, token: makeAdminSession() });
+    }
+    if (!verifyPassword(pwd)) {
+      log('admin login failed');
+      return sendJson(res, 401, { ok: false, error: '管理密码错误' });
+    }
+    return sendJson(res, 200, { ok: true, token: makeAdminSession() });
+  }
+
+  if (route === '/admin/state' && req.method === 'GET') {
+    if (!isAdmin(req, url)) return sendJson(res, 401, { ok: false, error: '未登录' });
+    return sendJson(res, 200, {
+      ok: true,
+      authCode: config.authCode,
+      defaultIntro: config.defaultIntro,
+      defaultOutro: config.defaultOutro,
+      enableBiliFallback: config.enableBiliFallback,
+    });
+  }
+
+  if (route === '/admin/update' && req.method === 'POST') {
+    if (!isAdmin(req, url)) return sendJson(res, 401, { ok: false, error: '未登录' });
+    const body = await readBody(req);
+    // 片头片尾 / 兜底开关
+    if (body.defaultIntro != null) config.defaultIntro = Math.max(0, parseInt(body.defaultIntro, 10) || 0);
+    if (body.defaultOutro != null) config.defaultOutro = Math.max(0, parseInt(body.defaultOutro, 10) || 0);
+    if (body.enableBiliFallback != null) config.enableBiliFallback = !!body.enableBiliFallback;
+    // 修改管理密码
+    if (body.newPassword) {
+      if (String(body.newPassword).length < 4) return sendJson(res, 400, { ok: false, error: '新密码至少 4 位' });
+      const { salt, hash } = hashPassword(body.newPassword);
+      config.adminSalt = salt; config.adminHash = hash;
+    }
+    saveConfig();
+    log('admin config updated');
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (route === '/admin/regenerate-code' && req.method === 'POST') {
+    if (!isAdmin(req, url)) return sendJson(res, 401, { ok: false, error: '未登录' });
+    config.authCode = genAuthCode();
+    saveConfig();
+    log('authCode regenerated');
+    return sendJson(res, 200, { ok: true, authCode: config.authCode });
+  }
+
+  // ============ 服务 API（客户端用授权码） ============
+  if (!serviceAuthorized(req, url)) {
+    log('service auth failed', route, (req.headers['authorization'] || '').slice(0, 12));
+    return sendJson(res, 401, { ok: false, error: '授权码无效或缺失，请在客户端填入本服务生成的授权码' });
   }
 
   try {
     const body = req.method === 'POST' ? await readBody(req) : {};
-
-    if (route === '/api/config' && req.method === 'GET') {
-      return sendJson(res, 200, { ok: true, authCode: config.authCode, defaultIntro: config.defaultIntro, defaultOutro: config.defaultOutro, enableBiliFallback: config.enableBiliFallback });
-    }
-    if (route === '/api/config' && req.method === 'POST') {
-      if (body.authCode) config.authCode = String(body.authCode).trim();
-      if (body.defaultIntro != null) config.defaultIntro = Math.max(0, parseInt(body.defaultIntro, 10) || 0);
-      if (body.defaultOutro != null) config.defaultOutro = Math.max(0, parseInt(body.defaultOutro, 10) || 0);
-      if (body.enableBiliFallback != null) config.enableBiliFallback = !!body.enableBiliFallback;
-      saveConfig();
-      log('config updated');
-      return sendJson(res, 200, { ok: true });
-    }
 
     // 弹幕搜索
     if (route === '/danmaku/search') {
@@ -558,56 +641,109 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// 设置页 HTML
+// 设置页 HTML（管理密码登录；授权码由服务端生成、客户端填入）
 const SETTINGS_HTML = `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ZDY 增强插件设置</title>
+<title>ZDY 增强插件管理</title>
 <style>
 body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:#0f1115;color:#e6e8ec;margin:0;padding:24px;}
-.card{max-width:560px;margin:0 auto;background:#171a21;border:1px solid #262b36;border-radius:12px;padding:24px;}
+.card{max-width:600px;margin:0 auto;background:#171a21;border:1px solid #262b36;border-radius:12px;padding:24px;}
 h1{font-size:20px;margin:0 0 4px;} .sub{color:#8b93a5;font-size:13px;margin-bottom:20px;}
 label{display:block;font-size:13px;color:#aab2c5;margin:14px 0 6px;}
 input{width:100%;box-sizing:border-box;background:#0f1115;border:1px solid #2c3242;border-radius:8px;color:#e6e8ec;padding:10px 12px;font-size:14px;}
-button{margin-top:20px;width:100%;background:#3b82f6;border:0;color:#fff;padding:12px;border-radius:8px;font-size:15px;cursor:pointer;}
-button:hover{background:#2f6fe0;} .tip{font-size:12px;color:#6b7280;margin-top:10px;line-height:1.6;}
-.ok{color:#34d399;font-size:13px;margin-top:12px;display:none;} code{background:#0f1115;padding:2px 6px;border-radius:4px;color:#f472b6;}
+button{margin-top:20px;background:#3b82f6;border:0;color:#fff;padding:11px 18px;border-radius:8px;font-size:15px;cursor:pointer;}
+button:hover{background:#2f6fe0;} button.ghost{background:#262b36;margin-left:8px;}
+.tip{font-size:12px;color:#6b7280;margin-top:10px;line-height:1.7;}
+.ok{color:#34d399;font-size:13px;margin-top:12px;} code{background:#0f1115;padding:3px 8px;border-radius:4px;color:#f472b6;font-size:15px;}
+.codebox{display:flex;align-items:center;gap:10px;} .codebox code{flex:1;display:block;text-align:center;font-size:18px;letter-spacing:1px;padding:10px;}
+hr{border:0;border-top:1px solid #262b36;margin:22px 0;} .hidden{display:none;}
 </style></head><body>
 <div class="card">
   <h1>ZDY 飞牛增强插件</h1>
-  <div class="sub">弹幕 · 字幕 · 跳过片头片尾 服务设置</div>
-  <label>授权码（客户端连接时填写）</label>
-  <input id="code" placeholder="加载中...">
-  <label>默认片头时长（秒）</label>
-  <input id="intro" type="number" value="90">
-  <label>默认片尾时长（秒）</label>
-  <input id="outro" type="number" value="60">
-  <button onclick="save()">保存设置</button>
-  <div class="ok" id="ok">已保存 ✓</div>
-  <div class="tip">桌面客户端 mpv 右键菜单 →「增强服务设置」里填写本 NAS 地址与上面的授权码。<br>
-  内网地址形如 <code>http://NAS内网IP:${PORT}</code>。</div>
+  <div class="sub">弹幕 · 字幕 · 跳过片头片尾 服务管理</div>
+
+  <div id="loginBox">
+    <label id="pwdLabel">管理密码</label>
+    <input id="pwd" type="password" placeholder="请输入管理密码" onkeydown="if(event.key==='Enter')login()">
+    <button onclick="login()" id="loginBtn">登录</button>
+    <div class="ok" id="loginMsg"></div>
+    <div class="tip" id="loginTip"></div>
+  </div>
+
+  <div id="mainBox" class="hidden">
+    <label>授权码（把它填入 PC 客户端「设置 → 增强服务」即可开通）</label>
+    <div class="codebox"><code id="authCode">---</code>
+      <button class="ghost" onclick="regen()">重置授权码</button></div>
+
+    <hr>
+    <label>默认片头时长（秒）</label>
+    <input id="intro" type="number" value="90">
+    <label>默认片尾时长（秒）</label>
+    <input id="outro" type="number" value="60">
+    <label style="display:flex;align-items:center;gap:8px;">
+      <input type="checkbox" id="bili" style="width:auto;"> 弹弹play 不可用时回退 B 站弹幕
+    </label>
+    <button onclick="savePrefs()">保存偏好</button>
+    <span class="ok" id="prefMsg"></span>
+
+    <hr>
+    <label>修改管理密码（留空则不改）</label>
+    <input id="newPwd" type="password" placeholder="新管理密码（至少 4 位）">
+    <button onclick="savePrefs()">应用修改</button>
+    <div class="tip">桌面客户端「设置 → 增强服务」填写本 NAS 地址（形如 <code>http://NAS内网IP:${PORT}</code>）和上面的授权码。<br>
+    授权码供客户端调用服务使用；本管理页用管理密码保护，二者分开。</div>
+  </div>
 </div>
 <script>
-async function api(p,opt){const r=await fetch(p,opt);return r.json();}
-async function load(){
-  const code=prompt('请输入当前授权码（首次为自动生成，见 NAS 数据目录 config.json）：');
-  if(!code)return;
-  try{
-    const j=await api('/api/config?token='+encodeURIComponent(code));
-    if(!j.ok){alert('授权码错误');return;}
-    window.__token=code;
-    document.getElementById('code').value=j.authCode;
-    document.getElementById('intro').value=j.defaultIntro;
-    document.getElementById('outro').value=j.defaultOutro;
-  }catch(e){alert('连接失败 '+e);}
+let TOKEN=null;
+async function api(p,opt,opt2){opt=opt||{};opt.headers=Object.assign({'Content-Type':'application/json'},opt.headers||{});if(TOKEN)opt.headers['Authorization']='Bearer '+TOKEN;const r=await fetch(p,opt);return r.json();}
+function show(el){document.getElementById(el).classList.remove('hidden');}
+function hide(el){document.getElementById(el).classList.add('hidden');}
+async function boot(){
+  try{const j=await fetch('/admin/info').then(r=>r.json());
+    if(!j.hasAdminPassword){
+      document.getElementById('pwdLabel').textContent='设置管理密码（首次使用，至少 4 位）';
+      document.getElementById('loginBtn').textContent='设置并进入';
+      document.getElementById('loginTip').textContent='该密码用于登录本管理页；客户端连接用的授权码会在进入后生成/展示。';
+    } else {
+      document.getElementById('loginTip').textContent='管理密码用于登录本页查看授权码与管理设置。';
+    }
+  }catch(e){}
 }
-async function save(){
-  const body={authCode:document.getElementById('code').value.trim(),
-    defaultIntro:parseInt(document.getElementById('intro').value||'90',10),
-    defaultOutro:parseInt(document.getElementById('outro').value||'60',10)};
-  const j=await api('/api/config?token='+encodeURIComponent(window.__token||body.authCode),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(j.ok){const el=document.getElementById('ok');el.style.display='block';setTimeout(()=>el.style.display='none',2500);}
+async function login(){
+  const pwd=document.getElementById('pwd').value;
+  const msg=document.getElementById('loginMsg');
+  if(!pwd){msg.textContent='请输入密码';return;}
+  const j=await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})}).then(r=>r.json());
+  if(j.ok){TOKEN=j.token;sessionStorage.setItem('zdyAdmin',TOKEN);hide('loginBox');show('mainBox');loadState();}
+  else{msg.textContent=j.error||'登录失败';}
 }
-load();
+async function loadState(){
+  // 自动恢复会话
+  if(!TOKEN){const t=sessionStorage.getItem('zdyAdmin');if(t){TOKEN=t;try{const t0=await fetch('/admin/state',{headers:{'Authorization':'Bearer '+TOKEN}}).then(r=>r.json());if(t0.ok){hide('loginBox');show('mainBox');}else{TOKEN=null;sessionStorage.removeItem('zdyAdmin');}}catch(e){}}}
+  if(!TOKEN)return;
+  const j=await api('/admin/state');
+  if(!j.ok){TOKEN=null;sessionStorage.removeItem('zdyAdmin');return;}
+  document.getElementById('authCode').textContent=j.authCode;
+  document.getElementById('intro').value=j.defaultIntro;
+  document.getElementById('outro').value=j.defaultOutro;
+  document.getElementById('bili').checked=!!j.enableBiliFallback;
+}
+async function regen(){
+  const j=await api('/admin/regenerate-code',{method:'POST'});
+  if(j.ok){document.getElementById('authCode').textContent=j.authCode;alert('已重置授权码，客户端需重新填入新授权码');}
+}
+async function savePrefs(){
+  const body={defaultIntro:parseInt(document.getElementById('intro').value||'90',10),
+    defaultOutro:parseInt(document.getElementById('outro').value||'60',10),
+    enableBiliFallback:document.getElementById('bili').checked,
+    newPassword:document.getElementById('newPwd').value||undefined};
+  const j=await api('/admin/update',{method:'POST',body:JSON.stringify(body)});
+  const m=document.getElementById('prefMsg');
+  if(j.ok){m.textContent='已保存 ✓';document.getElementById('newPwd').value='';setTimeout(()=>m.textContent='',2500);}
+  else{m.style.color='#f87171';m.textContent=j.error||'保存失败';setTimeout(()=>{m.style.color='';m.textContent='';},3000);}
+}
+boot();loadState();
 </script></body></html>`;
 
 server.listen(PORT, BIND_HOST, () => {

@@ -326,7 +326,7 @@
       <div class="hotkey-row" style="margin-top:12px">
         <div class="hotkey-label">
           <div class="hotkey-title">启用增强服务</div>
-          <div class="hotkey-sub">开启后弹幕/字幕/片头片尾优先走 NAS 增强服务；关闭或连接失败时自动回退客户端内置源</div>
+          <div class="hotkey-sub">开启后弹幕/字幕/片头片尾由 NAS 的 ZDY 服务提供。下方可填三条通道，在家走内网、在外走 IPv6 DDNS 或 FRP，客户端自动选最快可用通道并在断连时切换</div>
         </div>
         <div style="flex:0 0 260px;display:flex;align-items:center">
           <label class="switch" style="display:flex;align-items:center;gap:10px;cursor:pointer">
@@ -338,21 +338,41 @@
 
       <div class="hotkey-row" style="margin-top:10px">
         <div class="hotkey-label">
-          <div class="hotkey-title">ZDY 服务地址</div>
-          <div class="hotkey-sub">飞牛 NAS 上 ZDY 插件的地址，例如 http://192.168.1.10:34510</div>
+          <div class="hotkey-title">内网地址 · 局域网</div>
+          <div class="hotkey-sub">在家同一局域网时使用，例如 http://192.168.1.10:34510</div>
         </div>
-        <input type="text" id="zdy-url" class="hotkey-input glass-input" placeholder="http://192.168.1.10:34510" autocomplete="off" spellcheck="false" style="flex:0 0 320px;width:320px" />
+        <input type="text" id="zdy-lan" class="hotkey-input glass-input" placeholder="http://192.168.1.10:34510" autocomplete="off" spellcheck="false" style="flex:0 0 320px;width:320px" />
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">IPv6 DDNS 地址 · 外网直连</div>
+          <div class="hotkey-sub">在外网且宽带分配了公网 IPv6 时使用，填 DDNS 域名或 http://[IPv6]:34510</div>
+        </div>
+        <input type="text" id="zdy-ddns" class="hotkey-input glass-input" placeholder="http://你的DDNS域名:34510" autocomplete="off" spellcheck="false" style="flex:0 0 320px;width:320px" />
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">FRP 穿透地址 · 外网兜底</div>
+          <div class="hotkey-sub">无公网时用内网穿透，例如 http://frpc.你的域名:远程端口</div>
+        </div>
+        <input type="text" id="zdy-frp" class="hotkey-input glass-input" placeholder="http://frpc.example.com:远程端口" autocomplete="off" spellcheck="false" style="flex:0 0 320px;width:320px" />
       </div>
 
       <div class="hotkey-row" style="margin-top:10px">
         <div class="hotkey-label">
           <div class="hotkey-title">授权码</div>
-          <div class="hotkey-sub">NAS 的 ZDY 管理页中显示的授权码（管理页用管理密码登录，授权码用于开通服务）</div>
+          <div class="hotkey-sub">NAS 的 ZDY 管理页中显示的授权码（三条通道共用同一个授权码）</div>
         </div>
         <input type="text" id="zdy-token" class="hotkey-input glass-input" placeholder="ZDY-XXXXXXXXXXXX" autocomplete="off" spellcheck="false" style="flex:0 0 320px;width:320px" />
       </div>
 
       <div id="zdy-status" style="margin-top:10px;font-size:13px;min-height:18px"></div>
+
+      <div style="margin-top:6px;font-size:12px;color:var(--text-dim, rgba(245,247,251,.5));line-height:1.7">
+        提示：内网地址填 NAS 局域网 IP（端口 34510）；外网用 IPv6 DDNS 域名或 FRP 穿透地址。三条通道可只填你有的，客户端会自动测速选路，在外网断内网时无缝切到 DDNS/FRP。通道地址也可在 NAS 的 ZDY 管理页查看。
+      </div>
 
       <div class="setup-actions" style="margin-top:14px">
         <button type="button" class="btn-ghost" id="zdy-test">测试连接</button>

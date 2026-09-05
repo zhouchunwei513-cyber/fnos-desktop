@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.35.0';
+const APP_VERSION = '1.36.1';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3319,10 +3319,20 @@ ipcMain.handle('settings:set-enhance', async (_e, patch) => {
   try {
     const settings = (typeof loadSettings === 'function' ? loadSettings() : (global.__appSettings || {})) || {};
     const cur = settings.enhance || { enabled: false, baseUrl: '', authCode: '' };
-    const baseUrl = String(patch && patch.baseUrl != null ? patch.baseUrl : cur.baseUrl || '').trim().replace(/\/+$/, '');
+    const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
+    const lan = norm(patch && patch.lan != null ? patch.lan : cur.lan);
+    const ddns = norm(patch && patch.ddns != null ? patch.ddns : cur.ddns);
+    const frp = norm(patch && patch.frp != null ? patch.frp : cur.frp);
+    // 兼容旧版单地址字段 baseUrl
+    const legacyBase = norm(patch && patch.baseUrl != null ? patch.baseUrl : cur.baseUrl);
+    const lanFinal = lan || legacyBase;
     const next = {
       enabled: !!(patch && patch.enabled),
-      baseUrl,
+      lan: lanFinal,
+      ddns,
+      frp,
+      // baseUrl 保留指向内网，兼容老读取点
+      baseUrl: lanFinal,
       authCode: String(patch && patch.authCode != null ? patch.authCode : cur.authCode || '').trim(),
     };
     saveSettings({ enhance: next });
@@ -3333,35 +3343,82 @@ ipcMain.handle('settings:set-enhance', async (_e, patch) => {
   }
 });
 
-// v1.34.0：测试 ZDY 增强服务连通性
+// 单通道 ping（Node 16 无全局 fetch，使用 http/https 模块）
+function pingZdyChannel(baseUrl, token, timeoutMs) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const u = baseUrl + '/ping';
+    let parsed;
+    try { parsed = new URL(u); } catch (_) { return done({ ok: false, error: '地址格式不正确' }); }
+    const timer = setTimeout(() => done({ ok: false, error: '连接超时' }), timeoutMs || 6000);
+    const lib = parsed.protocol === 'https:' ? require('https') : require('http');
+    const headers = { Accept: 'application/json' };
+    if (token) headers.Authorization = 'Bearer ' + token;
+    const req = lib.get(u, { headers, timeout: timeoutMs || 6000 }, (res) => {
+      const ch = [];
+      res.on('data', (c) => ch.push(c));
+      res.on('end', () => {
+        clearTimeout(timer);
+        const ms = Date.now() - started;
+        const body = Buffer.concat(ch).toString('utf8');
+        let data = {};
+        try { data = JSON.parse(body || '{}'); } catch (_) {}
+        if (res.statusCode === 401 || data.unauthorized) return done({ ok: false, ms, error: '授权码错误' });
+        if (res.statusCode !== 200) return done({ ok: false, ms, error: 'HTTP ' + res.statusCode });
+        done({ ok: true, ms, version: data.version || '', authOk: true });
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.on('error', (err) => { clearTimeout(timer); done({ ok: false, ms: Date.now() - started, error: err && err.message === 'timeout' ? '连接超时' : '无法访问' }); });
+  });
+}
+
+// v1.36.0：读取 ZDY 增强服务设置（三通道 lan/ddns/frp + 授权码 + 开关）
+ipcMain.handle('settings:get-enhance', async () => {
+  try {
+    const settings = (typeof loadSettings === 'function' ? loadSettings() : (global.__appSettings || {})) || {};
+    const e = settings.enhance || global.__enhanceSettings || {};
+    const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
+    // 兼容旧版单字段 baseUrl：迁移到 lan
+    const lan = norm(e.lan) || norm(e.baseUrl);
+    const enhance = {
+      enabled: !!e.enabled,
+      lan,
+      ddns: norm(e.ddns),
+      frp: norm(e.frp),
+      baseUrl: lan,
+      authCode: String(e.authCode || '').trim(),
+    };
+    try { global.__enhanceSettings = enhance; } catch (_) {}
+    return { ok: true, enhance };
+  } catch (err) {
+    return { ok: false, error: err?.message || '读取增强服务设置失败', enhance: { enabled: false, lan: '', ddns: '', frp: '', baseUrl: '', authCode: '' } };
+  }
+});
+
+// v1.34.0：测试 ZDY 增强服务连通性；v1.36.0：三通道（内网/IPv6 DDNS/FRP）逐通道诊断
 ipcMain.handle('settings:enhance-ping', async (_e, cfg) => {
   try {
-    const baseUrl = String(cfg && cfg.baseUrl || '').trim().replace(/\/+$/, '');
-    const token = String(cfg && cfg.token || '').trim();
-    if (!baseUrl) return { ok: false, error: '服务地址为空' };
-    const url = baseUrl + '/ping?token=' + encodeURIComponent(token || 'x');
-    const ping = await new Promise((resolve) => {
-      let settled = false;
-      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-      const timer = setTimeout(() => done({ status: 0, body: '' }), 6000);
-      let u;
-      try { u = new URL(url); } catch (_) { clearTimeout(timer); return done({ status: -1, body: '' }); }
-      const lib = u.protocol === 'https:' ? require('https') : require('http');
-      const req = lib.get(url, { headers: { Accept: 'application/json' }, timeout: 6000 }, (res) => {
-        const ch = [];
-        res.on('data', (c) => ch.push(c));
-        res.on('end', () => { clearTimeout(timer); done({ status: res.statusCode, body: Buffer.concat(ch).toString('utf8') }); });
-      });
-      req.on('timeout', () => { req.destroy(new Error('timeout')); });
-      req.on('error', (err) => { clearTimeout(timer); done({ status: 0, body: '', err: err.message }); });
-    });
-    if (ping.status === -1) return { ok: false, error: '服务地址格式不正确' };
-    if (ping.status === 0) return { ok: false, error: ping.err === 'timeout' ? '连接超时（无法访问该地址）' : ('无法访问：' + (ping.err || '网络错误')) };
-    let data = {};
-    try { data = JSON.parse(ping.body || '{}'); } catch (_) {}
-    if (ping.status === 401 || data.unauthorized) return { ok: false, error: '授权码错误或未填写' };
-    if (ping.status !== 200) return { ok: false, error: 'HTTP ' + ping.status };
-    return { ok: true, version: data.version || '', note: data.note || '', enhance: true };
+    const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
+    const token = norm(cfg && (cfg.authCode || cfg.token));
+    const chans = [
+      { name: '内网', url: norm(cfg && cfg.lan) || norm(cfg && cfg.baseUrl) },
+      { name: 'IPv6 DDNS', url: norm(cfg && cfg.ddns) },
+      { name: 'FRP', url: norm(cfg && cfg.frp) },
+    ].filter((c) => c.url);
+    if (!chans.length) return { ok: false, error: '请至少填写一条通道地址' };
+    // 并行探测所有通道，按内网→DDNS→FRP 顺序返回；取首个可用为当前通道
+    const settled = await Promise.all(chans.map(async (c) => {
+      const r = await pingZdyChannel(c.url, token, 6000);
+      return { name: c.name, url: c.url, ...r };
+    }));
+    const firstOk = settled.find((r) => r.ok);
+    if (!firstOk) {
+      return { ok: false, error: '全部通道不可达', results: settled };
+    }
+    return { ok: true, activeChannel: firstOk.name, version: firstOk.version, results: settled };
   } catch (e) {
     return { ok: false, error: e.message || '无法访问' };
   }

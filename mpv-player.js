@@ -156,10 +156,11 @@ function perfArgs() {
     '--dscale=bilinear',
     '--tone-mapping=bt.2390',
     '--hdr-compute-peak=no',
-    // N100 双路 4K 弱机减负：音频统一按立体声处理，避免多声道上混/重采样的额外 CPU 开销。
-    // 注意：不要加 --vf=clr —— "clr" 只能作为运行时命令(vf clr)，写在命令行里会被当成滤镜名，
-    // mpv 报 "Option vf: 'clr' isn't supported" 致命错误、启动即 exit 1（默认本就无滤镜链，无需清）。
-    '--audio-channels=stereo'
+    // v1.36.0：移除强制 --audio-channels=stereo。旧逻辑把多声道（eac3/ac3 5.1 等）统一降混成
+    //   立体声，既损失音质又增加重采样 CPU 开销；4K 原盘 eac3 音频因此出现 underrun/不同步。
+    //   交给 mpv/WASAPI 按设备能力自动选择声道布局（wasapi 默认 passthrough/直出最佳）。
+    // 音频直出交给 WASAPI；同时开启轻量音频缓冲以减少 underrun
+    '--audio-buffer=0.4'
   ];
 }
 
@@ -268,8 +269,11 @@ class MpvPlayer extends EventEmitter {
     // 'script-message context_menu open' 没有任何监听者——右键绑定触发了却无菜单可弹。
     // 这里强制加载内置 OSD 上下文菜单脚本（它会监听 context_menu open 并读取 menu-data 渲染中文菜单）。
     args.push('--load-context-menu=yes');
-    // 把 lua 日志级别从 warn 提到 info，便于在 fnos-mpv.log 里确认菜单脚本/内置脚本是否成功加载
-    args.push('--msg-level=ffmpeg=v,stream=v,demuxer=v,stream-lavf=v,lua=info,ass=warn');
+    // v1.36.0：降低运行期日志噪音与磁盘 IO。此前 ffmpeg=v,stream=v,demuxer=v,stream-lavf=v 会在
+    //   播放过程中对【每个网络包/解码帧】写详细日志，4K 高码率下造成持续磁盘写入与主线程开销，
+    //   也是"占用资源过大"的来源之一。改为默认只记录 warning 及以上；lua 菜单保留 info。
+    //   需要排查断流时再临时打开（fnos-mpv.log 仍记录 end-file / HTTP 状态等关键事件）。
+    args.push('--msg-level=ffmpeg=error,stream=status,demuxer=warn,stream-lavf=warn,lua=info,ass=warn');
     // 直播/HTTP 断流自动重连（交给 ffmpeg 内建重试，覆盖短抖动；长期断链仍由应用层重新取流兜底）
     // reconnect_retries/on_http_error：NAS 中途断开长连接（partial file）时让 ffmpeg 多试几次断点续传，
     // 而不是很快放弃触发"提前 EOF"。
@@ -441,6 +445,11 @@ class MpvPlayer extends EventEmitter {
     let buf = '';
     sock.on('connect', () => {
       this.connected = true;
+      // v1.36.0：起播耗时埋点（spawn -> IPC 就绪）。便于诊断"加载慢"是卡在进程启动还是等取流。
+      try {
+        const ms = this._startTime ? (Date.now() - this._startTime) : -1;
+        this.emit('log', 'mpv ipc ready in ' + ms + 'ms after spawn');
+      } catch (_) {}
       // 缓存的 ready promise 先 resolve，再发事件，避免调用方晚于事件注册监听而永久挂起
       if (this._resolveReady) { try { this._resolveReady(); } catch (_) {} this._resolveReady = null; }
       this.emit('ipc-ready');
@@ -768,12 +777,12 @@ class MpvPlayer extends EventEmitter {
   async setMediaTitle(title) {
     try {
       const t = this._sanitizeTitle(title);
-      if (!t) { log('media-title ignored (generic/empty)', { raw: String(title || '').slice(0, 40) }); return; }
+      if (!t) { this.emit('log', 'media-title ignored (generic/empty): ' + String(title || '').slice(0, 40)); return; }
       this._mediaTitle = t;
       await this.command(['set_property', 'force-media-title', t]);
-      log('media-title updated', { title: t.slice(0, 60), isLive: this._isLive });
+      this.emit('log', 'media-title updated: ' + t.slice(0, 60) + ' (live=' + this._isLive + ')');
     } catch (e) {
-      log('setMediaTitle error', { err: String(e && e.message || e) });
+      this.emit('log', 'setMediaTitle error: ' + String(e && e.message || e));
     }
   }
 
@@ -816,7 +825,13 @@ class MpvPlayer extends EventEmitter {
     this._buffering = 100;
     this._armStartupWatchdog();
     const waitReady = this.connected ? Promise.resolve() : this._whenReady();
+    const _tWait = Date.now();
     await waitReady;
+    // v1.36.0：埋点——loadfile 等 IPC 就绪耗时。若长时间 >1s，说明卡在 mpv 进程启动/管道建立。
+    try {
+      const wms = Date.now() - _tWait;
+      if (wms > 300) this.emit('log', 'loadfile waited ' + wms + 'ms for ipc ready');
+    } catch (_) {}
     // 首帧前隐藏窗口：切片/切台瞬间露出网页自身加载界面，避免黑窗/待机画面（观感更快）
     try { this._armFirstFrameHide(); } catch (_) {}
     // 媒体级 http 头：通过 per-file option 传入（loadfile 的 options 仅支持部分，故用 property 兜底）
@@ -843,7 +858,7 @@ class MpvPlayer extends EventEmitter {
         await this.command(['set_property', 'force-media-title', mediaTitle]);
       } catch (_) {}
     } else {
-      log('loadfile no valid title (live/pending), force-media-title cleared', { isLive: this._isLive });
+      this.emit('log', 'loadfile no valid title (live/pending), force-media-title cleared');
     }
     await this.command(['loadfile', url, 'replace']);
     try { await this.command(['set_property', 'pause', false]); } catch (_) {}

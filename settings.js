@@ -445,8 +445,10 @@
     });
   }
 
-  // --------- ZDY 增强服务（v1.34.0） ---------
-  const zdyUrl = document.getElementById('zdy-url');
+  // --------- ZDY 增强服务（三通道：内网 / IPv6 DDNS / FRP） ---------
+  const zdyLan = document.getElementById('zdy-lan');
+  const zdyDdns = document.getElementById('zdy-ddns');
+  const zdyFrp = document.getElementById('zdy-frp');
   const zdyToken = document.getElementById('zdy-token');
   const zdySave = document.getElementById('zdy-save');
   const zdyTest = document.getElementById('zdy-test');
@@ -470,33 +472,48 @@
     try {
       const info = await fnosSettings.getSettings();
       const e = info?.enhance || {};
-      if (zdyUrl) zdyUrl.value = e.baseUrl || '';
+      // 兼容旧版单地址：lan 优先，其次旧 baseUrl
+      if (zdyLan) zdyLan.value = e.lan || e.baseUrl || '';
+      if (zdyDdns) zdyDdns.value = e.ddns || '';
+      if (zdyFrp) zdyFrp.value = e.frp || '';
       if (zdyToken) zdyToken.value = e.authCode || '';
       setZdyEnabled(!!e.enabled);
-      if (e.enabled && e.baseUrl) setZdyStatus(null, '已启用增强服务（保存后生效）');
+      const anyAddr = e.lan || e.ddns || e.frp || e.baseUrl;
+      if (e.enabled && anyAddr) setZdyStatus(null, '已启用增强服务（保存后生效，自动选择最快可用通道）');
     } catch (_) {}
   }
 
+  const trimAddr = (v) => (v || '').trim().replace(/\/+$/, '');
   function readEnhance() {
+    const lan = zdyLan ? trimAddr(zdyLan.value) : '';
+    const ddns = zdyDdns ? trimAddr(zdyDdns.value) : '';
+    const frp = zdyFrp ? trimAddr(zdyFrp.value) : '';
     return {
       enabled: zdyEnabled ? !!zdyEnabled.checked : false,
-      baseUrl: zdyUrl ? zdyUrl.value.trim().replace(/\/+$/, '') : '',
+      lan, ddns, frp,
+      // baseUrl 同步为内网地址，兼容其它读取点
+      baseUrl: lan,
       authCode: zdyToken ? zdyToken.value.trim() : '',
     };
   }
 
   if (zdyTest) {
     zdyTest.addEventListener('click', async () => {
-      setZdyStatus(null, '测试中…');
+      setZdyStatus(null, '正在逐通道测试（内网 → IPv6 DDNS → FRP）…');
       zdyTest.disabled = true;
       try {
         const cfg = readEnhance();
-        if (!cfg.baseUrl) { setZdyStatus(false, '请先填写服务地址'); zdyTest.disabled = false; return; }
-        const res = await fnosSettings.enhancePing(cfg.baseUrl, cfg.authCode);
+        if (!cfg.lan && !cfg.ddns && !cfg.frp) { setZdyStatus(false, '请至少填写一条通道地址'); zdyTest.disabled = false; return; }
+        const res = await fnosSettings.enhancePing(cfg);
         if (res && res.ok) {
-          setZdyStatus(true, '连接成功：ZDY ' + (res.version || '') + ' ｜ ' + (res.note || ''));
+          const results = res.results || [];
+          const line = results.map((x) => x.ok
+            ? '✓' + x.name + '(' + x.ms + 'ms' + (x.version ? '·ZDY' + x.version : '') + ')'
+            : '✗' + x.name + '(' + (x.error || '超时') + ')').join('　');
+          const okCount = results.filter((x) => x.ok).length;
+          setZdyStatus(okCount > 0, '可用 ' + okCount + '/3' + (res.activeChannel ? '，当前走「' + res.activeChannel + '」' : '') + '　' + line);
         } else {
-          setZdyStatus(false, '连接失败：' + ((res && res.error) || '无法访问或授权码错误'));
+          setZdyStatus(false, '全部通道不可达：' + ((res && res.error) || '请确认 NAS 在线、ZDY 插件运行中'));
         }
       } catch (err) {
         setZdyStatus(false, '连接失败：' + (err?.message || '未知错误'));
@@ -513,14 +530,14 @@
       setZdyStatus(null, '');
       try {
         const cfg = readEnhance();
-        if (cfg.enabled && !cfg.baseUrl) {
-          setZdyStatus(false, '启用增强服务时必须填写服务地址');
+        if (cfg.enabled && !cfg.lan && !cfg.ddns && !cfg.frp) {
+          setZdyStatus(false, '启用增强服务时至少填写一条通道地址');
           zdySave.disabled = false; zdySave.textContent = '保存增强服务设置'; return;
         }
         const res = await fnosSettings.setEnhance(cfg);
         if (res && res.ok) {
           zdySave.textContent = '已保存';
-          setZdyStatus(cfg.enabled, cfg.enabled ? '增强服务已保存，下次播放生效' : '已关闭增强服务，使用内置源');
+          setZdyStatus(cfg.enabled, cfg.enabled ? '增强服务已保存，下次播放自动选路' : '已关闭增强服务');
           setTimeout(() => { zdySave.textContent = '保存增强服务设置'; }, 1800);
         } else {
           setZdyStatus(false, (res && res.error) || '保存失败');

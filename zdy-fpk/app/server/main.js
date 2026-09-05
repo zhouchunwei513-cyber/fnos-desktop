@@ -323,14 +323,43 @@ async function biliSearch(keyword) {
     r = JSON.parse(await httpGet('https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=' + encodeURIComponent(keyword), { 'User-Agent': UA, 'Referer': 'https://www.bilibili.com/' }));
   }
   const arr = (r && r.data && r.data.result) || [];
-  return arr.filter((v) => v.bvid).slice(0, 8).map((v) => ({
+  const core = coreTitleOf(keyword);
+  const scoreBili = (v) => {
+    const title = String(v.title || '').replace(/<[^>]+>/g, '');
+    const t = title.toLowerCase();
+    let s = 0;
+    // 核心片名必须命中，否则强烈降权
+    if (core && !t.includes(core.toLowerCase())) s -= 120;
+    // 解说/混剪/预告/花絮/短剧/reaction/原声 等非正片强降权
+    if (/(解说|解析|混剪|剪辑|预告|花絮|reaction|react|反应|盘点|测评|吐槽|万字|拉片|看片|陪看|几分钟|速看|一口气|短剧|合集|原声|ost|大碟|直播|录播|实况|翻唱|翻拍)/i.test(title)) s -= 80;
+    // 正片/官方/完整版/电影 提权
+    if (/(官方|正片|完整版|高清|国语|普通话)/.test(title)) s += 30;
+    // 时长：B 站影视区正片多为长视频。parse "HH:MM:SS" 或 "MM:SS"
+    const dur = String(v.duration || '');
+    const parts = dur.split(':').map(Number);
+    let sec = 0;
+    if (parts.length === 3) sec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    else if (parts.length === 2) sec = parts[0] * 60 + parts[1];
+    if (sec >= 3600) s += 50;           // ≥60min，很可能是正片
+    else if (sec >= 1800) s += 20;      // ≥30min
+    else if (sec > 0 && sec < 1200) s -= 20; // <20min 多半是解说短片
+    // 播放量轻微加权（官方影视资源通常播放高）
+    s += Math.min(20, Math.log10((v.play || 1)) * 3);
+    return s;
+  };
+  const scored = arr.filter((v) => v.bvid).map((v) => ({
     source: 'bilibili',
     bvid: v.bvid,
     aid: v.aid,
     title: String(v.title || '').replace(/<[^>]+>/g, ''),
     duration: v.duration || '',
     play: v.play || 0,
-  }));
+    _score: scoreBili(v),
+  })).sort((a, b) => b._score - a._score);
+  // 过滤掉核心片名不命中（-120）或明显解说（-80）的，但若全部命中不了则保留前 3 兜底
+  const good = scored.filter((v) => v._score > -60);
+  const pick = (good.length ? good : scored).slice(0, 8).map(({ _score, ...rest }) => rest);
+  return pick;
 }
 
 async function biliPagelist(bvid) {
@@ -483,10 +512,18 @@ async function searchAssrt(title) {
   const links = [];
   const seen = {};
   let m;
-  const re = /href="(\/xml\/sub\/\d+\/\d+\.xml)"[^>]*>([\s\S]*?)<\/a>/g;
+  // 锚点形如：<a class="introtitle" ... title="字幕名" href="/xml/sub/xx/xx.xml"> （内部是星星图片，无文本）
+  const re = /<a\b[^>]*?href="(\/xml\/sub\/\d+\/\d+\.xml)"[^>]*>([\s\S]*?)<\/a>/g;
   while ((m = re.exec(h)) !== null) {
-    if (!seen[m[1]]) { seen[m[1]] = 1; links.push({ detailUrl: 'https://assrt.net' + m[1], name: stripHtml(m[2]) || title }); }
-    if (links.length >= 15) break;
+    const href = m[1];
+    if (seen[href]) continue;
+    seen[href] = 1;
+    // 名称优先取 title="..." 属性；其次取锚内文本
+    const tagHead = h.slice(Math.max(0, m.index - 200), m.index + href.length + 20);
+    const titleAttr = (tagHead.match(/title="([^"]+)"/) || [])[1] || '';
+    const name = stripHtml(titleAttr) || stripHtml(m[2]) || title;
+    links.push({ detailUrl: 'https://assrt.net' + href, name });
+    if (links.length >= 20) break;
   }
   const scored = [];
   for (const it of links) {
@@ -494,7 +531,9 @@ async function searchAssrt(title) {
       const dh = await httpGet(it.detailUrl, { 'User-Agent': UA, 'Referer': 'https://assrt.net/' });
       const zip = dh.match(/\/download\/\d+\/[^"'\s]*?\.zip/i);
       if (!zip) continue; // 网盘外链/需积分 rar 跳过
-      const name = stripHtml((dh.match(/<title>([^<]+)<\/title>/) || [])[1]) || it.name;
+      // 详情页 <title> 更准确；拿不到则用列表名
+      const detailName = stripHtml((dh.match(/<title>([^<]+)<\/title>/) || [])[1]) || it.name;
+      const name = (detailName && detailName.length > 2 && !/下载|字幕下载|assrt/i.test(detailName.slice(0, 6))) ? detailName : it.name;
       const lang = /简体|简英|中英|双语|GB2312|GBK/i.test(name) ? '简' : (/繁体|繁體|Big5/i.test(name) ? '繁' : '中');
       scored.push({
         source: 'assrt',
@@ -507,10 +546,12 @@ async function searchAssrt(title) {
       });
     } catch (e) {}
   }
-  // 相关性排序，丢弃核心片名不符的条目
-  return scored
-    .filter((s) => s.score > 0)
+  // 相关性排序：丢弃核心片名严重不符（score < -50）的条目；若过滤后为空则退回全部（保证有结果）
+  const good = scored.filter((s) => s.score > -50);
+  const pool = good.length ? good : scored;
+  return pool
     .sort((a, b) => b.score - a.score)
+    .slice(0, 12)
     .map(({ score, ...rest }) => rest);
 }
 
@@ -563,6 +604,22 @@ function serviceAuthorized(req, url) {
   return !!config.authCode && token === config.authCode;
 }
 
+// 收集本机可用地址（供客户端三通道填写参考）
+function localAddrs() {
+  const out = { ipv4: [], ipv6: [] };
+  try {
+    const ifaces = os.networkInterfaces();
+    for (const name of Object.keys(ifaces)) {
+      for (const a of (ifaces[name] || [])) {
+        if (a.internal) continue;
+        if (a.family === 'IPv4') out.ipv4.push(a.address);
+        else if (a.family === 'IPv6' && !a.address.startsWith('fe80')) out.ipv6.push(a.address);
+      }
+    }
+  } catch (_) {}
+  return out;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const route = url.pathname;
@@ -572,8 +629,8 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
-  // 健康检查（免认证）
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.2.0' });
+  // 健康检查（免认证）：附带本机地址，方便客户端三通道填写
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.2.1', port: PORT, addrs: localAddrs() });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {

@@ -34,17 +34,20 @@ const HTTP_OPENSUB_UA = 'FNOS Desktop Player';
 const SUB_SEARCH_CACHE = new Map();
 const SUB_CACHE_TTL = 10 * 60 * 1000;
 
-// ---------------------- ZDY 增强服务转发（v1.34.0） ----------------------
-// 用户在「设置 → 增强服务」配置了 NAS 上的 ZDY FPK 后，弹幕/字幕/片头片尾优先由家中 NAS
-// 提供（内网快、规避数据中心 IP 风控）；未配置或请求失败时自动回退到本文件内置实现。
-function getEnhanceConfig() {
+// ---------------------- ZDY 增强服务转发（三网自适应：内网 / IPv6 DDNS / FRP） ----------------------
+// 用户在「设置 → 增强服务」可填三条通道地址（内网 IPv4、IPv6 DDNS 域名、FRP 中转）。
+// 客户端运行时自动探测并选用最快且可达的一条；当前通道失败时无缝切换到其它通道。
+// 在家走内网（最快），外出走 IPv6 DDNS 或 FRP（公网），无需手动切换。未配置则弹幕/字幕/片头片尾不可用。
+let __activeBaseUrl = null;   // 最近成功使用的通道基地址（缓存，避免每次都全量探测）
+let __activeChannel = null;   // 通道名 inner/ipv6/frp
+let __activeCheckedAt = 0;    // 上次探测时间戳
+const ACTIVE_TTL = 20 * 1000; // 缓存 20s 内直接用当前通道
+
+function rawEnhanceConfig() {
   try {
-    if (global.__enhanceSettings && global.__enhanceSettings.enabled && global.__enhanceSettings.baseUrl) {
-      return global.__enhanceSettings;
-    }
+    if (global.__enhanceSettings && global.__enhanceSettings.enabled) return global.__enhanceSettings;
   } catch (_) {}
   try {
-    // 兜底：从主进程设置读取（helper 与 main 同进程，electron app 可直接读 settings.json）
     const electron = require('electron');
     const app = electron && electron.app;
     if (app && app.getPath) {
@@ -52,24 +55,46 @@ function getEnhanceConfig() {
       if (fs.existsSync(sf)) {
         const j = JSON.parse(fs.readFileSync(sf, 'utf8'));
         const e = j && j.enhance;
-        if (e && e.enabled && e.baseUrl) return e;
+        if (e && e.enabled) return e;
       }
     }
   } catch (_) {}
   return null;
 }
 
-function enhanceFetch(routePath, bodyObj) {
-  return new Promise((resolve) => {
-    const cfg = getEnhanceConfig();
-    if (!cfg) return resolve(null); // 未配置 -> 回退
+// 归一化三条通道（兼容旧版单地址 baseUrl）。返回 [{name,label,baseUrl}, ...]，去重去空。
+function getEnhanceChannels() {
+  const cfg = rawEnhanceConfig();
+  if (!cfg) return null;
+  const norm = (u) => String(u || '').trim().replace(/\/+$/, '');
+  const map = [
+    { name: 'inner', label: '内网', baseUrl: norm(cfg.lan || cfg.innerUrl || cfg.baseUrl) },
+    { name: 'ipv6', label: 'IPv6 DDNS', baseUrl: norm(cfg.ddns || cfg.ipv6Url) },
+    { name: 'frp', label: 'FRP 中转', baseUrl: norm(cfg.frp || cfg.frpUrl) },
+  ];
+  // 旧版只填 baseUrl：归为 inner
+  const seen = {};
+  const out = [];
+  for (const c of map) {
+    if (!c.baseUrl || seen[c.baseUrl]) continue;
+    seen[c.baseUrl] = 1;
+    out.push(c);
+  }
+  if (!out.length) return null;
+  return { cfg, channels: out };
+}
+
+// 对单条通道发一次请求（可返回 JSON 或 Buffer）。返回 {status, buffer, json} 或抛错。
+function zdyRequestOnce(baseUrl, routePath, bodyObj, cfg, { binary = false, timeoutMs = 8000 } = {}) {
+  return new Promise((resolve, reject) => {
     let urlObj;
-    try { urlObj = new URL(routePath, cfg.baseUrl.replace(/\/+$/, '') + '/'); } catch (_) { return resolve(null); }
+    try { urlObj = new URL(routePath, baseUrl.replace(/\/+$/, '') + '/'); }
+    catch (e) { return reject(new Error('地址非法')); }
     if (cfg.authCode) urlObj.searchParams.set('token', cfg.authCode);
     const payload = Buffer.from(JSON.stringify(bodyObj || {}), 'utf8');
     const lib = urlObj.protocol === 'http:' ? http : https;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 8000);
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, timeoutMs);
     const req = lib.request(
       { hostname: urlObj.hostname, port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80), path: urlObj.pathname + urlObj.search, method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': payload.length, 'Authorization': 'Bearer ' + (cfg.authCode || '') }, signal: ctrl.signal },
       (resp) => {
@@ -77,59 +102,127 @@ function enhanceFetch(routePath, bodyObj) {
         resp.on('data', (c) => ch.push(c));
         resp.on('end', () => {
           clearTimeout(timer);
-          if (resp.statusCode === 401) { try { console.log('[mpv-helper] ZDY 401 授权码错误, 回退内置源'); } catch (_) {} return resolve({ __unauthorized: true }); }
-          if (resp.statusCode !== 200) { try { console.log('[mpv-helper] ZDY HTTP', resp.statusCode, '回退内置源'); } catch (_) {} return resolve(null); }
-          try { resolve(JSON.parse(Buffer.concat(ch).toString('utf8'))); }
-          catch (e) { try { console.log('[mpv-helper] ZDY 响应解析失败, 回退:', e.message); } catch (_) {} resolve(null); }
+          const buffer = Buffer.concat(ch);
+          if (resp.statusCode === 401) return resolve({ status: 401, unauthorized: true });
+          if (resp.statusCode !== 200) { resp.resume && resp.resume(); return resolve({ status: resp.statusCode, httpError: true, buffer }); }
+          if (binary) return resolve({ status: 200, buffer });
+          try { resolve({ status: 200, json: JSON.parse(buffer.toString('utf8')) }); }
+          catch (e) { resolve({ status: 200, parseError: true }); }
         });
       }
     );
-    req.on('error', (e) => { clearTimeout(timer); try { console.log('[mpv-helper] ZDY 连接失败:', e.message); } catch (_) {} resolve({ __error: '无法连接 ZDY 增强服务：' + e.message }); });
+    req.on('error', (e) => { clearTimeout(timer); reject(e); });
     req.write(payload);
     req.end();
   });
 }
 
+// 探测：并行向所有通道的 /ping 发请求，返回最快可用的通道（或 null）。
+async function probeBestChannel(chan) {
+  const { cfg, channels } = chan;
+  const probes = channels.map((c) =>
+    zdyRequestOnce(c.baseUrl, '/ping', { t: Date.now() }, cfg, { timeoutMs: 3500 })
+      .then((r) => ({ c, ok: r && r.status === 200, unauthorized: r && r.unauthorized }))
+      .catch(() => ({ c, ok: false }))
+  );
+  const results = await Promise.all(probes);
+  // 选第一个成功的（并行竞速：按返回顺序 settle，Promise.all 保留原顺序；
+  // 为选"最快"，改用竞速：任一成功即定）。
+  return results;
+}
+
+// 竞速版探测：谁先 200 用谁；全部失败返回 null。同时把结果缓存。
+async function selectBestChannel(chan) {
+  const { cfg, channels } = chan;
+  return new Promise((resolve) => {
+    let settled = false;
+    let pending = channels.length;
+    const failures = [];
+    channels.forEach((c) => {
+      zdyRequestOnce(c.baseUrl, '/ping', { t: Date.now() }, cfg, { timeoutMs: 3500 })
+        .then((r) => {
+          if (settled) return;
+          if (r && r.status === 200) {
+            settled = true;
+            __activeBaseUrl = c.baseUrl; __activeChannel = c.name; __activeCheckedAt = Date.now();
+            log('info', 'zdy.channel.selected', { channel: c.name, baseUrl: c.baseUrl.replace(/\/\/.*@/, '//') });
+            resolve(c);
+          } else {
+            failures.push({ name: c.name, reason: r && r.unauthorized ? '授权码错误(401)' : ('HTTP ' + (r && r.status)) });
+            if (--pending === 0 && !settled) { settled = true; resolve(null); }
+          }
+        })
+        .catch((e) => {
+          failures.push({ name: c.name, reason: String(e && e.message || e) });
+          if (--pending === 0 && !settled) {
+            log('warn', 'zdy.channel.all-failed', { failures });
+            settled = true; resolve(null);
+          }
+        });
+    });
+  });
+}
+
+// 取得当前可用通道：缓存有效直接用，否则竞速探测。
+async function resolveChannel(chan) {
+  const now = Date.now();
+  if (__activeBaseUrl && (now - __activeCheckedAt) < ACTIVE_TTL) {
+    const stillThere = chan.channels.find((c) => c.baseUrl === __activeBaseUrl);
+    if (stillThere) return stillThere;
+  }
+  return await selectBestChannel(chan);
+}
+
+// 统一请求入口：先用当前通道，失败则清空缓存并在其余通道间竞速重试。
+async function enhanceFetch(routePath, bodyObj, { binary = false } = {}) {
+  const chan = getEnhanceChannels();
+  if (!chan) return binary ? Promise.reject(new Error('未启用 ZDY 增强服务')) : Promise.resolve(null);
+  let active = await resolveChannel(chan);
+  if (!active) {
+    return binary
+      ? Promise.reject(new Error('三条通道（内网/IPv6 DDNS/FRP）均不可达，请检查 NAS 是否在线、地址是否正确'))
+      : Promise.resolve({ __error: '增强服务不可达：内网 / IPv6 DDNS / FRP 三条通道均连不上（NAS 是否在线？）' });
+  }
+  const tryOrder = [active, ...chan.channels.filter((c) => c.baseUrl !== active.baseUrl)];
+  let lastUnauthorized = false;
+  for (let i = 0; i < tryOrder.length; i++) {
+    const c = tryOrder[i];
+    try {
+      const r = await zdyRequestOnce(c.baseUrl, routePath, bodyObj, chan.cfg, { binary, timeoutMs: binary ? 30000 : 9000 });
+      if (r && r.status === 200) {
+        if (c.baseUrl !== __activeBaseUrl) { __activeBaseUrl = c.baseUrl; __activeChannel = c.name; __activeCheckedAt = Date.now(); }
+        else { __activeCheckedAt = Date.now(); }
+        if (binary) return r.buffer;
+        return r.json;
+      }
+      if (r && r.unauthorized) { lastUnauthorized = true; break; }
+      // 该通道 HTTP 错误：标记失效并切下一条
+      __activeBaseUrl = null; __activeCheckedAt = 0;
+    } catch (e) {
+      log('warn', 'zdy.req.failover', { channel: c.name, route: routePath, err: String(e && e.message || e) });
+      __activeBaseUrl = null; __activeCheckedAt = 0;
+    }
+  }
+  if (lastUnauthorized) return binary ? Promise.reject(new Error('授权码错误(401)，请在设置中核对 ZDY 授权码')) : { __unauthorized: true };
+  return binary ? Promise.reject(new Error('所有通道请求失败')) : { __error: '所有通道均请求失败' };
+}
+
 // 二进制（zip/gz 字幕包）版 ZDY 请求：返回 Buffer。客户端零外网请求，字幕 zip 由 NAS 下载后回传。
 function enhanceFetchBuffer(routePath, bodyObj) {
-  return new Promise((resolve, reject) => {
-    const cfg = getEnhanceConfig();
-    if (!cfg || !cfg.enabled || !cfg.baseUrl) return reject(new Error('未启用 ZDY 增强服务'));
-    let urlObj;
-    try { urlObj = new URL(routePath, cfg.baseUrl.replace(/\/+$/, '') + '/'); } catch (_) { return reject(new Error('ZDY 地址非法')); }
-    if (cfg.authCode) urlObj.searchParams.set('token', cfg.authCode);
-    const payload = Buffer.from(JSON.stringify(bodyObj || {}), 'utf8');
-    const lib = urlObj.protocol === 'http:' ? http : https;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 30000);
-    const req = lib.request(
-      { hostname: urlObj.hostname, port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80), path: urlObj.pathname + urlObj.search, method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': payload.length, 'Authorization': 'Bearer ' + (cfg.authCode || '') }, signal: ctrl.signal },
-      (resp) => {
-        if (resp.statusCode === 401) { clearTimeout(timer); res_err(resp, '授权码错误'); return; }
-        if (resp.statusCode !== 200) { clearTimeout(timer); resp.resume(); return reject(new Error('ZDY 字幕下载 HTTP ' + resp.statusCode)); }
-        const ch = [];
-        resp.on('data', (c) => ch.push(c));
-        resp.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(ch)); });
-      }
-    );
-    function res_err(resp, msg) { resp.resume(); reject(new Error(msg)); }
-    req.on('error', (e) => { clearTimeout(timer); reject(new Error('无法连接 ZDY：' + e.message)); });
-    req.write(payload);
-    req.end();
-  });
+  return enhanceFetch(routePath, bodyObj, { binary: true });
 }
 
 // 弹幕/字幕/片头片尾【仅】使用 ZDY 增强服务（不再回退客户端内置源）。
 // 返回 { ok:false, error } 表示不可用及原因；返回 ZDY 响应对象表示成功。
 async function requireZdy(routePath, bodyObj) {
-  const cfg = getEnhanceConfig();
-  if (!cfg || !cfg.enabled || !cfg.baseUrl) {
-    return { ok: false, error: '未启用 ZDY 增强服务：请在客户端「设置 → 增强服务」填写 NAS 服务地址并打开开关' };
+  const chan = getEnhanceChannels();
+  if (!chan) {
+    return { ok: false, error: '未启用 ZDY 增强服务：请在客户端「设置 → 增强服务」填写至少一条通道地址（内网 / IPv6 DDNS / FRP）并打开开关' };
   }
   let res;
   try { res = await enhanceFetch(routePath, bodyObj); }
   catch (e) { return { ok: false, error: 'ZDY 请求失败：' + (e && e.message) }; }
-  if (!res) return { ok: false, error: 'ZDY 增强服务无响应，请检查服务地址或稍后重试' };
+  if (!res) return { ok: false, error: 'ZDY 增强服务无响应（内网 / IPv6 DDNS / FRP 均不可达），请检查 NAS 是否在线' };
   if (res.__unauthorized) return { ok: false, error: '授权码错误：请在 ZDY 管理页核对授权码并重新填写' };
   if (res.__error) return { ok: false, error: res.__error };
   return res;

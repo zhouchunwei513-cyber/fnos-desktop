@@ -35,6 +35,16 @@ try {
   BILI = null;
 }
 
+// 飞牛 fnOS 系统级 WebSocket 认证客户端（RSA+AES 登录 + HMAC 签名）。
+// 用于校验 NAS 地址/账号可用性，并为后续飞牛系统能力扩展预留；缺失时优雅降级。
+let FNOS_AUTH = null;
+try {
+  FNOS_AUTH = require(path.join(__dirname, 'fnos_auth.js'));
+} catch (e) {
+  log('fnos_auth 模块加载失败: ' + (e && e.message));
+  FNOS_AUTH = null;
+}
+
 const PORT = parseInt(
   process.env.TRIM_SERVICE_PORT ||
   process.env.FPK_SERVICE_PORT ||
@@ -712,7 +722,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）：附带本机地址，方便客户端三通道填写
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.0', port: PORT, addrs: localAddrs() });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.1', port: PORT, addrs: localAddrs() });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {
@@ -779,6 +789,51 @@ const server = http.createServer(async (req, res) => {
     saveConfig();
     log('authCode regenerated');
     return sendJson(res, 200, { ok: true, authCode: config.authCode });
+  }
+
+  // 飞牛 NAS 连接/账号测试：系统级 WebSocket 认证校验地址+账号+密码（管理密码保护）
+  // body: { host, port?, tls?, username, password }
+  if (route === '/admin/fnos-test' && req.method === 'POST') {
+    if (!isAdmin(req, url)) return sendJson(res, 401, { ok: false, error: '未登录' });
+    const body = await readBody(req);
+    if (!FNOS_AUTH) {
+      return sendJson(res, 200, { ok: false, error: '飞牛认证模块不可用（需 Node 18+ 全局 WebSocket）' });
+    }
+    const rawHost = String(body.host || '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    let hostPart = rawHost;
+    let portPart = parseInt(body.port, 10) || 0;
+    // 支持 host 中带端口（1.2.3.4:10300 或 [::1]:10300）
+    const m = rawHost.match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/);
+    if (m) {
+      hostPart = m[1].replace(/^\[|\]$/g, '');
+      if (m[2]) portPart = parseInt(m[2], 10) || portPart;
+    }
+    const username = String(body.username || '').trim();
+    const password = String(body.password || '');
+    if (!hostPart || !username || !password) {
+      return sendJson(res, 200, { ok: false, error: '请填写 NAS 地址、账号和密码' });
+    }
+    let session = null;
+    try {
+      session = await FNOS_AUTH.login({
+        host: hostPart, port: portPart, tls: !!body.tls,
+        username, password, timeoutMs: 12000,
+      });
+      const info = await session.call({ req: 'user.info' });
+      const ok = info && info.result === 'succ';
+      log('fnos test', hostPart, username, ok ? 'succ' : ('fail ' + JSON.stringify(info).slice(0, 80)));
+      return sendJson(res, 200, {
+        ok,
+        user: ok ? (info.userInfo && info.userInfo.user) : null,
+        admin: ok ? !!(info.userInfo && info.userInfo.admin) : false,
+        error: ok ? null : ('认证失败: ' + (info.errno || info.result || '未知')),
+      });
+    } catch (e) {
+      log('fnos test fail', hostPart, e.message);
+      return sendJson(res, 200, { ok: false, error: '连接失败: ' + e.message });
+    } finally {
+      if (session) { try { session.close(); } catch (e2) { /* ignore */ } }
+    }
   }
 
   // ============ 服务 API（客户端用授权码） ============

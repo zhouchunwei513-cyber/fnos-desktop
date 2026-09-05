@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.32.5';
+const APP_VERSION = '1.33.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4919,21 +4919,30 @@ async function embedMpvPlay(hostWin, payload) {
 
 // 片名异步就绪后实时更新：把真实片名推给当前存活的 MPV 播放器
 // （解决 MKV 首次打开时 playinfo 尚未返回、标题栏/状态栏先显示"飞牛影视"的问题）
-ipcMain.handle('mpv:update-title', async (_e, args) => {
+ipcMain.handle('mpv:update-title', async (e, args) => {
   try {
     const title = args && args.title ? String(args.title).trim() : '';
     if (!title) return { ok: false };
-    for (const surf of mpvSurfaces.values()) {
+    // 只更新"发起该播放请求的宿主窗口"对应的播放器，避免点播片名被广播到直播/其他独立窗口。
+    const senderWin = hostWindowFromSender(e && e.sender) || mainWindow;
+    let applied = 0;
+    for (const [key, surf] of mpvSurfaces.entries()) {
       try {
-        if (surf && surf.isAlive && surf.isAlive() && surf.player && surf.player.setMediaTitle) {
-          await surf.player.setMediaTitle(title);
+        if (!surf || !surf.isAlive || !surf.isAlive() || !surf.player || !surf.player.setMediaTitle) continue;
+        // 直播流不接受点播片名（直播窗口标题应是频道名，且直播无 force-media-title 时显频道/URL）
+        if (surf.player._isLive) { dlog('info', 'mpv.title.skip-live', { title, key: String(key) }); continue; }
+        // 只作用于同一宿主窗口的 surface（独立窗 standalone 与嵌入窗分属不同宿主）
+        if (surf.parent && senderWin && surf.parent !== senderWin) {
+          dlog('info', 'mpv.title.skip-other-window', { title }); continue;
         }
+        await surf.player.setMediaTitle(title);
+        applied++;
       } catch (_) {}
     }
-    dlog('info', 'mpv.title.update', { title });
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: String(e && e.message || e) };
+    dlog('info', 'mpv.title.update', { title, applied });
+    return { ok: applied > 0, applied };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message || err) };
   }
 });
 

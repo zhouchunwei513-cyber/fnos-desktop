@@ -767,14 +767,26 @@ class MpvPlayer extends EventEmitter {
   // 运行时更新片名（首次播放时 playinfo 可能尚未返回，拿到真实片名后实时推送）
   async setMediaTitle(title) {
     try {
-      const t = String(title || '').trim();
-      if (!t) return;
+      const t = this._sanitizeTitle(title);
+      if (!t) { log('media-title ignored (generic/empty)', { raw: String(title || '').slice(0, 40) }); return; }
       this._mediaTitle = t;
       await this.command(['set_property', 'force-media-title', t]);
-      log('media-title updated', { title: t.slice(0, 60) });
+      log('media-title updated', { title: t.slice(0, 60), isLive: this._isLive });
     } catch (e) {
       log('setMediaTitle error', { err: String(e && e.message || e) });
     }
+  }
+
+  // 清洗片名：去掉站点后缀；过滤掉"飞牛影视/fNOS/加载中"等非片名占位（document.title 固定为站名，
+  // 首次 playinfo 未返回时拿到的是站名，绝不能写进 force-media-title，否则标题栏/状态栏先显站名）。
+  _sanitizeTitle(title) {
+    let t = String(title || '').trim();
+    if (!t) return '';
+    t = t.replace(/\s*[-_|–—]\s*飞牛.*$/, '').replace(/\s*[-_|–—]\s*fnos.*$/i, '').trim();
+    const generic = ['飞牛影视', '飞牛', 'fnos', 'fnos 影视', '加载中', 'loading', '未命名', ''];
+    const low = t.toLowerCase();
+    for (const g of generic) { if (low === String(g).toLowerCase()) return ''; }
+    return t;
   }
 
   // 加载并播放（可带该媒体专属头）。opts: { isLive, recover, resumePos }
@@ -819,16 +831,19 @@ class MpvPlayer extends EventEmitter {
         if (ua) { try { await this.command(['set_property', 'user-agent', ua]); } catch (_) {} }
       }
     }
-    // 强制使用网页真实片名（document.title）作为媒体标题，避免 mpv 把签名 URL 末尾的
-    // 哈希 ID（如 59356e5e...）当作标题显示；同时供在线字幕/弹幕按片名匹配。
-    const mediaTitle = (opts && typeof opts.title === 'string' ? opts.title : '').trim();
+    // 每个媒体加载前先清空上一部的缓存片名，避免"上一部 VOD 片名串到本次直播/新窗口"
+    // （force-media-title 会跨 loadfile 残留）。随后若本次带了合法片名再覆盖。
+    try { await this.command(['set_property', 'force-media-title', '']); } catch (_) {}
+    this._mediaTitle = '';
+    // 使用真实片名作为媒体标题，避免 mpv 把签名 URL 末尾哈希 ID 当标题；同时供字幕/弹幕匹配。
+    const mediaTitle = this._sanitizeTitle(opts && opts.title);
     if (mediaTitle) {
       try {
-        // 去掉站点后缀（"片名 - 飞牛影视" → "片名"），保留核心名供字幕/弹幕搜索
-        const clean = mediaTitle.replace(/\s*[-_|–—]\s*飞牛.*$/, '').replace(/\s*[-_|–—]\s*fnos.*$/i, '').trim();
-        this._mediaTitle = clean || mediaTitle;
-        await this.command(['set_property', 'force-media-title', this._mediaTitle]);
+        this._mediaTitle = mediaTitle;
+        await this.command(['set_property', 'force-media-title', mediaTitle]);
       } catch (_) {}
+    } else {
+      log('loadfile no valid title (live/pending), force-media-title cleared', { isLive: this._isLive });
     }
     await this.command(['loadfile', url, 'replace']);
     try { await this.command(['set_property', 'pause', false]); } catch (_) {}

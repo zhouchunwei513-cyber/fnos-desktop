@@ -202,15 +202,21 @@ function FN.build_danmaku_items()
     }
 end
 
--- 画中画子菜单：默认全屏；进入小窗后可调节大小、可明确关闭回到全屏
-function FN.build_pip_items()
+-- 跳过片头/片尾子菜单：手动跳过 + 长度设置 + 自动跳过开关
+function FN.build_skip_items()
     return {
-        { title = "进入画中画（小窗）", cmd = "script-message fnos-pip-enter" },
-        { title = "关闭画中画（恢复全屏）", cmd = "script-message fnos-pip-exit" },
+        { title = "跳过片头（前进90秒/按章节）", cmd = "script-message fnos-skip intro" },
+        { title = "跳到片尾前（回退60秒）", cmd = "script-message fnos-skip credits" },
         { type = "separator" },
-        { title = "小窗大小：小（320）", cmd = "script-message fnos-pip-size 320" },
-        { title = "小窗大小：中（480）", cmd = "script-message fnos-pip-size 480" },
-        { title = "小窗大小：大（680）", cmd = "script-message fnos-pip-size 720" },
+        { title = "片头长度：60秒", cmd = "script-message fnos-skip-set intro 60" },
+        { title = "片头长度：90秒（默认）", cmd = "script-message fnos-skip-set intro 90" },
+        { title = "片头长度：120秒", cmd = "script-message fnos-skip-set intro 120" },
+        { type = "separator" },
+        { title = "片尾回退：45秒", cmd = "script-message fnos-skip-set credits 45" },
+        { title = "片尾回退：60秒（默认）", cmd = "script-message fnos-skip-set credits 60" },
+        { title = "片尾回退：90秒", cmd = "script-message fnos-skip-set credits 90" },
+        { type = "separator" },
+        { title = "自动跳过片头（章节标记）开/关", cmd = "script-message fnos-skip-auto" },
     }
 end
 
@@ -274,7 +280,7 @@ function FN.menu_main()
         { title = "字幕设置 ▸", submenu = FN.build_sub_items() },
         { title = "弹幕 ▸", submenu = FN.build_danmaku_items() },
         { title = "播放倍速 ▸", submenu = FN.build_speed_items() },
-        { title = "画中画 ▸", submenu = FN.build_pip_items() },
+        { title = "跳过片头片尾 ▸", submenu = FN.build_skip_items() },
         { type = "separator" },
         { title = "播放列表 ▸", submenu = FN.build_playlist_items() },
         { title = "章节跳转 ▸", submenu = FN.build_chapter_items() },
@@ -2024,7 +2030,7 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.smallButtonsBar
 
-    -- Track selection buttons（统一中文文字样式，与弹幕/倍速/画中画同基线）
+    -- Track selection buttons（统一中文文字样式，与弹幕/倍速/跳过同基线）
     geo = { x = geo.x - tsW - padX, y = geo.y, an = geo.an, w = tsW, h = geo.h }
     lo = add_layout("sub_track")
     lo.geometry = geo
@@ -2035,10 +2041,10 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
-    -- fnOS 新增：画质 / 倍速 / 画中画 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
+    -- fnOS 新增：画质 / 倍速 / 跳过片头 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
     local fnBtnW = 70
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
-    lo = add_layout("fnos_pip")
+    lo = add_layout("fnos_skip")
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
@@ -2351,14 +2357,14 @@ local function osc_init()
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-quality-menu") end
 
-    --fnOS 新增：画中画按钮（左键切换进入/退出小窗，右键也退出；与音轨/字幕标签统一字号字体）
-    ne = new_element("fnos_pip", "button")
+    --fnOS 新增：跳过片头片尾按钮（左键跳过片头，右键跳到片尾前；与音轨/字幕标签统一字号字体）
+    ne = new_element("fnos_skip", "button")
     ne.enabled = true
     ne.content = function ()
-        return osc_styles.smallButtonsLlabel .. " 画中画 "
+        return osc_styles.smallButtonsLlabel .. " 跳片头 "
     end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-pip") end
-    ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-pip-exit") end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-skip", "intro") end
+    ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-skip", "credits") end
 
     --seekbar
     ne = new_element("seekbar", "slider")

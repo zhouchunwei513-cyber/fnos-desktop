@@ -3,14 +3,23 @@
 --       默认右键菜单是英文。这里用 Lua 构造菜单数据（menu-data 属性），交给 mpv 内置
 --       context_menu 脚本以 OSD 方式渲染中文菜单，任何 0.36+ 版本都可用。
 -- 打开方式：给内置脚本发 script-message "context_menu open"（等价于 script-binding context_menu/open）。
--- v1.29 增强：音轨/内置字幕轨按名称选择、在线字幕搜索下载、加载本地字幕、画中画。
+-- v1.33 增强：音轨/内置字幕轨、在线字幕搜索下载、画质、播放信息、跳过片头片尾、弹幕。
 -- 安全：全部逻辑包在 pcall 里，任何 API 不兼容/异常都只影响菜单本身，绝不影响播放。
+-- 注意：必须显式 require mp / mp.utils / mp.msg。shinchiro 构建下全局 mp 表不保证带 .utils，
+--       直接写 utils.format_json 会在运行时 "attempt to index field 'utils' (a nil value)"，
+--       一旦在 build_menu/菜单回调里触发，整个菜单脚本崩溃，画质/播放信息/字幕全部失效。
+
+local mp = require 'mp'
+local utils = require 'mp.utils'
+local msg = require 'mp.msg'
 
 local g_results = nil       -- 最近一次在线字幕搜索结果
 local g_searching = nil     -- 正在搜索的语言标记
-local g_pip_active = false  -- 是否处于画中画小窗（lua 侧跟踪，用于双击退出/标题切换）
 local g_dm_results = nil    -- 最近一次弹幕搜索结果（cid/标题）
 local g_dm_searching = false -- 弹幕是否正在搜索
+local g_skip_intro_sec = 90   -- 手动跳过片头：前进秒数
+local g_skip_credits_sec = 60 -- 手动跳到片尾：回退秒数
+local g_skip_auto = false     -- 自动跳过片头（按章节标记）
 local build_menu            -- 前向声明（open_context_menu 会先用到，真正赋值在后面）
 
 -- ---------------- 基础工具 ----------------
@@ -59,7 +68,7 @@ local function helper_async(route, bodyJson, onDone)
             ["capture_stdout"] = true, ["capture_stderr"] = true, ["playback_only"] = false
         }, function(_success, res, _err)
             local out = (res and res.stdout) or ""
-            local ok, data = pcall(function() return mp.utils.parse_json(out) end)
+            local ok, data = pcall(function() return utils.parse_json(out) end)
             if ok and type(data) == "table" then onDone(data) else onDone(nil) end
         end)
     end)
@@ -157,7 +166,7 @@ mp.register_script_message("fnos-quality-menu", function()
         { title = (g_quality == "480p" and "✓ " or "") .. "480p", cmd = "script-message fnos-quality 480" },
         { title = (g_quality == "360p" and "✓ " or "") .. "360p", cmd = "script-message fnos-quality 360" },
     } }
-    mp.commandv("script-message-to", "context_menu", "update-data", mp.utils.format_json(data))
+    mp.commandv("script-message-to", "context_menu", "update-data", utils.format_json(data))
     mp.commandv("script-message-to", "context_menu", "open")
 end)
 mp.get_quality_label = function() return g_quality end
@@ -268,7 +277,6 @@ build_menu = function()
         item("播放 / 暂停", "cycle pause", "空格"),
         item("停止播放 / 关闭", "stop"),
         item("全屏", "cycle fullscreen", "f"),
-        item("画中画（小窗置顶）", "script-message fnos-pip"),
         sep(),
 
         { ["title"] = "播放控制", ["type"] = "submenu", ["submenu"] = {
@@ -278,6 +286,22 @@ build_menu = function()
             item("A-B 循环", "ab-loop", "l"),
             item("逐帧前进", "frame-step", "."),
             item("逐帧后退", "frame-back-step", ","),
+        }},
+
+        { ["title"] = "跳过片头 / 片尾", ["type"] = "submenu", ["submenu"] = {
+            item("跳过片头（默认前进 90 秒）", "script-message fnos-skip intro"),
+            item("跳到片尾前（回退 60 秒）", "script-message fnos-skip credits"),
+            sep(),
+            item("片头跳过长度：60 秒", "script-message fnos-skip-set intro 60"),
+            item("片头跳过长度：90 秒（默认）", "script-message fnos-skip-set intro 90"),
+            item("片头跳过长度：120 秒", "script-message fnos-skip-set intro 120"),
+            sep(),
+            item("片尾回退长度：45 秒", "script-message fnos-skip-set credits 45"),
+            item("片尾回退长度：60 秒（默认）", "script-message fnos-skip-set credits 60"),
+            item("片尾回退长度：90 秒", "script-message fnos-skip-set credits 90"),
+            sep(),
+            item("自动跳过（按章节标记 片头/片尾）", "script-message fnos-skip-auto"),
+            { ["title"] = g_skip_auto and "✓ 自动跳过：已开启" or "自动跳过：未开启", ["selectable"] = false },
         }},
 
         { ["title"] = "字幕", ["type"] = "submenu", ["submenu"] = sub_menu },
@@ -333,21 +357,6 @@ build_menu = function()
             return dmenu
         end)() },
 
-        { ["title"] = g_pip_active and "画中画（开启中·点此退出）" or "画中画", ["type"] = "submenu", ["submenu"] = g_pip_active and {
-            item("▶ 退出画中画（恢复跟随飞牛窗口）", "script-message fnos-pip-exit"),
-            item("小提示：小窗中双击画面也可退出", nil),
-            sep(),
-            item("小窗大小：小（320）", "script-message fnos-pip-size 320"),
-            item("小窗大小：中（480）", "script-message fnos-pip-size 480"),
-            item("小窗大小：大（720）", "script-message fnos-pip-size 720"),
-        } or {
-            item("进入画中画（小窗置顶）", "script-message fnos-pip-enter"),
-            sep(),
-            item("小窗大小：小（320）", "script-message fnos-pip-size 320"),
-            item("小窗大小：中（480）", "script-message fnos-pip-size 480"),
-            item("小窗大小：大（720）", "script-message fnos-pip-size 720"),
-        }},
-
         { ["title"] = "进度跳转", ["type"] = "submenu", ["submenu"] = {
             item("后退 5 秒", "seek -5", "←"),
             item("前进 5 秒", "seek 5", "→"),
@@ -372,7 +381,7 @@ mp.register_script_message("fnos-sub-search", function(lang)
         if g_searching then return end
         g_searching = lang
         mp.osd_message("正在搜索在线字幕（" .. (lang == "en" and "英文" or "中文") .. "）…", 4000)
-        local body = mp.utils.format_json({ filename = media_keyword(), lang = lang })
+        local body = utils.format_json({ filename = media_keyword(), lang = lang })
         helper_async("/subtitle/search", body, function(data)
             g_searching = nil
             if not data or not data.ok then
@@ -394,7 +403,7 @@ mp.register_script_message("fnos-sub-dl", function(id)
         end
         if not target then mp.osd_message("字幕条目已过期，请重新搜索", 3000); return end
         mp.osd_message("正在下载并加载字幕…", 4000)
-        helper_async("/subtitle/download", mp.utils.format_json({ item = target }), function(data)
+        helper_async("/subtitle/download", utils.format_json({ item = target }), function(data)
             if data and data.ok then
                 mp.osd_message("字幕已加载（" .. tostring(data.count or 1) .. " 个）", 3000)
             else
@@ -427,7 +436,7 @@ mp.register_script_message("fnos-dm-search", function()
         g_dm_results = nil
         local kw = media_keyword()
         mp.osd_message("正在搜索弹幕：" .. kw .. " …", 4000)
-        helper_async("/danmaku/search", mp.utils.format_json({ keyword = kw }), function(data)
+        helper_async("/danmaku/search", utils.format_json({ keyword = kw }), function(data)
             g_dm_searching = false
             if not data or not data.ok then
                 mp.osd_message("弹幕搜索失败（网络错误或被限流）", 3500); return
@@ -451,89 +460,121 @@ mp.register_script_message("fnos-dm-pick", function(cid)
     end)
 end)
 
--- 画中画状态同步：进入时强制退出全屏（小窗不应全屏）并把视频区双击改为"退出画中画"；
--- 退出时还原双击为默认行为。解决"小窗双击变成最大化全屏、且没有退出入口"。
-local function sync_pip_bindings()
-    pcall(function()
-        if g_pip_active then
-            mp.set_property_bool("fullscreen", false)
-            -- 小窗双击 = 退出画中画（PiP 绑定优先级最高，覆盖 standalone 的双击全屏）
-            mp.add_forced_key_binding("MBTN_LEFT_DBL", "fnos-pip-dbl", function()
-                pcall(function()
-                    helper_async("/pip/toggle", '{"mode":"exit"}', function(data)
-                        if data and data.ok then
-                            g_pip_active = false
-                            sync_pip_bindings()
-                            mp.osd_message("已退出画中画", 2500)
-                        end
-                    end)
-                end)
-            end, { complex = true })
-        else
-            mp.remove_key_binding("fnos-pip-dbl")
-            -- 非画中画：独立播放器窗口（ontop=no，即"用 mpv 打开"的窗口）双击=全屏切换；
-            -- 嵌入覆盖窗（ontop=yes，贴合飞牛视频区）不启用双击全屏（mpv 默认全屏会破坏跟随）。
-            local is_standalone = (mp.get_property_native("ontop") == false)
-            if is_standalone then
-                mp.add_forced_key_binding("MBTN_LEFT_DBL", "fnos-dbl-fullscreen", function()
-                    pcall(function() mp.commandv("cycle", "fullscreen") end)
-                end, { complex = true })
-            else
-                mp.remove_key_binding("fnos-dbl-fullscreen")
+-- ---------------- 跳过片头 / 片尾 ----------------
+-- 说明：权威片头片尾时间戳由 NAS 端 FPK（SkipIntro 库）提供；客户端这里先提供
+--       立即可用的"手动跳过 + 按章节自动跳过"，无时间戳数据时也能正常工作。
+-- 手动：片头默认前进 g_skip_intro_sec(90s)；片尾回退 g_skip_credits_sec(60s)。
+-- 自动：扫描章节标题，命中"片头/OP/intro"的章节结束位置，播放进入该区间时自动跳到其结尾；
+--       命中"片尾/ED/credits"则跳到该章节开头之后（接近正片结束的片尾可按需求跳到下一集）。
+local function find_chapter_range(keywords)
+    local n = mp.get_property_number("chapter-list/count", 0) or 0
+    for i = 0, n - 1 do
+        local base = "chapter-list/" .. i .. "/"
+        local title = (mp.get_property(base .. "title") or ""):lower()
+        for _, kw in ipairs(keywords) do
+            if title:find(kw, 1, true) then
+                local start_t = mp.get_property_number(base .. "time", 0) or 0
+                -- 章节结束 = 下一章开始；最后一章用文件时长
+                local end_t = mp.get_property_number("duration", 0) or 0
+                if i + 1 < n then
+                    end_t = mp.get_property_number("chapter-list/" .. (i + 1) .. "/time", end_t) or end_t
+                end
+                return start_t, end_t, title
             end
         end
+    end
+    return nil
+end
+
+local function do_skip_intro()
+    pcall(function()
+        -- 优先用章节标记（精确），否则用默认固定秒数
+        local s, e = find_chapter_range({ "片头", "op", "intro", "开场" })
+        if s then
+            local pos = mp.get_property_number("time-pos", 0) or 0
+            if pos >= s - 1 and pos < e then
+                mp.commandv("seek", tostring(e), "absolute+exact")
+                mp.osd_message("已跳过片头（章节）", 2000); return
+            end
+        end
+        mp.commandv("seek", tostring(g_skip_intro_sec), "relative+exact")
+        mp.osd_message("已跳过片头（前进 " .. tostring(g_skip_intro_sec) .. " 秒）", 2000)
+    end)
+end
+
+local function do_skip_credits()
+    pcall(function()
+        local dur = mp.get_property_number("duration", 0) or 0
+        local s = find_chapter_range({ "片尾", "ed", "credits", "ending", "彩蛋" })
+        if s then
+            mp.commandv("seek", tostring(s), "absolute+exact")
+            mp.osd_message("已跳到片尾开始处", 2000); return
+        end
+        -- 无章节：回退 credits_sec（用于回看片尾字幕），直播/无时长流则提示
+        if dur > 0 then
+            local target = math.max(0, dur - g_skip_credits_sec)
+            mp.commandv("seek", tostring(target), "absolute+exact")
+            mp.osd_message("已跳到片尾前 " .. tostring(g_skip_credits_sec) .. " 秒", 2000)
+        else
+            mp.osd_message("当前为直播流，无片尾可跳转", 2000)
+        end
+    end)
+end
+
+mp.register_script_message("fnos-skip", function(which)
+    if which == "credits" then do_skip_credits() else do_skip_intro() end
+end)
+mp.register_script_message("fnos-skip-set", function(kind, sec)
+    pcall(function()
+        local n = tonumber(sec)
+        if not n then return end
+        if kind == "credits" then g_skip_credits_sec = n
+        else g_skip_intro_sec = n end
+        mp.osd_message((kind == "credits" and "片尾回退" or "片头跳过") .. "长度已设为 " .. tostring(n) .. " 秒", 2000)
         refresh_menu_data()
     end)
+end)
+
+-- 自动跳过：时间轴观察者，进入片头章节区间即跳到章节末（每集只触发一次，离开区间重置）
+local g_auto_intro_done = false
+mp.register_script_message("fnos-skip-auto", function()
+    pcall(function()
+        g_skip_auto = not g_skip_auto
+        mp.osd_message(g_skip_auto and "已开启自动跳过片头（按章节标记）" or "已关闭自动跳过", 2500)
+        refresh_menu_data()
+    end)
+end)
+mp.observe_property("time-pos", "number", function(pos)
+    if not g_skip_auto or not pos then return end
+    pcall(function()
+        local s, e = find_chapter_range({ "片头", "op", "intro", "开场" })
+        if s then
+            if pos >= s - 1 and pos < e - 0.5 then
+                if not g_auto_intro_done then
+                    g_auto_intro_done = true
+                    mp.commandv("seek", tostring(e), "absolute+exact")
+                    mp.osd_message("自动跳过片头", 2000)
+                end
+            elseif pos < s - 2 or pos >= e then
+                g_auto_intro_done = false
+            end
+        end
+    end)
+end)
+
+-- 双击：独立播放器窗口（ontop=no，"用 mpv 打开"）双击=全屏切换；嵌入覆盖窗（ontop=yes）不动作。
+local function sync_dbl_binding()
+    pcall(function()
+        local is_standalone = (mp.get_property_native("ontop") == false)
+        if is_standalone then
+            mp.add_forced_key_binding("MBTN_LEFT_DBL", "fnos-dbl-fullscreen", function()
+                pcall(function() mp.commandv("cycle", "fullscreen") end)
+            end, { complex = true })
+        else
+            mp.remove_key_binding("fnos-dbl-fullscreen")
+        end
+    end)
 end
-
-mp.register_script_message("fnos-pip", function()
-    pcall(function()
-        helper_async("/pip/toggle", "{}", function(data)
-            if data and data.ok then
-                g_pip_active = data.pip and true or false
-                sync_pip_bindings()
-                mp.osd_message(g_pip_active and "已进入画中画（小窗置顶，可拖动；双击画面退出）" or "已退出画中画，恢复跟随飞牛窗口", 3000)
-            else
-                mp.osd_message("画中画切换失败", 2500)
-            end
-        end)
-    end)
-end)
-
--- 进入画中画（可选 size 参数：320/480/720）
-local function pip_enter(sizePx)
-    pcall(function()
-        local body = sizePx and ('{"mode":"enter","size":' .. tostring(sizePx) .. '}') or '{"mode":"enter"}'
-        helper_async("/pip/toggle", body, function(data)
-            if data and data.ok then
-                g_pip_active = true
-                sync_pip_bindings()
-                mp.osd_message("已进入画中画（小窗置顶，可拖动；双击画面退出）", 3500)
-            else
-                mp.osd_message("切换画中画失败：" .. ((data and data.error) or "未知错误"), 3000)
-            end
-        end)
-    end)
-end
-
-mp.register_script_message("fnos-pip-enter", function() pip_enter(nil) end)
-mp.register_script_message("fnos-pip-exit", function()
-    pcall(function()
-        helper_async("/pip/toggle", '{"mode":"exit"}', function(data)
-            if data and data.ok then
-                g_pip_active = false
-                sync_pip_bindings()
-                mp.osd_message("已退出画中画，恢复正常画面", 2500)
-            else
-                mp.osd_message("退出画中画失败：" .. ((data and data.error) or "未知错误"), 3000)
-            end
-        end)
-    end)
-end)
-mp.register_script_message("fnos-pip-size", function(px)
-    local n = tonumber(px)
-    if n then pip_enter(n) end
-end)
 
 -- ---------------- 安装 ----------------
 pcall(function()
@@ -541,7 +582,7 @@ pcall(function()
     refresh_menu_data()
     -- 右键直接呼出中文菜单（覆盖默认右键行为）；每次打开都重建 menu-data（刷新音轨/字幕轨/搜索结果）
     mp.add_forced_key_binding("MBTN_RIGHT", "fnos-context-menu", open_context_menu)
-    -- 启动后绑定双击行为（独立窗口双击全屏 / 嵌入窗双击不动作）。延迟到首帧后，确保 ontop 已按形态生效。
-    mp.observe_property("ontop", "bool", function() sync_pip_bindings() end)
-    mp.msg.info("FNOS 中文右键菜单已加载（含在线字幕/本地字幕/画中画）")
+    -- 独立窗口双击全屏；延迟到首帧后确保 ontop 已按形态生效。
+    mp.observe_property("ontop", "bool", function() sync_dbl_binding() end)
+    mp.msg.info("FNOS 中文右键菜单已加载（含在线字幕/画质/跳过片头片尾/弹幕）")
 end)

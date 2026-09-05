@@ -486,14 +486,16 @@ async function searchBiliVideos(keyword) {
   return out;
 }
 
-// 取某视频的分页列表（bvid -> cid）
-async function biliPagelist(bvid, aid) {
-  const url = aid
-    ? 'https://api.bilibili.com/x/player/pagelist?aid=' + aid
-    : 'https://api.bilibili.com/x/player/pagelist?bvid=' + encodeURIComponent(bvid);
+// 取某视频的分页列表（bvid -> cid）。
+// 注意：必须用 bvid 请求。search/type 返回的 aid 是加密/旧字段，传给 pagelist?aid= 会报错取不到 cid，
+// 曾导致"搜索到 20 条但全部 cid=0、弹幕结果为 0"。bvid 稳定可靠。
+async function biliPagelist(bvid /*, aid 已弃用，保留参数位不影响调用方 */) {
+  if (!bvid) return [];
+  const url = 'https://api.bilibili.com/x/player/pagelist?bvid=' + encodeURIComponent(bvid);
   const txt = await biliGetText(url);
   let j; try { j = JSON.parse(txt); } catch (e) { j = null; }
-  const arr = (j && Array.isArray(j.data)) ? j.data : [];
+  const arr = (j && j.code === 0 && Array.isArray(j.data)) ? j.data : [];
+  if (!arr.length) log('warn', 'bili.pagelist.empty', { bvid, code: j && j.code, msg: j && j.message });
   return arr.map(p => ({ cid: Number(p.cid), page: p.page, part: p.part || '', duration: Number(p.duration) || 0 }));
 }
 
@@ -528,22 +530,66 @@ function parseBiliSegProto(buf) {
   return out;
 }
 
-// 拉取并解析某 cid 的弹幕：seg.so 按每 6 分钟一段，遍历全片分段（protobuf）
+// 生成随机 buvid3（降低数据中心/无 cookie 时 B 站风控导致 seg.so 返回空的概率）
+function _biliBuvid() {
+  const hex = crypto.randomBytes(16).toString('hex');
+  return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20) + 'infoc';
+}
+let _biliCookie = null;
+function biliHeaders() {
+  if (!_biliCookie) _biliCookie = 'buvid3=' + _biliBuvid() + '; buvid4=' + crypto.randomBytes(16).toString('hex');
+  return Object.assign({}, BILI_HEADERS, { 'Cookie': _biliCookie });
+}
+
+// 解析历史 XML 弹幕（<d p="出现时间,模式,字号,颜色,...">文本</d>），作为 seg.so 被风控时的回退。
+function parseBiliXml(buf) {
+  const t = buf.toString('utf8');
+  const out = [];
+  const re = /<d\s+[^>]*p="([^"]*)"[^>]*>([\s\S]*?)<\/d>/g;
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const f = m[1].split(',');
+    const prog = parseFloat(f[0]) || 0;
+    const mode = parseInt(f[1], 10) || 1;
+    const fs = parseInt(f[2], 10) || 25;
+    const color = parseInt(f[3], 10) || 0xffffff;
+    let text = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (text) {
+      if (text.length > 80) text = text.slice(0, 80);
+      out.push({ t: Math.round(prog * 1000) / 1000, text, color, size: fs, type: mode });
+    }
+  }
+  return out;
+}
+
+// 拉取并解析某 cid 的弹幕：优先 seg.so（protobuf，按每 6 分钟一段）；
+// 若 seg.so 被风控（返回字节数很小/无弹幕元素），回退历史 XML 接口（comment.bilibili.com）。
 // light=true 时只拉前几段用于搜索预览计数（轻量），否则拉全片。
 async function fetchBiliDanmaku(cid, light) {
-  const out = [];
+  let out = [];
   const maxSeg = light ? 3 : 60; // 预览取前 3 段（约 18 分钟）估算密度
+  let segOk = false;
   for (let seg = 1; seg <= maxSeg; seg++) {
     let batch;
     try {
       const url = 'https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=' + cid + '&segment_index=' + seg;
-      const buf = await httpGet(url, BILI_HEADERS, 2);
+      const buf = await httpGet(url, biliHeaders(), 2);
       batch = parseBiliSegProto(buf);
     } catch (e) { break; }
     if (!batch || !batch.length) { break; }
+    segOk = true;
     for (const d of batch) out.push(d);
     if (light && out.length > 400) break; // 预览足够
     if (!light && batch.length < 5) break; // 末段通常很少
+  }
+  // seg.so 风控回退：历史 XML 弹幕（无需登录）
+  if (!segOk || out.length === 0) {
+    try {
+      const xbuf = await httpGet('https://comment.bilibili.com/' + cid + '.xml', biliHeaders(), 2);
+      const xmlDm = parseBiliXml(xbuf);
+      log('info', 'danmaku.xml-fallback', { cid: String(cid), count: xmlDm.length });
+      for (const d of xmlDm) out.push(d);
+    } catch (e) { log('warn', 'danmaku.xml-fallback-fail', { cid: String(cid), err: String(e && e.message || e) }); }
   }
   out.sort((a, b) => a.t - b.t);
   return out;

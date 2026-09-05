@@ -722,7 +722,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）：附带本机地址，方便客户端三通道填写
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.1', port: PORT, addrs: localAddrs() });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.2', port: PORT, addrs: localAddrs() });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {
@@ -865,22 +865,28 @@ const server = http.createServer(async (req, res) => {
           try {
             const ep = parseInt(body.episode || body.ep || 0, 10) || 0;
             const season = parseInt(body.season || 0, 10) || 0;
-            const cands = await BILI.search_candidates(kw, season, ep, 1500);
-            const biliResults = (cands || []).map(c => ({
+            // search_candidates(title, ep_num, season_num) 返回 { ok, candidates }
+            // 注意：参数顺序是 (片名, 集数, 季数)，且只接受 3 个参数
+            const r = await BILI.search_candidates(kw, ep, season);
+            const cands = (r && r.candidates) || [];
+            // 候选字段：{ index, cid, bvid, title, source, season, is_compilation, sim }
+            // 无 duration 字段 —— 不做时长裁剪，交由 filterDanmakuByDuration 放行
+            const biliResults = cands.map(c => ({
               source: 'bilibili',
-              title: c.matched_title || c.title || kw,
-              bvid: c.bvid, cid: c.cid, id: c.cid || c.bvid,
-              duration: c.duration || '', episodeId: 0,
-              matched_title: c.matched_title || c.title
+              title: c.title || kw,
+              matched_title: c.title || kw,
+              bvid: c.bvid || '', cid: c.cid || '', id: c.cid || c.bvid || '',
+              episodeId: 0,
+              is_compilation: !!c.is_compilation,
+              sim: (typeof c.sim === 'number') ? c.sim : null,
             }));
             results = results.concat(biliResults);
             log('bili mature candidates:', biliResults.length, kw);
-          } catch (e) { log('bili mature search fail', e.message); }
+          } catch (e) { log('bili mature search fail', e && e.stack ? e.stack : e); }
         }
-        // 弹弹play 补充（影视正片库，剧集级匹配）
-        if (results.length < 2) {
-          try { results = (await dandanSearch(kw)).concat(results); } catch (e) { log('dandan search fail', e.message); }
-        }
+        // 弹弹play 补充（影视正片库，剧集级匹配）——B 站不足或失败时兜底
+        try { const dd = await dandanSearch(kw); if (dd && dd.length) results = dd.concat(results); }
+        catch (e) { log('dandan search fail', e && e.message ? e.message : e); }
         if (results.length) diskSet(ck, results);
       }
       // 时长过滤：每次都按本次影片时长过滤+排序（即便命中缓存也重筛，

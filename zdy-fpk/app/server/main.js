@@ -22,6 +22,19 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// 成熟的 B站弹幕下载器（番剧区 WBI + pgc 取集 cid + 视频区 LCS 相似度匹配 + seg.so 解析），
+// 纯 Node 内置模块。独立文件，缺失时优雅降级到内置简易实现。
+let BILI = null;
+try {
+  BILI = require(path.join(__dirname, 'bili_danmaku.js'));
+  if (typeof BILI.setLogSink === 'function') {
+    BILI.setLogSink((line) => log('[bili] ' + String(line).replace(/^\[bili_danmaku\]\s*/, '')));
+  }
+} catch (e) {
+  log('bili_danmaku 模块加载失败，回退内置弹幕: ' + (e && e.message));
+  BILI = null;
+}
+
 const PORT = parseInt(
   process.env.TRIM_SERVICE_PORT ||
   process.env.FPK_SERVICE_PORT ||
@@ -699,7 +712,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）：附带本机地址，方便客户端三通道填写
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.2.2', port: PORT, addrs: localAddrs() });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.0', port: PORT, addrs: localAddrs() });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {
@@ -786,16 +799,32 @@ const server = http.createServer(async (req, res) => {
       log('danmaku search', JSON.stringify(rawKw), '->', JSON.stringify(kw), 'dur=', mediaDur);
       // 缓存键：片名 + 时长档（按 10 分钟分桶），避免不同时长结果互相污染
       const durBucket = mediaDur > 1800 ? Math.round(mediaDur / 600) : 0;
-      const ck = 'dmsearch_v2_' + String(kw).replace(/\s+/g, '').toLowerCase() + '_' + durBucket;
+      const ck = 'dmsearch_v3_' + String(kw).replace(/\s+/g, '').toLowerCase() + '_' + durBucket;
       let results = persistentGet(ck, TTL_SEARCH);
       let cached = !!results;
       if (!results) {
         results = [];
-        // 弹弹play 优先（影视正片库，剧集级匹配）
-        try { results = await dandanSearch(kw); } catch (e) { log('dandan search fail', e.message); }
-        // B站兜底（正片优先排序，已剔除解说/预告/混剪）
-        if ((!results.length) && config.enableBiliFallback) {
-          try { results = await biliSearch(kw); } catch (e) { log('bili search fail', e.message); }
+        // 成熟 B站模块优先：番剧区(media_bangumi)+视频区 WBI 搜索，LCS 相似度
+        // + 季/集匹配 + 时长/标题黑名单过滤，结果质量最高（Fntv-Plus 同源算法）
+        if (BILI) {
+          try {
+            const ep = parseInt(body.episode || body.ep || 0, 10) || 0;
+            const season = parseInt(body.season || 0, 10) || 0;
+            const cands = await BILI.search_candidates(kw, season, ep, 1500);
+            const biliResults = (cands || []).map(c => ({
+              source: 'bilibili',
+              title: c.matched_title || c.title || kw,
+              bvid: c.bvid, cid: c.cid, id: c.cid || c.bvid,
+              duration: c.duration || '', episodeId: 0,
+              matched_title: c.matched_title || c.title
+            }));
+            results = results.concat(biliResults);
+            log('bili mature candidates:', biliResults.length, kw);
+          } catch (e) { log('bili mature search fail', e.message); }
+        }
+        // 弹弹play 补充（影视正片库，剧集级匹配）
+        if (results.length < 2) {
+          try { results = (await dandanSearch(kw)).concat(results); } catch (e) { log('dandan search fail', e.message); }
         }
         if (results.length) diskSet(ck, results);
       }
@@ -813,15 +842,30 @@ const server = http.createServer(async (req, res) => {
     // 弹幕下载（内容缓存 30 天，按 episodeId/cid 唯一）
     if (route === '/danmaku/download') {
       const item = body.item || body;
-      const uid = 'dmdl_' + (item.episodeId || item.cid || item.bvid || '');
-      log('danmaku download', item.source, item.episodeId || item.bvid, item.cid);
+      const uid = 'dmdl_' + (item.episodeId || item.cid || item.bvid || md5(String(item.title || item.keyword || '')));
+      log('danmaku download', item.source, item.episodeId || item.bvid || item.title, item.cid || '');
       let cached = persistentGet(uid, TTL_DANMAKU);
       let comments = cached || [];
+      let matchedTitle = item.matched_title || item.title || '';
       if (!comments.length) {
         if (item.source === 'dandanplay' || item.episodeId) {
           try { comments = await dandanDanmaku(item.episodeId, true); } catch (e) { log('dandan dm fail', e.message); }
         }
-        if ((!comments.length) && (item.bvid || item.cid)) {
+        // 成熟 B站模块：若带 title（自动/手动匹配），走番剧区+视频区 LCS 智能匹配直出弹幕
+        if (!comments.length && BILI && (item.title || item.keyword) && !item.cid) {
+          try {
+            const ep = parseInt(item.ep || item.episode || 0, 10) || 0;
+            const season = parseInt(item.season || 0, 10) || 0;
+            const r = await BILI.runToMemory(String(item.title || item.keyword), ep, season, 1500);
+            log('bili mature module:', r.ok ? ('ok count=' + r.danmaku_count + ' matched=' + r.matched_title) : ('fail ' + r.error));
+            if (r.ok && r.comments && r.comments.length) {
+              comments = r.comments;
+              matchedTitle = r.matched_title || matchedTitle;
+            }
+          } catch (e) { log('bili mature fail', e.message); }
+        }
+        // 回退：已知 cid/bvid 的简易拉取
+        if (!comments.length && (item.bvid || item.cid)) {
           try {
             let cid = item.cid;
             if (!cid && item.bvid) {
@@ -833,7 +877,35 @@ const server = http.createServer(async (req, res) => {
         }
         if (comments.length) diskSet(uid, comments);
       }
-      return sendJson(res, 200, { ok: comments.length > 0, count: comments.length, comments, cached: !!cached });
+      // 脏数据清洗（越界 time/mode/color 丢弃）
+      comments = sanitizeDanmaku(comments);
+      return sendJson(res, 200, { ok: comments.length > 0, count: comments.length, comments, cached: !!cached, matched_title: matchedTitle });
+    }
+
+    // 弹幕智能一键匹配（成熟模块：番剧区 WBI + pgc + 视频区 LCS），直接返回弹幕内容
+    if (route === '/danmaku/auto') {
+      const rawKw = body.keyword || body.title || body.filename || '';
+      const kw = cleanMovieName(rawKw);
+      const ep = parseInt(body.ep || body.episode || 0, 10) || 0;
+      const season = parseInt(body.season || 0, 10) || 0;
+      const ck = 'dmauto_' + md5(String(kw) + '_' + ep + '_' + season);
+      let cached = persistentGet(ck, TTL_DANMAKU);
+      let payload = cached;
+      if (!payload) {
+        if (!BILI) {
+          payload = { ok: false, error: '弹幕模块不可用' };
+        } else {
+          try {
+            const r = await BILI.runToMemory(kw, ep, season, 1500);
+            payload = { ok: r.ok, comments: sanitizeDanmaku(r.comments || []), matched_title: r.matched_title || kw, count: (r.comments || []).length, source: 'bilibili', cookie_status: r.cookie_status || null, error: r.error };
+          } catch (e) {
+            payload = { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        }
+        if (payload && payload.ok && payload.comments && payload.comments.length) diskSet(ck, payload);
+      }
+      log('danmaku auto', JSON.stringify(kw), 'ep=', ep, '->', payload.ok ? ('ok ' + payload.count + ' 条') : ('fail ' + (payload.error || '')));
+      return sendJson(res, 200, Object.assign({ cached: !!cached, keyword: kw }, payload));
     }
 
     // 字幕搜索（持久化缓存 7 天）

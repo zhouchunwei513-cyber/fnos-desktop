@@ -19,7 +19,7 @@ local g_dm_results = nil    -- 最近一次弹幕搜索结果（cid/标题）
 local g_dm_searching = false -- 弹幕是否正在搜索
 local g_skip_intro_sec = 90   -- 手动跳过片头：前进秒数
 local g_skip_credits_sec = 60 -- 手动跳到片尾：回退秒数
-local g_skip_auto = false     -- 自动跳过片头（按章节标记）
+local g_skip_auto = true      -- 自动跳过片头片尾（单一开关，默认开启；关闭则任何自动跳过都不触发）
 local g_auto_enhance = true   -- 起播自动经 ZDY 加载弹幕/字幕/片头片尾（再次打开影片秒载缓存）
 local g_auto_done = false     -- 当前文件自动增强是否已触发（防重）
 -- ZDY 权威片头片尾时间戳（秒）；起播自动获取，优先于章节/默认秒数
@@ -162,17 +162,34 @@ mp.register_script_message("fnos-quality", function(q)
     else local h = tonumber(tostring(q):match("%d+")); if h then set_quality(h, h) end end
 end)
 
--- 底部控制栏「画质」按钮：直接弹画质选择菜单（无二级菜单）
+-- 底部控制栏「画质」按钮：临时把 menu-data 换成画质子菜单后打开 context_menu，
+-- 关闭后恢复主菜单数据。内置 context_menu.lua 只读 menu-data 属性，没有 update-data 消息。
 mp.register_script_message("fnos-quality-menu", function()
-    local data = { type = "menu", title = "画质选择", items = {
-        { title = (g_quality == "原画" and "✓ " or "") .. "原画（不缩放）", cmd = "script-message fnos-quality original" },
-        { title = (g_quality == "1080p" and "✓ " or "") .. "1080p", cmd = "script-message fnos-quality 1080" },
-        { title = (g_quality == "720p" and "✓ " or "") .. "720p", cmd = "script-message fnos-quality 720" },
-        { title = (g_quality == "480p" and "✓ " or "") .. "480p", cmd = "script-message fnos-quality 480" },
-        { title = (g_quality == "360p" and "✓ " or "") .. "360p", cmd = "script-message fnos-quality 360" },
-    } }
-    mp.commandv("script-message-to", "context_menu", "update-data", utils.format_json(data))
-    mp.commandv("script-message-to", "context_menu", "open")
+    pcall(function()
+        local qitem = function(title, val)
+            return { title = title, cmd = "script-message fnos-quality " .. val }
+        end
+        local data = {
+            { title = "返回", cmd = "script-message fnos-menu-main" },
+            qitem((g_quality == "原画" and "✓ " or "") .. "原画（不缩放）", "original"),
+            qitem((g_quality == "1080p" and "✓ " or "") .. "1080p", "1080"),
+            qitem((g_quality == "720p" and "✓ " or "") .. "720p", "720"),
+            qitem((g_quality == "480p" and "✓ " or "") .. "480p", "480"),
+            qitem((g_quality == "360p" and "✓ " or "") .. "360p", "360"),
+        }
+        mp.set_property_native("menu-data", data)
+        mp.commandv("script-message-to", "context_menu", "open")
+        -- 打开后立即把 menu-data 还原为完整主菜单（下次右键/画质均不受影响）
+        refresh_menu_data()
+    end)
+end)
+
+-- 画质子菜单里的"返回"：刷新为完整主菜单并重新打开
+mp.register_script_message("fnos-menu-main", function()
+    pcall(function()
+        refresh_menu_data()
+        mp.commandv("script-message-to", "context_menu", "open")
+    end)
 end)
 mp.get_quality_label = function() return g_quality end
 
@@ -294,19 +311,11 @@ build_menu = function()
         }},
 
         { ["title"] = "跳过片头 / 片尾", ["type"] = "submenu", ["submenu"] = {
-            item("跳过片头（默认前进 90 秒）", "script-message fnos-skip intro"),
-            item("跳到片尾前（回退 60 秒）", "script-message fnos-skip credits"),
+            -- 单一开关：开启即自动跳过片头片尾（ZDY 时间戳/章节/默认秒数），关闭则不跳
+            item(g_skip_auto and "✓ 自动跳过片头片尾：已开启（点击关闭）" or "自动跳过片头片尾：已关闭（点击开启）", "script-message fnos-skip-auto"),
             sep(),
-            item("片头跳过长度：60 秒", "script-message fnos-skip-set intro 60"),
-            item("片头跳过长度：90 秒（默认）", "script-message fnos-skip-set intro 90"),
-            item("片头跳过长度：120 秒", "script-message fnos-skip-set intro 120"),
-            sep(),
-            item("片尾回退长度：45 秒", "script-message fnos-skip-set credits 45"),
-            item("片尾回退长度：60 秒（默认）", "script-message fnos-skip-set credits 60"),
-            item("片尾回退长度：90 秒", "script-message fnos-skip-set credits 90"),
-            sep(),
-            item("自动跳过（按章节标记 片头/片尾）", "script-message fnos-skip-auto"),
-            { ["title"] = g_skip_auto and "✓ 自动跳过：已开启" or "自动跳过：未开启", ["selectable"] = false },
+            item("手动跳过片头", "script-message fnos-skip intro"),
+            item("手动跳到片尾", "script-message fnos-skip credits"),
         }},
 
         { ["title"] = "字幕", ["type"] = "submenu", ["submenu"] = sub_menu },
@@ -577,42 +586,58 @@ mp.register_script_message("fnos-skip-set", function(kind, sec)
     end)
 end)
 
--- 自动跳过：时间轴观察者。片头用 ZDY 时间戳/章节标记自动跳过；片尾在开启 g_skip_auto 且
--- 到达 ZDY 片尾时间戳时提示（片尾不强制跳走，避免打断观看，用户可用菜单/按钮跳过）。
+-- 自动跳过片头片尾：单一开关 g_skip_auto（默认开启）。开启时：
+--   片头——起播仍在片头区间内自动跳到片头结束（ZDY 时间戳优先，其次章节标记，再不行固定秒数）。
+--   片尾——播放到达片尾开始位置时提示并跳过（ZDY 时间戳优先，其次章节标记）。
+-- 关闭时：以上自动行为全部不触发（手动"跳过片头/片尾"菜单项仍可用）。
 local g_auto_intro_done = false
 local g_auto_credits_done = false
 mp.register_script_message("fnos-skip-auto", function()
     pcall(function()
         g_skip_auto = not g_skip_auto
-        mp.osd_message(g_skip_auto and "已开启自动跳过片头（按章节标记）" or "已关闭自动跳过", 2500)
+        mp.osd_message(g_skip_auto and "已开启自动跳过片头片尾" or "已关闭自动跳过片头片尾", 2000)
         refresh_menu_data()
     end)
 end)
 mp.observe_property("time-pos", "number", function(pos)
     if not pos then return end
+    -- 单一开关：关闭则不做任何自动跳过
+    if not g_skip_auto then return end
+    local dur = mp.get_property_number("duration", 0) or 0
     pcall(function()
-        -- 优先：ZDY 权威片头时间戳（起播自动获取）。片头区间一般 0~introEnd，
-        -- 只要仍处于片头内（pos < introEnd）就自动跳过一次，不依赖 g_skip_auto 开关。
-        if g_zdy_intro_end and g_zdy_intro_end > 0 and g_zdy_intro_end < (mp.get_property_number("duration", 0) or 0) then
-            if pos < g_zdy_intro_end - 0.5 and not g_auto_intro_done then
-                g_auto_intro_done = true
-                mp.commandv("seek", tostring(g_zdy_intro_end), "absolute+exact")
-                mp.osd_message("自动跳过片头（ZDY）", 1800)
+        -- ===== 片头自动跳过（只跳一次）=====
+        if not g_auto_intro_done and pos < 30 then
+            local introEnd = nil
+            -- ZDY 权威时间戳优先
+            if g_zdy_intro_end and g_zdy_intro_end > 0 and g_zdy_intro_end < dur then
+                introEnd = g_zdy_intro_end
+            else
+                local _s, e = find_chapter_range({ "片头", "op", "intro", "开场" })
+                if e and e > 5 and e < dur then introEnd = e end
             end
-            return
+            -- 既无 ZDY 也无章节：起播在最开始且片长足够，用固定片头秒数兜底
+            if not introEnd and dur > 600 and pos < 5 then introEnd = g_skip_intro_sec end
+            if introEnd and pos < introEnd - 1 then
+                g_auto_intro_done = true
+                mp.commandv("seek", tostring(introEnd), "absolute+exact")
+                mp.osd_message("自动跳过片头", 1800)
+            end
         end
-        -- 回退：章节标记自动跳过（需用户在菜单开启"自动跳过"）
-        if not g_skip_auto then return end
-        local s, e = find_chapter_range({ "片头", "op", "intro", "开场" })
-        if s then
-            if pos >= s - 1 and pos < e - 0.5 then
-                if not g_auto_intro_done then
-                    g_auto_intro_done = true
-                    mp.commandv("seek", tostring(e), "absolute+exact")
-                    mp.osd_message("自动跳过片头", 2000)
-                end
-            elseif pos < s - 2 or pos >= e then
-                g_auto_intro_done = false
+        -- ===== 片尾自动跳过（到达片尾开始位置时提示并跳过，只跳一次）=====
+        if not g_auto_credits_done and dur > 600 and pos > dur * 0.5 then
+            local creditsStart = nil
+            if g_zdy_credits_start and g_zdy_credits_start > 0 and g_zdy_credits_start < dur then
+                creditsStart = g_zdy_credits_start
+            else
+                local s = find_chapter_range({ "片尾", "ed", "credits", "ending" })
+                if s and s > dur * 0.5 then creditsStart = s end
+            end
+            if creditsStart and pos >= creditsStart and pos < creditsStart + 2 then
+                g_auto_credits_done = true
+                -- 片尾通常意味着本集结束：跳到接近结尾（保留少量时间，不直接终止播放）
+                local target = dur - 2
+                mp.commandv("seek", tostring(math.max(target, creditsStart)), "absolute+exact")
+                mp.osd_message("已自动跳过片尾", 2000)
             end
         end
     end)
@@ -658,7 +683,8 @@ local function auto_fetch_danmaku(kw)
 end
 
 local function auto_fetch_subtitle(kw)
-    helper_async("/subtitle/search", utils.format_json({ filename = kw, lang = "zh" }), function(data)
+    local dur = mp.get_property_number("duration", 0) or 0
+    helper_async("/subtitle/search", utils.format_json({ title = kw, filename = kw, lang = "zh", duration = dur }), function(data)
         if not data or not data.ok or not data.results or #data.results == 0 then return end
         g_results = data.results
         -- 自动下载并加载第一条（ZDY 已按相关度评分排序，最匹配的简体/双语正片字幕在最前）。
@@ -681,7 +707,8 @@ local function run_auto_enhance()
         if is_live() then return end
         local kw = media_keyword()
         if not kw or kw == "video" or kw == "" then return end
-        auto_fetch_skip(kw)
+        -- 自动跳过片头片尾：仅在开关开启时获取时间戳（关闭则不请求、不跳过）
+        if g_skip_auto then auto_fetch_skip(kw) end
         auto_fetch_danmaku(kw)
         auto_fetch_subtitle(kw)
     end)

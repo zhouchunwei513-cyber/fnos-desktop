@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.37.0';
+const APP_VERSION = '1.38.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3490,9 +3490,26 @@ ipcMain.handle('settings:get', async () => {
       iptvEpgUrl: (s.iptv && s.iptv.iptvEpgUrl) || '',
       iptvCacheSeconds: clampInt(s.iptv && s.iptv.iptvCacheSeconds, 0, 120, 30),
     },
+    // v1.37.1：增强服务（ZDY）三通道设置，供设置页回显（修复"保存后重开为空"）
+    enhance: normalizeEnhance(s.enhance || {}),
     version: APP_VERSION,
   };
 });
+
+// 归一化增强服务配置：三通道 lan/ddns/frp + 授权码 + 开关，兼容旧版单字段 baseUrl
+function normalizeEnhance(e) {
+  const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
+  const lan = norm(e.lan) || norm(e.baseUrl);
+  // v1.37.0：增强服务默认启用（用户未显式关闭时即为开）
+  return {
+    enabled: e.enabled !== false,
+    lan,
+    ddns: norm(e.ddns),
+    frp: norm(e.frp),
+    baseUrl: lan,
+    authCode: norm(e.authCode),
+  };
+}
 
 // v1.16.1：保存无操作自动锁定时长
 ipcMain.handle('settings:set-auto-lock', async (_e, payload) => {

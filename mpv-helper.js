@@ -917,8 +917,8 @@ function start() {
         }
         if (route === '/danmaku/search') {
           const kw = body.keyword || body.filename || body.query || body.title || '';
-          // 弹幕仅使用 ZDY 增强服务
-          const zr = await requireZdy('/danmaku/search', { keyword: kw, filename: body.filename || kw, title: body.title || kw });
+          // 弹幕仅使用 ZDY 增强服务。必须透传 duration（影片时长），ZDY 据此过滤同名 MV/解说/有声书
+          const zr = await requireZdy('/danmaku/search', { keyword: kw, filename: body.filename || kw, title: body.title || kw, duration: Number(body.duration) || 0, season: Number(body.season) || 0, episode: Number(body.episode) || 0 });
           if (zr.ok && Array.isArray(zr.results)) {
             log('info', 'danmaku.search.zdy', { count: zr.results.length });
             return sendJson(res, 200, { ok: true, results: zr.results, source: 'zdy' });

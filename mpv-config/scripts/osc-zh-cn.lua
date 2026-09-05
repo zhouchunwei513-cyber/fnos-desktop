@@ -202,21 +202,13 @@ function FN.build_danmaku_items()
     }
 end
 
--- 跳过片头/片尾子菜单：手动跳过 + 长度设置 + 自动跳过开关
+-- 跳过片头/片尾：单一自动开关（开启即自动跳过片头片尾）+ 手动跳过
 function FN.build_skip_items()
     return {
-        { title = "跳过片头（前进90秒/按章节）", cmd = "script-message fnos-skip intro" },
-        { title = "跳到片尾前（回退60秒）", cmd = "script-message fnos-skip credits" },
+        { title = "自动跳过片头片尾：开/关", cmd = "script-message fnos-skip-auto" },
         { type = "separator" },
-        { title = "片头长度：60秒", cmd = "script-message fnos-skip-set intro 60" },
-        { title = "片头长度：90秒（默认）", cmd = "script-message fnos-skip-set intro 90" },
-        { title = "片头长度：120秒", cmd = "script-message fnos-skip-set intro 120" },
-        { type = "separator" },
-        { title = "片尾回退：45秒", cmd = "script-message fnos-skip-set credits 45" },
-        { title = "片尾回退：60秒（默认）", cmd = "script-message fnos-skip-set credits 60" },
-        { title = "片尾回退：90秒", cmd = "script-message fnos-skip-set credits 90" },
-        { type = "separator" },
-        { title = "自动跳过片头（章节标记）开/关", cmd = "script-message fnos-skip-auto" },
+        { title = "立即跳过片头", cmd = "script-message fnos-skip intro" },
+        { title = "立即跳到片尾前", cmd = "script-message fnos-skip credits" },
     }
 end
 
@@ -2041,18 +2033,9 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
-    -- fnOS 新增：画质 / 倍速 / 跳过片尾 / 跳过片头 / 弹幕 中文文字按钮（放在轨道按钮左侧），统一用 fnTextButtonsBar 对齐基线
+    -- fnOS 新增：画质 / 倍速 / 弹幕 中文文字按钮（跳过片头片尾按钮已按需求移除，进度条随之加长；
+    -- 跳过功能保留在右键菜单与左下角菜单，自动跳过由开关控制）
     local fnBtnW = 70
-    geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
-    lo = add_layout("fnos_skip_outro")
-    lo.geometry = geo
-    lo.style = osc_styles.fnTextButtonsBar
-
-    geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
-    lo = add_layout("fnos_skip_intro")
-    lo.geometry = geo
-    lo.style = osc_styles.fnTextButtonsBar
-
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
     lo = add_layout("fnos_speed")
     lo.geometry = geo
@@ -2361,22 +2344,6 @@ local function osc_init()
         return osc_styles.smallButtonsLlabel .. " " .. label .. " "
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-quality-menu") end
-
-    --fnOS 新增：跳过片头按钮（跳到片头结束）；与音轨/字幕标签统一字号字体
-    ne = new_element("fnos_skip_intro", "button")
-    ne.enabled = true
-    ne.content = function ()
-        return osc_styles.smallButtonsLlabel .. " 跳片头 "
-    end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-skip", "intro") end
-
-    --fnOS 新增：跳过片尾按钮（跳到片尾开始处附近）
-    ne = new_element("fnos_skip_outro", "button")
-    ne.enabled = true
-    ne.content = function ()
-        return osc_styles.smallButtonsLlabel .. " 跳片尾 "
-    end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-skip", "credits") end
 
     --seekbar
     ne = new_element("seekbar", "slider")

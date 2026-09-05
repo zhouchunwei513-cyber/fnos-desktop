@@ -445,6 +445,100 @@
     });
   }
 
+  // --------- ZDY 增强服务（v1.34.0） ---------
+  const zdyUrl = document.getElementById('zdy-url');
+  const zdyToken = document.getElementById('zdy-token');
+  const zdySave = document.getElementById('zdy-save');
+  const zdyTest = document.getElementById('zdy-test');
+  const zdyError = document.getElementById('zdy-error');
+  const zdyStatus = document.getElementById('zdy-status');
+  const zdySel = document.querySelector('[data-select="zdy-enabled"]');
+
+  function setZdyEnabledSel(on) {
+    if (!zdySel) return;
+    zdySel.setAttribute('data-value', on ? '1' : '0');
+    const v = zdySel.querySelector('.glass-select-value');
+    if (v) v.textContent = on ? '开启（弹幕/字幕/片头片尾走 NAS 增强服务）' : '关闭（使用客户端内置源）';
+  }
+  // 下拉选项点击
+  document.querySelectorAll('[data-select="zdy-enabled"] .glass-select-option').forEach((op) => {
+    op.addEventListener('click', () => setZdyEnabledSel(op.getAttribute('data-value') === '1'));
+  });
+
+  function setZdyStatus(ok, msg) {
+    if (!zdyStatus) return;
+    zdyStatus.style.color = ok ? '#4ade80' : (ok === false ? '#f87171' : 'rgba(245,247,251,.65)');
+    zdyStatus.textContent = msg || '';
+  }
+
+  async function loadEnhanceConfig() {
+    try {
+      const info = await fnosSettings.getSettings();
+      const e = info?.enhance || {};
+      if (zdyUrl) zdyUrl.value = e.baseUrl || '';
+      if (zdyToken) zdyToken.value = e.authCode || '';
+      setZdyEnabledSel(!!e.enabled);
+      if (e.enabled && e.baseUrl) setZdyStatus(null, '已启用增强服务（保存并重启 MPV 后生效）');
+    } catch (_) {}
+  }
+
+  function readEnhance() {
+    return {
+      enabled: zdySel ? zdySel.getAttribute('data-value') === '1' : false,
+      baseUrl: zdyUrl ? zdyUrl.value.trim().replace(/\/+$/, '') : '',
+      authCode: zdyToken ? zdyToken.value.trim() : '',
+    };
+  }
+
+  if (zdyTest) {
+    zdyTest.addEventListener('click', async () => {
+      showError(zdyError, '');
+      setZdyStatus(null, '测试中…');
+      zdyTest.disabled = true;
+      try {
+        const cfg = readEnhance();
+        if (!cfg.baseUrl) { setZdyStatus(false, '请先填写服务地址'); zdyTest.disabled = false; return; }
+        const res = await fnosSettings.enhancePing(cfg.baseUrl, cfg.authCode);
+        if (res && res.ok) {
+          setZdyStatus(true, '连接成功：ZDY ' + (res.version || '') + ' ｜ ' + (res.note || ''));
+        } else {
+          setZdyStatus(false, '连接失败：' + ((res && res.error) || '无法访问或授权码错误'));
+        }
+      } catch (err) {
+        setZdyStatus(false, '连接失败：' + (err?.message || '未知错误'));
+      } finally {
+        zdyTest.disabled = false;
+      }
+    });
+  }
+
+  if (zdySave) {
+    zdySave.addEventListener('click', async () => {
+      zdySave.disabled = true;
+      zdySave.textContent = '保 存 中';
+      showError(zdyError, '');
+      try {
+        const cfg = readEnhance();
+        if (cfg.enabled && !cfg.baseUrl) {
+          showError(zdyError, '启用增强服务时必须填写服务地址');
+          zdySave.disabled = false; zdySave.textContent = '保存增强服务设置'; return;
+        }
+        const res = await fnosSettings.setEnhance(cfg);
+        if (res && res.ok) {
+          zdySave.textContent = '已保存';
+          setZdyStatus(cfg.enabled, cfg.enabled ? '增强服务已保存，下次播放生效' : '已关闭增强服务，使用内置源');
+          setTimeout(() => { zdySave.textContent = '保存增强服务设置'; }, 1800);
+        } else {
+          showError(zdyError, (res && res.error) || '保存失败');
+        }
+      } catch (err) {
+        showError(zdyError, err?.message || '保存失败');
+      } finally {
+        zdySave.disabled = false;
+      }
+    });
+  }
+
   // --------- 自动锁定时长（v1.16.1） ---------
   if (autoLockSel) {
     autoLockSel.addEventListener('change', async () => {
@@ -487,6 +581,7 @@
       }
       loadLiveConfig();
       loadVlcConfig();
+      loadEnhanceConfig();
     } catch (err) {
       showError(hkError, err?.message || '加载设置失败');
     }

@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.33.0';
+const APP_VERSION = '1.34.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3311,6 +3311,47 @@ ipcMain.handle('settings:vlc-runtime', async () => {
     return info;
   } catch (e) {
     return { available: false, reason: e.message, settings: getMpvSettings() };
+  }
+});
+
+// v1.34.0：保存 ZDY 增强服务设置（弹幕/字幕/片头片尾走 NAS FPK）
+ipcMain.handle('settings:set-enhance', async (_e, patch) => {
+  try {
+    const settings = (typeof loadSettings === 'function' ? loadSettings() : (global.__appSettings || {})) || {};
+    const cur = settings.enhance || { enabled: false, baseUrl: '', authCode: '' };
+    const baseUrl = String(patch && patch.baseUrl != null ? patch.baseUrl : cur.baseUrl || '').trim().replace(/\/+$/, '');
+    const next = {
+      enabled: !!(patch && patch.enabled),
+      baseUrl,
+      authCode: String(patch && patch.authCode != null ? patch.authCode : cur.authCode || '').trim(),
+    };
+    saveSettings({ enhance: next });
+    try { global.__enhanceSettings = next; } catch (_) {}
+    return { ok: true, enhance: next };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// v1.34.0：测试 ZDY 增强服务连通性
+ipcMain.handle('settings:enhance-ping', async (_e, cfg) => {
+  try {
+    const baseUrl = String(cfg && cfg.baseUrl || '').trim().replace(/\/+$/, '');
+    const token = String(cfg && cfg.token || '').trim();
+    if (!baseUrl) return { ok: false, error: '服务地址为空' };
+    const url = baseUrl + '/ping?token=' + encodeURIComponent(token || 'x');
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const resp = await fetch(url, { signal: ctrl.signal, headers: { Accept: 'application/json' } });
+    clearTimeout(timer);
+    const text = await resp.text();
+    let data = {};
+    try { data = JSON.parse(text); } catch (_) {}
+    if (resp.status === 401 || data.unauthorized) return { ok: false, error: '授权码错误或未填写' };
+    if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
+    return { ok: true, version: data.version || '', note: data.note || '', enhance: true };
+  } catch (e) {
+    return { ok: false, error: /abort/i.test(e.message) ? '连接超时' : (e.message || '无法访问') };
   }
 });
 

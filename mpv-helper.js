@@ -34,6 +34,62 @@ const HTTP_OPENSUB_UA = 'FNOS Desktop Player';
 const SUB_SEARCH_CACHE = new Map();
 const SUB_CACHE_TTL = 10 * 60 * 1000;
 
+// ---------------------- ZDY 增强服务转发（v1.34.0） ----------------------
+// 用户在「设置 → 增强服务」配置了 NAS 上的 ZDY FPK 后，弹幕/字幕/片头片尾优先由家中 NAS
+// 提供（内网快、规避数据中心 IP 风控）；未配置或请求失败时自动回退到本文件内置实现。
+function getEnhanceConfig() {
+  try {
+    if (global.__enhanceSettings && global.__enhanceSettings.enabled && global.__enhanceSettings.baseUrl) {
+      return global.__enhanceSettings;
+    }
+  } catch (_) {}
+  try {
+    // 兜底：从主进程设置读取（helper 与 main 同进程，electron app 可直接读 settings.json）
+    const electron = require('electron');
+    const app = electron && electron.app;
+    if (app && app.getPath) {
+      const sf = path.join(app.getPath('userData'), 'settings.json');
+      if (fs.existsSync(sf)) {
+        const j = JSON.parse(fs.readFileSync(sf, 'utf8'));
+        const e = j && j.enhance;
+        if (e && e.enabled && e.baseUrl) return e;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function enhanceFetch(routePath, bodyObj) {
+  return new Promise((resolve) => {
+    const cfg = getEnhanceConfig();
+    if (!cfg) return resolve(null); // 未配置 -> 回退
+    let urlObj;
+    try { urlObj = new URL(routePath, cfg.baseUrl.replace(/\/+$/, '') + '/'); } catch (_) { return resolve(null); }
+    if (cfg.authCode) urlObj.searchParams.set('token', cfg.authCode);
+    const payload = Buffer.from(JSON.stringify(bodyObj || {}), 'utf8');
+    const lib = urlObj.protocol === 'http:' ? http : https;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 8000);
+    const req = lib.request(
+      { hostname: urlObj.hostname, port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80), path: urlObj.pathname + urlObj.search, method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': payload.length, 'Authorization': 'Bearer ' + (cfg.authCode || '') }, signal: ctrl.signal },
+      (resp) => {
+        const ch = [];
+        resp.on('data', (c) => ch.push(c));
+        resp.on('end', () => {
+          clearTimeout(timer);
+          if (resp.statusCode === 401) { try { console.log('[mpv-helper] ZDY 401 授权码错误, 回退内置源'); } catch (_) {} return resolve({ __unauthorized: true }); }
+          if (resp.statusCode !== 200) { try { console.log('[mpv-helper] ZDY HTTP', resp.statusCode, '回退内置源'); } catch (_) {} return resolve(null); }
+          try { resolve(JSON.parse(Buffer.concat(ch).toString('utf8'))); }
+          catch (e) { try { console.log('[mpv-helper] ZDY 响应解析失败, 回退:', e.message); } catch (_) {} resolve(null); }
+        });
+      }
+    );
+    req.on('error', (e) => { clearTimeout(timer); try { console.log('[mpv-helper] ZDY 连接失败, 回退内置源:', e.message); } catch (_) {} resolve(null); });
+    req.write(payload);
+    req.end();
+  });
+}
+
 // 清洗片名，提升在线命中率：去掉扩展名、年份、分辨率、压制组、来源/编码、季集标记中的杂质
 function cleanTitle(raw) {
   let t = String(raw || '').replace(/\.(mkv|mp4|avi|ts|m2ts|iso|rmvb|flv|mov|webm|ass|srt)$/i, '');
@@ -687,8 +743,14 @@ function start() {
         if (route === '/subtitle/search') {
           const q = body.filename || body.title || body.query || body.keyword || '';
           log('info', 'sub.search.req', { raw: String(q).slice(0, 80), lang: body.lang || 'zh' });
+          // 优先 ZDY 增强服务
+          const zq = await enhanceFetch('/subtitle/search', { title: q, filename: q, lang: body.lang || 'zh' });
+          if (zq && zq.ok && Array.isArray(zq.results)) {
+            log('info', 'sub.search.zdy', { source: 'zdy', count: zq.results.length });
+            return sendJson(res, 200, { ok: true, results: zq.results, source: 'zdy' });
+          }
           const list = await searchOnlineSubtitle(q, body.lang || 'zh');
-          return sendJson(res, 200, { ok: true, results: list });
+          return sendJson(res, 200, { ok: true, results: list, source: 'builtin' });
         }
         if (route === '/subtitle/download') {
           const r = await downloadSubtitle(body.item || {});
@@ -716,15 +778,40 @@ function start() {
           return sendJson(res, 200, r || { ok: false, error: '无结果', pip: false });
         }
         if (route === '/danmaku/search') {
-          const list = await danmakuSearch(body.keyword || body.filename || body.query || '');
-          return sendJson(res, 200, { ok: true, results: list });
+          const kw = body.keyword || body.filename || body.query || '';
+          // 优先 ZDY 增强服务（弹弹play 等家中 NAS 网络源）
+          const zq = await enhanceFetch('/danmaku/search', { keyword: kw, filename: body.filename || kw });
+          if (zq && zq.ok && Array.isArray(zq.results)) {
+            log('info', 'danmaku.search.zdy', { source: 'zdy', count: zq.results.length });
+            return sendJson(res, 200, { ok: true, results: zq.results, source: 'zdy' });
+          }
+          const list = await danmakuSearch(kw);
+          return sendJson(res, 200, { ok: true, results: list, source: 'builtin' });
         }
         if (route === '/danmaku/download') {
-          const r = await danmakuDownload(body.cid || body.id);
-          if (r.ok && r.danmaku && r.danmaku.length) {
-            await pushDanmakuToMpv(r.danmaku, body.cid || body.id);
+          const cid = body.cid || body.id;
+          // ZDY 来源的弹幕项带 source:'zdy'，走 NAS 下载
+          if (body.source === 'zdy' || (body.item && body.item.source === 'zdy') || String(body.episodeId || '').length) {
+            const zr = await enhanceFetch('/danmaku/download', { cid, id: body.id, episodeId: body.episodeId, title: body.title, filename: body.filename });
+            if (zr && zr.ok && Array.isArray(zr.danmaku) && zr.danmaku.length) {
+              log('info', 'danmaku.download.zdy', { count: zr.danmaku.length });
+              await pushDanmakuToMpv(zr.danmaku, cid || body.id);
+              return sendJson(res, 200, { ok: true, count: zr.danmaku.length, source: 'zdy' });
+            }
           }
-          return sendJson(res, 200, { ok: r.ok, count: r.count });
+          const r = await danmakuDownload(cid);
+          if (r.ok && r.danmaku && r.danmaku.length) {
+            await pushDanmakuToMpv(r.danmaku, cid);
+          }
+          return sendJson(res, 200, { ok: r.ok, count: r.count, source: 'builtin' });
+        }
+        // 跳过片头片尾时间戳（优先 ZDY）
+        if (route === '/skip/timestamps') {
+          const zr = await enhanceFetch('/skip/timestamps', { title: body.title || '', filename: body.filename || '', duration: body.duration || 0 });
+          if (zr && zr.ok) {
+            return sendJson(res, 200, { ok: true, introStart: zr.introStart, introEnd: zr.introEnd, creditsStart: zr.creditsStart, source: 'zdy' });
+          }
+          return sendJson(res, 200, { ok: true, introStart: null, introEnd: null, creditsStart: null, source: 'builtin' });
         }
         return sendJson(res, 404, { ok: false, error: 'not found' });
       } catch (e) {

@@ -37,6 +37,13 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   // v1.25.0：兼容性播放器（MPV）设置（通道名沿用 set-vlc/vlc-runtime）
   setVlc: (patch) => ipcRenderer.invoke('settings:set-vlc', patch || {}),
   vlcRuntime: () => ipcRenderer.invoke('settings:vlc-runtime'),
+  // v1.34.0：ZDY 增强服务（弹幕/字幕/片头片尾走 NAS）
+  setEnhance: (patch) => ipcRenderer.invoke('settings:set-enhance', patch || {}),
+  enhancePing: (baseUrl, token) =>
+    ipcRenderer.invoke('settings:enhance-ping', {
+      baseUrl: String(baseUrl || '').trim(),
+      token: String(token || '').trim(),
+    }),
   restartApp: () => ipcRenderer.invoke('app:restart'),
   close: () => ipcRenderer.send('settings:close'),
 });

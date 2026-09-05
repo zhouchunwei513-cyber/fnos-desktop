@@ -1,0 +1,12 @@
+{
+    "data-share": {
+        "shares": [
+            {
+                "name": "zdy",
+                "permission": {
+                    "rw": ["zdy"]
+                }
+            }
+        ]
+    }
+}

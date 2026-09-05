@@ -1,0 +1,3 @@
+#!/bin/bash
+# ZDY 生命周期回调
+exit 0

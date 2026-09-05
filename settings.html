@@ -314,6 +314,46 @@
       </div>
     </section>
 
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="section-icon">⚡</span>
+        <h2>增强服务（ZDY 插件）</h2>
+      </div>
+      <p class="section-desc">
+        填写飞牛 NAS 上 ZDY 增强插件的地址与授权码后，在线弹幕、在线字幕、跳过片头片尾将优先由家中 NAS 的增强服务提供（内网更快、规避外网风控）。留空或连接失败时自动回退到客户端内置源。地址格式例如 <code>http://192.168.1.10:34510</code>。
+      </p>
+
+      <div class="field" style="margin-top:12px">
+        <label>启用增强服务</label>
+        <div class="glass-select" data-select="zdy-enabled" data-value="0" tabindex="0" style="width:100%">
+          <div class="glass-select-value">关闭（使用客户端内置源）</div>
+          <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="glass-select-menu">
+            <div class="glass-select-option" data-value="1">开启（弹幕/字幕/片头片尾走 NAS 增强服务）</div>
+            <div class="glass-select-option" data-value="0">关闭（使用客户端内置源）</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:12px">
+        <label>ZDY 服务地址</label>
+        <input type="text" id="zdy-url" class="lock-input" placeholder="http://192.168.1.10:34510" autocomplete="off" spellcheck="false" />
+      </div>
+
+      <div class="field" style="margin-top:12px">
+        <label>授权码</label>
+        <input type="password" id="zdy-token" class="lock-input" placeholder="ZDY 插件界面显示的授权码" autocomplete="off" spellcheck="false" />
+      </div>
+
+      <div id="zdy-status" style="margin-top:8px;font-size:13px;opacity:.85"></div>
+      <div id="zdy-error" class="lock-error" hidden style="margin-top:10px"></div>
+
+      <div class="setup-actions" style="margin-top:14px">
+        <button type="button" class="btn-ghost" id="zdy-test">测试连接</button>
+        <button type="button" class="btn-primary" id="zdy-save">保存增强服务设置</button>
+      </div>
+    </section>
+
     <div class="setup-actions" style="margin-top:14px">
       <button type="button" class="btn-ghost" id="btn-close">关闭</button>
     </div>

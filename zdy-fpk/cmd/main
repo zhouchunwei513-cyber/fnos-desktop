@@ -1,0 +1,97 @@
+#!/bin/bash
+# ZDY 增强插件生命周期脚本：启动/停止/状态
+# fnOS 运行时注入：TRIM_APPDEST / TRIM_PKGVAR / TRIM_SERVICE_PORT / TRIM_TEMP_LOGFILE
+
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+DATA_DIR="${TRIM_PKGVAR}/data"
+mkdir -p "${DATA_DIR}" 2>/dev/null
+
+pick_node() {
+    if command -v node >/dev/null 2>&1; then command -v node; return 0; fi
+    for v in nodejs_v22 nodejs_v20 nodejs_v18 nodejs_v16; do
+        local p="/var/apps/${v}/target/bin/node"
+        if [ -x "$p" ]; then echo "$p"; return 0; fi
+    done
+    return 1
+}
+
+NODE_BIN="$(pick_node)"
+SERVER_JS="${TRIM_APPDEST}/server/main.js"
+SERVICE_PORT="${TRIM_SERVICE_PORT:-34510}"
+
+log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}" 2>/dev/null; }
+
+port_listening() {
+    if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | grep -qE "[:.]${SERVICE_PORT}[[:space:]]" && return 0; fi
+    if command -v netstat >/dev/null 2>&1; then netstat -ltn 2>/dev/null | grep -qE "[:.]${SERVICE_PORT}[[:space:]]" && return 0; fi
+    (exec 3<>"/dev/tcp/127.0.0.1/${SERVICE_PORT}") 2>/dev/null && { exec 3>&-; return 0; }
+    return 1
+}
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        local pid; pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if kill -0 "${pid}" 2>/dev/null; then return 0; fi
+        rm -f "${PID_FILE}"
+    fi
+    return 1
+}
+
+start_process() {
+    if status; then log_msg "already running"; return 0; fi
+    if [ -z "${NODE_BIN}" ]; then
+        echo "未找到 Node.js，请先在飞牛应用中心安装 Node.js（nodejs_v18+）" > "${TRIM_TEMP_LOGFILE}"
+        return 1
+    fi
+    log_msg "Starting ZDY node=${NODE_BIN} port=${SERVICE_PORT}"
+    nohup bash -c '
+        NODE_BIN="$1"; SERVER_JS="$2"; LOG_FILE="$3"; DATA_DIR="$4"; SERVICE_PORT="$5"
+        while true; do
+            echo "$(date "+%Y-%m-%d %H:%M:%S") - [guard] spawn node" >> "$LOG_FILE"
+            DATA_DIR="$DATA_DIR" TRIM_SERVICE_PORT="$SERVICE_PORT" FPK_SERVICE_PORT="$SERVICE_PORT" PORT="$SERVICE_PORT" \
+                "$NODE_BIN" "$SERVER_JS" >> "$LOG_FILE" 2>&1
+            echo "$(date "+%Y-%m-%d %H:%M:%S") - [guard] node exited, restart in 3s" >> "$LOG_FILE"
+            sleep 3
+        done
+    ' _ "${NODE_BIN}" "${SERVER_JS}" "${LOG_FILE}" "${DATA_DIR}" "${SERVICE_PORT}" >> "${LOG_FILE}" 2>&1 &
+    GUARD_PID=$!
+    echo "${GUARD_PID}" > "${PID_FILE}"
+    local i=0
+    while [ $i -lt 15 ]; do
+        sleep 1; i=$((i + 1))
+        if port_listening; then log_msg "ZDY listening on ${SERVICE_PORT} (guard ${GUARD_PID})"; return 0; fi
+        if ! kill -0 "${GUARD_PID}" 2>/dev/null; then
+            echo "服务启动失败，详见日志：${LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
+            tail -n 20 "${LOG_FILE}" 2>/dev/null >> "${TRIM_TEMP_LOGFILE}"
+            rm -f "${PID_FILE}"; return 1
+        fi
+    done
+    if kill -0 "${GUARD_PID}" 2>/dev/null; then return 0; fi
+    echo "启动超时，详见日志：${LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
+    tail -n 20 "${LOG_FILE}" 2>/dev/null >> "${TRIM_TEMP_LOGFILE}"
+    rm -f "${PID_FILE}"; return 1
+}
+
+stop_process() {
+    log_msg "Stopping ZDY ..."
+    if [ -r "${PID_FILE}" ]; then
+        local pid; pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -TERM "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null
+            local c=0
+            while kill -0 "${pid}" 2>/dev/null && [ $c -lt 8 ]; do sleep 1; c=$((c + 1)); done
+            if kill -0 "${pid}" 2>/dev/null; then kill -KILL "-${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null; fi
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    pkill -f "${SERVER_JS}" 2>/dev/null
+    return 0
+}
+
+case $1 in
+    start)  start_process ;;
+    stop)   stop_process ;;
+    status) if status; then exit 0; else exit 3; fi ;;
+    *)      exit 1 ;;
+esac

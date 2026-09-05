@@ -28,3 +28,7 @@ Thumbs.db
 mpv/*.exe
 mpv/*.dll
 mpv/*.com
+
+# ZDY fpk 构建产物
+zdy-fpk/dist/
+zdy-fpk/app.tgz

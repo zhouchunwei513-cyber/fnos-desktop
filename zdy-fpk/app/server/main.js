@@ -106,15 +106,46 @@ function isAdmin(req, url) {
   return false;
 }
 
-// 简单内存缓存（5 分钟）
+// 内存缓存（5 分钟）+ 磁盘持久化缓存（弹幕/字幕搜索结果 7 天，弹幕内容 30 天）。
+// 作用：客户端再次打开同一部影片时直接命中本地缓存秒返回，不必重新访问外网，
+//       既快又稳定（也规避数据中心/家庭网络对弹幕站点的临时限流）。
 const CACHE = new Map();
+const MEM_TTL = 5 * 60 * 1000;
 function cacheGet(key) {
   const hit = CACHE.get(key);
-  if (hit && Date.now() - hit.t < 5 * 60 * 1000) return hit.v;
+  if (hit && Date.now() - hit.t < MEM_TTL) return hit.v;
   if (hit) CACHE.delete(key);
   return null;
 }
 function cacheSet(key, v) { CACHE.set(key, { t: Date.now(), v }); }
+
+const DISK_CACHE_DIR = path.join(DATA_DIR, 'cache');
+try { fs.mkdirSync(DISK_CACHE_DIR, { recursive: true }); } catch (e) {}
+function _diskPath(key) {
+  const h = crypto.createHash('md5').update(String(key)).digest('hex');
+  return path.join(DISK_CACHE_DIR, h + '.json');
+}
+// ttlMs: 磁盘有效期
+function diskGet(key, ttlMs) {
+  try {
+    const p = _diskPath(key);
+    if (!fs.existsSync(p)) return null;
+    const st = fs.statSync(p);
+    if (Date.now() - st.mtimeMs > ttlMs) return null;
+    const obj = JSON.parse(fs.readFileSync(p, 'utf8'));
+    cacheSet(key, obj); // 回填内存
+    return obj;
+  } catch (e) { return null; }
+}
+function diskSet(key, v) {
+  try { cacheSet(key, v); fs.writeFileSync(_diskPath(key), JSON.stringify(v)); } catch (e) {}
+}
+// 先内存→再磁盘（按 ttl）
+function persistentGet(key, ttlMs) {
+  return cacheGet(key) || diskGet(key, ttlMs);
+}
+const TTL_SEARCH = 7 * 24 * 3600 * 1000;   // 搜索结果 7 天
+const TTL_DANMAKU = 30 * 24 * 3600 * 1000; // 弹幕内容 30 天
 
 function log(...a) {
   const msg = new Date().toISOString() + ' ' + a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
@@ -239,7 +270,7 @@ async function dandanDanmaku(episodeId, withRelated) {
           });
           conv(j.comments);
           (j.related || []).forEach((rel) => conv(rel.comments));
-          resolve(out);
+          resolve(sanitizeDanmaku(out));
         } catch (e) { reject(e); }
       });
     });
@@ -308,6 +339,31 @@ async function biliPagelist(bvid) {
   return (j.data || []).map((p) => ({ cid: p.cid, page: p.page, duration: p.duration || 0, part: p.part || '' }));
 }
 
+// 弹幕条目清洗：数据中心 IP 下 seg.so/XML 可能被风控，粗解析会产出 time 天文数字、
+// mode/color 越界的脏数据。这里只保留时间在 [0, 12h]、mode 1~9、color 0~0xFFFFFF、文本非空的条目。
+// 若脏数据占比过高（说明整体解析错位），返回空数组，宁可不显示也不上花屏乱码弹幕。
+function sanitizeDanmaku(list) {
+  if (!Array.isArray(list)) return [];
+  const good = [];
+  for (const c of list) {
+    const t = Number(c && c.time);
+    const mode = parseInt(c && c.mode, 10);
+    const color = parseInt(c && c.color, 10);
+    const text = String((c && c.text) || '').trim();
+    if (!isFinite(t) || t < 0 || t > 12 * 3600) continue;
+    if (!mode || mode < 1 || mode > 9) continue;
+    if (!isFinite(color) || color < 0 || color > 0xFFFFFF) continue;
+    if (!text || text.length > 200) continue;
+    good.push({ time: t, mode: mode > 6 ? 1 : mode, color, text });
+  }
+  // 若清洗后存活率 < 30% 且原始条目不少，视为整体解析错位（风控/空响应被误解析），丢弃
+  if (list.length >= 20 && good.length < list.length * 0.3) {
+    log('danmaku sanitize: discard low-yield parse', { total: list.length, good: good.length });
+    return [];
+  }
+  return good;
+}
+
 async function biliDanmaku(cid) {
   // 优先历史 XML 接口（无需登录、稳定），失败回退 seg.so
   try {
@@ -324,14 +380,15 @@ async function biliDanmaku(cid) {
         text: m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
       });
     }
-    if (out.length) return out;
+    const clean = sanitizeDanmaku(out);
+    if (clean.length) return clean;
   } catch (e) {}
   // seg.so 回退（粗解析 protobuf 文本字段）
   try {
     const cidNum = parseInt(String(cid).replace(/^cid=/, ''), 10) || cid;
     const buvid = crypto.randomBytes(8).toString('hex') + crypto.randomBytes(8).toString('hex');
     const buf = await httpGet('https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=' + cidNum + '&segment_index=1', { 'User-Agent': UA, 'Referer': 'https://www.bilibili.com/', 'Cookie': 'buvid3=' + buvid }, 0, true);
-    return parseSegDanmaku(buf);
+    return sanitizeDanmaku(parseSegDanmaku(buf));
   } catch (e) { return []; }
 }
 
@@ -387,7 +444,41 @@ function stripHtml(s) {
   return String(s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&#?\w+;/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// 提取核心片名：去年份/季集/分辨率/编码/来源等噪声，用于字幕相关性匹配，
+// 避免把同名不同作品、花絮预告、合集等字幕当成正片字幕。
+function coreTitleOf(t) {
+  return String(t || '')
+    .replace(/[（(【\[].*?[)）】\]]/g, ' ')
+    .replace(/\b(19|20)\d{2}\b/gi, ' ')
+    .replace(/\bS\d{1,2}\s*[-x~]?\s*E?\d{0,3}\b/gi, ' ')
+    .replace(/第\s*\d+\s*[季集期部]/g, ' ')
+    .replace(/\b\d{3,4}p\b|\b[248]k\b/gi, ' ')
+    .replace(/web[ -]?dl|webrip|bluray|bdrip|hdrip|dvdrip|x264|x265|h\.?264|h\.?265|hevc|aac|ac3|mp3|10bit|hdr|remux|proper/gi, ' ')
+    .replace(/[\s._\-—·,，、]+/g, '')
+    .trim();
+}
+
+// 字幕条目相关性评分：核心片名必须命中；简体/正片优先；花絮预告降权。
+function scoreSubtitle(name, core) {
+  const n = coreTitleOf(name);
+  let score = 0;
+  if (core && n) {
+    if (n.includes(core) || core.includes(n)) score += 50;
+    else score -= 100; // 核心片名对不上，基本是别的影片
+  }
+  // 语言：简体/中英优先
+  if (/简体|简英|中英|双语|GB2312|GBK/i.test(name)) score += 20;
+  else if (/繁体|繁體|港台|Big5/i.test(name)) score += 5;
+  else if (/english|英文/i.test(name)) score -= 5;
+  // 非正片内容降权
+  if (/花絮|预告|特辑|彩蛋|制作|幕后|访谈|综艺|动画版|电视剧版|舞台剧|纪录片|合集|删减|加长版/.test(name) && !/花絮|预告|纪录片/.test(core)) score -= 60;
+  // 名称越接近纯核心片名越可能是正片主字幕
+  if (core && n) score -= Math.abs(n.length - core.length) * 0.5;
+  return score;
+}
+
 async function searchAssrt(title) {
+  const core = coreTitleOf(title);
   const h = await httpGet('https://assrt.net/sub/?searchword=' + encodeURIComponent(title), { 'User-Agent': UA, 'Referer': 'https://assrt.net/', 'Accept-Language': 'zh-CN' });
   const links = [];
   const seen = {};
@@ -395,26 +486,32 @@ async function searchAssrt(title) {
   const re = /href="(\/xml\/sub\/\d+\/\d+\.xml)"[^>]*>([\s\S]*?)<\/a>/g;
   while ((m = re.exec(h)) !== null) {
     if (!seen[m[1]]) { seen[m[1]] = 1; links.push({ detailUrl: 'https://assrt.net' + m[1], name: stripHtml(m[2]) || title }); }
-    if (links.length >= 12) break;
+    if (links.length >= 15) break;
   }
-  const out = [];
+  const scored = [];
   for (const it of links) {
     try {
       const dh = await httpGet(it.detailUrl, { 'User-Agent': UA, 'Referer': 'https://assrt.net/' });
       const zip = dh.match(/\/download\/\d+\/[^"'\s]*?\.zip/i);
       if (!zip) continue; // 网盘外链/需积分 rar 跳过
       const name = stripHtml((dh.match(/<title>([^<]+)<\/title>/) || [])[1]) || it.name;
-      out.push({
+      const lang = /简体|简英|中英|双语|GB2312|GBK/i.test(name) ? '简' : (/繁体|繁體|Big5/i.test(name) ? '繁' : '中');
+      scored.push({
         source: 'assrt',
         id: 'assrt_' + (it.detailUrl.match(/\/(\d+)\.xml/) || [])[1],
         name: name.slice(0, 80),
-        lang: /简|中英|GB/.test(dh) ? '简' : (/繁|Big5/.test(dh) ? '繁' : '中'),
+        lang,
+        score: scoreSubtitle(name, core),
         downloadUrl: 'https://assrt.net' + zip[0].replace(/&amp;/g, '&'),
         referer: 'https://assrt.net/',
       });
     } catch (e) {}
   }
-  return out;
+  // 相关性排序，丢弃核心片名不符的条目
+  return scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(({ score, ...rest }) => rest);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +573,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.1.0' });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.2.0' });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {
@@ -554,52 +651,64 @@ const server = http.createServer(async (req, res) => {
   try {
     const body = req.method === 'POST' ? await readBody(req) : {};
 
-    // 弹幕搜索
+    // 弹幕搜索（内存+磁盘持久化缓存，TTL 7 天；再次打开同片秒返回）
     if (route === '/danmaku/search') {
       const kw = body.keyword || body.title || body.filename || '';
       log('danmaku search', kw);
-      let results = [];
-      // 弹弹play 优先
-      try { results = await dandanSearch(kw); } catch (e) { log('dandan search fail', e.message); }
-      // B站兜底
-      if ((!results.length) && config.enableBiliFallback) {
-        try { results = await biliSearch(kw); } catch (e) { log('bili search fail', e.message); }
+      const ck = 'dmsearch_' + String(kw).replace(/\s+/g, '').toLowerCase();
+      let results = persistentGet(ck, TTL_SEARCH);
+      let cached = !!results;
+      if (!results) {
+        results = [];
+        // 弹弹play 优先
+        try { results = await dandanSearch(kw); } catch (e) { log('dandan search fail', e.message); }
+        // B站兜底
+        if ((!results.length) && config.enableBiliFallback) {
+          try { results = await biliSearch(kw); } catch (e) { log('bili search fail', e.message); }
+        }
+        if (results.length) diskSet(ck, results);
       }
-      return sendJson(res, 200, { ok: true, results });
+      return sendJson(res, 200, { ok: true, results, cached });
     }
 
-    // 弹幕下载
+    // 弹幕下载（内容缓存 30 天，按 episodeId/cid 唯一）
     if (route === '/danmaku/download') {
       const item = body.item || body;
-      log('danmaku download', item.source, item.episodeId || item.bvid);
-      let comments = [];
-      if (item.source === 'dandanplay' || item.episodeId) {
-        try { comments = await dandanDanmaku(item.episodeId, true); } catch (e) { log('dandan dm fail', e.message); }
+      const uid = 'dmdl_' + (item.episodeId || item.cid || item.bvid || '');
+      log('danmaku download', item.source, item.episodeId || item.bvid, item.cid);
+      let cached = persistentGet(uid, TTL_DANMAKU);
+      let comments = cached || [];
+      if (!comments.length) {
+        if (item.source === 'dandanplay' || item.episodeId) {
+          try { comments = await dandanDanmaku(item.episodeId, true); } catch (e) { log('dandan dm fail', e.message); }
+        }
+        if ((!comments.length) && (item.bvid || item.cid)) {
+          try {
+            let cid = item.cid;
+            if (!cid && item.bvid) {
+              const pages = await biliPagelist(item.bvid);
+              cid = (pages.sort((a, b) => (b.duration || 0) - (a.duration || 0))[0] || {}).cid;
+            }
+            if (cid) comments = await biliDanmaku(cid);
+          } catch (e) { log('bili dm fail', e.message); }
+        }
+        if (comments.length) diskSet(uid, comments);
       }
-      if ((!comments.length) && (item.bvid || item.cid)) {
-        try {
-          let cid = item.cid;
-          if (!cid && item.bvid) {
-            const pages = await biliPagelist(item.bvid);
-            cid = (pages.sort((a, b) => (b.duration || 0) - (a.duration || 0))[0] || {}).cid;
-          }
-          if (cid) comments = await biliDanmaku(cid);
-        } catch (e) { log('bili dm fail', e.message); }
-      }
-      return sendJson(res, 200, { ok: comments.length > 0, count: comments.length, comments });
+      return sendJson(res, 200, { ok: comments.length > 0, count: comments.length, comments, cached: !!cached });
     }
 
-    // 字幕搜索
+    // 字幕搜索（持久化缓存 7 天）
     if (route === '/subtitle/search') {
       const title = body.title || body.filename || body.query || body.keyword || '';
       log('subtitle search', title);
-      const ck = 'sub_' + title;
-      let results = cacheGet(ck);
+      const ck = 'sub_' + String(title).replace(/\s+/g, '').toLowerCase();
+      let results = persistentGet(ck, TTL_SEARCH);
+      let cached = !!results;
       if (!results) {
         try { results = await searchAssrt(title); } catch (e) { log('assrt fail', e.message); results = []; }
-        cacheSet(ck, results);
+        if (results.length) diskSet(ck, results);
       }
-      return sendJson(res, 200, { ok: true, results });
+      return sendJson(res, 200, { ok: true, results, cached });
     }
 
     // 字幕下载（返回 zip 流）

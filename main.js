@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.34.1';
+const APP_VERSION = '1.35.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3340,18 +3340,30 @@ ipcMain.handle('settings:enhance-ping', async (_e, cfg) => {
     const token = String(cfg && cfg.token || '').trim();
     if (!baseUrl) return { ok: false, error: '服务地址为空' };
     const url = baseUrl + '/ping?token=' + encodeURIComponent(token || 'x');
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 6000);
-    const resp = await fetch(url, { signal: ctrl.signal, headers: { Accept: 'application/json' } });
-    clearTimeout(timer);
-    const text = await resp.text();
+    const ping = await new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const timer = setTimeout(() => done({ status: 0, body: '' }), 6000);
+      let u;
+      try { u = new URL(url); } catch (_) { clearTimeout(timer); return done({ status: -1, body: '' }); }
+      const lib = u.protocol === 'https:' ? require('https') : require('http');
+      const req = lib.get(url, { headers: { Accept: 'application/json' }, timeout: 6000 }, (res) => {
+        const ch = [];
+        res.on('data', (c) => ch.push(c));
+        res.on('end', () => { clearTimeout(timer); done({ status: res.statusCode, body: Buffer.concat(ch).toString('utf8') }); });
+      });
+      req.on('timeout', () => { req.destroy(new Error('timeout')); });
+      req.on('error', (err) => { clearTimeout(timer); done({ status: 0, body: '', err: err.message }); });
+    });
+    if (ping.status === -1) return { ok: false, error: '服务地址格式不正确' };
+    if (ping.status === 0) return { ok: false, error: ping.err === 'timeout' ? '连接超时（无法访问该地址）' : ('无法访问：' + (ping.err || '网络错误')) };
     let data = {};
-    try { data = JSON.parse(text); } catch (_) {}
-    if (resp.status === 401 || data.unauthorized) return { ok: false, error: '授权码错误或未填写' };
-    if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
+    try { data = JSON.parse(ping.body || '{}'); } catch (_) {}
+    if (ping.status === 401 || data.unauthorized) return { ok: false, error: '授权码错误或未填写' };
+    if (ping.status !== 200) return { ok: false, error: 'HTTP ' + ping.status };
     return { ok: true, version: data.version || '', note: data.note || '', enhance: true };
   } catch (e) {
-    return { ok: false, error: /abort/i.test(e.message) ? '连接超时' : (e.message || '无法访问') };
+    return { ok: false, error: e.message || '无法访问' };
   }
 });
 

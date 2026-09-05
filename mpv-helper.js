@@ -84,10 +84,55 @@ function enhanceFetch(routePath, bodyObj) {
         });
       }
     );
-    req.on('error', (e) => { clearTimeout(timer); try { console.log('[mpv-helper] ZDY 连接失败, 回退内置源:', e.message); } catch (_) {} resolve(null); });
+    req.on('error', (e) => { clearTimeout(timer); try { console.log('[mpv-helper] ZDY 连接失败:', e.message); } catch (_) {} resolve({ __error: '无法连接 ZDY 增强服务：' + e.message }); });
     req.write(payload);
     req.end();
   });
+}
+
+// 二进制（zip/gz 字幕包）版 ZDY 请求：返回 Buffer。客户端零外网请求，字幕 zip 由 NAS 下载后回传。
+function enhanceFetchBuffer(routePath, bodyObj) {
+  return new Promise((resolve, reject) => {
+    const cfg = getEnhanceConfig();
+    if (!cfg || !cfg.enabled || !cfg.baseUrl) return reject(new Error('未启用 ZDY 增强服务'));
+    let urlObj;
+    try { urlObj = new URL(routePath, cfg.baseUrl.replace(/\/+$/, '') + '/'); } catch (_) { return reject(new Error('ZDY 地址非法')); }
+    if (cfg.authCode) urlObj.searchParams.set('token', cfg.authCode);
+    const payload = Buffer.from(JSON.stringify(bodyObj || {}), 'utf8');
+    const lib = urlObj.protocol === 'http:' ? http : https;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 30000);
+    const req = lib.request(
+      { hostname: urlObj.hostname, port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80), path: urlObj.pathname + urlObj.search, method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': payload.length, 'Authorization': 'Bearer ' + (cfg.authCode || '') }, signal: ctrl.signal },
+      (resp) => {
+        if (resp.statusCode === 401) { clearTimeout(timer); res_err(resp, '授权码错误'); return; }
+        if (resp.statusCode !== 200) { clearTimeout(timer); resp.resume(); return reject(new Error('ZDY 字幕下载 HTTP ' + resp.statusCode)); }
+        const ch = [];
+        resp.on('data', (c) => ch.push(c));
+        resp.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(ch)); });
+      }
+    );
+    function res_err(resp, msg) { resp.resume(); reject(new Error(msg)); }
+    req.on('error', (e) => { clearTimeout(timer); reject(new Error('无法连接 ZDY：' + e.message)); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// 弹幕/字幕/片头片尾【仅】使用 ZDY 增强服务（不再回退客户端内置源）。
+// 返回 { ok:false, error } 表示不可用及原因；返回 ZDY 响应对象表示成功。
+async function requireZdy(routePath, bodyObj) {
+  const cfg = getEnhanceConfig();
+  if (!cfg || !cfg.enabled || !cfg.baseUrl) {
+    return { ok: false, error: '未启用 ZDY 增强服务：请在客户端「设置 → 增强服务」填写 NAS 服务地址并打开开关' };
+  }
+  let res;
+  try { res = await enhanceFetch(routePath, bodyObj); }
+  catch (e) { return { ok: false, error: 'ZDY 请求失败：' + (e && e.message) }; }
+  if (!res) return { ok: false, error: 'ZDY 增强服务无响应，请检查服务地址或稍后重试' };
+  if (res.__unauthorized) return { ok: false, error: '授权码错误：请在 ZDY 管理页核对授权码并重新填写' };
+  if (res.__error) return { ok: false, error: res.__error };
+  return res;
 }
 
 // 清洗片名，提升在线命中率：去掉扩展名、年份、分辨率、压制组、来源/编码、季集标记中的杂质
@@ -345,15 +390,15 @@ async function downloadSubtitle(item) {
   if (!/^https?:\/\//i.test(url)) throw new Error('缺少字幕下载地址');
   const dir = getSubtitleCacheDir();
   const stamp = Date.now() + '-' + crypto.randomBytes(3).toString('hex');
-  // 按下载域名带 Referer/UA：assrt.net 直链需带站点 Referer，否则可能返回错误页
-  const dlHeaders = { 'Accept-Encoding': 'gzip', 'User-Agent': ASSRT_HEADERS['User-Agent'] };
+  // 客户端零外网请求：字幕 zip 一律经 ZDY（NAS 端，内网/外网三网自适应）下载后回传二进制，
+  // 不在客户端直接连 assrt.net。ZDY 的 /subtitle/download 按 downloadUrl 拉取并透传 zip 流。
+  let raw;
   try {
-    const u0 = new URL(url);
-    if (/assrt\.net$/i.test(u0.hostname) || u0.hostname.endsWith('.assrt.net')) {
-      dlHeaders['Referer'] = ASSRT_BASE + '/';
-    }
-  } catch (_) { /* 链接非法时下方会抛错 */ }
-  const raw = await httpGet(url, dlHeaders);
+    raw = await enhanceFetchBuffer('/subtitle/download', { downloadUrl: url, url, referer: item && item.referer });
+  } catch (e) {
+    throw new Error('字幕下载失败（经增强服务）：' + (e && e.message));
+  }
+  if (!raw || raw.length < 8) throw new Error('字幕包为空（可能需要积分/登录，换一条试试）');
   log('info', 'sub.download', { source: item && item.source, name: String(item && item.name || '').slice(0, 60), bytes: raw.length, head: raw.slice(0, 2).toString('hex') });
 
   let files = [];
@@ -743,14 +788,14 @@ function start() {
         if (route === '/subtitle/search') {
           const q = body.filename || body.title || body.query || body.keyword || '';
           log('info', 'sub.search.req', { raw: String(q).slice(0, 80), lang: body.lang || 'zh' });
-          // 优先 ZDY 增强服务
-          const zq = await enhanceFetch('/subtitle/search', { title: q, filename: q, lang: body.lang || 'zh' });
-          if (zq && zq.ok && Array.isArray(zq.results)) {
-            log('info', 'sub.search.zdy', { source: 'zdy', count: zq.results.length });
-            return sendJson(res, 200, { ok: true, results: zq.results, source: 'zdy' });
+          // 弹幕/字幕/片头片尾仅使用 ZDY 增强服务，不再回退内置源
+          const zr = await requireZdy('/subtitle/search', { title: q, filename: q, lang: body.lang || 'zh' });
+          if (zr.ok && Array.isArray(zr.results)) {
+            log('info', 'sub.search.zdy', { count: zr.results.length });
+            return sendJson(res, 200, { ok: true, results: zr.results, source: 'zdy' });
           }
-          const list = await searchOnlineSubtitle(q, body.lang || 'zh');
-          return sendJson(res, 200, { ok: true, results: list, source: 'builtin' });
+          log('warn', 'sub.search.fail', { error: zr.error });
+          return sendJson(res, 200, { ok: false, results: [], error: zr.error || '字幕服务不可用' });
         }
         if (route === '/subtitle/download') {
           const r = await downloadSubtitle(body.item || {});
@@ -778,40 +823,44 @@ function start() {
           return sendJson(res, 200, r || { ok: false, error: '无结果', pip: false });
         }
         if (route === '/danmaku/search') {
-          const kw = body.keyword || body.filename || body.query || '';
-          // 优先 ZDY 增强服务（弹弹play 等家中 NAS 网络源）
-          const zq = await enhanceFetch('/danmaku/search', { keyword: kw, filename: body.filename || kw });
-          if (zq && zq.ok && Array.isArray(zq.results)) {
-            log('info', 'danmaku.search.zdy', { source: 'zdy', count: zq.results.length });
-            return sendJson(res, 200, { ok: true, results: zq.results, source: 'zdy' });
+          const kw = body.keyword || body.filename || body.query || body.title || '';
+          // 弹幕仅使用 ZDY 增强服务
+          const zr = await requireZdy('/danmaku/search', { keyword: kw, filename: body.filename || kw, title: body.title || kw });
+          if (zr.ok && Array.isArray(zr.results)) {
+            log('info', 'danmaku.search.zdy', { count: zr.results.length });
+            return sendJson(res, 200, { ok: true, results: zr.results, source: 'zdy' });
           }
-          const list = await danmakuSearch(kw);
-          return sendJson(res, 200, { ok: true, results: list, source: 'builtin' });
+          log('warn', 'danmaku.search.fail', { error: zr.error });
+          return sendJson(res, 200, { ok: false, results: [], error: zr.error || '弹幕服务不可用' });
         }
         if (route === '/danmaku/download') {
-          const cid = body.cid || body.id;
-          // ZDY 来源的弹幕项带 source:'zdy'，走 NAS 下载
-          if (body.source === 'zdy' || (body.item && body.item.source === 'zdy') || String(body.episodeId || '').length) {
-            const zr = await enhanceFetch('/danmaku/download', { cid, id: body.id, episodeId: body.episodeId, title: body.title, filename: body.filename });
-            if (zr && zr.ok && Array.isArray(zr.danmaku) && zr.danmaku.length) {
-              log('info', 'danmaku.download.zdy', { count: zr.danmaku.length });
-              await pushDanmakuToMpv(zr.danmaku, cid || body.id);
-              return sendJson(res, 200, { ok: true, count: zr.danmaku.length, source: 'zdy' });
-            }
+          // 弹幕仅使用 ZDY 增强服务。ZDY 的 /danmaku/download 需要完整条目对象
+          // （source/bvid/episodeId/cid 等），因此把客户端传来的 item 或平铺字段原样透传。
+          const item = body.item || {
+            source: body.source, bvid: body.bvid, aid: body.aid, cid: body.cid || body.id,
+            id: body.id, episodeId: body.episodeId, animeId: body.animeId,
+            title: body.title, filename: body.filename,
+          };
+          const zr = await requireZdy('/danmaku/download', item);
+          // ZDY 返回字段名为 comments（与内置 danmaku 字段都兼容）
+          const list = (zr && Array.isArray(zr.comments) && zr.comments) || (zr && Array.isArray(zr.danmaku) && zr.danmaku) || [];
+          if (zr && zr.ok && list.length) {
+            log('info', 'danmaku.download.zdy', { count: list.length, cached: !!zr.cached });
+            await pushDanmakuToMpv(list, item.cid || item.episodeId || item.bvid || 'zdy');
+            return sendJson(res, 200, { ok: true, count: list.length, source: 'zdy', cached: !!zr.cached });
           }
-          const r = await danmakuDownload(cid);
-          if (r.ok && r.danmaku && r.danmaku.length) {
-            await pushDanmakuToMpv(r.danmaku, cid);
-          }
-          return sendJson(res, 200, { ok: r.ok, count: r.count, source: 'builtin' });
+          log('warn', 'danmaku.download.fail', { error: zr && zr.error });
+          return sendJson(res, 200, { ok: false, count: 0, error: (zr && zr.error) || '弹幕加载失败' });
         }
-        // 跳过片头片尾时间戳（优先 ZDY）
+        // 跳过片头片尾时间戳（仅使用 ZDY）
         if (route === '/skip/timestamps') {
-          const zr = await enhanceFetch('/skip/timestamps', { title: body.title || '', filename: body.filename || '', duration: body.duration || 0 });
-          if (zr && zr.ok) {
-            return sendJson(res, 200, { ok: true, introStart: zr.introStart, introEnd: zr.introEnd, creditsStart: zr.creditsStart, source: 'zdy' });
+          const zr = await requireZdy('/skip/timestamps', { title: body.title || '', filename: body.filename || '', duration: body.duration || 0, season: body.season || 0, episode: body.episode || 0 });
+          if (zr.ok) {
+            // ZDY 字段为 outroStart（片尾开始），兼容 creditsStart 两种命名
+            const creditsStart = zr.creditsStart != null ? zr.creditsStart : zr.outroStart;
+            return sendJson(res, 200, { ok: true, introStart: zr.introStart, introEnd: zr.introEnd, creditsStart, outroStart: zr.outroStart, source: 'zdy' });
           }
-          return sendJson(res, 200, { ok: true, introStart: null, introEnd: null, creditsStart: null, source: 'builtin' });
+          return sendJson(res, 200, { ok: false, introStart: null, introEnd: null, creditsStart: null, error: zr.error || '片头片尾服务不可用' });
         }
         return sendJson(res, 404, { ok: false, error: 'not found' });
       } catch (e) {

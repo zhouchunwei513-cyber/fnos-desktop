@@ -450,20 +450,15 @@
   const zdyToken = document.getElementById('zdy-token');
   const zdySave = document.getElementById('zdy-save');
   const zdyTest = document.getElementById('zdy-test');
-  const zdyError = document.getElementById('zdy-error');
   const zdyStatus = document.getElementById('zdy-status');
-  const zdySel = document.querySelector('[data-select="zdy-enabled"]');
+  const zdyEnabled = document.getElementById('zdy-enabled');
+  const zdyEnabledLabel = document.getElementById('zdy-enabled-label');
 
-  function setZdyEnabledSel(on) {
-    if (!zdySel) return;
-    zdySel.setAttribute('data-value', on ? '1' : '0');
-    const v = zdySel.querySelector('.glass-select-value');
-    if (v) v.textContent = on ? '开启（弹幕/字幕/片头片尾走 NAS 增强服务）' : '关闭（使用客户端内置源）';
+  function setZdyEnabled(on) {
+    if (zdyEnabled) zdyEnabled.checked = !!on;
+    if (zdyEnabledLabel) zdyEnabledLabel.textContent = on ? '已启用' : '已关闭';
   }
-  // 下拉选项点击
-  document.querySelectorAll('[data-select="zdy-enabled"] .glass-select-option').forEach((op) => {
-    op.addEventListener('click', () => setZdyEnabledSel(op.getAttribute('data-value') === '1'));
-  });
+  if (zdyEnabled) zdyEnabled.addEventListener('change', () => setZdyEnabled(zdyEnabled.checked));
 
   function setZdyStatus(ok, msg) {
     if (!zdyStatus) return;
@@ -477,14 +472,14 @@
       const e = info?.enhance || {};
       if (zdyUrl) zdyUrl.value = e.baseUrl || '';
       if (zdyToken) zdyToken.value = e.authCode || '';
-      setZdyEnabledSel(!!e.enabled);
-      if (e.enabled && e.baseUrl) setZdyStatus(null, '已启用增强服务（保存并重启 MPV 后生效）');
+      setZdyEnabled(!!e.enabled);
+      if (e.enabled && e.baseUrl) setZdyStatus(null, '已启用增强服务（保存后生效）');
     } catch (_) {}
   }
 
   function readEnhance() {
     return {
-      enabled: zdySel ? zdySel.getAttribute('data-value') === '1' : false,
+      enabled: zdyEnabled ? !!zdyEnabled.checked : false,
       baseUrl: zdyUrl ? zdyUrl.value.trim().replace(/\/+$/, '') : '',
       authCode: zdyToken ? zdyToken.value.trim() : '',
     };
@@ -492,7 +487,6 @@
 
   if (zdyTest) {
     zdyTest.addEventListener('click', async () => {
-      showError(zdyError, '');
       setZdyStatus(null, '测试中…');
       zdyTest.disabled = true;
       try {
@@ -516,11 +510,11 @@
     zdySave.addEventListener('click', async () => {
       zdySave.disabled = true;
       zdySave.textContent = '保 存 中';
-      showError(zdyError, '');
+      setZdyStatus(null, '');
       try {
         const cfg = readEnhance();
         if (cfg.enabled && !cfg.baseUrl) {
-          showError(zdyError, '启用增强服务时必须填写服务地址');
+          setZdyStatus(false, '启用增强服务时必须填写服务地址');
           zdySave.disabled = false; zdySave.textContent = '保存增强服务设置'; return;
         }
         const res = await fnosSettings.setEnhance(cfg);
@@ -529,10 +523,10 @@
           setZdyStatus(cfg.enabled, cfg.enabled ? '增强服务已保存，下次播放生效' : '已关闭增强服务，使用内置源');
           setTimeout(() => { zdySave.textContent = '保存增强服务设置'; }, 1800);
         } else {
-          showError(zdyError, (res && res.error) || '保存失败');
+          setZdyStatus(false, (res && res.error) || '保存失败');
         }
       } catch (err) {
-        showError(zdyError, err?.message || '保存失败');
+        setZdyStatus(false, err?.message || '保存失败');
       } finally {
         zdySave.disabled = false;
       }

@@ -92,35 +92,35 @@ const CACHE_PRESETS = {
     'cache-pause-initial': 'no',  // 关键：不在起播时等待缓冲填满（直播缓存满是滞后主要原因）
     'cache-pause-wait': '0.5'
   },
-  standard: { // 均衡：约 32MB / 60s 预读
+  standard: { // 均衡：约 32MB / 60s 预读；起播不等待缓冲填满，首帧尽快出来（后台继续预读抗抖动）
     cache: 'yes',
-    'demuxer-max-bytes': '32MiB',
+    'demuxer-max-bytes': '48MiB',
     'demuxer-max-back-bytes': '16MiB',
     'demuxer-readahead-secs': '60',
     'cache-secs': '60',
     'cache-pause': 'yes',
-    'cache-pause-initial': 'yes',
-    'cache-pause-wait': '1.5'
+    'cache-pause-initial': 'no',   // 关键提速：起播不等待初始缓冲
+    'cache-pause-wait': '0.6'
   },
-  smooth: {   // 流畅优先：约 128MB / 120s 预读（4K/高码率推荐）
+  smooth: {   // 流畅优先：约 128MB / 120s 预读（4K/高码率推荐）；同样快速起播
     cache: 'yes',
-    'demuxer-max-bytes': '128MiB',
+    'demuxer-max-bytes': '160MiB',
     'demuxer-max-back-bytes': '48MiB',
     'demuxer-readahead-secs': '120',
     'cache-secs': '120',
     'cache-pause': 'yes',
-    'cache-pause-initial': 'yes',
-    'cache-pause-wait': '2'
+    'cache-pause-initial': 'no',   // 关键提速：起播不等待初始缓冲
+    'cache-pause-wait': '0.8'
   },
-  unlimited: { // 不限速、尽量多读
+  unlimited: { // 不限速、尽量多读；快速起播
     cache: 'yes',
     'demuxer-max-bytes': '512MiB',
     'demuxer-max-back-bytes': '128MiB',
     'demuxer-readahead-secs': '300',
     'cache-secs': '300',
     'cache-pause': 'yes',
-    'cache-pause-initial': 'yes',
-    'cache-pause-wait': '2'
+    'cache-pause-initial': 'no',
+    'cache-pause-wait': '0.8'
   }
 };
 

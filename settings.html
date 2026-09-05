@@ -323,30 +323,36 @@
         填写飞牛 NAS 上 ZDY 增强插件的地址与授权码后，在线弹幕、在线字幕、跳过片头片尾将优先由家中 NAS 的增强服务提供（内网更快、规避外网风控）。留空或连接失败时自动回退到客户端内置源。地址格式例如 <code>http://192.168.1.10:34510</code>。授权码在 NAS 的 ZDY 管理页里查看（管理页用管理密码登录，授权码用于本客户端开通服务，二者不同）。
       </p>
 
-      <div class="field" style="margin-top:12px">
-        <label>启用增强服务</label>
-        <div class="glass-select" data-select="zdy-enabled" data-value="0" tabindex="0" style="width:100%">
-          <div class="glass-select-value">关闭（使用客户端内置源）</div>
-          <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <div class="glass-select-menu">
-            <div class="glass-select-option" data-value="1">开启（弹幕/字幕/片头片尾走 NAS 增强服务）</div>
-            <div class="glass-select-option" data-value="0">关闭（使用客户端内置源）</div>
-          </div>
+      <div class="hotkey-row" style="margin-top:12px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">启用增强服务</div>
+          <div class="hotkey-sub">开启后弹幕/字幕/片头片尾优先走 NAS 增强服务；关闭或连接失败时自动回退客户端内置源</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center">
+          <label class="switch" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="zdy-enabled" />
+            <span id="zdy-enabled-label">已关闭</span>
+          </label>
         </div>
       </div>
 
-      <div class="field" style="margin-top:12px">
-        <label>ZDY 服务地址</label>
-        <input type="text" id="zdy-url" class="lock-input" placeholder="http://192.168.1.10:34510" autocomplete="off" spellcheck="false" />
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">ZDY 服务地址</div>
+          <div class="hotkey-sub">飞牛 NAS 上 ZDY 插件的地址，例如 http://192.168.1.10:34510</div>
+        </div>
+        <input type="text" id="zdy-url" class="hotkey-input glass-input" placeholder="http://192.168.1.10:34510" autocomplete="off" spellcheck="false" style="flex:0 0 320px;width:320px" />
       </div>
 
-      <div class="field" style="margin-top:12px">
-        <label>授权码</label>
-        <input type="password" id="zdy-token" class="lock-input" placeholder="ZDY 插件界面显示的授权码" autocomplete="off" spellcheck="false" />
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">授权码</div>
+          <div class="hotkey-sub">NAS 的 ZDY 管理页中显示的授权码（管理页用管理密码登录，授权码用于开通服务）</div>
+        </div>
+        <input type="text" id="zdy-token" class="hotkey-input glass-input" placeholder="ZDY-XXXXXXXXXXXX" autocomplete="off" spellcheck="false" style="flex:0 0 320px;width:320px" />
       </div>
 
-      <div id="zdy-status" style="margin-top:8px;font-size:13px;opacity:.85"></div>
-      <div id="zdy-error" class="lock-error" hidden style="margin-top:10px"></div>
+      <div id="zdy-status" style="margin-top:10px;font-size:13px;min-height:18px"></div>
 
       <div class="setup-actions" style="margin-top:14px">
         <button type="button" class="btn-ghost" id="zdy-test">测试连接</button>

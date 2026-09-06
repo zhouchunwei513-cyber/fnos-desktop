@@ -69,6 +69,12 @@ const BAD_TITLE = ['reaction', '反应', '杂谈', '吐槽', '解说', '盘点',
     '有声轻小说', '广播剧', '有声书', '有声小说',
     '一口气看完', '一口气蹲坑', '看完这', '解析', '精讲', '讲解', '速览', '合集', '总集'];
 
+// 「软非正片」词：不是纯二创，但时间轴/内容与正片错位（删减片段合集、英语学习搬运等）。
+// 不做硬剔除（硬删会把仅存的搬运源清零），只在排序时降权沉底。
+const SOFT_OFF_TITLE = ['删减', '删除片段', '被删', '片段大全', '删减片段', '白星版本',
+    '英语学习', '电影学英语', '学英语', '英语教学', '看电影学', '电影英语', '大字幕',
+    '马车', '吻', '船戏', '演员今昔', '今昔对比', '巧合', '为何沉没', '揭秘'];
+
 // 标题/分P名里常见的非识别性填充词，做相似度比较时剔除
 const _FILLER = ['高清', '1080p', '720p', '480p', '4k', '合集', '全集', '更新', '熟肉', '生肉',
     '字幕组', '官方', '独家', '番剧', '动画', '动漫', '国语', '日语', '中字', '双语',
@@ -555,15 +561,21 @@ async function search_video(title, ep_num, season_num) {
             const low = t.toLowerCase();
             return !BAD_TITLE.some((k) => low.indexOf(k) >= 0);
         });
-        function kind_of(t) {
-            if (ep_num && _ep_in_title(t, ep_num) && !_is_compilation_title(t)) return 0;
-            if (_is_compilation_title(t)) return 2;
+        function is_soft_off(t) {
+            const low = String(t).toLowerCase();
+            return SOFT_OFF_TITLE.some((k) => low.indexOf(k.toLowerCase()) >= 0);
+        }
+        // 排序档位：0=正片单集；1=普通搬运/不明；2=软非正片（删减片段/英语学习，沉底但不删除）；3=合集/解说
+        function rank_of(t) {
+            if (_is_compilation_title(t)) return 3;
+            if (is_soft_off(t)) return 2;
+            if (ep_num && _ep_in_title(t, ep_num)) return 0;
             return 1;
         }
-        const scored = filtered.map(([t, bvid, vr]) => [title_sim(title, t), kind_of(t), t, bvid, vr, parse_season_from_title(t)]);
+        const scored = filtered.map(([t, bvid, vr]) => [title_sim(title, t), rank_of(t), t, bvid, vr, parse_season_from_title(t)]);
         scored.sort((x, y) => (x[1] - y[1]) || (y[4] - x[4]) || (y[0] - x[0]));
         log(`[视频区]${label ? ' (' + label + ')' : ''} 候选 ${scored.length} 个, keyword="${keyword}", ep_num=${ep_num} season_num=${season_num || 0}`);
-        const tagmap = { 0: '[单集]', 1: '[不明]', 2: '[合集]' };
+        const tagmap = { 0: '[单集]', 1: '[不明]', 2: '[软非正片]', 3: '[合集]' };
         for (let i = 0; i < Math.min(scored.length, 8); i++) {
             const [sim, kind, t, bvid, vr, season] = scored[i];
             log(`[视频区]   候选[${i}]${tagmap[kind] || '?'} sim=${sim.toFixed(2)} season=${season} 弹幕=${vr} ${JSON.stringify(t)}`);
@@ -574,9 +586,9 @@ async function search_video(title, ep_num, season_num) {
             if (sim < VIDEO_SIM_FLOOR) continue;
             const cid = await cid_from_bvid(bvid, ep_num, t);
             if (cid) {
-                // [lc-469] 合集/解说类(kind=2 或命中 BAD_TITLE)标记 isCompilation：
-                // 不参与「首选/聚合优选」，避免电视剧兜底时误选「一口气看完全集」之类。
-                const isCompilation = (kind === 2) || BAD_TITLE.some((k) => t.toLowerCase().indexOf(k) >= 0);
+                // kind=3 合集/解说 或命中 BAD_TITLE → isCompilation（不参与首选/聚合）；
+                // kind=2 软非正片（删减/英语学习）也标记，避免误选为正片源，但保留在候选里。
+                const isCompilation = (kind >= 2) || BAD_TITLE.some((k) => t.toLowerCase().indexOf(k) >= 0);
                 const info = { source: 'video', bvid: bvid, sim: sim, season_match: isSeasonHit(season, season_num), isCompilation };
                 const tag = tagmap[kind] || '?';
                 const mark = sim >= SIM_LOW ? '' : ' [兜底]';

@@ -617,17 +617,18 @@ async function searchAssrt(title) {
     links.push({ detailUrl: 'https://assrt.net' + href, name });
     if (links.length >= 20) break;
   }
-  const scored = [];
-  for (const it of links) {
+  // 并发抓取详情页（原串行逐条抓，10+ 条在弱网下会超过客户端 45s 超时导致整批 0 结果）。
+  // 仅取前 12 条、单页 8s 超时，保证总耗时可控；rar（客户端仅能解 zip）直接跳过。
+  const picked = links.slice(0, 12);
+  const detailResults = await Promise.all(picked.map(async (it) => {
     try {
       const dh = await httpGet(it.detailUrl, { 'User-Agent': UA, 'Referer': 'https://assrt.net/' });
       const zip = dh.match(/\/download\/\d+\/[^"'\s]*?\.zip/i);
-      if (!zip) continue; // 网盘外链/需积分 rar 跳过
-      // 详情页 <title> 更准确；拿不到则用列表名
+      if (!zip) return null; // 网盘外链/rar（客户端仅 adm-zip 解 zip）跳过
       const detailName = stripHtml((dh.match(/<title>([^<]+)<\/title>/) || [])[1]) || it.name;
       const name = (detailName && detailName.length > 2 && !/下载|字幕下载|assrt/i.test(detailName.slice(0, 6))) ? detailName : it.name;
       const lang = /简体|简英|中英|双语|GB2312|GBK/i.test(name) ? '简' : (/繁体|繁體|Big5/i.test(name) ? '繁' : '中');
-      scored.push({
+      return {
         source: 'assrt',
         id: 'assrt_' + (it.detailUrl.match(/\/(\d+)\.xml/) || [])[1],
         name: name.slice(0, 80),
@@ -635,9 +636,10 @@ async function searchAssrt(title) {
         score: scoreSubtitle(name, core),
         downloadUrl: 'https://assrt.net' + zip[0].replace(/&amp;/g, '&'),
         referer: 'https://assrt.net/',
-      });
-    } catch (e) {}
-  }
+      };
+    } catch (e) { return null; }
+  }));
+  const scored = detailResults.filter(Boolean);
   // 相关性排序：丢弃核心片名严重不符（score < -50）的条目；若过滤后为空则退回全部（保证有结果）
   const good = scored.filter((s) => s.score > -50);
   const pool = good.length ? good : scored;
@@ -722,7 +724,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）：附带本机地址，方便客户端三通道填写
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.2', port: PORT, addrs: localAddrs() });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.3', port: PORT, addrs: localAddrs() });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {
@@ -875,6 +877,7 @@ const server = http.createServer(async (req, res) => {
               source: 'bilibili',
               title: c.title || kw,
               matched_title: c.title || kw,
+              keyword: kw, // 原始片名：下载时据此走智能匹配，避免直接用错误分段 cid
               bvid: c.bvid || '', cid: c.cid || '', id: c.cid || c.bvid || '',
               episodeId: 0,
               is_compilation: !!c.is_compilation,
@@ -912,12 +915,15 @@ const server = http.createServer(async (req, res) => {
         if (item.source === 'dandanplay' || item.episodeId) {
           try { comments = await dandanDanmaku(item.episodeId, true); } catch (e) { log('dandan dm fail', e.message); }
         }
-        // 成熟 B站模块：若带 title（自动/手动匹配），走番剧区+视频区 LCS 智能匹配直出弹幕
-        if (!comments.length && BILI && (item.title || item.keyword) && !item.cid) {
+        // B站源：优先走成熟模块智能匹配（番剧区+视频区 LCS + 时长/合集/季筛选），
+        // 用「原始片名 keyword」而不是候选标题，避免直接拿到合集 P1 删减片段那种错误 cid。
+        // 带 cid 的候选也不再绕过智能匹配——cid 可能只是多 P 视频的第一分段。
+        if (!comments.length && BILI && (item.keyword || item.title)) {
           try {
             const ep = parseInt(item.ep || item.episode || 0, 10) || 0;
             const season = parseInt(item.season || 0, 10) || 0;
-            const r = await BILI.runToMemory(String(item.title || item.keyword), ep, season, 1500);
+            const kw = String(item.keyword || item.title || '');
+            const r = await BILI.runToMemory(kw, ep, season, 1500);
             log('bili mature module:', r.ok ? ('ok count=' + r.danmaku_count + ' matched=' + r.matched_title) : ('fail ' + r.error));
             if (r.ok && r.comments && r.comments.length) {
               comments = r.comments;
@@ -925,13 +931,14 @@ const server = http.createServer(async (req, res) => {
             }
           } catch (e) { log('bili mature fail', e.message); }
         }
-        // 回退：已知 cid/bvid 的简易拉取
+        // 回退：智能匹配无果，再用已知 bvid/cid 直接拉（bvid 取时长最长分段）
         if (!comments.length && (item.bvid || item.cid)) {
           try {
             let cid = item.cid;
-            if (!cid && item.bvid) {
+            if (item.bvid) {
               const pages = await biliPagelist(item.bvid);
-              cid = (pages.sort((a, b) => (b.duration || 0) - (a.duration || 0))[0] || {}).cid;
+              // 多 P 视频取时长最长分段（正片段），而非默认第一 P（常是删减/预告）
+              if (pages.length) cid = pages.sort((a, b) => (b.duration || 0) - (a.duration || 0))[0].cid;
             }
             if (cid) comments = await biliDanmaku(cid);
           } catch (e) { log('bili dm fail', e.message); }

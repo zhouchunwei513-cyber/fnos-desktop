@@ -724,7 +724,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查（免认证）：附带本机地址，方便客户端三通道填写
-  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.3', port: PORT, addrs: localAddrs() });
+  if (route === '/ping') return sendJson(res, 200, { ok: true, service: 'zdy-fpk', version: '1.3.4', port: PORT, addrs: localAddrs() });
 
   // 设置页静态资源（免认证，页面内登录管理密码）
   if (route === '/' || route === '/index.html') {

@@ -321,25 +321,33 @@ contextBridge.exposeInMainWorld('fnos', {
           const t = norm(s);
           if (t.length < 2 || t.length > 80) return false;
           if (/^(飞牛影视|飞牛|fnos|FNOS|登录|首页|加载中|loading|null|undefined)$/i.test(t)) return false;
+          // 对白/字幕碎片过滤：媒体详情响应里常嵌套剧集/相关推荐/片段数组，其 title 可能是
+          // 一句对白（如“你希望那样吗”）。片名几乎不含句读标点或句末语气词/疑问词。
+          if (/[?？!！。，、；：“”"''…—]/.test(t)) return false;
+          if (/[吗呢吧啊呀嘛哦哩么]+$/.test(t)) return false;
+          // 纯数字/纯哈希/URL 片段
+          if (/^[0-9a-fA-F-]{8,}$/.test(t)) return false;
           return true;
         };
         // 收集候选：键名含 name/title（排除 guid/url 等无关键），值为非空字符串
         const KEY_RE = /(^|_)(name|title|showname|seriesname|videoname|media_name|media_title|display_name|episode_name|channel_name|program_name)$/i;
         const hits = [];
-        const walk = (obj, depth) => {
-          if (!obj || typeof obj !== 'object' || depth > 5) return;
-          if (Array.isArray(obj)) { for (const it of obj) walk(it, depth + 1); return; }
+        // 关键：只从“非数组上下文”的浅层对象取主片名。
+        // 数组里（相关推荐/剧集列表/片段/演员）的 name/title 不是当前媒体的片名，必须跳过。
+        const walk = (obj, depth, inArray) => {
+          if (!obj || typeof obj !== 'object' || depth > 3) return;
+          if (Array.isArray(obj)) { for (const it of obj) walk(it, depth + 1, true); return; }
           for (const k of Object.keys(obj)) {
             const v = obj[k];
             if (typeof v === 'string') {
-              if (KEY_RE.test(k) && good(v)) hits.push({ key: k, val: norm(v) });
+              if (!inArray && KEY_RE.test(k) && good(v)) hits.push({ key: k, val: norm(v), depth });
             } else if (v && typeof v === 'object') {
-              walk(v, depth + 1);
+              walk(v, depth + 1, inArray);
             }
           }
         };
         const d = (json.Data || json.data) ? (json.Data || json.data) : json;
-        walk(d, 0);
+        walk(d, 0, false);
         if (!hits.length) return '';
         // 优先级：精确键名 > 包含 media/video/series/episode > 其它；取最靠前的高优先级候选
         const score = (k) => {
@@ -348,7 +356,7 @@ contextBridge.exposeInMainWorld('fnos', {
           if (/channel_?name|program_?name|live/i.test(k)) return 3;
           return 2;
         };
-        hits.sort((a, b) => score(b.key) - score(a.key));
+        hits.sort((a, b) => (score(b.key) - score(a.key)) || (a.depth - b.depth));
         return hits[0].val;
       } catch (_) { return ''; }
     }

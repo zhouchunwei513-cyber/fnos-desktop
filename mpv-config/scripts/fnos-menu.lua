@@ -79,14 +79,40 @@ local function helper_async(route, bodyJson, onDone)
     end)
 end
 
+-- 判断是否为“可作为片名搜索”的合法文本。媒体详情接口里嵌套的剧集/相关推荐/片段数组，
+-- 其 title 可能是一句对白（如“你希望那样吗”）或纯媒体哈希，必须识别并丢弃，否则字幕/弹幕
+-- 会拿一句对白或哈希去搜索，必然 0 结果。
+local function valid_movie_name(n)
+    if not n then return false end
+    n = tostring(n):gsub("^%s+", ""):gsub("%s+$", "")
+    if n == "" then return false end
+    local low = n:lower()
+    if low == "飞牛影视" or low == "飞牛" or low == "fnos" or low == "loading"
+        or low == "加载中" or low == "未命名" or low == "video" or n == "-" then
+        return false
+    end
+    -- 含句读标点 / 句末语气词 / 疑问词 → 多半是对白字幕而非片名
+    if n:find("[?？!！。，、；：“”\"'‘’…—]") then return false end
+    if n:find("[吗呢吧啊呀嘛哦哩么]+$") then return false end
+    -- 纯十六进制/数字 GUID（媒体 range id 形如 e66071fadcf2435abe3852f4c3671e1b）
+    if n:match("^[0-9a-fA-F%-]+$") and #n >= 8 then return false end
+    if n:match("^%d+$") then return false end
+    -- 过短（单字）或过长（整句）都不像片名
+    if #n < 2 or #n > 80 then return false end
+    return true
+end
+
 local function media_keyword()
-    -- 优先用真实片名（force-media-title / media-title，由客户端按网页 document.title 设置）；
-    -- 否则退到文件名。去掉站点后缀与年份/分辨率等噪音，提升字幕/弹幕命中率。
+    -- 优先用真实片名（force-media-title / media-title，由客户端按网页接口片名设置）；
+    -- 若片名是对白碎片/哈希等垃圾值，则退到文件名。去掉站点后缀与噪音，提升字幕/弹幕命中率。
     local name = mp.get_property("media-title") or ""
-    if name == "" then name = mp.get_property("filename/no-ext") or "video" end
+    if not valid_movie_name(name) then
+        name = mp.get_property("filename/no-ext") or "video"
+    end
     name = tostring(name):gsub("^.*[\\/]", ""):gsub("%?.*$", "")
     name = name:gsub("%s*[-_|–—]%s*飞牛.*$", ""):gsub("%s*[-_|–—]%s*fnos.*$", "")
-    return (name ~= "" and name) or "video"
+    if not valid_movie_name(name) then name = "video" end
+    return name
 end
 
 -- ---------------- 播放统计信息（码率/分辨率/帧率/硬解/格式/丢帧/缓存）----------------

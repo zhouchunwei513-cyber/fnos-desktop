@@ -795,6 +795,12 @@ class MpvPlayer extends EventEmitter {
     const generic = ['飞牛影视', '飞牛', 'fnos', 'fnos 影视', '加载中', 'loading', '未命名', ''];
     const low = t.toLowerCase();
     for (const g of generic) { if (low === String(g).toLowerCase()) return ''; }
+    // 对白/字幕碎片过滤：媒体详情接口里嵌套的剧集/相关推荐/片段数组，其 title 可能是一句
+    // 对白（如“你希望那样吗”）。片名几乎不含句读标点/句末语气词；纯哈希也要排除。
+    if (t.length < 2 || t.length > 80) return '';
+    if (/[?？!！。，、；：“”"''…—]/.test(t)) return '';
+    if (/[吗呢吧啊呀嘛哦哩么]+$/.test(t)) return '';
+    if (/^[0-9a-fA-F-]{8,}$/.test(t)) return '';
     return t;
   }
 

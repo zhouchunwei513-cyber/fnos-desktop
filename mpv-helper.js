@@ -881,14 +881,37 @@ function start() {
         if (route === '/subtitle/search') {
           const q = body.filename || body.title || body.query || body.keyword || '';
           log('info', 'sub.search.req', { raw: String(q).slice(0, 80), lang: body.lang || 'zh' });
-          // 弹幕/字幕/片头片尾仅使用 ZDY 增强服务，不再回退内置源
-          const zr = await requireZdy('/subtitle/search', { title: q, filename: q, lang: body.lang || 'zh' });
-          if (zr.ok && Array.isArray(zr.results)) {
-            log('info', 'sub.search.zdy', { count: zr.results.length });
-            return sendJson(res, 200, { ok: true, results: zr.results, source: 'zdy' });
+          // 主用 ZDY 增强服务（NAS 端三网自适应）；若 ZDY 不可用或返回 0 条（如 NAS 端
+          // 插件未更新/外网 frp 超时），回退客户端本地直连 assrt 检索，保证“能搜到”。
+          let results = [];
+          let source = 'zdy';
+          try {
+            const zr = await requireZdy('/subtitle/search', { title: q, filename: q, lang: body.lang || 'zh' });
+            if (zr && zr.ok && Array.isArray(zr.results) && zr.results.length) {
+              results = zr.results;
+              log('info', 'sub.search.zdy', { count: results.length });
+            } else {
+              log('warn', 'sub.search.zdy-empty', { error: zr && zr.error });
+            }
+          } catch (e) {
+            log('warn', 'sub.search.zdy-err', { error: String(e && e.message || e) });
           }
-          log('warn', 'sub.search.fail', { error: zr.error });
-          return sendJson(res, 200, { ok: false, results: [], error: zr.error || '字幕服务不可用' });
+          if (!results.length) {
+            try {
+              const local = await searchOnlineSubtitle(q, body.lang || 'zh');
+              if (Array.isArray(local) && local.length) {
+                results = local;
+                source = 'local-assrt';
+                log('info', 'sub.search.local', { count: results.length });
+              }
+            } catch (e) {
+              log('warn', 'sub.search.local-err', { error: String(e && e.message || e) });
+            }
+          }
+          if (results.length) {
+            return sendJson(res, 200, { ok: true, results, source });
+          }
+          return sendJson(res, 200, { ok: false, results: [], error: '未搜索到字幕' });
         }
         if (route === '/subtitle/download') {
           const r = await downloadSubtitle(body.item || {});

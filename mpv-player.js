@@ -798,7 +798,9 @@ class MpvPlayer extends EventEmitter {
     // 对白/字幕碎片过滤：媒体详情接口里嵌套的剧集/相关推荐/片段数组，其 title 可能是一句
     // 对白（如“你希望那样吗”）。片名几乎不含句读标点/句末语气词；纯哈希也要排除。
     if (t.length < 2 || t.length > 80) return '';
-    if (/[?？!！。，、；：“”"''…—]/.test(t)) return '';
+    // 对白碎片过滤：句末标点/疑问感叹/中文逗号/顿号/引号/省略号多为对白。
+    // 但不能拒绝冒号(: ：)，英文片名常见 "The Chronicles of Narnia: The Lion..."。
+    if (/[?？!！。，、；“”"''…—]/.test(t)) return '';
     if (/[吗呢吧啊呀嘛哦哩么]+$/.test(t)) return '';
     if (/^[0-9a-fA-F-]{8,}$/.test(t)) return '';
     return t;

@@ -36,8 +36,13 @@ local function item(title, cmd, shortcut)
 end
 local function sep() return { ["type"] = "separator" } end
 
+-- 子菜单（画质/倍速）打开期间为 true：此时 refresh_menu_data 不得覆盖 menu-data，
+-- 否则 context_menu 弹出后点选的菜单项已变回主菜单数据，导致命令不执行（点击失效）。
+local g_submenu_open = false
+
 -- 刷新菜单数据：把中文菜单写入 mpv 的 menu-data 属性（内置 context_menu / 原生右键菜单都会读它）
 local function refresh_menu_data()
+    if g_submenu_open then return end
     pcall(function() mp.set_property_native("menu-data", build_menu()) end)
 end
 
@@ -47,6 +52,7 @@ end
 --       因此这里直接发 script-message 打开。每次打开前刷新 menu-data（音轨/字幕轨/搜索结果均为动态）。
 local function open_context_menu()
     pcall(function()
+        g_submenu_open = false  -- 打开主菜单即退出子菜单态，确保刷新的是完整主菜单
         refresh_menu_data()
         -- 内置 context_menu.lua 注册的脚本名是 "context_menu"、消息名是 "open"，
         -- 必须用 script-message-to 指定目标脚本；写成全局 broadcast 不会被它接收（菜单打不开）。
@@ -68,13 +74,30 @@ local function helper_async(route, bodyJson, onDone)
         local args = { curl, "-s", "-m", "45", "-X", "POST",
                        "-H", "Content-Type: application/json",
                        "--data", bodyJson or "{}", url }
+        mp.msg.info("zdy helper req route=" .. route .. " body=" .. tostring(bodyJson):sub(1, 300))
         mp.command_native_async({
             ["name"] = "subprocess", ["args"] = args,
             ["capture_stdout"] = true, ["capture_stderr"] = true, ["playback_only"] = false
         }, function(_success, res, _err)
             local out = (res and res.stdout) or ""
+            local st = (res and res.status) or -1
             local ok, data = pcall(function() return utils.parse_json(out) end)
-            if ok and type(data) == "table" then onDone(data) else onDone(nil) end
+            if ok and type(data) == "table" then
+                local n = 0
+                if type(data.results) == "table" then n = #data.results
+                elseif type(data.comments) == "table" then n = #data.comments
+                elseif data.count then n = data.count end
+                mp.msg.info("zdy helper ok route=" .. route .. " status=" .. tostring(st)
+                    .. " ok=" .. tostring(data.ok) .. " count=" .. tostring(n)
+                    .. " channel=" .. tostring(data.channel or data.source or "")
+                    .. " err=" .. tostring(data.error or ""))
+                onDone(data)
+            else
+                mp.msg.warn("zdy helper FAIL route=" .. route .. " status=" .. tostring(st)
+                    .. " stderr=" .. tostring((res and res.stderr) or ""):sub(1, 200)
+                    .. " out=" .. tostring(out):sub(1, 200))
+                onDone(nil)
+            end
         end)
     end)
 end
@@ -91,8 +114,12 @@ local function valid_movie_name(n)
         or low == "加载中" or low == "未命名" or low == "video" or n == "-" then
         return false
     end
-    -- 含句读标点 / 句末语气词 / 疑问词 → 多半是对白字幕而非片名
-    if n:find("[?？!！。，、；：“”\"'‘’…—]") then return false end
+    -- 含句末标点 / 句读标点 / 疑问感叹 → 多半是对白字幕而非片名。
+    -- 注意：不能拒绝冒号（: ：），英文片名常见 "The Chronicles of Narnia: The Lion..."。
+    if n:find("[?？!！。，、；“”\"'‘’…—]") then return false end
+    -- 句中逗号通常是对白（如“好的，那就这样吧”）；但英文逗号可能出现在片名（如 "To Live, To Die"），
+    -- 仅当含中文逗号/中文语境时拒绝。
+    if n:find("[，、]") then return false end
     if n:find("[吗呢吧啊呀嘛哦哩么]+$") then return false end
     -- 纯十六进制/数字 GUID（媒体 range id 形如 e66071fadcf2435abe3852f4c3671e1b）
     if n:match("^[0-9a-fA-F%-]+$") and #n >= 8 then return false end
@@ -186,33 +213,129 @@ end
 mp.register_script_message("fnos-quality", function(q)
     if not q or q == "original" or q == "原画" then set_quality("original")
     else local h = tonumber(tostring(q):match("%d+")); if h then set_quality(h, h) end end
+    close_submenu()  -- 选定画质后收起子菜单，恢复主菜单数据
 end)
 
--- 底部控制栏「画质」按钮：临时把 menu-data 换成画质子菜单后打开 context_menu，
--- 关闭后恢复主菜单数据。内置 context_menu.lua 只读 menu-data 属性，没有 update-data 消息。
+-- 打开一个"子菜单"并保持其 menu-data 不被主菜单覆盖。
+-- 关键修复：旧实现打开子菜单后立即 refresh_menu_data()，把 menu-data 还原成主菜单，
+-- 导致 context_menu 弹出后用户点击的是被覆盖的主菜单数据，画质/倍速命令不执行（点击失效）。
+-- 现用 g_submenu_open 标记：子菜单打开期间 refresh_menu_data 不再覆盖，关闭时才还原。
+local function open_submenu(data)
+    g_submenu_open = true
+    mp.set_property_native("menu-data", data)
+    mp.commandv("script-message-to", "context_menu", "open")
+end
+local function close_submenu()
+    g_submenu_open = false
+    refresh_menu_data()
+end
+
+-- 底部控制栏「画质」按钮：弹出画质子菜单（由本脚本持有 menu-data，避免与 OSC 竞态）。
 mp.register_script_message("fnos-quality-menu", function()
     pcall(function()
         local qitem = function(title, val)
             return { title = title, cmd = "script-message fnos-quality " .. val }
         end
         local data = {
-            { title = "返回", cmd = "script-message fnos-menu-main" },
+            { title = "画质（输出缩放）", state = { "disabled" }, cmd = "osd-msg show-text 画质" },
+            { type = "separator" },
             qitem((g_quality == "原画" and "✓ " or "") .. "原画（不缩放）", "original"),
             qitem((g_quality == "1080p" and "✓ " or "") .. "1080p", "1080"),
             qitem((g_quality == "720p" and "✓ " or "") .. "720p", "720"),
             qitem((g_quality == "480p" and "✓ " or "") .. "480p", "480"),
             qitem((g_quality == "360p" and "✓ " or "") .. "360p", "360"),
         }
-        mp.set_property_native("menu-data", data)
-        mp.commandv("script-message-to", "context_menu", "open")
-        -- 打开后立即把 menu-data 还原为完整主菜单（下次右键/画质均不受影响）
-        refresh_menu_data()
+        open_submenu(data)
+    end)
+end)
+
+-- 倍速：设置播放速度并刷新倍速菜单选中态
+local function set_speed(s)
+    pcall(function()
+        local v = tonumber(s) or 1.0
+        mp.set_property_number("speed", v)
+        mp.osd_message("倍速 " .. string.format("%.2g", v) .. "x", 2000)
+    end)
+end
+mp.register_script_message("fnos-speed", function(s) set_speed(s); close_submenu() end)
+
+-- 底部控制栏「倍速」按钮：弹出倍速子菜单
+mp.register_script_message("fnos-speed-menu", function()
+    pcall(function()
+        local cur = mp.get_property_number("speed", 1) or 1
+        local data = {
+            { title = "播放倍速（当前 " .. string.format("%.2f", cur) .. "x）", state = { "disabled" },
+              cmd = "osd-msg show-text 倍速" },
+            { type = "separator" },
+        }
+        for _, sp in ipairs({ 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 }) do
+            local label = (math.abs(sp - 1.0) < 0.001) and "1.0x（正常）" or string.format("%.2gx", sp)
+            if math.abs(cur - sp) < 0.001 then label = "✓ " .. label end
+            data[#data + 1] = { title = label, cmd = "script-message fnos-speed " .. tostring(sp) }
+        end
+        open_submenu(data)
+    end)
+end)
+
+-- 音轨切换子菜单（自包含，避免跨脚本写 menu-data 竞态）
+mp.register_script_message("fnos-audio-menu", function()
+    pcall(function()
+        local tracks = mp.get_property_native("track-list") or {}
+        local cur = mp.get_property_number("aid", -1)
+        local data = {
+            { title = "音轨选择", state = { "disabled" }, cmd = "osd-msg show-text 音轨" },
+            { type = "separator" },
+            { title = (cur == -1 or cur == nil) and "✓ 静音轨" or "静音轨",
+              cmd = "set aid no; osd-msg show-text 已关闭音轨" },
+        }
+        for _, t in ipairs(tracks) do
+            if t.type == "audio" then
+                local lang = t.lang and (t.lang:sub(1, 12)) or "音轨"
+                local title = t.title and (t.title:sub(1, 30)) or ""
+                local label = "音轨 " .. t.id .. " · " .. lang .. (title ~= "" and (" " .. title) or "")
+                if t.id == cur then label = "✓ " .. label end
+                data[#data + 1] = { title = label, cmd = "set aid " .. t.id .. "; osd-msg show-text 音轨 " .. t.id }
+            end
+        end
+        open_submenu(data)
+    end)
+end)
+
+-- 字幕设置子菜单（自包含）
+mp.register_script_message("fnos-sub-menu", function()
+    pcall(function()
+        local tracks = mp.get_property_native("track-list") or {}
+        local cur = mp.get_property_number("sid", -1)
+        local vis = mp.get_property_bool("sub-visibility", true)
+        local data = {
+            { title = "字幕设置", state = { "disabled" }, cmd = "osd-msg show-text 字幕设置" },
+            { type = "separator" },
+            { title = vis and "✓ 字幕显示开" or "字幕显示开", cmd = "cycle sub-visibility" },
+            { title = (cur == -1 or cur == nil or not vis) and "✓ 关闭字幕" or "关闭字幕", cmd = "set sid no; osd-msg show-text 关闭字幕" },
+        }
+        for _, t in ipairs(tracks) do
+            if t.type == "sub" then
+                local lang = t.lang and (t.lang:sub(1, 12)) or "字幕"
+                local title = t.title and (t.title:sub(1, 30)) or ""
+                local label = "字幕轨 " .. t.id .. " · " .. lang .. (title ~= "" and (" " .. title) or "")
+                if t.id == cur and vis then label = "✓ " .. label end
+                data[#data + 1] = { title = label, cmd = "set sid " .. t.id .. "; set sub-visibility yes; osd-msg show-text 字幕轨 " .. t.id }
+            end
+        end
+        data[#data + 1] = { type = "separator" }
+        data[#data + 1] = { title = "在线搜索字幕…", cmd = "script-message fnos-sub-search title" }
+        data[#data + 1] = { title = "字幕上移", cmd = "add sub-margin-y 30; osd-msg show-text 字幕上移" }
+        data[#data + 1] = { title = "字幕下移", cmd = "add sub-margin-y -30; osd-msg show-text 字幕下移" }
+        data[#data + 1] = { title = "字幕放大", cmd = "add sub-scale 0.1" }
+        data[#data + 1] = { title = "字幕缩小", cmd = "add sub-scale -0.1" }
+        open_submenu(data)
     end)
 end)
 
 -- 画质子菜单里的"返回"：刷新为完整主菜单并重新打开
 mp.register_script_message("fnos-menu-main", function()
     pcall(function()
+        g_submenu_open = false
         refresh_menu_data()
         mp.commandv("script-message-to", "context_menu", "open")
     end)

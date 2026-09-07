@@ -57,12 +57,32 @@ local function helper_async(route, bodyJson, onDone)
     end)
 end
 
+-- 判断是否像有效片名（排除 media-title 被设成 URL 路径段 / 对白碎片 / 纯哈希）
+local function valid_movie_name(s)
+    if not s or s == '' then return false end
+    s = tostring(s)
+    if s == 'video' or s == 'range' or s == 'media' or s == 'play' or s == 'index' or s == 'file' then return false end
+    local han = 0; for _ in s:gmatch('[\228-\233][\128-\191][\128-\191]') do han = han + 1 end
+    if han == 0 and not s:find('[A-Za-z]') then return false end
+    if s:match('^[0-9a-fA-F]+$') and #s >= 8 then return false end          -- 纯哈希
+    if s:match('^%d+$') then return false end                                  -- 纯数字
+    if s:match('^https?://') then return false end
+    if s:find('/') or s:find('\\') then return false end
+    if s:match('[。！？；]') then return false end                             -- 完整对白句读
+    if s:match('吗$') or s:match('呢$') or s:match('吧$') or s:match('？$') then return false end
+    if #s <= 1 then return false end
+    return true
+end
+
 local function media_keyword()
-    local name = mp.get_property('media-title') or ''
-    if name == '' then name = mp.get_property('filename/no-ext') or 'video' end
-    name = tostring(name):gsub('^.*[\\/]', ''):gsub('%?.*$', '')
+    local name = tostring(mp.get_property('media-title') or '')
+    if not valid_movie_name(name) then
+        name = tostring(mp.get_property('filename/no-ext') or '')
+    end
+    name = name:gsub('^.*[\\/]', ''):gsub('%?.*$', '')
     name = name:gsub('%s*[-_|–—]%s*飞牛.*$', ''):gsub('%s*[-_|–—]%s*fnos.*$', '')
-    return (name ~= '' and name) or 'video'
+    if not valid_movie_name(name) then name = '' end
+    return (name ~= '' and name) or ''
 end
 
 local function ass_color(hex, alpha)

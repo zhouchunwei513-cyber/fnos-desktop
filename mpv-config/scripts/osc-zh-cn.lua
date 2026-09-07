@@ -2281,7 +2281,7 @@ local function osc_init()
         return osc_styles.smallButtonsLlabel .. "音轨 " ..
                mp.get_property_number("aid", "-") .. "/" .. audio_track_count .. " "
     end
-    ne.eventresponder["mbtn_left_up"] = function () FN.menu_audio() end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-audio-menu") end
     ne.eventresponder["mbtn_right_up"] = function () mp.command("cycle audio") end
     ne.eventresponder["wheel_down_press"] = function () mp.command("cycle audio") end
     ne.eventresponder["wheel_up_press"] = function () mp.command("cycle audio down") end
@@ -2295,7 +2295,7 @@ local function osc_init()
         return osc_styles.smallButtonsLlabel .. "字幕 " ..
                (cur == -1 and "0" or cur) .. "/" .. sub_track_count .. " "
     end
-    ne.eventresponder["mbtn_left_up"] = function () FN.menu_sub() end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-sub-menu") end
     ne.eventresponder["mbtn_right_up"] = function () mp.command("cycle sub") end
     ne.eventresponder["wheel_down_press"] = function () mp.command("cycle sub") end
     ne.eventresponder["wheel_up_press"] = function () mp.command("cycle sub down") end
@@ -2316,7 +2316,7 @@ local function osc_init()
         if math.abs(s - 1.0) < 0.001 then txt = "倍速" else txt = string.format("%.2gx", s) end
         return osc_styles.smallButtonsLlabel .. " " .. txt .. " "
     end
-    ne.eventresponder["mbtn_left_up"] = function () FN.menu_speed() end
+    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-speed-menu") end
 
     --fnOS 新增：弹幕按钮（搜索/开关弹幕，走本地 helper）
     ne = new_element("fnos_danmaku", "button")

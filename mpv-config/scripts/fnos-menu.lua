@@ -52,6 +52,16 @@ end
 -- 导致整个 fnos_menu 脚本崩溃、所有控制栏菜单失效。这里先声明 local，后部再赋值。
 local open_submenu, close_submenu
 
+-- 安全注册脚本消息：任一菜单处理器内部报错时只记录日志，绝不让异常冒泡
+-- （mpv 对未捕获 Lua 错误会直接销毁整个脚本 client，导致所有控制栏/右键菜单失效、回退英文）。
+local function safe_msg(name, fn)
+    mp.register_script_message(name, function(...)
+        local args = {...}
+        local ok, err = pcall(function() return fn(unpack(args)) end)
+        if not ok then mp.msg.error("[fnos-menu] 处理器 " .. name .. " 出错: " .. tostring(err)) end
+    end)
+end
+
 -- 打开右键菜单。Windows 无原生右键菜单，mpv 走内置 @context_menu.lua（OSD 渲染）：
 --   该脚本只暴露 script-message "context_menu open"，读取 menu-data 属性后绘制中文菜单。
 -- 注意：内置命令 "context-menu" 在 Windows 上是 VOCTRL_SHOW_MENU，无原生菜单后端=空操作，
@@ -65,6 +75,10 @@ local function open_context_menu()
         mp.commandv("script-message-to", "context_menu", "open")
     end)
 end
+
+-- 供 OSC 左下角「≡」按钮调用（script-message-to fnos_menu fnos-context-open），
+-- 让左下角≡、右键、控制栏子菜单三者共用同一套中文菜单数据。
+safe_msg("fnos-context-open", function() open_context_menu() end)
 
 -- 调主进程本地助手（异步 subprocess 调 curl，绝不阻塞播放）。route 形如 /subtitle/search。
 local function helper_async(route, bodyJson, onDone)
@@ -202,7 +216,7 @@ end
 mp.add_key_binding("x", "fnos-stats-close", function()
     if _stats_visible then _stats_visible = false; mp.osd_message("", 0.01) end
 end)
-mp.register_script_message("fnos-playback-stats", show_playback_stats)
+safe_msg("fnos-playback-stats", show_playback_stats)
 
 -- 画质（输出缩放）：原画=清除 vf 中的 scale；其余把输出高度限制到目标值（宽度按比例 -2 保持偶数）
 local g_quality = "原画"
@@ -220,7 +234,7 @@ local function set_quality(q, h)
         pcall(refresh_menu_data)
     end)
 end
-mp.register_script_message("fnos-quality", function(q)
+safe_msg("fnos-quality", function(q)
     if not q or q == "original" or q == "原画" then set_quality("original")
     else local h = tonumber(tostring(q):match("%d+")); if h then set_quality(h, h) end end
     close_submenu()  -- 选定画质后收起子菜单，恢复主菜单数据
@@ -241,7 +255,7 @@ close_submenu = function()
 end
 
 -- 底部控制栏「画质」按钮：弹出画质子菜单（由本脚本持有 menu-data，避免与 OSC 竞态）。
-mp.register_script_message("fnos-quality-menu", function()
+safe_msg("fnos-quality-menu", function()
     pcall(function()
         local qitem = function(title, val)
             return { title = title, cmd = "script-message fnos-quality " .. val }
@@ -267,10 +281,10 @@ local function set_speed(s)
         mp.osd_message("倍速 " .. string.format("%.2g", v) .. "x", 2000)
     end)
 end
-mp.register_script_message("fnos-speed", function(s) set_speed(s); close_submenu() end)
+safe_msg("fnos-speed", function(s) set_speed(s); close_submenu() end)
 
 -- 底部控制栏「倍速」按钮：弹出倍速子菜单
-mp.register_script_message("fnos-speed-menu", function()
+safe_msg("fnos-speed-menu", function()
     pcall(function()
         local cur = mp.get_property_number("speed", 1) or 1
         local data = {
@@ -288,7 +302,7 @@ mp.register_script_message("fnos-speed-menu", function()
 end)
 
 -- 音轨切换子菜单（自包含，避免跨脚本写 menu-data 竞态）
-mp.register_script_message("fnos-audio-menu", function()
+safe_msg("fnos-audio-menu", function()
     pcall(function()
         local tracks = mp.get_property_native("track-list") or {}
         local cur = mp.get_property_number("aid", -1)
@@ -312,7 +326,7 @@ mp.register_script_message("fnos-audio-menu", function()
 end)
 
 -- 字幕设置子菜单（自包含）
-mp.register_script_message("fnos-sub-menu", function()
+safe_msg("fnos-sub-menu", function()
     pcall(function()
         local tracks = mp.get_property_native("track-list") or {}
         local cur = mp.get_property_number("sid", -1)
@@ -333,7 +347,7 @@ mp.register_script_message("fnos-sub-menu", function()
             end
         end
         data[#data + 1] = { type = "separator" }
-        data[#data + 1] = { title = "在线搜索字幕…", cmd = "script-message fnos-sub-search title" }
+        data[#data + 1] = { title = "在线搜索字幕…", cmd = "script-message fnos-sub-search zh" }
         data[#data + 1] = { title = "字幕上移", cmd = "add sub-margin-y 30; osd-msg show-text 字幕上移" }
         data[#data + 1] = { title = "字幕下移", cmd = "add sub-margin-y -30; osd-msg show-text 字幕下移" }
         data[#data + 1] = { title = "字幕放大", cmd = "add sub-scale 0.1" }
@@ -343,7 +357,7 @@ mp.register_script_message("fnos-sub-menu", function()
 end)
 
 -- 画质子菜单里的"返回"：刷新为完整主菜单并重新打开
-mp.register_script_message("fnos-menu-main", function()
+safe_msg("fnos-menu-main", function()
     pcall(function()
         g_submenu_open = false
         refresh_menu_data()
@@ -551,7 +565,7 @@ build_menu = function()
 end
 
 -- ---------------- 脚本消息：字幕搜索/下载/本地/画中画 ----------------
-mp.register_script_message("fnos-sub-search", function(lang)
+safe_msg("fnos-sub-search", function(lang)
     pcall(function()
         if g_searching then return end
         g_searching = lang
@@ -570,7 +584,7 @@ mp.register_script_message("fnos-sub-search", function(lang)
     end)
 end)
 
-mp.register_script_message("fnos-sub-dl", function(id)
+safe_msg("fnos-sub-dl", function(id)
     pcall(function()
         local target = nil
         if g_results then
@@ -588,7 +602,7 @@ mp.register_script_message("fnos-sub-dl", function(id)
     end)
 end)
 
-mp.register_script_message("fnos-sub-local", function()
+safe_msg("fnos-sub-local", function()
     pcall(function()
         mp.osd_message("请在弹出的对话框选择字幕文件…", 4000)
         helper_async("/subtitle/open-dialog", "{}", function(data)
@@ -604,7 +618,7 @@ mp.register_script_message("fnos-sub-local", function()
 end)
 
 -- ---------------- 弹幕：搜索/选择（结果平铺进本脚本菜单，避免与弹幕脚本竞态写 menu-data）----------------
-mp.register_script_message("fnos-dm-search", function()
+safe_msg("fnos-dm-search", function()
     pcall(function()
         if g_dm_searching then return end
         g_dm_searching = true
@@ -630,7 +644,7 @@ end)
 -- 选择某组弹幕：在菜单脚本里查回完整条目（含 source/bvid/episodeId/cid）后，
 -- 直接调 helper 的 /danmaku/download（ZDY 需要完整条目才能下载）。
 -- 下载成功后 helper 经 IPC 回推 fnos-danmaku-data，弹幕渲染脚本自动渲染，无需再转发。
-mp.register_script_message("fnos-dm-pick", function(cid)
+safe_msg("fnos-dm-pick", function(cid)
     pcall(function()
         if not cid then return end
         local target = nil
@@ -731,10 +745,10 @@ local function do_skip_credits()
     end)
 end
 
-mp.register_script_message("fnos-skip", function(which)
+safe_msg("fnos-skip", function(which)
     if which == "credits" then do_skip_credits() else do_skip_intro() end
 end)
-mp.register_script_message("fnos-skip-set", function(kind, sec)
+safe_msg("fnos-skip-set", function(kind, sec)
     pcall(function()
         local n = tonumber(sec)
         if not n then return end
@@ -751,7 +765,7 @@ end)
 -- 关闭时：以上自动行为全部不触发（手动"跳过片头/片尾"菜单项仍可用）。
 local g_auto_intro_done = false
 local g_auto_credits_done = false
-mp.register_script_message("fnos-skip-auto", function()
+safe_msg("fnos-skip-auto", function()
     pcall(function()
         g_skip_auto = not g_skip_auto
         mp.osd_message(g_skip_auto and "已开启自动跳过片头片尾" or "已关闭自动跳过片头片尾", 2000)
@@ -915,7 +929,7 @@ mp.register_event("file-loaded", function()
     pcall(function() schedule_auto_enhance() end)
 end)
 
-mp.register_script_message("fnos-auto-enhance", function()
+safe_msg("fnos-auto-enhance", function()
     pcall(function()
         g_auto_enhance = not g_auto_enhance
         mp.osd_message(g_auto_enhance and "已开启起播自动加载（弹幕/字幕/片头片尾）" or "已关闭起播自动加载", 2500)
@@ -942,7 +956,10 @@ pcall(function()
     -- 先预置一次中文菜单数据（此刻轨道可能还没加载，打开时 open_context_menu 会再刷新）
     refresh_menu_data()
     -- 右键直接呼出中文菜单（覆盖默认右键行为）；每次打开都重建 menu-data（刷新音轨/字幕轨/搜索结果）
-    mp.add_forced_key_binding("MBTN_RIGHT", "fnos-context-menu", open_context_menu)
+    mp.add_forced_key_binding("MBTN_RIGHT", "fnos-context-menu", function()
+        local ok, err = pcall(open_context_menu)
+        if not ok then mp.msg.error("[fnos-menu] 打开菜单出错: " .. tostring(err)) end
+    end)
     -- 独立窗口双击全屏；延迟到首帧后确保 ontop 已按形态生效。
     mp.observe_property("ontop", "bool", function() sync_dbl_binding() end)
     mp.msg.info("FNOS 中文右键菜单已加载（含在线字幕/画质/跳过片头片尾/弹幕）")

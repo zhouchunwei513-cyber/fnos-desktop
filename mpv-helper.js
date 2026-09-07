@@ -940,33 +940,80 @@ function start() {
         }
         if (route === '/danmaku/search') {
           const kw = body.keyword || body.filename || body.query || body.title || '';
-          // 弹幕仅使用 ZDY 增强服务。必须透传 duration（影片时长），ZDY 据此过滤同名 MV/解说/有声书
-          const zr = await requireZdy('/danmaku/search', { keyword: kw, filename: body.filename || kw, title: body.title || kw, duration: Number(body.duration) || 0, season: Number(body.season) || 0, episode: Number(body.episode) || 0 });
-          if (zr.ok && Array.isArray(zr.results)) {
-            log('info', 'danmaku.search.zdy', { count: zr.results.length });
-            return sendJson(res, 200, { ok: true, results: zr.results, source: 'zdy' });
+          // 主用 ZDY 增强服务（透传 duration 过滤同名 MV/解说）；ZDY 未配置/不可用/返回 0 时，
+          // 回退客户端本地直连 B 站检索，保证“未启用增强服务也能搜到弹幕”。
+          let results = [];
+          let source = 'zdy';
+          try {
+            const zr = await requireZdy('/danmaku/search', { keyword: kw, filename: body.filename || kw, title: body.title || kw, duration: Number(body.duration) || 0, season: Number(body.season) || 0, episode: Number(body.episode) || 0 });
+            if (zr && zr.ok && Array.isArray(zr.results) && zr.results.length) {
+              results = zr.results;
+              log('info', 'danmaku.search.zdy', { count: results.length });
+            } else {
+              log('warn', 'danmaku.search.zdy-empty', { error: zr && zr.error });
+            }
+          } catch (e) {
+            log('warn', 'danmaku.search.zdy-err', { error: String(e && e.message || e) });
           }
-          log('warn', 'danmaku.search.fail', { error: zr.error });
-          return sendJson(res, 200, { ok: false, results: [], error: zr.error || '弹幕服务不可用' });
+          if (!results.length && kw) {
+            try {
+              const local = await danmakuSearch(kw);
+              if (Array.isArray(local) && local.length) {
+                results = local.map(v => ({ source: 'bilibili', cid: v.cid, bvid: v.bvid, title: v.title, name: v.name, count: v.count, keyword: kw }));
+                source = 'local-bili';
+                log('info', 'danmaku.search.local', { count: results.length });
+              }
+            } catch (e) {
+              log('warn', 'danmaku.search.local-err', { error: String(e && e.message || e) });
+            }
+          }
+          if (results.length) {
+            return sendJson(res, 200, { ok: true, results, source });
+          }
+          log('warn', 'danmaku.search.fail', { kw: String(kw).slice(0, 40) });
+          return sendJson(res, 200, { ok: false, results: [], error: '未搜索到弹幕' });
         }
         if (route === '/danmaku/download') {
-          // 弹幕仅使用 ZDY 增强服务。ZDY 的 /danmaku/download 需要完整条目对象
-          // （source/bvid/episodeId/cid 等），因此把客户端传来的 item 或平铺字段原样透传。
+          // ZDY 的 /danmaku/download 需要完整条目对象（source/bvid/episodeId/cid 等）；
+          // ZDY 未配置/失败/无结果时，回退客户端本地直连 B 站按 cid 拉取。
           const item = body.item || {
             source: body.source, bvid: body.bvid, aid: body.aid, cid: body.cid || body.id,
             id: body.id, episodeId: body.episodeId, animeId: body.animeId,
             title: body.title, filename: body.filename,
           };
-          const zr = await requireZdy('/danmaku/download', item);
-          // ZDY 返回字段名为 comments（与内置 danmaku 字段都兼容）
-          const list = (zr && Array.isArray(zr.comments) && zr.comments) || (zr && Array.isArray(zr.danmaku) && zr.danmaku) || [];
-          if (zr && zr.ok && list.length) {
-            log('info', 'danmaku.download.zdy', { count: list.length, cached: !!zr.cached });
-            await pushDanmakuToMpv(list, item.cid || item.episodeId || item.bvid || 'zdy');
-            return sendJson(res, 200, { ok: true, count: list.length, source: 'zdy', cached: !!zr.cached });
+          let list = [];
+          let source = 'zdy';
+          try {
+            const zr = await requireZdy('/danmaku/download', item);
+            const zl = (zr && Array.isArray(zr.comments) && zr.comments) || (zr && Array.isArray(zr.danmaku) && zr.danmaku) || [];
+            if (zr && zr.ok && zl.length) {
+              list = zl;
+              log('info', 'danmaku.download.zdy', { count: list.length, cached: !!zr.cached });
+            } else {
+              log('warn', 'danmaku.download.zdy-empty', { error: zr && zr.error });
+            }
+          } catch (e) {
+            log('warn', 'danmaku.download.zdy-err', { error: String(e && e.message || e) });
           }
-          log('warn', 'danmaku.download.fail', { error: zr && zr.error });
-          return sendJson(res, 200, { ok: false, count: 0, error: (zr && zr.error) || '弹幕加载失败' });
+          // 本地 B 站兜底：需要 cid（bilibili 源）
+          if (!list.length && item && item.cid && (!item.source || item.source === 'bilibili')) {
+            try {
+              const lr = await danmakuDownload(Number(item.cid));
+              if (lr && Array.isArray(lr.danmaku) && lr.danmaku.length) {
+                list = lr.danmaku;
+                source = 'local-bili';
+                log('info', 'danmaku.download.local', { cid: String(item.cid), count: list.length });
+              }
+            } catch (e) {
+              log('warn', 'danmaku.download.local-err', { error: String(e && e.message || e) });
+            }
+          }
+          if (list.length) {
+            await pushDanmakuToMpv(list, item.cid || item.episodeId || item.bvid || source);
+            return sendJson(res, 200, { ok: true, count: list.length, source });
+          }
+          log('warn', 'danmaku.download.fail', { cid: String(item && item.cid || '') });
+          return sendJson(res, 200, { ok: false, count: 0, error: '弹幕加载失败' });
         }
         // 跳过片头片尾时间戳（仅使用 ZDY）
         if (route === '/skip/timestamps') {

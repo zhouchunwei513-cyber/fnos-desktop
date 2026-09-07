@@ -359,7 +359,10 @@ local user_opts = {
 
     -- luacheck: push ignore
     -- luacheck: max line length
-    menu_mbtn_left_command = "script-binding select/menu; script-message-to osc osc-hide",
+    -- 左下角「≡」改为呼出 FNOS 中文主菜单（与右键、控制栏子菜单同一套 menu-data，保证三入口联动）；
+    -- 右键仍保留 mpv 默认播放列表浏览。
+    menu_mbtn_left_command = "script-message-to fnos_menu fnos-context-open; script-message-to osc osc-hide",
+    menu_mbtn_right_command = "script-binding select/menu; script-message-to osc osc-hide",
     menu_mbtn_mid_command = "",
     menu_mbtn_right_command = "",
 

@@ -46,6 +46,12 @@ local function refresh_menu_data()
     pcall(function() mp.set_property_native("menu-data", build_menu()) end)
 end
 
+-- 子菜单函数前置声明：它们在文件后部用 local function 定义，但前面的画质/倍速消息处理器
+-- 就会引用 close_submenu。Lua 的 local function 只在定义点之后可见，若不前置声明，
+-- 前面的闭包会绑定到全局 nil，运行到即报 "attempt to call global 'close_submenu' (a nil value)"，
+-- 导致整个 fnos_menu 脚本崩溃、所有控制栏菜单失效。这里先声明 local，后部再赋值。
+local open_submenu, close_submenu
+
 -- 打开右键菜单。Windows 无原生右键菜单，mpv 走内置 @context_menu.lua（OSD 渲染）：
 --   该脚本只暴露 script-message "context_menu open"，读取 menu-data 属性后绘制中文菜单。
 -- 注意：内置命令 "context-menu" 在 Windows 上是 VOCTRL_SHOW_MENU，无原生菜单后端=空操作，
@@ -124,6 +130,10 @@ local function valid_movie_name(n)
     -- 纯十六进制/数字 GUID（媒体 range id 形如 e66071fadcf2435abe3852f4c3671e1b）
     if n:match("^[0-9a-fA-F%-]+$") and #n >= 8 then return false end
     if n:match("^%d+$") then return false end
+    -- URL/路径片段（media-title 未就绪时会回退成播放地址，如 "media/range/.../video"）
+    if n:find("[/\\]") then return false end
+    if low:find("http") or low:find("range") or low:find("%.com")
+        or low:find("%.ts$") or low:find("%.m3u8") or low:find("index") then return false end
     -- 过短（单字）或过长（整句）都不像片名
     if #n < 2 or #n > 80 then return false end
     return true
@@ -220,12 +230,12 @@ end)
 -- 关键修复：旧实现打开子菜单后立即 refresh_menu_data()，把 menu-data 还原成主菜单，
 -- 导致 context_menu 弹出后用户点击的是被覆盖的主菜单数据，画质/倍速命令不执行（点击失效）。
 -- 现用 g_submenu_open 标记：子菜单打开期间 refresh_menu_data 不再覆盖，关闭时才还原。
-local function open_submenu(data)
+open_submenu = function(data)
     g_submenu_open = true
     mp.set_property_native("menu-data", data)
     mp.commandv("script-message-to", "context_menu", "open")
 end
-local function close_submenu()
+close_submenu = function()
     g_submenu_open = false
     refresh_menu_data()
 end
@@ -850,12 +860,18 @@ local function auto_fetch_subtitle(kw)
     end)
 end
 
-local function run_auto_enhance()
+local function run_auto_enhance(confirmedTitle)
     pcall(function()
         if not g_auto_enhance then return end
         if is_live() then return end
-        local kw = media_keyword()
-        if not kw or kw == "video" or kw == "" then return end
+        -- 优先用 tick 轮询确认过的片名；若不可靠再走 media_keyword()（内部对 media-title 做校验）。
+        local kw = valid_movie_name(confirmedTitle) and tostring(confirmedTitle) or media_keyword()
+        if not kw or kw == "video" or kw == "" or not valid_movie_name(kw) then
+            mp.msg.info("auto-enhance abort: no valid title (raw=" .. tostring(confirmedTitle)
+                .. " kw=" .. tostring(kw) .. " media-title=" .. tostring(mp.get_property("media-title")) .. ")")
+            return
+        end
+        mp.msg.info("auto-enhance start kw=" .. kw)
         -- 自动跳过片头片尾：仅在开关开启时获取时间戳（关闭则不请求、不跳过）
         if g_skip_auto then auto_fetch_skip(kw) end
         auto_fetch_danmaku(kw)
@@ -876,9 +892,17 @@ local function schedule_auto_enhance()
             tries = tries + 1
             if g_auto_done then return end
             local title = mp.get_property("media-title") or ""
-            if (title ~= "" and title ~= "video") or tries >= 12 then
+            -- 必须等到 media-title 是"合法片名"才触发（拒绝 video/URL 段/哈希/对白）。
+            -- 旧逻辑只判 != "video"，force-media-title 设置的竞态窗口里会读到 URL 末段 "video"，
+            -- 导致拿 "video" 去搜弹幕/字幕。现统一用 valid_movie_name，超时 12 次也必须拿到合法名才发。
+            if valid_movie_name(title) then
                 g_auto_done = true
-                run_auto_enhance()
+                run_auto_enhance(title)
+                return
+            end
+            if tries >= 24 then  -- 约 12 秒仍无合法片名，放弃自动增强（避免发垃圾请求）
+                g_auto_done = true
+                mp.msg.info("auto-enhance give up: no valid title after retries, media-title=" .. title)
                 return
             end
             mp.add_timeout(0.5, tick)

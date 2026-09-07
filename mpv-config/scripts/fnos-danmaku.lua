@@ -57,20 +57,38 @@ local function helper_async(route, bodyJson, onDone)
     end)
 end
 
+-- 字节安全工具：Lua pattern 字符类按单字节匹配，中文标点为 UTF-8 多字节，
+-- 写进 [..] 会误伤含同字节的中文片名。多字节内容一律用 plain 子串匹配。
+local function _contains_any(s, subs)
+    for _, sub in ipairs(subs) do if s:find(sub, 1, true) then return true end end
+    return false
+end
+local function _ends_with_any(s, subs)
+    for _, sub in ipairs(subs) do
+        local ls, lb = #s, #sub
+        if ls >= lb and s:sub(ls - lb + 1) == sub then return true end
+    end
+    return false
+end
+
 -- 判断是否像有效片名（排除 media-title 被设成 URL 路径段 / 对白碎片 / 纯哈希）
 local function valid_movie_name(s)
     if not s or s == '' then return false end
-    s = tostring(s)
-    if s == 'video' or s == 'range' or s == 'media' or s == 'play' or s == 'index' or s == 'file' then return false end
-    local han = 0; for _ in s:gmatch('[\228-\233][\128-\191][\128-\191]') do han = han + 1 end
-    if han == 0 and not s:find('[A-Za-z]') then return false end
-    if s:match('^[0-9a-fA-F]+$') and #s >= 8 then return false end          -- 纯哈希
-    if s:match('^%d+$') then return false end                                  -- 纯数字
-    if s:match('^https?://') then return false end
-    if s:find('/') or s:find('\\') then return false end
-    if s:match('[。！？；]') then return false end                             -- 完整对白句读
-    if s:match('吗$') or s:match('呢$') or s:match('吧$') or s:match('？$') then return false end
-    if #s <= 1 then return false end
+    s = tostring(s):gsub('^%s+', ''):gsub('%s+$', '')
+    if s == '' then return false end
+    local low = s:lower()
+    for _, b in ipairs({ 'video', 'range', 'media', 'play', 'index', 'file', 'fnos', 'loading', '加载中', '-', '飞牛影视', '飞牛' }) do
+        if low == b then return false end
+    end
+    -- 句读/疑问/感叹标点（plain 匹配，多字节安全）；不拒绝冒号（阿凡达：水之道 / Narnia: The Lion）
+    if _contains_any(s, { '?', '!', '？', '！', '。', '，', '、', '；', '“', '”', '"', "'", '‘', '’', '…', '—' }) then return false end
+    if _ends_with_any(s, { '吗', '呢', '吧', '啊', '呀', '嘛', '哦', '哩', '么' }) then return false end
+    if s:match('^[0-9a-fA-F%-]+$') and #s >= 8 then return false end   -- 纯哈希
+    if s:match('^%d+$') then return false end                          -- 纯数字
+    if s:find('[/\\]') then return false end
+    if _contains_any(low, { 'http', 'range', '.com', '.m3u8', 'index' })
+        or _ends_with_any(low, { '.ts' }) then return false end
+    if #s < 2 or #s > 80 then return false end
     return true
 end
 
@@ -272,14 +290,9 @@ end
 
 local function dm_pick(cid)
     pcall(function()
-        mp.osd_message('正在加载弹幕…', 4000)
-        helper_async('/danmaku/download', utils.format_json({ cid = tostring(cid) }), function(data)
-            if data and data.ok and (data.count or 0) > 0 then
-                mp.osd_message('弹幕加载中：' .. tostring(data.count) .. ' 条', 2500)
-            else
-                mp.osd_message('弹幕加载失败：' .. ((data and data.error) or '网络错误'), 3500)
-            end
-        end)
+        -- 统一转发给菜单脚本的 fnos-dm-pick：它会查回完整候选条目并注入【当前正确片名 keyword】，
+        -- ZDY 下载端依赖 keyword 做智能匹配；只传裸 cid 会命中"cid 直拉"，多 P/合集易取到错误分段。
+        mp.commandv('script-message', 'fnos-dm-pick', tostring(cid))
     end)
 end
 

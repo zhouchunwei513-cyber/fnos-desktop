@@ -59,7 +59,7 @@ function FN.build_speed_items()
         items[#items + 1] = {
             title = label,
             state = is_c(s) and { "checked" } or nil,
-            cmd = "set speed " .. s .. "; osd-msg show-text 倍速 " .. string.format("%.2g", s) .. "x"
+            cmd = "script-message-to fnos_menu fnos-speed " .. tostring(s)
         }
     end
     return items
@@ -83,7 +83,7 @@ function FN.menu_speed()
         items[#items + 1] = {
             title = label,
             state = #states > 0 and states or nil,
-            cmd = "set speed " .. s .. "; osd-msg show-text 倍速 " .. string.format("%.2g", s) .. "x"
+            cmd = "script-message-to fnos_menu fnos-speed " .. tostring(s)
         }
     end
     FN.open_menu(items)

@@ -122,6 +122,24 @@ local function helper_async(route, bodyJson, onDone)
     end)
 end
 
+-- 字节安全工具：Lua 的 pattern 字符类 [..] 按【单字节】匹配，而中文标点/汉字是 UTF-8 多字节，
+-- 直接把中文标点写进字符类会把其首字节当成类成员，进而误伤所有含该字节的中文片名
+-- （此前"孤注一掷/泰坦尼克号/落凡尘"等几乎全部中文片名都被误判为"含标点"而拒绝，
+--  导致弹幕/字幕只能拿 "video" 去搜索）。因此所有多字节中文标点/语气词都用 plain 子串匹配。
+local function _contains_any(s, subs)
+    for _, sub in ipairs(subs) do
+        if s:find(sub, 1, true) then return true end  -- plain=true，按字节精确匹配整个多字节串
+    end
+    return false
+end
+local function _ends_with_any(s, subs)
+    for _, sub in ipairs(subs) do
+        local ls, lb = #s, #sub
+        if ls >= lb and s:sub(ls - lb + 1) == sub then return true end
+    end
+    return false
+end
+
 -- 判断是否为“可作为片名搜索”的合法文本。媒体详情接口里嵌套的剧集/相关推荐/片段数组，
 -- 其 title 可能是一句对白（如“你希望那样吗”）或纯媒体哈希，必须识别并丢弃，否则字幕/弹幕
 -- 会拿一句对白或哈希去搜索，必然 0 结果。
@@ -130,25 +148,24 @@ local function valid_movie_name(n)
     n = tostring(n):gsub("^%s+", ""):gsub("%s+$", "")
     if n == "" then return false end
     local low = n:lower()
-    if low == "飞牛影视" or low == "飞牛" or low == "fnos" or low == "loading"
-        or low == "加载中" or low == "未命名" or low == "video" or n == "-" then
+    for _, b in ipairs({ "飞牛影视", "飞牛", "fnos", "loading", "加载中", "未命名", "video", "-" }) do
+        if low == b then return false end
+    end
+    -- 句读/疑问/感叹标点 → 多半是对白字幕而非片名（plain 子串匹配，多字节安全）。
+    -- 不拒绝冒号（: ：）：英文片名常见 "The Chronicles of Narnia: The Lion..."，中文也常见"阿凡达：水之道"。
+    if _contains_any(n, { "?", "!", "？", "！", "。", "，", "、", "；", "“", "”", "\"", "'", "‘", "’", "…", "—" }) then
         return false
     end
-    -- 含句末标点 / 句读标点 / 疑问感叹 → 多半是对白字幕而非片名。
-    -- 注意：不能拒绝冒号（: ：），英文片名常见 "The Chronicles of Narnia: The Lion..."。
-    if n:find("[?？!！。，、；“”\"'‘’…—]") then return false end
-    -- 句中逗号通常是对白（如“好的，那就这样吧”）；但英文逗号可能出现在片名（如 "To Live, To Die"），
-    -- 仅当含中文逗号/中文语境时拒绝。
-    if n:find("[，、]") then return false end
-    if n:find("[吗呢吧啊呀嘛哦哩么]+$") then return false end
-    -- 纯十六进制/数字 GUID（媒体 range id 形如 e66071fadcf2435abe3852f4c3671e1b）
+    -- 句末语气词（整字结尾匹配，多字节安全）→ 多为对白。
+    if _ends_with_any(n, { "吗", "呢", "吧", "啊", "呀", "嘛", "哦", "哩", "么" }) then return false end
+    -- 纯十六进制/数字 GUID（媒体 range id 形如 e66071fadcf2435abe3852f4c3671e1b）。这里只含 ASCII，字符类安全。
     if n:match("^[0-9a-fA-F%-]+$") and #n >= 8 then return false end
     if n:match("^%d+$") then return false end
     -- URL/路径片段（media-title 未就绪时会回退成播放地址，如 "media/range/.../video"）
     if n:find("[/\\]") then return false end
-    if low:find("http") or low:find("range") or low:find("%.com")
-        or low:find("%.ts$") or low:find("%.m3u8") or low:find("index") then return false end
-    -- 过短（单字）或过长（整句）都不像片名
+    if _contains_any(low, { "http", "range", ".com", ".m3u8", "index" })
+        or _ends_with_any(low, { ".ts" }) then return false end
+    -- 过短（单字节噪声）或过长（整句）都不像片名
     if #n < 2 or #n > 80 then return false end
     return true
 end
@@ -176,47 +193,73 @@ local function fmt_kbps(v)
     return string.format("%d Kbps", n)
 end
 
+-- 实时播放信息覆盖层：每 0.5s 重绘，进度/码率/缓存/倍速实时变化；再次点击菜单或按 x 关闭。
 local _stats_visible = false
-local function show_playback_stats()
-    -- 再点一次"播放信息"即关闭（提供明确退出机制）
-    if _stats_visible then
-        _stats_visible = false
-        mp.osd_message("", 0.01)
-        return
-    end
-    _stats_visible = true
+local _stats_timer = nil
+
+local function fmt_time(sec)
+    sec = math.max(0, math.floor(tonumber(sec) or 0))
+    local h = math.floor(sec / 3600)
+    local m = math.floor((sec % 3600) / 60)
+    local s = sec % 60
+    if h > 0 then return string.format("%d:%02d:%02d", h, m, s) end
+    return string.format("%02d:%02d", m, s)
+end
+
+local function hide_playback_stats()
+    _stats_visible = false
+    if _stats_timer then _stats_timer:kill(); _stats_timer = nil end
+    mp.osd_message("", 0.01)
+end
+
+local function render_playback_stats()
+    if not _stats_visible then return end
     pcall(function()
         local g = function(p, d) local v = mp.get_property(p); if v == nil or v == "" then return d end; return v end
         local gn = function(p, d) local v = mp.get_property_number(p); if v == nil then return d end; return v end
         local lines = {}
         local title = g("media-title", "")
         table.insert(lines, "『" .. tostring(title) .. "』")
+        local pos = gn("time-pos", 0)
+        local dur = gn("duration", 0)
+        local pct = (dur > 0) and (pos / dur * 100) or 0
+        table.insert(lines, "进度: " .. fmt_time(pos) .. " / " .. (dur > 0 and fmt_time(dur) or "直播/未知")
+            .. string.format("  (%.1f%%)", pct))
         table.insert(lines, "分辨率: " .. tostring(gn("width", 0)) .. "×" .. tostring(gn("height", 0))
-            .. "   帧率: " .. string.format("%.2f", gn("estimated-vf-fps", gn("container-fps", 0))) .. " fps")
+            .. "   帧率: " .. string.format("%.1f", gn("estimated-vf-fps", gn("container-fps", 0))) .. " fps"
+            .. "   倍速: " .. string.format("%.2f", gn("speed", 1)) .. "x")
         table.insert(lines, "视频: " .. tostring(g("video-codec", "—")) .. "   音频: " .. tostring(g("audio-codec", "—")))
         table.insert(lines, "总码率: " .. fmt_kbps(gn("packet-bitrate", gn("video-bitrate", 0)))
             .. "   视频码率: " .. fmt_kbps(gn("video-bitrate", 0)))
-        table.insert(lines, "音频码率: " .. fmt_kbps(gn("audio-bitrate", 0)))
+        table.insert(lines, "音频码率: " .. fmt_kbps(gn("audio-bitrate", 0))
+            .. "   音量: " .. string.format("%d", gn("volume", 100)) .. "%")
         local hw = g("hwdec-current", "")
-        table.insert(lines, "硬解: " .. tostring(hw ~= "" and hw or g("hwdec", "—")))
-        table.insert(lines, "丢帧: " .. tostring(gn("frame-drop-count", 0)) .. "   误帧: " .. tostring(gn("frame-mistimed-count", 0))
-            .. "   显示同步: " .. tostring(g("display-sync-active", "no") == "yes" and "开" or "关"))
-        table.insert(lines, "缓存: " .. string.format("%.1f", gn("demuxer-cache-time", 0)) .. " 秒 / "
-            .. string.format("%.1f", gn("demuxer-cache-duration", 0)) .. " 秒   缓冲: "
-            .. string.format("%d", gn("cache-buffering-state", 100)) .. "%")
-        local spd = gn("avsync", 0)
-        table.insert(lines, "A/V 同步偏差: " .. string.format("%.3f", spd) .. " 秒   音量: "
-            .. string.format("%d", gn("volume", 100)) .. "%")
-        table.insert(lines, "————（再次点击菜单「播放信息」或按 x 关闭）")
-        mp.osd_message(table.concat(lines, "\n"), 12000)
-        mp.add_timeout(12.1, function() _stats_visible = false end)
+        table.insert(lines, "硬解: " .. tostring(hw ~= "" and hw or g("hwdec", "—"))
+            .. "   丢帧: " .. tostring(gn("frame-drop-count", 0)))
+        table.insert(lines, "缓存: " .. string.format("%.1f", gn("demuxer-cache-duration", 0)) .. " 秒   缓冲: "
+            .. string.format("%d", gn("cache-buffering-state", 100)) .. "%"
+            .. "   A/V: " .. string.format("%.3f", gn("avsync", 0)) .. "s")
+        table.insert(lines, "—— 实时刷新 · 再点菜单「播放信息」或按 x 关闭 ——")
+        -- duration 设长于刷新间隔（0.8s > 0.5s），由下一次重绘覆盖，实现持续实时更新
+        mp.osd_message(table.concat(lines, "\n"), 0.8)
     end)
 end
+
+local function show_playback_stats()
+    -- 再点一次"播放信息"即关闭
+    if _stats_visible then hide_playback_stats(); return end
+    _stats_visible = true
+    render_playback_stats()
+    _stats_timer = mp.add_periodic_timer(0.5, render_playback_stats)
+end
+
 -- 按 x 快速关闭播放信息
 mp.add_key_binding("x", "fnos-stats-close", function()
-    if _stats_visible then _stats_visible = false; mp.osd_message("", 0.01) end
+    if _stats_visible then hide_playback_stats() end
 end)
 safe_msg("fnos-playback-stats", show_playback_stats)
+-- 切文件 / 退出时自动关闭覆盖层，避免残留
+mp.register_event("end-file", function() if _stats_visible then pcall(hide_playback_stats) end end)
 
 -- 画质（输出缩放）：原画=清除 vf 中的 scale；其余把输出高度限制到目标值（宽度按比例 -2 保持偶数）
 local g_quality = "原画"
@@ -225,12 +268,14 @@ local function set_quality(q, h)
         if not q or q == "original" or q == "原画" then
             mp.commandv("vf", "remove", "@fnos_q")
             g_quality = "原画"
+            mp.osd_message("🖼 输出画质：原画（不缩放，保持片源分辨率）", 2200)
         else
+            -- 仅本地输出缩放（把渲染高度压到目标值，省 GPU 算力/发热），不改变片源清晰度。
             mp.commandv("vf", "remove", "@fnos_q")
             mp.commandv("vf", "add", "@fnos_q:lavfi=[scale=-2:'min(" .. h .. ",ih)':flags=lanczos]")
             g_quality = tostring(h) .. "p"
+            mp.osd_message("🖼 输出缩放：" .. g_quality .. "（本地降分辨率，低性能机更流畅）", 2200)
         end
-        mp.osd_message("画质：" .. g_quality, 2000)
         pcall(refresh_menu_data)
     end)
 end
@@ -273,12 +318,17 @@ safe_msg("fnos-quality-menu", function()
     end)
 end)
 
--- 倍速：设置播放速度并刷新倍速菜单选中态
+-- 倍速：设置播放速度（mpv 自动用 scaletempo2 保持音调不变）并给出明确 OSD 反馈。
+-- 注意：speed 是真实生效的（音频变速不变调、视频同步），此前用户以为"没用"是因为旧菜单
+-- 用裸 `set speed` 无任何提示、也不刷新选中态。现统一走本处理器。
 local function set_speed(s)
     pcall(function()
         local v = tonumber(s) or 1.0
         mp.set_property_number("speed", v)
-        mp.osd_message("倍速 " .. string.format("%.2g", v) .. "x", 2000)
+        local back = mp.get_property_number("speed", v)
+        local tag = (math.abs(back - 1.0) < 0.001) and "（正常速度）" or "（音频变速不变调）"
+        mp.osd_message("▶ 播放倍速：" .. string.format("%.2f", back) .. "x  " .. tag, 2200)
+        pcall(refresh_menu_data)
     end)
 end
 safe_msg("fnos-speed", function(s) set_speed(s); close_submenu() end)
@@ -477,7 +527,7 @@ build_menu = function()
         { ["title"] = "播放控制", ["type"] = "submenu", ["submenu"] = {
             item("上一集 / 上一台", "playlist-prev"),
             item("下一集 / 下一台", "playlist-next"),
-            item("恢复正常速度", "set speed 1.0", "Backspace"),
+            item("恢复正常速度", "script-message fnos-speed 1.0", "Backspace"),
             item("A-B 循环", "ab-loop", "l"),
             item("逐帧前进", "frame-step", "."),
             item("逐帧后退", "frame-back-step", ","),
@@ -495,17 +545,20 @@ build_menu = function()
 
         audio_submenu(),
 
-        { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = {
-            item("切换全屏", "cycle fullscreen", "f"),
-            sep(),
-            -- 画质（输出缩放）：原画=不缩放；其余把输出高度压到目标值，省算力/带宽观感更顺滑
-            item("画质：原画（不缩放）", "script-message fnos-quality original"),
-            item("画质：1080p", "script-message fnos-quality 1080"),
-            item("画质：720p", "script-message fnos-quality 720"),
-            item("画质：480p", "script-message fnos-quality 480"),
-            item("画质：360p", "script-message fnos-quality 360"),
-            sep(),
-            item("画面比例 16:9", "set video-aspect-override 16:9"),
+        { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = (function()
+            local vh = mp.get_property_number("height", 0) or 0
+            local t = {
+                item("切换全屏", "cycle fullscreen", "f"),
+                sep(),
+                { ["title"] = "输出缩放（当前源 " .. tostring(vh > 0 and (vh .. "p") or "?") .. "，仅本地降分辨率省性能，不改变片源）",
+                  ["selectable"] = false },
+                item((g_quality == "原画" and "✓ " or "") .. "原画（不缩放）", "script-message fnos-quality original"),
+                item((g_quality == "1080p" and "✓ " or "") .. "输出 1080p", "script-message fnos-quality 1080"),
+                item((g_quality == "720p" and "✓ " or "") .. "输出 720p", "script-message fnos-quality 720"),
+                item((g_quality == "480p" and "✓ " or "") .. "输出 480p", "script-message fnos-quality 480"),
+                item((g_quality == "360p" and "✓ " or "") .. "输出 360p（低性能机）", "script-message fnos-quality 360"),
+                sep(),
+                item("画面比例 16:9", "set video-aspect-override 16:9"),
             item("画面比例 4:3", "set video-aspect-override 4:3"),
             item("画面比例 自动", "set video-aspect-override -1", "A"),
             item("截图(含字幕)", "screenshot each-frame", "s"),
@@ -514,17 +567,23 @@ build_menu = function()
             item("亮度 -", "add brightness -10"),
             item("对比度 +", "add contrast 10"),
             item("对比度 -", "add contrast -10"),
-        }},
+            }
+            return { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = t }
+        end)()},
 
-        { ["title"] = "播放速度", ["type"] = "submenu", ["submenu"] = {
-            item("0.25 倍速", "set speed 0.25"),
-            item("0.5 倍速", "set speed 0.5"),
-            item("0.75 倍速", "set speed 0.75"),
-            item("正常 1.0 倍速", "set speed 1.0"),
-            item("1.25 倍速", "set speed 1.25"),
-            item("1.5 倍速", "set speed 1.5"),
-            item("2.0 倍速", "set speed 2.0"),
-        }},
+        { ["title"] = "播放速度", ["type"] = "submenu", ["submenu"] = (function()
+            local cur = mp.get_property_number("speed", 1) or 1
+            local t = {
+                { ["title"] = "当前倍速 " .. string.format("%.2f", cur) .. "x（音频自动变速不变调）", ["selectable"] = false },
+                sep(),
+            }
+            for _, sp in ipairs({ 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 }) do
+                local label = (math.abs(sp - 1.0) < 0.001) and "1.00x（正常）" or string.format("%.2gx", sp)
+                if math.abs(cur - sp) < 0.001 then label = "✓ " .. label end
+                t[#t + 1] = item(label, "script-message fnos-speed " .. tostring(sp))
+            end
+            return t
+        end)()},
 
         { ["title"] = "弹幕", ["type"] = "submenu", ["submenu"] = (function()
             local dmenu = {
@@ -660,6 +719,16 @@ safe_msg("fnos-dm-pick", function(cid)
             -- 兜底：只有 cid（如外部脚本触发）
             target = { cid = tostring(cid), id = tostring(cid) }
         end
+        -- 关键：ZDY 下载端用 item.keyword 做智能匹配（番剧区/视频区 LCS）。
+        -- 候选条目里的 keyword 可能是旧的垃圾值（如 URL 段 "video"），导致匹配到无关视频。
+        -- 这里强制用当前已校验的正确片名覆盖，保证下载端按真实片名匹配正片弹幕。
+        local real_kw = media_keyword()
+        if real_kw and real_kw ~= "" and real_kw ~= "video" then
+            target.keyword = real_kw
+            if not valid_movie_name(target.title) then target.title = real_kw end
+        end
+        mp.msg.info("danmaku pick key=" .. tostring(cid) .. " keyword=" .. tostring(target.keyword)
+            .. " source=" .. tostring(target.source) .. " cid=" .. tostring(target.cid))
         mp.osd_message("正在加载弹幕…", 1500)
         helper_async("/danmaku/download", utils.format_json({ item = target }), function(data)
             if not (data and data.ok and (data.count or 0) > 0) then

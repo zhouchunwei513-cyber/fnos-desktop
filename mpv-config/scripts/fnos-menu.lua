@@ -3,7 +3,9 @@
 --       默认右键菜单是英文。这里用 Lua 构造菜单数据（menu-data 属性），交给 mpv 内置
 --       context_menu 脚本以 OSD 方式渲染中文菜单，任何 0.36+ 版本都可用。
 -- 打开方式：给内置脚本发 script-message "context_menu open"（等价于 script-binding context_menu/open）。
--- v1.33 增强：音轨/内置字幕轨、在线字幕搜索下载、画质、播放信息、跳过片头片尾、弹幕。
+-- v1.33 增强：音轨/内置字幕轨、播放信息、倍速、画面调整等。
+-- v1.47.0：弹幕、在线字幕搜索下载、画质切换、跳过片头片尾（ZDY 增强）已全部下线，
+--          仅保留本地字幕（内置轨 + 本地字幕文件加载）、音轨、倍速、画面、播放信息等本地能力。
 -- 安全：全部逻辑包在 pcall 里，任何 API 不兼容/异常都只影响菜单本身，绝不影响播放。
 -- 注意：必须显式 require mp / mp.utils / mp.msg。shinchiro 构建下全局 mp 表不保证带 .utils，
 --       直接写 utils.format_json 会在运行时 "attempt to index field 'utils' (a nil value)"，
@@ -13,19 +15,6 @@ local mp = require 'mp'
 local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 
-local g_results = nil       -- 最近一次在线字幕搜索结果
-local g_searching = nil     -- 正在搜索的语言标记
-local g_dm_results = nil    -- 最近一次弹幕搜索结果（cid/标题）
-local g_dm_fallback_count = nil  -- 自动顺次尝试弹幕候选的计数（首个候选下载0条时尝试下一个）
-local g_dm_searching = false -- 弹幕是否正在搜索
-local g_skip_intro_sec = 90   -- 手动跳过片头：前进秒数
-local g_skip_credits_sec = 60 -- 手动跳到片尾：回退秒数
-local g_skip_auto = true      -- 自动跳过片头片尾（单一开关，默认开启；关闭则任何自动跳过都不触发）
-local g_auto_enhance = true   -- 起播自动经 ZDY 加载弹幕/字幕/片头片尾（再次打开影片秒载缓存）
-local g_auto_done = false     -- 当前文件自动增强是否已触发（防重）
--- ZDY 权威片头片尾时间戳（秒）；起播自动获取，优先于章节/默认秒数
-local g_zdy_intro_end = nil
-local g_zdy_credits_start = nil
 local build_menu            -- 前向声明（open_context_menu 会先用到，真正赋值在后面）
 
 -- ---------------- 基础工具 ----------------
@@ -277,15 +266,8 @@ safe_msg("fnos-playback-stats", show_playback_stats)
 -- 切文件 / 退出时自动关闭覆盖层，避免残留
 mp.register_event("end-file", function() if _stats_visible then pcall(hide_playback_stats) end end)
 
--- 清晰度说明：飞牛在线流媒体只提供单一播放地址，清晰度由片源决定，播放器无法切换源分辨率
--- （本地 vf scale 只是把画面渲染得更糊，窗口放大反而更差）。本项仅做说明，不再做误导性"降画质"。
--- 兼容旧消息名（OSC/旧配置可能仍发 fnos-quality*），收到时给出说明而不执行任何缩放。
-safe_msg("fnos-quality", function()
-    local vh = mp.get_property_number("height", 0) or 0
-    mp.osd_message("当前片源清晰度：" .. (vh > 0 and (vh .. "p") or "未知")
-        .. "\n在线影视清晰度由片源决定，播放器无法切换；\n如卡顿可尝试「倍速→降低」或全屏观看。", 4000)
-    pcall(close_submenu)
-end)
+-- v1.47.0：画质/清晰度切换已移除（在线流媒体清晰度由片源决定，mpv 无法切换源分辨率，
+-- 旧本地 vf scale 只会让画面更糊）。右键菜单与 OSC 均不再提供该项。
 
 -- 打开一个"子菜单"并保持其 menu-data 不被主菜单覆盖。
 -- 关键修复：旧实现打开子菜单后立即 refresh_menu_data()，把 menu-data 还原成主菜单，
@@ -301,21 +283,7 @@ close_submenu = function()
     refresh_menu_data()
 end
 
--- 底部控制栏「清晰度」按钮：在线流媒体清晰度由片源决定、不可切换，仅展示当前片源信息。
-safe_msg("fnos-quality-menu", function()
-    pcall(function()
-        local vw = mp.get_property_number("width", 0) or 0
-        local vh = mp.get_property_number("height", 0) or 0
-        local info = (vw > 0 and vh > 0) and (vw .. " × " .. vh) or "未知"
-        local data = {
-            { title = "片源清晰度：" .. info, state = { "disabled" }, cmd = "script-message fnos-quality" },
-            { type = "separator" },
-            { title = "在线影视清晰度由片源决定，无法切换", state = { "disabled" }, cmd = "script-message fnos-quality" },
-            { title = "卡顿可降低倍速或全屏观看", state = { "disabled" }, cmd = "script-message fnos-quality" },
-        }
-        open_submenu(data)
-    end)
-end)
+-- v1.47.0：底部控制栏「清晰度/画质」按钮已随画质功能一并移除。
 
 -- 倍速：设置播放速度（mpv 自动用 scaletempo2 保持音调不变）并给出明确 OSD 反馈。
 -- 注意：speed 是真实生效的（音频变速不变调、视频同步），此前用户以为"没用"是因为旧菜单
@@ -396,7 +364,6 @@ safe_msg("fnos-sub-menu", function()
             end
         end
         data[#data + 1] = { type = "separator" }
-        data[#data + 1] = { title = "在线搜索字幕…", cmd = "script-message fnos-sub-search zh" }
         data[#data + 1] = { title = "字幕上移", cmd = "add sub-margin-y 30; osd-msg show-text 字幕上移" }
         data[#data + 1] = { title = "字幕下移", cmd = "add sub-margin-y -30; osd-msg show-text 字幕下移" }
         data[#data + 1] = { title = "字幕放大", cmd = "add sub-scale 0.1" }
@@ -438,37 +405,7 @@ local function track_items(kind, prop)
     return list
 end
 
-local function online_result_items()
-    -- 搜索结果直接平铺进字幕菜单（不套二级子菜单）；无结果返回空
-    if not g_results or #g_results == 0 then return {} end
-    local t = { sep(), { ["title"] = "在线搜索结果（点击下载加载）", ["type"] = "separator" } }
-    for i, r in ipairs(g_results) do
-        if i <= 20 then
-            local src = r.source and (r.source .. " · ") or ""
-            local label = string.format("%s%s  [%s]  下载%s", src, r.name or ("字幕 " .. i), r.lang or "", tostring(r.downloads or 0))
-            if #label > 92 then label = label:sub(1, 92) .. "…" end
-            table.insert(t, item(label, "script-message fnos-sub-dl " .. tostring(r.id)))
-        end
-    end
-    return t
-end
-
--- 弹幕搜索结果：平铺进弹幕子菜单（与字幕一致，统一由本脚本持有 menu-data，避免与弹幕脚本竞态写菜单）
-local function danmaku_result_items()
-    if g_dm_searching then
-        return { sep(), { ["title"] = "弹幕搜索中，请稍候再右键打开…", ["selectable"] = false } }
-    end
-    if not g_dm_results or #g_dm_results == 0 then return {} end
-    local t = { sep(), { ["title"] = "弹幕搜索结果（点击加载）", ["type"] = "separator" } }
-    for i, r in ipairs(g_dm_results) do
-        if i <= 12 then
-            local label = r.name or ("弹幕 " .. tostring(r.id))
-            if #label > 90 then label = label:sub(1, 90) .. "…" end
-            table.insert(t, item(label, "script-message fnos-dm-pick " .. tostring(r.id)))
-        end
-    end
-    return t
-end
+-- v1.47.0：在线字幕搜索结果 / 弹幕搜索结果构建函数已随功能下线移除。
 
 -- ---------------- 菜单子构建器 ----------------
 
@@ -493,16 +430,12 @@ end
 
 -- 真正的菜单构建
 build_menu = function()
+    -- v1.47.0：移除弹幕、在线字幕搜索、跳过片头片尾（ZDY 增强）相关项。
+    -- 字幕菜单仅保留：显示/隐藏、加载本地字幕文件、内置字幕轨切换、字幕时序/位置/字号调整。
     local sub_menu = {
         item("显示 / 隐藏字幕", "cycle sub-visibility", "v"),
         item("加载本地字幕文件…", "script-message fnos-sub-local"),
-        sep(),
-        g_searching
-            and item("正在搜索在线字幕…")
-            or  item("在线搜索字幕（点击直接出结果）", "script-message fnos-sub-search zh"),
     }
-    local online = online_result_items()
-    for _, it in ipairs(online) do table.insert(sub_menu, it) end
     table.insert(sub_menu, sep())
     local builtin = builtin_sub_submenu()
     if #builtin > 1 then
@@ -531,28 +464,14 @@ build_menu = function()
             item("逐帧后退", "frame-back-step", ","),
         }},
 
-        { ["title"] = "跳过片头 / 片尾", ["type"] = "submenu", ["submenu"] = {
-            -- 单一开关：开启即自动跳过片头片尾（ZDY 时间戳/章节/默认秒数），关闭则不跳
-            item(g_skip_auto and "✓ 自动跳过片头片尾：已开启（点击关闭）" or "自动跳过片头片尾：已关闭（点击开启）", "script-message fnos-skip-auto"),
-            sep(),
-            item("手动跳过片头", "script-message fnos-skip intro"),
-            item("手动跳到片尾", "script-message fnos-skip credits"),
-        }},
-
         { ["title"] = "字幕", ["type"] = "submenu", ["submenu"] = sub_menu },
 
         audio_submenu(),
 
-        { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = (function()
-            local vw = mp.get_property_number("width", 0) or 0
-            local vh = mp.get_property_number("height", 0) or 0
-            local t = {
-                item("切换全屏", "cycle fullscreen", "f"),
-                sep(),
-                { ["title"] = "片源清晰度：" .. tostring(vw > 0 and (vw .. "×" .. vh) or "未知")
-                  .. "（在线片源决定，不可切换）", ["selectable"] = false },
-                sep(),
-                item("画面比例 16:9", "set video-aspect-override 16:9"),
+        { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = {
+            item("切换全屏", "cycle fullscreen", "f"),
+            sep(),
+            item("画面比例 16:9", "set video-aspect-override 16:9"),
             item("画面比例 4:3", "set video-aspect-override 4:3"),
             item("画面比例 自动", "set video-aspect-override -1", "A"),
             item("截图(含字幕)", "screenshot each-frame", "s"),
@@ -561,9 +480,7 @@ build_menu = function()
             item("亮度 -", "add brightness -10"),
             item("对比度 +", "add contrast 10"),
             item("对比度 -", "add contrast -10"),
-            }
-            return { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = t }
-        end)()},
+        }},
 
         { ["title"] = "播放速度", ["type"] = "submenu", ["submenu"] = (function()
             local cur = mp.get_property_number("speed", 1) or 1
@@ -578,26 +495,6 @@ build_menu = function()
             end
             return t
         end)()},
-
-        { ["title"] = "弹幕", ["type"] = "submenu", ["submenu"] = (function()
-            local dmenu = {
-                { ["title"] = g_auto_enhance and "✓ 起播自动加载（弹幕/字幕/片头）" or "起播自动加载（弹幕/字幕/片头）：关",
-                  ["cmd"] = "script-message fnos-auto-enhance" },
-                item("🔍 搜索并加载弹幕（自动按片名）", "script-message fnos-dm-search"),
-                item("弹幕 开 / 关", "script-message fnos-danmaku-toggle"),
-            }
-            -- 搜索结果直接平铺（点 fnos-dm-search 后 helper 返回，写入菜单，重新右键即见）
-            for _, it in ipairs(danmaku_result_items()) do table.insert(dmenu, it) end
-            table.insert(dmenu, sep())
-            table.insert(dmenu, item("字号 大", "script-message fnos-danmaku-opts size 42"))
-            table.insert(dmenu, item("字号 中", "script-message fnos-danmaku-opts size 34"))
-            table.insert(dmenu, item("字号 小", "script-message fnos-danmaku-opts size 26"))
-            table.insert(dmenu, item("速度 慢", "script-message fnos-danmaku-opts speed 0.7"))
-            table.insert(dmenu, item("速度 正常", "script-message fnos-danmaku-opts speed 1.0"))
-            table.insert(dmenu, item("速度 快", "script-message fnos-danmaku-opts speed 1.4"))
-            table.insert(dmenu, item("关闭弹幕", "script-message fnos-danmaku-off"))
-            return dmenu
-        end)() },
 
         { ["title"] = "进度跳转", ["type"] = "submenu", ["submenu"] = {
             item("后退 5 秒", "seek -5", "←"),
@@ -617,44 +514,7 @@ build_menu = function()
     }
 end
 
--- ---------------- 脚本消息：字幕搜索/下载/本地/画中画 ----------------
-safe_msg("fnos-sub-search", function(lang)
-    pcall(function()
-        if g_searching then return end
-        g_searching = lang
-        mp.osd_message("正在搜索在线字幕（" .. (lang == "en" and "英文" or "中文") .. "）…", 4000)
-        local body = utils.format_json({ filename = media_keyword(), lang = lang })
-        helper_async("/subtitle/search", body, function(data)
-            g_searching = nil
-            if not data or not data.ok then
-                mp.osd_message("在线字幕搜索失败（可能被限流，请稍后再试）", 4000); return
-            end
-            g_results = data.results or {}
-            if #g_results == 0 then mp.osd_message("未找到匹配字幕，可尝试『在线搜索字幕（英文）』或更换片名", 4000); return end
-            mp.osd_message("找到 " .. tostring(#g_results) .. " 条字幕，请在字幕菜单选择", 1800)
-            open_context_menu()
-        end)
-    end)
-end)
-
-safe_msg("fnos-sub-dl", function(id)
-    pcall(function()
-        local target = nil
-        if g_results then
-            for _, r in ipairs(g_results) do if tostring(r.id) == tostring(id) then target = r end end
-        end
-        if not target then mp.osd_message("字幕条目已过期，请重新搜索", 3000); return end
-        mp.osd_message("正在下载并加载字幕…", 4000)
-        helper_async("/subtitle/download", utils.format_json({ item = target }), function(data)
-            if data and data.ok then
-                mp.osd_message("字幕已加载（" .. tostring(data.count or 1) .. " 个）", 3000)
-            else
-                mp.osd_message("字幕下载失败：" .. ((data and data.error) or "网络错误"), 4000)
-            end
-        end)
-    end)
-end)
-
+-- ---------------- 脚本消息：本地字幕加载（v1.47.0 起移除在线字幕搜索/下载） ----------------
 safe_msg("fnos-sub-local", function()
     pcall(function()
         mp.osd_message("请在弹出的对话框选择字幕文件…", 4000)
@@ -670,372 +530,12 @@ safe_msg("fnos-sub-local", function()
     end)
 end)
 
--- ---------------- 弹幕：搜索/选择（结果平铺进本脚本菜单，避免与弹幕脚本竞态写 menu-data）----------------
-safe_msg("fnos-dm-search", function()
-    pcall(function()
-        if g_dm_searching then return end
-        g_dm_searching = true
-        g_dm_results = nil
-        local kw = media_keyword()
-        local sdur = mp.get_property_number("duration", 0) or 0
-        mp.osd_message("正在搜索弹幕：" .. kw .. " …", 4000)
-        helper_async("/danmaku/search", utils.format_json({ keyword = kw, duration = sdur }), function(data)
-            g_dm_searching = false
-            if not data or not data.ok then
-                mp.osd_message("弹幕搜索失败（网络错误）", 1800); return
-            end
-            g_dm_results = data.results or {}
-            if #g_dm_results == 0 then
-                mp.osd_message("未找到弹幕，可换片名后重试", 1800); return
-            end
-            mp.osd_message("找到 " .. tostring(#g_dm_results) .. " 组弹幕，请右键『弹幕』菜单选择加载", 1800)
-            refresh_menu_data()
-        end)
-    end)
-end)
+-- v1.47.0：弹幕搜索/选择/下载处理器已移除（弹幕功能整体下线）。
 
--- 选择某组弹幕：在菜单脚本里查回完整条目（含 source/bvid/episodeId/cid）后，
--- 直接调 helper 的 /danmaku/download（ZDY 需要完整条目才能下载）。
--- 下载成功后 helper 经 IPC 回推 fnos-danmaku-data，弹幕渲染脚本自动渲染，无需再转发。
-safe_msg("fnos-dm-pick", function(cid)
-    pcall(function()
-        if not cid then return end
-        -- 用户手动从菜单选择候选 = 新一轮，清空自动顺次计数
-        g_dm_fallback_count = nil
-        local target = nil
-        if g_dm_results then
-            for _, r in ipairs(g_dm_results) do
-                if tostring(r.id) == tostring(cid)
-                    or tostring(r.episodeId) == tostring(cid)
-                    or tostring(r.cid) == tostring(cid)
-                    or tostring(r.bvid) == tostring(cid) then target = r end
-            end
-        end
-        if not target then
-            -- 兜底：只有 cid（如外部脚本触发）
-            target = { cid = tostring(cid), id = tostring(cid) }
-        end
-        -- 关键：ZDY 下载端用 item.keyword 做智能匹配（番剧区/视频区 LCS）。
-        -- 候选条目里的 keyword 可能是旧的垃圾值（如 URL 段 "video"），导致匹配到无关视频。
-        -- 这里强制用当前已校验的正确片名覆盖，保证下载端按真实片名匹配正片弹幕。
-        local real_kw = media_keyword()
-        if real_kw and real_kw ~= "" and real_kw ~= "video" then
-            target.keyword = real_kw
-            if not valid_movie_name(target.title) then target.title = real_kw end
-        end
-        mp.msg.info("danmaku pick key=" .. tostring(cid) .. " keyword=" .. tostring(target.keyword)
-            .. " source=" .. tostring(target.source) .. " cid=" .. tostring(target.cid))
-        mp.osd_message("正在加载弹幕…", 1500)
-        helper_async("/danmaku/download", utils.format_json({ item = target }), function(data)
-            if data and data.ok and (data.count or 0) > 0 then
-                return  -- 成功，弹幕渲染脚本会自行 OSD
-            end
-            -- 兜底：当前候选下载 0 条（如命中二创/无弹幕切片），自动尝试下一个候选，最多顺次尝试 3 个。
-            if g_dm_results then
-                local cur_idx = nil
-                for i, r in ipairs(g_dm_results) do
-                    if tostring(r.id) == tostring(cid)
-                        or tostring(r.episodeId) == tostring(cid)
-                        or tostring(r.cid) == tostring(cid)
-                        or tostring(r.bvid) == tostring(cid) then cur_idx = i; break end
-                end
-                if cur_idx then
-                    local tries = (g_dm_fallback_count or 0) + 1
-                    for j = cur_idx + 1, #g_dm_results do
-                        local nx = g_dm_results[j]
-                        local nk = nx and (nx.id or nx.episodeId or nx.cid or nx.bvid)
-                        if nk and tries <= 3 then
-                            g_dm_fallback_count = tries
-                            mp.msg.info("danmaku 候选 " .. tostring(cur_idx) .. " 下载0条，改试候选 " .. tostring(j))
-                            mp.commandv("script-message", "fnos-dm-pick", tostring(nk))
-                            return
-                        end
-                    end
-                end
-            end
-            g_dm_fallback_count = nil
-            mp.osd_message("未获取到弹幕（已尝试多个匹配源，可能该片暂无弹幕）", 3000)
-        end)
-    end)
-end)
+-- v1.47.0：跳过片头/片尾（ZDY 增强）功能已移除。
 
--- ---------------- 跳过片头 / 片尾 ----------------
--- 说明：权威片头片尾时间戳由 NAS 端 FPK（SkipIntro 库）提供；客户端这里先提供
---       立即可用的"手动跳过 + 按章节自动跳过"，无时间戳数据时也能正常工作。
--- 手动：片头默认前进 g_skip_intro_sec(90s)；片尾回退 g_skip_credits_sec(60s)。
--- 自动：扫描章节标题，命中"片头/OP/intro"的章节结束位置，播放进入该区间时自动跳到其结尾；
---       命中"片尾/ED/credits"则跳到该章节开头之后（接近正片结束的片尾可按需求跳到下一集）。
-local function find_chapter_range(keywords)
-    local n = mp.get_property_number("chapter-list/count", 0) or 0
-    for i = 0, n - 1 do
-        local base = "chapter-list/" .. i .. "/"
-        local title = (mp.get_property(base .. "title") or ""):lower()
-        for _, kw in ipairs(keywords) do
-            if title:find(kw, 1, true) then
-                local start_t = mp.get_property_number(base .. "time", 0) or 0
-                -- 章节结束 = 下一章开始；最后一章用文件时长
-                local end_t = mp.get_property_number("duration", 0) or 0
-                if i + 1 < n then
-                    end_t = mp.get_property_number("chapter-list/" .. (i + 1) .. "/time", end_t) or end_t
-                end
-                return start_t, end_t, title
-            end
-        end
-    end
-    return nil
-end
 
-local function do_skip_intro()
-    pcall(function()
-        -- 优先 ZDY 权威时间戳
-        if g_zdy_intro_end and g_zdy_intro_end > 0 then
-            local pos = mp.get_property_number("time-pos", 0) or 0
-            if pos < g_zdy_intro_end - 1 then
-                mp.commandv("seek", tostring(g_zdy_intro_end), "absolute+exact")
-                mp.osd_message("已跳过片头（ZDY " .. tostring(math.floor(g_zdy_intro_end)) .. "s）", 1800)
-                return
-            end
-        end
-        -- 其次用章节标记（精确），否则用默认固定秒数
-        local s, e = find_chapter_range({ "片头", "op", "intro", "开场" })
-        if s then
-            local pos = mp.get_property_number("time-pos", 0) or 0
-            if pos >= s - 1 and pos < e then
-                mp.commandv("seek", tostring(e), "absolute+exact")
-                mp.osd_message("已跳过片头（章节）", 2000); return
-            end
-        end
-        mp.commandv("seek", tostring(g_skip_intro_sec), "relative+exact")
-        mp.osd_message("已跳过片头（前进 " .. tostring(g_skip_intro_sec) .. " 秒）", 2000)
-    end)
-end
-
-local function do_skip_credits()
-    pcall(function()
-        local dur = mp.get_property_number("duration", 0) or 0
-        -- 优先 ZDY 权威片尾时间戳
-        if g_zdy_credits_start and g_zdy_credits_start > 0 then
-            mp.commandv("seek", tostring(g_zdy_credits_start), "absolute+exact")
-            mp.osd_message("已跳到片尾（ZDY " .. tostring(math.floor(g_zdy_credits_start)) .. "s）", 1800)
-            return
-        end
-        local s = find_chapter_range({ "片尾", "ed", "credits", "ending", "彩蛋" })
-        if s then
-            mp.commandv("seek", tostring(s), "absolute+exact")
-            mp.osd_message("已跳到片尾开始处", 2000); return
-        end
-        -- 无章节：回退 credits_sec（用于回看片尾字幕），直播/无时长流则提示
-        if dur > 0 then
-            local target = math.max(0, dur - g_skip_credits_sec)
-            mp.commandv("seek", tostring(target), "absolute+exact")
-            mp.osd_message("已跳到片尾前 " .. tostring(g_skip_credits_sec) .. " 秒", 2000)
-        else
-            mp.osd_message("当前为直播流，无片尾可跳转", 2000)
-        end
-    end)
-end
-
-safe_msg("fnos-skip", function(which)
-    if which == "credits" then do_skip_credits() else do_skip_intro() end
-end)
-safe_msg("fnos-skip-set", function(kind, sec)
-    pcall(function()
-        local n = tonumber(sec)
-        if not n then return end
-        if kind == "credits" then g_skip_credits_sec = n
-        else g_skip_intro_sec = n end
-        mp.osd_message((kind == "credits" and "片尾回退" or "片头跳过") .. "长度已设为 " .. tostring(n) .. " 秒", 2000)
-        refresh_menu_data()
-    end)
-end)
-
--- 自动跳过片头片尾：单一开关 g_skip_auto（默认开启）。开启时：
---   片头——起播仍在片头区间内自动跳到片头结束（ZDY 时间戳优先，其次章节标记，再不行固定秒数）。
---   片尾——播放到达片尾开始位置时提示并跳过（ZDY 时间戳优先，其次章节标记）。
--- 关闭时：以上自动行为全部不触发（手动"跳过片头/片尾"菜单项仍可用）。
-local g_auto_intro_done = false
-local g_auto_credits_done = false
-safe_msg("fnos-skip-auto", function()
-    pcall(function()
-        g_skip_auto = not g_skip_auto
-        mp.osd_message(g_skip_auto and "已开启自动跳过片头片尾" or "已关闭自动跳过片头片尾", 2000)
-        refresh_menu_data()
-    end)
-end)
-mp.observe_property("time-pos", "number", function(pos)
-    if not pos then return end
-    -- 单一开关：关闭则不做任何自动跳过
-    if not g_skip_auto then return end
-    local dur = mp.get_property_number("duration", 0) or 0
-    pcall(function()
-        -- ===== 片头自动跳过（只跳一次）=====
-        if not g_auto_intro_done and pos < 30 then
-            local introEnd = nil
-            -- ZDY 权威时间戳优先
-            if g_zdy_intro_end and g_zdy_intro_end > 0 and g_zdy_intro_end < dur then
-                introEnd = g_zdy_intro_end
-            else
-                local _s, e = find_chapter_range({ "片头", "op", "intro", "开场" })
-                if e and e > 5 and e < dur then introEnd = e end
-            end
-            -- 既无 ZDY 也无章节：起播在最开始且片长足够，用固定片头秒数兜底
-            if not introEnd and dur > 600 and pos < 5 then introEnd = g_skip_intro_sec end
-            if introEnd and pos < introEnd - 1 then
-                g_auto_intro_done = true
-                mp.commandv("seek", tostring(introEnd), "absolute+exact")
-                mp.osd_message("自动跳过片头", 1800)
-            end
-        end
-        -- ===== 片尾自动跳过（到达片尾开始位置时提示并跳过，只跳一次）=====
-        if not g_auto_credits_done and dur > 600 and pos > dur * 0.5 then
-            local creditsStart = nil
-            if g_zdy_credits_start and g_zdy_credits_start > 0 and g_zdy_credits_start < dur then
-                creditsStart = g_zdy_credits_start
-            else
-                local s = find_chapter_range({ "片尾", "ed", "credits", "ending" })
-                if s and s > dur * 0.5 then creditsStart = s end
-            end
-            if creditsStart and pos >= creditsStart and pos < creditsStart + 2 then
-                g_auto_credits_done = true
-                -- 片尾通常意味着本集结束：跳到接近结尾（保留少量时间，不直接终止播放）
-                local target = dur - 2
-                mp.commandv("seek", tostring(math.max(target, creditsStart)), "absolute+exact")
-                mp.osd_message("已自动跳过片尾", 2000)
-            end
-        end
-    end)
-end)
-
--- ---------------- 起播自动增强（弹幕 + 字幕 + 片头片尾，仅走 ZDY 服务端）----------------
--- 需求：再次打开影片时自动加载"已搜索到的"弹幕/字幕/片头片尾。ZDY 服务端有磁盘持久缓存
---       （搜索结果 7 天 / 弹幕 30 天），因此即使是首次也会把结果缓存，重复打开秒返回。
--- 行为：file-loaded 后等片名就绪 → 并行向 ZDY 请求：弹幕(自动加载最优)、字幕(自动加载最优)、
---       片头片尾时间戳(自动应用到下面的 time-pos 观察者)。任一失败静默，绝不打扰播放。
--- 直播流（无时长）跳过自动加载。可在『弹幕』菜单用"起播自动加载"开关关闭。
-local function is_live()
-    -- 直播流为 http(s) 且无确定时长；点播文件（即使是 http）都有 duration
-    local dur = mp.get_property_number("duration", 0) or 0
-    local path = mp.get_property("path") or ""
-    return dur <= 0 and path:find("^http") ~= nil
-end
-
-local function auto_fetch_skip(kw)
-    local dur = mp.get_property_number("duration", 0) or 0
-    helper_async("/skip/timestamps", utils.format_json({ title = kw, filename = kw, duration = dur }), function(data)
-        if data and data.ok then
-            g_zdy_intro_end = tonumber(data.introEnd) or nil
-            g_zdy_credits_start = tonumber(data.creditsStart or data.outroStart) or nil
-        end
-    end)
-end
-
-local function auto_fetch_danmaku(kw)
-    local dur = mp.get_property_number("duration", 0) or 0
-    helper_async("/danmaku/search", utils.format_json({ keyword = kw, duration = dur }), function(data)
-        if not data or not data.ok or not data.results or #data.results == 0 then return end
-        g_dm_results = data.results
-        -- ZDY 已按片名清洗 + 时长贴合度过滤排序（同名 MV/解说切片已剔除）。
-        -- 自动加载第一项；用 fnos-dm-pick（携带完整条目 source/bvid/episodeId）由 helper 转发 ZDY 下载。
-        local best = data.results[1]
-        if best then
-            local key = best.id or best.episodeId or best.cid or best.bvid
-            if key then mp.commandv("script-message", "fnos-dm-pick", tostring(key)) end
-        end
-        refresh_menu_data()
-    end)
-end
-
-local function auto_fetch_subtitle(kw)
-    local dur = mp.get_property_number("duration", 0) or 0
-    helper_async("/subtitle/search", utils.format_json({ title = kw, filename = kw, lang = "zh", duration = dur }), function(data)
-        if not data or not data.ok or not data.results or #data.results == 0 then return end
-        g_results = data.results
-        -- 自动下载并加载第一条（ZDY 已按相关度评分排序，最匹配的简体/双语正片字幕在最前）。
-        -- helper 下载后作为外挂字幕载入但不强制显示，用户可在字幕菜单切换/关闭。
-        local best = data.results[1]
-        if best then
-            helper_async("/subtitle/download", utils.format_json({ item = best }), function(dd)
-                if dd and dd.ok and (dd.count or 0) > 0 then
-                    mp.osd_message("已自动加载匹配字幕（可在字幕菜单切换）", 2200)
-                end
-            end)
-        end
-        refresh_menu_data()
-    end)
-end
-
-local function run_auto_enhance(confirmedTitle)
-    pcall(function()
-        if not g_auto_enhance then return end
-        if is_live() then return end
-        -- 优先用 tick 轮询确认过的片名；若不可靠再走 media_keyword()（内部对 media-title 做校验）。
-        local kw = valid_movie_name(confirmedTitle) and tostring(confirmedTitle) or media_keyword()
-        if not kw or kw == "video" or kw == "" or not valid_movie_name(kw) then
-            mp.msg.info("auto-enhance abort: no valid title (raw=" .. tostring(confirmedTitle)
-                .. " kw=" .. tostring(kw) .. " media-title=" .. tostring(mp.get_property("media-title")) .. ")")
-            return
-        end
-        mp.msg.info("auto-enhance start kw=" .. kw)
-        -- 自动跳过片头片尾：仅在开关开启时获取时间戳（关闭则不请求、不跳过）
-        if g_skip_auto then auto_fetch_skip(kw) end
-        auto_fetch_danmaku(kw)
-        auto_fetch_subtitle(kw)
-    end)
-end
-
--- file-loaded 后片名可能尚未就绪，轮询最多约 6 秒直到拿到片名再触发
-local function schedule_auto_enhance()
-    g_auto_done = false
-    g_auto_intro_done = false
-    g_auto_credits_done = false
-    g_zdy_intro_end = nil
-    g_zdy_credits_start = nil
-    local tries = 0
-    local function tick()
-        pcall(function()
-            tries = tries + 1
-            if g_auto_done then return end
-            local title = mp.get_property("media-title") or ""
-            -- 必须等到 media-title 是"合法片名"才触发（拒绝 video/URL 段/哈希/对白）。
-            -- 额外：若当前是压制/抓轨文件名（如 No More Bets.2023.2160p...-BestWEB），流媒体场景
-            -- force-media-title 稍后（本日志 1.6s 后）会覆盖成正式中文片名，继续等待，避免抢跑用英文
-            -- 压制名搜弹幕/字幕。本地文件无 force-media-title，超时后用压制名兜底。
-            local fn_raw = tostring(mp.get_property("filename/no-ext") or ""):gsub("^.*[\\/]", "")
-            local title_is_fn = (title == fn_raw) or is_release_filename(title)
-            local good = valid_movie_name(title) and not is_release_filename(title) and not (title_is_fn and is_release_filename(fn_raw))
-            if good then
-                g_auto_done = true
-                run_auto_enhance(title)
-                return
-            end
-            if tries >= 24 then  -- 约 12 秒：流媒体仍无正式片名，用压制文件名兜底（本地文件场景）
-                g_auto_done = true
-                local kw = media_keyword()
-                if kw ~= "video" and valid_movie_name(kw) then
-                    mp.msg.info("auto-enhance fallback use filename kw=" .. kw)
-                    run_auto_enhance(kw)
-                else
-                    mp.msg.info("auto-enhance give up: no valid title after retries, media-title=" .. title)
-                end
-                return
-            end
-            mp.add_timeout(0.5, tick)
-        end)
-    end
-    mp.add_timeout(0.8, tick)
-end
-
-mp.register_event("file-loaded", function()
-    pcall(function() schedule_auto_enhance() end)
-end)
-
-safe_msg("fnos-auto-enhance", function()
-    pcall(function()
-        g_auto_enhance = not g_auto_enhance
-        mp.osd_message(g_auto_enhance and "已开启起播自动加载（弹幕/字幕/片头片尾）" or "已关闭起播自动加载", 2500)
-        refresh_menu_data()
-    end)
-end)
+-- v1.47.0：起播自动增强（自动弹幕/在线字幕/片头片尾）已整体移除。
 
 -- 双击：独立播放器窗口（ontop=no，"用 mpv 打开"）双击=全屏切换；嵌入覆盖窗（ontop=yes）不动作。
 local function sync_dbl_binding()
@@ -1062,5 +562,5 @@ pcall(function()
     end)
     -- 独立窗口双击全屏；延迟到首帧后确保 ontop 已按形态生效。
     mp.observe_property("ontop", "bool", function() sync_dbl_binding() end)
-    mp.msg.info("FNOS 中文右键菜单已加载（含在线字幕/画质/跳过片头片尾/弹幕）")
+    mp.msg.info("FNOS 中文右键菜单已加载（本地字幕/音轨/倍速/画面/播放信息；v1.47.0 已移除弹幕/在线字幕/画质/片头片尾）")
 end)

@@ -43,6 +43,25 @@ contextBridge.exposeInMainWorld('fnos', {
       try { ipcRenderer.send('fnos:media-log', { stage, t: Date.now(), url: location.href, ...(extra || {}) }); } catch (_) {}
     };
 
+    // v1.47.0 性能守卫：视频接管只在【飞牛影视/视频播放页】才有意义。
+    // 文件管理、相册、设置、第三方大型 FPK 应用等窗口此前也会无条件 hook
+    // fetch/XHR 并启动 subtree MutationObserver（任意 DOM 变更都全量
+    // querySelectorAll('video')），在文件列表/重前端应用里造成持续 CPU 占用、卡顿。
+    // 这里按路由判断：非视频页直接跳过整套拦截，进入视频页后（SPA 导航）再惰性启动。
+    const VIDEO_PATH_RE = /\/v\/(?:video|movie|tv(?:\/episode|\/season)?|folder|media|live)\//i;
+    let __installed = false;
+    function isVideoRoute() {
+      try {
+        const p = location.pathname || '';
+        if (VIDEO_PATH_RE.test(p)) return true;
+        if (/\/v\/live\//.test(p)) return true;
+        // 播放页可能带 media_guid / itemGuid 查询参数
+        const sp = new URLSearchParams(location.search || '');
+        if (sp.get('media_guid') || sp.get('itemGuid') || sp.get('item_guid')) return true;
+        return false;
+      } catch (_) { return false; }
+    }
+
     // ---- fNOS API 签名（与参考客户端 fntv 完全一致：MD5(key_url_nonce_ts_md5(body)_secret)）----
     const FN_API_KEY = 'NDzZTVxnRKP8Z0jXg1VAMonaG8akvh';
     const FN_API_SECRET = '16CCEB3D-AB42-077D-36A1-F355324E4237';
@@ -857,7 +876,47 @@ contextBridge.exposeInMainWorld('fnos', {
     }
     function scan() { try { document.querySelectorAll('video').forEach(watch); } catch (_) {} }
 
+    // MutationObserver 高频回调节流：文件列表/重前端应用 DOM 变更极频繁，
+    // 若每次变更都全量 scan() 会持续占满主线程。用 rAF + 时间窗合并，最多每 400ms 扫一次，
+    // 且仅在视频页才扫描 <video>。
+    let __scanQueued = false;
+    let __lastScanAt = 0;
+    function scheduleScan() {
+      if (__scanQueued) return;
+      __scanQueued = true;
+      const delay = Math.max(0, 400 - (Date.now() - __lastScanAt));
+      setTimeout(() => {
+        __scanQueued = false;
+        __lastScanAt = Date.now();
+        try { if (isVideoRoute() && !state.handled) scan(); } catch (_) {}
+      }, delay);
+    }
+
     const boot = () => {
+      // 非视频页：不 hook fetch/XHR、不装 MutationObserver，彻底避免文件管理/FPK 应用卡顿。
+      // 仅保留一个极轻量的路由监听（重写 pushState/replaceState 各一次），SPA 导航到
+      // 视频页时再惰性完成安装。
+      try {
+        const ensureInstall = () => { if (!__installed && isVideoRoute()) { __installed = true; installHooks(); } };
+        const wrapHistory = (name) => {
+          const orig = history[name];
+          if (typeof orig !== 'function' || orig.__mpvWrapped) return;
+          history[name] = function () {
+            const r = orig.apply(this, arguments);
+            try { ensureInstall(); if (__installed) { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; } } catch (_) {}
+            return r;
+          };
+          history[name].__mpvWrapped = true;
+        };
+        wrapHistory('pushState');
+        wrapHistory('replaceState');
+        window.addEventListener('popstate', () => { try { ensureInstall(); if (__installed) { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; } } catch (_) {} });
+        ensureInstall();
+      } catch (_) {}
+    };
+
+    // 真正安装视频接管（仅视频页执行一次）
+    function installHooks() {
       readTokenFromStorage();
       state.itemGuid = guidFromPath();
       // 挂载"重新取流"函数：直接给【隔离世界模块级变量】赋值（与 contextBridge 暴露的
@@ -867,14 +926,16 @@ contextBridge.exposeInMainWorld('fnos', {
       try { hookXHR(); } catch (_) {}
       scan();
       try {
-        const mo = new MutationObserver(() => { scan(); const g = guidFromPath(); if (g && g !== state.itemGuid) { state.itemGuid = g; state.handled = false; state.mediaGuid = ''; } });
+        const mo = new MutationObserver(() => { scheduleScan(); const g = guidFromPath(); if (g && g !== state.itemGuid) { state.itemGuid = g; state.handled = false; state.mediaGuid = ''; } });
         mo.observe(document.documentElement || document, { childList: true, subtree: true });
       } catch (_) {}
       // 路由变化（SPA）重置
       try {
         const push = history.pushState;
-        history.pushState = function () { const r = push.apply(this, arguments); try { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; startRectLoop && reportRect(); } catch (_) {} return r; };
-        window.addEventListener('popstate', () => { try { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; } catch (_) {} });
+        if (typeof push === 'function' && !push.__mpvRouteWrapped) {
+          history.pushState = function () { const r = push.apply(this, arguments); try { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; startRectLoop && reportRect(); } catch (_) {} return r; };
+          history.pushState.__mpvRouteWrapped = true;
+        }
       } catch (_) {}
       ipcRenderer.on('mpv:embed-closed', () => { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); log('embed.closed', {}); });
       // 菜单/快捷键强制接管：即使页面无 <video>（如 MKV 直接跳转），也按路由解析直链

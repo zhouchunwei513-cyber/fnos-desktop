@@ -878,28 +878,8 @@ function start() {
 
         if (route === '/ping') return sendJson(res, 200, { ok: true, pip: !!global.__mpvHelperPip });
 
-        if (route === '/subtitle/search') {
-          const q = body.filename || body.title || body.query || body.keyword || '';
-          log('info', 'sub.search.req', { raw: String(q).slice(0, 80), lang: body.lang || 'zh' });
-          // 只使用 ZDY 增强服务（NAS 端三网自适应 + assrt 抓取）。已按用户要求移除客户端本地直连兜底，
-          // 避免数据中心 IP 被风控返回垃圾/空结果，统一以 NAS 通道为准。
-          try {
-            const zr = await requireZdy('/subtitle/search', { title: q, filename: q, lang: body.lang || 'zh' });
-            if (zr && zr.ok && Array.isArray(zr.results) && zr.results.length) {
-              log('info', 'sub.search.zdy', { count: zr.results.length });
-              return sendJson(res, 200, { ok: true, results: zr.results, source: 'zdy' });
-            }
-            log('warn', 'sub.search.zdy-empty', { error: zr && zr.error });
-            return sendJson(res, 200, { ok: false, results: [], error: (zr && zr.error) || '未搜索到字幕（请确认 ZDY 增强服务已启用且片名正确）' });
-          } catch (e) {
-            log('warn', 'sub.search.zdy-err', { error: String(e && e.message || e) });
-            return sendJson(res, 200, { ok: false, results: [], error: '字幕服务不可用：' + String(e && e.message || e) });
-          }
-        }
-        if (route === '/subtitle/download') {
-          const r = await downloadSubtitle(body.item || {});
-          return sendJson(res, 200, { ok: true, loaded: r.loaded, count: r.loaded.length });
-        }
+        // v1.47.0：在线弹幕 / 在线字幕搜索 / 跳过片头片尾（ZDY 增强）功能已全部下线，
+        // helper 仅保留本地字幕文件选择与画中画（PiP）能力。
         if (route === '/subtitle/open-dialog') {
           const files = await openSubtitleFileDialog();
           if (files && files.length) {
@@ -920,55 +900,6 @@ function start() {
           }
           log(r && r.ok ? 'info' : 'warn', 'pip.toggle', { mode: pipMode, size: body.size || 0, ok: !!(r && r.ok), pip: !!(r && r.pip), error: r && r.error || '' });
           return sendJson(res, 200, r || { ok: false, error: '无结果', pip: false });
-        }
-        if (route === '/danmaku/search') {
-          const kw = body.keyword || body.filename || body.query || body.title || '';
-          // 只使用 ZDY 增强服务（透传 duration 过滤同名 MV/解说）。已按用户要求移除客户端本地直连兜底。
-          try {
-            const zr = await requireZdy('/danmaku/search', { keyword: kw, filename: body.filename || kw, title: body.title || kw, duration: Number(body.duration) || 0, season: Number(body.season) || 0, episode: Number(body.episode) || 0 });
-            if (zr && zr.ok && Array.isArray(zr.results) && zr.results.length) {
-              log('info', 'danmaku.search.zdy', { count: zr.results.length });
-              return sendJson(res, 200, { ok: true, results: zr.results, source: 'zdy' });
-            }
-            log('warn', 'danmaku.search.zdy-empty', { error: zr && zr.error });
-            return sendJson(res, 200, { ok: false, results: [], error: (zr && zr.error) || '未搜索到弹幕（请确认 ZDY 增强服务已启用且片名正确）' });
-          } catch (e) {
-            log('warn', 'danmaku.search.zdy-err', { error: String(e && e.message || e) });
-            return sendJson(res, 200, { ok: false, results: [], error: '弹幕服务不可用：' + String(e && e.message || e) });
-          }
-        }
-        if (route === '/danmaku/download') {
-          // ZDY 的 /danmaku/download 需要完整条目对象（source/bvid/episodeId/cid 等）。
-          // 只走 ZDY 通道，已按用户要求移除客户端本地直连 B 站兜底。
-          const item = body.item || {
-            source: body.source, bvid: body.bvid, aid: body.aid, cid: body.cid || body.id,
-            id: body.id, episodeId: body.episodeId, animeId: body.animeId,
-            title: body.title, filename: body.filename,
-          };
-          try {
-            const zr = await requireZdy('/danmaku/download', item);
-            const zl = (zr && Array.isArray(zr.comments) && zr.comments) || (zr && Array.isArray(zr.danmaku) && zr.danmaku) || [];
-            if (zr && zr.ok && zl.length) {
-              log('info', 'danmaku.download.zdy', { count: zl.length, cached: !!zr.cached });
-              await pushDanmakuToMpv(zl, item.cid || item.episodeId || item.bvid || 'zdy');
-              return sendJson(res, 200, { ok: true, count: zl.length, source: 'zdy' });
-            }
-            log('warn', 'danmaku.download.zdy-empty', { error: zr && zr.error, cid: String(item && item.cid || '') });
-            return sendJson(res, 200, { ok: false, count: 0, error: (zr && zr.error) || '弹幕加载失败（ZDY 未返回数据，请确认增强服务与片名）' });
-          } catch (e) {
-            log('warn', 'danmaku.download.zdy-err', { error: String(e && e.message || e) });
-            return sendJson(res, 200, { ok: false, count: 0, error: '弹幕下载服务不可用：' + String(e && e.message || e) });
-          }
-        }
-        // 跳过片头片尾时间戳（仅使用 ZDY）
-        if (route === '/skip/timestamps') {
-          const zr = await requireZdy('/skip/timestamps', { title: body.title || '', filename: body.filename || '', duration: body.duration || 0, season: body.season || 0, episode: body.episode || 0 });
-          if (zr.ok) {
-            // ZDY 字段为 outroStart（片尾开始），兼容 creditsStart 两种命名
-            const creditsStart = zr.creditsStart != null ? zr.creditsStart : zr.outroStart;
-            return sendJson(res, 200, { ok: true, introStart: zr.introStart, introEnd: zr.introEnd, creditsStart, outroStart: zr.outroStart, source: 'zdy' });
-          }
-          return sendJson(res, 200, { ok: false, introStart: null, introEnd: null, creditsStart: null, error: zr.error || '片头片尾服务不可用' });
         }
         return sendJson(res, 404, { ok: false, error: 'not found' });
       } catch (e) {

@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.46.0';
+const APP_VERSION = '1.47.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3314,127 +3314,6 @@ ipcMain.handle('settings:vlc-runtime', async () => {
   }
 });
 
-// v1.34.0：保存 ZDY 增强服务设置（弹幕/字幕/片头片尾走 NAS FPK）
-ipcMain.handle('settings:set-enhance', async (_e, patch) => {
-  try {
-    const settings = (typeof loadSettings === 'function' ? loadSettings() : (global.__appSettings || {})) || {};
-    const cur = settings.enhance || { enabled: false, baseUrl: '', authCode: '' };
-    const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
-    const lan = norm(patch && patch.lan != null ? patch.lan : cur.lan);
-    const ddns = norm(patch && patch.ddns != null ? patch.ddns : cur.ddns);
-    const frp = norm(patch && patch.frp != null ? patch.frp : cur.frp);
-    // 兼容旧版单地址字段 baseUrl
-    const legacyBase = norm(patch && patch.baseUrl != null ? patch.baseUrl : cur.baseUrl);
-    const lanFinal = lan || legacyBase;
-    const next = {
-      enabled: !!(patch && patch.enabled),
-      lan: lanFinal,
-      ddns,
-      frp,
-      // baseUrl 保留指向内网，兼容老读取点
-      baseUrl: lanFinal,
-      authCode: String(patch && patch.authCode != null ? patch.authCode : cur.authCode || '').trim(),
-    };
-    saveSettings({ enhance: next });
-    try { global.__enhanceSettings = next; } catch (_) {}
-    return { ok: true, enhance: next };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-});
-
-// 单通道 ping（Node 16 无全局 fetch，使用 http/https 模块）
-function pingZdyChannel(baseUrl, token, timeoutMs) {
-  return new Promise((resolve) => {
-    const started = Date.now();
-    let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    const u = baseUrl + '/ping';
-    let parsed;
-    try { parsed = new URL(u); } catch (_) { return done({ ok: false, error: '地址格式不正确' }); }
-    const timer = setTimeout(() => done({ ok: false, error: '连接超时' }), timeoutMs || 6000);
-    const lib = parsed.protocol === 'https:' ? require('https') : require('http');
-    const headers = { Accept: 'application/json' };
-    if (token) headers.Authorization = 'Bearer ' + token;
-    // 用 options 对象而非中文域名原始串：URL.hostname 已自动转为 punycode（xn--），
-    // 否则中文域名(DDNS 国际化域名)会被 Node 当作非法主机直接失败。
-    const reqOptions = {
-      protocol: parsed.protocol,
-      hostname: parsed.hostname,
-      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-      path: parsed.pathname + parsed.search,
-      method: 'GET',
-      headers,
-      timeout: timeoutMs || 6000,
-    };
-    const req = lib.get(reqOptions, (res) => {
-      const ch = [];
-      res.on('data', (c) => ch.push(c));
-      res.on('end', () => {
-        clearTimeout(timer);
-        const ms = Date.now() - started;
-        const body = Buffer.concat(ch).toString('utf8');
-        let data = {};
-        try { data = JSON.parse(body || '{}'); } catch (_) {}
-        if (res.statusCode === 401 || data.unauthorized) return done({ ok: false, ms, error: '授权码错误' });
-        if (res.statusCode !== 200) return done({ ok: false, ms, error: 'HTTP ' + res.statusCode });
-        done({ ok: true, ms, version: data.version || '', authOk: true });
-      });
-    });
-    req.on('timeout', () => { req.destroy(new Error('timeout')); });
-    req.on('error', (err) => { clearTimeout(timer); done({ ok: false, ms: Date.now() - started, error: err && err.message === 'timeout' ? '连接超时' : '无法访问' }); });
-  });
-}
-
-// v1.36.0：读取 ZDY 增强服务设置（三通道 lan/ddns/frp + 授权码 + 开关）
-ipcMain.handle('settings:get-enhance', async () => {
-  try {
-    const settings = (typeof loadSettings === 'function' ? loadSettings() : (global.__appSettings || {})) || {};
-    const e = settings.enhance || global.__enhanceSettings || {};
-    const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
-    // 兼容旧版单字段 baseUrl：迁移到 lan
-    const lan = norm(e.lan) || norm(e.baseUrl);
-    const enhance = {
-      enabled: !!e.enabled,
-      lan,
-      ddns: norm(e.ddns),
-      frp: norm(e.frp),
-      baseUrl: lan,
-      authCode: String(e.authCode || '').trim(),
-    };
-    try { global.__enhanceSettings = enhance; } catch (_) {}
-    return { ok: true, enhance };
-  } catch (err) {
-    return { ok: false, error: err?.message || '读取增强服务设置失败', enhance: { enabled: false, lan: '', ddns: '', frp: '', baseUrl: '', authCode: '' } };
-  }
-});
-
-// v1.34.0：测试 ZDY 增强服务连通性；v1.36.0：三通道（内网/IPv6 DDNS/FRP）逐通道诊断
-ipcMain.handle('settings:enhance-ping', async (_e, cfg) => {
-  try {
-    const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
-    const token = norm(cfg && (cfg.authCode || cfg.token));
-    const chans = [
-      { name: '内网', url: norm(cfg && cfg.lan) || norm(cfg && cfg.baseUrl) },
-      { name: 'IPv6 DDNS', url: norm(cfg && cfg.ddns) },
-      { name: 'FRP', url: norm(cfg && cfg.frp) },
-    ].filter((c) => c.url);
-    if (!chans.length) return { ok: false, error: '请至少填写一条通道地址' };
-    // 并行探测所有通道，按内网→DDNS→FRP 顺序返回；取首个可用为当前通道
-    const settled = await Promise.all(chans.map(async (c) => {
-      const r = await pingZdyChannel(c.url, token, 6000);
-      return { name: c.name, url: c.url, ...r };
-    }));
-    const firstOk = settled.find((r) => r.ok);
-    if (!firstOk) {
-      return { ok: false, error: '全部通道不可达', results: settled };
-    }
-    return { ok: true, activeChannel: firstOk.name, version: firstOk.version, results: settled };
-  } catch (e) {
-    return { ok: false, error: e.message || '无法访问' };
-  }
-});
-
 ipcMain.handle('lock:verify', async (_e, password) => {
   try {
     if (verifyAppPassword(String(password || ''))) {
@@ -3490,26 +3369,9 @@ ipcMain.handle('settings:get', async () => {
       iptvEpgUrl: (s.iptv && s.iptv.iptvEpgUrl) || '',
       iptvCacheSeconds: clampInt(s.iptv && s.iptv.iptvCacheSeconds, 0, 120, 30),
     },
-    // v1.37.1：增强服务（ZDY）三通道设置，供设置页回显（修复"保存后重开为空"）
-    enhance: normalizeEnhance(s.enhance || {}),
     version: APP_VERSION,
   };
 });
-
-// 归一化增强服务配置：三通道 lan/ddns/frp + 授权码 + 开关，兼容旧版单字段 baseUrl
-function normalizeEnhance(e) {
-  const norm = (v) => String(v == null ? '' : v).trim().replace(/\/+$/, '');
-  const lan = norm(e.lan) || norm(e.baseUrl);
-  // v1.37.0：增强服务默认启用（用户未显式关闭时即为开）
-  return {
-    enabled: e.enabled !== false,
-    lan,
-    ddns: norm(e.ddns),
-    frp: norm(e.frp),
-    baseUrl: lan,
-    authCode: norm(e.authCode),
-  };
-}
 
 // v1.16.1：保存无操作自动锁定时长
 ipcMain.handle('settings:set-auto-lock', async (_e, payload) => {

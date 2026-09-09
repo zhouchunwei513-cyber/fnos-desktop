@@ -146,8 +146,7 @@ function FN.build_sub_items(tracks)
     end
     items[#items + 1] = { type = "separator" }
     items[#items + 1] = { title = "加载本地字幕…", cmd = "script-message fnos-sub-local" }
-    -- v1.32.5：扁平化——点击直接按当前片名搜索并弹出结果列表，无二级菜单；搜不到就是空列表。
-    items[#items + 1] = { title = "在线搜索字幕（自动按片名）", cmd = "script-message fnos-sub-search title" }
+    -- v1.47.0：在线搜索字幕功能已下线，仅保留本地字幕轨与本地字幕文件。
     items[#items + 1] = { type = "separator" }
     local shift = mp.get_property_number("sub-delay", 0) or 0
     items[#items + 1] = { title = "字幕偏移（当前 " .. string.format("%.1f", shift) .. "s）", state = { "disabled" },
@@ -183,34 +182,7 @@ end
 
 -- ============ 在线字幕 / 加载本地字幕 / 画中画（走本地 helper，免 API Key，与右键菜单共用） ============
 
--- 弹幕子菜单（走本地 helper：B站弹幕免 Key；渲染由 fnos-danmaku.lua 负责）
-function FN.build_danmaku_items()
-    return {
-        { title = "搜索并加载弹幕…", cmd = "script-message fnos-danmaku-search" },
-        { title = "弹幕 开/关", cmd = "script-message fnos-danmaku-toggle" },
-        { type = "separator" },
-        { title = "字号 大", cmd = "script-message fnos-danmaku-opts size 42" },
-        { title = "字号 中", cmd = "script-message fnos-danmaku-opts size 34" },
-        { title = "字号 小", cmd = "script-message fnos-danmaku-opts size 26" },
-        { title = "速度 慢", cmd = "script-message fnos-danmaku-opts speed 0.7" },
-        { title = "速度 正常", cmd = "script-message fnos-danmaku-opts speed 1.0" },
-        { title = "速度 快", cmd = "script-message fnos-danmaku-opts speed 1.4" },
-        { title = "透明度 高", cmd = "script-message fnos-danmaku-opts opacity 1.0" },
-        { title = "透明度 半透", cmd = "script-message fnos-danmaku-opts opacity 0.6" },
-        { type = "separator" },
-        { title = "关闭弹幕", cmd = "script-message fnos-danmaku-off" },
-    }
-end
-
--- 跳过片头/片尾：单一自动开关（开启即自动跳过片头片尾）+ 手动跳过
-function FN.build_skip_items()
-    return {
-        { title = "自动跳过片头片尾：开/关", cmd = "script-message fnos-skip-auto" },
-        { type = "separator" },
-        { title = "立即跳过片头", cmd = "script-message fnos-skip intro" },
-        { title = "立即跳到片尾前", cmd = "script-message fnos-skip credits" },
-    }
-end
+-- v1.47.0：弹幕子菜单、跳过片头/片尾（ZDY 增强）已随在线弹幕字幕功能下线移除。
 
 -- 播放列表（全中文，替代内置英文 select/select-playlist）
 function FN.build_playlist_items()
@@ -270,9 +242,7 @@ function FN.menu_main()
     local items = {
         { title = "音轨选择 ▸", submenu = FN.build_audio_items() },
         { title = "字幕设置 ▸", submenu = FN.build_sub_items() },
-        { title = "弹幕 ▸", submenu = FN.build_danmaku_items() },
         { title = "播放倍速 ▸", submenu = FN.build_speed_items() },
-        { title = "跳过片头片尾 ▸", submenu = FN.build_skip_items() },
         { type = "separator" },
         { title = "播放列表 ▸", submenu = FN.build_playlist_items() },
         { title = "章节跳转 ▸", submenu = FN.build_chapter_items() },
@@ -2036,21 +2006,11 @@ local function bar_layout(direction, slim)
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
-    -- fnOS 新增：画质 / 倍速 / 弹幕 中文文字按钮（跳过片头片尾按钮已按需求移除，进度条随之加长；
-    -- 跳过功能保留在右键菜单与左下角菜单，自动跳过由开关控制）
+    -- v1.47.0：仅保留「倍速」中文文字按钮；画质（清晰度）/弹幕按钮已随功能下线移除，
+    -- 进度条相应加长。
     local fnBtnW = 70
     geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
     lo = add_layout("fnos_speed")
-    lo.geometry = geo
-    lo.style = osc_styles.fnTextButtonsBar
-
-    geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
-    lo = add_layout("fnos_quality")
-    lo.geometry = geo
-    lo.style = osc_styles.fnTextButtonsBar
-
-    geo = { x = geo.x - fnBtnW - padX, y = geo.y, an = geo.an, w = fnBtnW, h = geo.h }
-    lo = add_layout("fnos_danmaku")
     lo.geometry = geo
     lo.style = osc_styles.fnTextButtonsBar
 
@@ -2321,29 +2281,7 @@ local function osc_init()
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-speed-menu") end
 
-    --fnOS 新增：弹幕按钮（搜索/开关弹幕，走本地 helper）
-    ne = new_element("fnos_danmaku", "button")
-    ne.enabled = true
-    ne.content = function ()
-        return osc_styles.smallButtonsLlabel .. " 弹幕 "
-    end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-danmaku-search") end
-    ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-danmaku-toggle") end
-
-    --fnOS 清晰度按钮：在线片源清晰度不可切换，展示当前片源高度（如 2160p/1080p）
-    ne = new_element("fnos_quality", "button")
-    ne.enabled = true
-    ne.content = function ()
-        local vh = mp.get_property_number("height", 0) or 0
-        local label = "清晰度"
-        if vh and vh >= 4000 then label = "2160p"
-        elseif vh and vh >= 1000 then label = "1080p"
-        elseif vh and vh >= 700 then label = "720p"
-        elseif vh and vh >= 460 then label = "480p"
-        elseif vh and vh > 0 then label = vh .. "p" end
-        return osc_styles.smallButtonsLlabel .. " " .. label .. " "
-    end
-    ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-quality-menu") end
+    -- v1.47.0：弹幕 / 清晰度（画质）按钮已随在线弹幕字幕功能下线移除。
 
     --seekbar
     ne = new_element("seekbar", "slider")

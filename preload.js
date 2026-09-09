@@ -49,7 +49,8 @@ contextBridge.exposeInMainWorld('fnos', {
     // querySelectorAll('video')），在文件列表/重前端应用里造成持续 CPU 占用、卡顿。
     // 这里按路由判断：非视频页直接跳过整套拦截，进入视频页后（SPA 导航）再惰性启动。
     const VIDEO_PATH_RE = /\/v\/(?:video|movie|tv(?:\/episode|\/season)?|folder|media|live)\//i;
-    let __installed = false;
+    let __installed = false;           // MutationObserver（DOM 监听）是否已惰性安装
+    let __onVideoActivity = null;      // 网络钩子命中播放接口时的回调（惰性安装 DOM 监听）
     function isVideoRoute() {
       try {
         const p = location.pathname || '';
@@ -405,6 +406,10 @@ contextBridge.exposeInMainWorld('fnos', {
         } catch (_) {}
         const p = origFetch.apply(this, arguments);
         try {
+          // 命中飞牛播放/媒体接口：标记视频活动，惰性安装 MutationObserver（文件管理/FPK 不触发）。
+          if (isPlayableStreamUrl(url) || /\/v\/api\/v1\/(stream|play|live|tv|media|detail|item)|\/wp\/(m3u8|flv|live|download)|\/live\//i.test(url)) {
+            try { if (typeof __onVideoActivity === 'function') __onVideoActivity(); } catch (_) {}
+          }
           // 直播/流媒体直链：捕获响应里可能返回的真实播放地址（部分接口返回 JSON {url}/{data:{url}}）
           if (isPlayableStreamUrl(url) || /\/v\/api\/v1\/(stream|play|live|tv)|\/wp\/(m3u8|flv|live)|\/live\//i.test(url)) {
             p.then(r => r.clone().text()).then(txt => {
@@ -456,6 +461,10 @@ contextBridge.exposeInMainWorld('fnos', {
           const url = this.__mpvUrl || '';
           rememberFromUrl(url);
           rememberStreamUrl(url);
+          // 命中播放/媒体接口：惰性安装 MutationObserver（文件管理/FPK 页不会命中，零 DOM 开销）。
+          if (/\/v\/api\/v1\/(stream|play|live|tv|media|detail|item|channel)|\/wp\/(m3u8|flv|live|download)/i.test(url)) {
+            try { if (typeof __onVideoActivity === 'function') __onVideoActivity(); } catch (_) {}
+          }
           if (/\/v\/api\/v1\/(stream\/list|stream|play\/info|play\/quality|media|detail|item|live|tv|channel)\b/.test(url)) {
             this.addEventListener('load', () => {
               try {
@@ -893,62 +902,68 @@ contextBridge.exposeInMainWorld('fnos', {
     }
 
     const boot = () => {
-      // 非视频页：不 hook fetch/XHR、不装 MutationObserver，彻底避免文件管理/FPK 应用卡顿。
-      // 仅保留一个极轻量的路由监听（重写 pushState/replaceState 各一次），SPA 导航到
-      // 视频页时再惰性完成安装。
+      // v1.47.0 性能策略：
+      //  - fetch/XHR 钩子始终安装（极轻量：仅在请求发生时做字符串匹配，无 DOM 查询、无定时器），
+      //    保证飞牛影视播放页无论什么路由都能被接管，零回归风险。
+      //  - 真正的性能大头是 subtree MutationObserver + 全量 querySelectorAll('video')。
+      //    它改为【惰性安装】：只有当 fetch/XHR 命中飞牛播放接口（/v/api/v1/... stream/media/play、
+      //    wp 转码网关等），或页面确实出现 <video> 时才启动；文件管理、相册、设置、第三方大型 FPK
+      //    应用不会触发这些接口，因而永不启动 MutationObserver，彻底消除列表/重前端应用卡顿。
       try {
-        const ensureInstall = () => { if (!__installed && isVideoRoute()) { __installed = true; installHooks(); } };
-        const wrapHistory = (name) => {
-          const orig = history[name];
-          if (typeof orig !== 'function' || orig.__mpvWrapped) return;
-          history[name] = function () {
-            const r = orig.apply(this, arguments);
-            try { ensureInstall(); if (__installed) { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; } } catch (_) {}
-            return r;
+        readTokenFromStorage();
+        state.itemGuid = guidFromPath();
+        try { __mpvRefreshFn = refreshMpvMedia; } catch (_) {}
+        try { hookFetch(); } catch (_) {}
+        try { hookXHR(); } catch (_) {}
+        // 标记“视频活动”：由网络钩子命中播放接口时调用，惰性安装 DOM 监听。
+        __onVideoActivity = () => { installDomObserver(); };
+        // 页面若已存在 video（极少见的非接口驱动场景），也惰性启动。
+        try {
+          const wrapHistory = (name) => {
+            const orig = history[name];
+            if (typeof orig !== 'function' || orig.__mpvWrapped) return;
+            history[name] = function () {
+              const r = orig.apply(this, arguments);
+              try { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; } catch (_) {}
+              return r;
+            };
+            history[name].__mpvWrapped = true;
           };
-          history[name].__mpvWrapped = true;
-        };
-        wrapHistory('pushState');
-        wrapHistory('replaceState');
-        window.addEventListener('popstate', () => { try { ensureInstall(); if (__installed) { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; } } catch (_) {} });
-        ensureInstall();
+          wrapHistory('pushState');
+          wrapHistory('replaceState');
+          window.addEventListener('popstate', () => { try { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; } catch (_) {} });
+        } catch (_) {}
+        // 启动时若已在播放页（DOMContentLoaded 后），尝试一次性轻量探测 video
+        if (isVideoRoute()) installDomObserver();
+        // 菜单/快捷键强制接管：不依赖 DOM 监听是否安装，始终响应（即使页面无 <video> 也按路由解析直链）
+        window.addEventListener('fnos:mpv-embed', () => {
+          try {
+            installDomObserver();
+            state.handled = false; state.resolving = false;
+            state.itemGuid = state.itemGuid || guidFromPath();
+            readTokenFromStorage();
+            const v = getMainVideo();
+            log('embed.menu', { path: location.pathname, itemGuid: state.itemGuid, hasVideo: !!v });
+            triggerEmbed(v, 'menu');
+          } catch (_) {}
+        });
+        ipcRenderer.on('mpv:embed-closed', () => { try { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); log('embed.closed', {}); } catch (_) {} });
+        log('preload.boot', { path: location.pathname });
       } catch (_) {}
     };
 
-    // 真正安装视频接管（仅视频页执行一次）
-    function installHooks() {
-      readTokenFromStorage();
-      state.itemGuid = guidFromPath();
-      // 挂载"重新取流"函数：直接给【隔离世界模块级变量】赋值（与 contextBridge 暴露的
-      // __refreshMpvMedia 闭包共享），不要改写 window.fnos 上的 bridge 代理对象（冻结、赋值无效）。
-      try { __mpvRefreshFn = refreshMpvMedia; } catch (_) {}
-      try { hookFetch(); } catch (_) {}
-      try { hookXHR(); } catch (_) {}
-      scan();
+    // 惰性安装 MutationObserver + 首次 scan（仅检测到视频活动时执行一次）
+    function installDomObserver() {
+      if (__installed) return;
+      __installed = true;
       try {
+        scan();
         const mo = new MutationObserver(() => { scheduleScan(); const g = guidFromPath(); if (g && g !== state.itemGuid) { state.itemGuid = g; state.handled = false; state.mediaGuid = ''; } });
         mo.observe(document.documentElement || document, { childList: true, subtree: true });
+        // 路由变化（SPA）重置：pushState/replaceState 已在 boot 中统一包裹，这里不重复包裹。
       } catch (_) {}
-      // 路由变化（SPA）重置
-      try {
-        const push = history.pushState;
-        if (typeof push === 'function' && !push.__mpvRouteWrapped) {
-          history.pushState = function () { const r = push.apply(this, arguments); try { state.itemGuid = guidFromPath(); state.handled = false; state.mediaGuid = ''; startRectLoop && reportRect(); } catch (_) {} return r; };
-          history.pushState.__mpvRouteWrapped = true;
-        }
-      } catch (_) {}
-      ipcRenderer.on('mpv:embed-closed', () => { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); log('embed.closed', {}); });
-      // 菜单/快捷键强制接管：即使页面无 <video>（如 MKV 直接跳转），也按路由解析直链
-      window.addEventListener('fnos:mpv-embed', () => {
-        state.handled = false; state.resolving = false;
-        state.itemGuid = state.itemGuid || guidFromPath();
-        readTokenFromStorage();
-        const v = getMainVideo();
-        log('embed.menu', { path: location.pathname, itemGuid: state.itemGuid, hasVideo: !!v });
-        triggerEmbed(v, 'menu');
-      });
-      log('preload.boot', { path: location.pathname });
-    };
+      log('dom.observer.installed', { path: location.pathname });
+    }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();
   } catch (e) {

@@ -2330,20 +2330,17 @@ local function osc_init()
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-danmaku-search") end
     ne.eventresponder["mbtn_right_up"] = function () mp.commandv("script-message", "fnos-danmaku-toggle") end
 
-    --fnOS 新增：画质按钮（原画/1080p/720p/480p/360p 输出缩放）
+    --fnOS 清晰度按钮：在线片源清晰度不可切换，展示当前片源高度（如 2160p/1080p）
     ne = new_element("fnos_quality", "button")
     ne.enabled = true
     ne.content = function ()
-        local vf = mp.get_property("vf", "") or ""
-        local m = vf:match("min%((%d+)%,ih%)")
-        local label = "画质"
-        if m then
-            local n = tonumber(m)
-            if n >= 1080 then label = "1080p"
-            elseif n >= 700 then label = "720p"
-            elseif n >= 460 then label = "480p"
-            else label = "360p" end
-        end
+        local vh = mp.get_property_number("height", 0) or 0
+        local label = "清晰度"
+        if vh and vh >= 4000 then label = "2160p"
+        elseif vh and vh >= 1000 then label = "1080p"
+        elseif vh and vh >= 700 then label = "720p"
+        elseif vh and vh >= 460 then label = "480p"
+        elseif vh and vh > 0 then label = vh .. "p" end
         return osc_styles.smallButtonsLlabel .. " " .. label .. " "
     end
     ne.eventresponder["mbtn_left_up"] = function () mp.commandv("script-message", "fnos-quality-menu") end

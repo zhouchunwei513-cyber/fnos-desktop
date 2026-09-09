@@ -243,14 +243,16 @@ local function load_items(json_str, key)
     if type(list) ~= 'table' then return 0 end
     local arr = {}
     for _, d in ipairs(list) do
-        local t = tonumber(d.t)
+        -- 字段兼容：ZDY/helper 下发的弹幕用 time/mode（日志 {"time":2046.31,"mode":1,...}），
+        -- 旧本地格式用 t/type。此前只读 d.t，导致 time 字段的弹幕全部被跳过、提示"未获取到弹幕"。
+        local t = tonumber(d.t or d.time or d.playTime)
         if t and d.text and t >= 0 then
             arr[#arr + 1] = {
                 t = t,
                 text = tostring(d.text),
                 color = tonumber(d.color) or 0xffffff,
-                size = tonumber(d.size) or 25,
-                type = tonumber(d.type) or 1,
+                size = tonumber(d.size or d.fontSize) or 25,
+                type = tonumber(d.type or d.mode) or 1,
             }
         end
     end

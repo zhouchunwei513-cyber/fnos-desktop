@@ -16,6 +16,7 @@ local msg = require 'mp.msg'
 local g_results = nil       -- 最近一次在线字幕搜索结果
 local g_searching = nil     -- 正在搜索的语言标记
 local g_dm_results = nil    -- 最近一次弹幕搜索结果（cid/标题）
+local g_dm_fallback_count = nil  -- 自动顺次尝试弹幕候选的计数（首个候选下载0条时尝试下一个）
 local g_dm_searching = false -- 弹幕是否正在搜索
 local g_skip_intro_sec = 90   -- 手动跳过片头：前进秒数
 local g_skip_credits_sec = 60 -- 手动跳到片尾：回退秒数
@@ -170,6 +171,21 @@ local function valid_movie_name(n)
     return true
 end
 
+-- 识别"压制/抓轨文件名"（如 No More Bets.2023.2160p.60fps.HQ.WEB-DL.H265...-BestWEB）。
+-- 这类是种子/抓轨文件名，不是展示片名；流媒体场景 force-media-title 稍后会覆盖成正式中文片名，
+-- 自动增强应等待，避免拿整串英文压制名去搜弹幕/字幕（命中错误二创/0 结果）。
+local function is_release_filename(n)
+    n = tostring(n or "")
+    local low = n:lower()
+    local has_year = n:find("19%d%d") or n:find("20[0-3]%d")
+    local has_tag = low:find("web%-dl") or low:find("webrip") or low:find("bluray")
+        or low:find("bdrip") or low:find("hdrip") or low:find("x264") or low:find("x265")
+        or low:find("h264") or low:find("h265") or low:find("hevc") or low:find("ddp")
+        or low:find("aac") or low:find("remux") or n:find("2160p") or n:find("1080p")
+        or n:find("720p") or n:find("480p") or low:find("bestweb")
+    return has_year and has_tag and #n > 24
+end
+
 local function media_keyword()
     -- 优先用真实片名（force-media-title / media-title，由客户端按网页接口片名设置）；
     -- 若片名是对白碎片/哈希等垃圾值，则退到文件名。去掉站点后缀与噪音，提升字幕/弹幕命中率。
@@ -261,28 +277,14 @@ safe_msg("fnos-playback-stats", show_playback_stats)
 -- 切文件 / 退出时自动关闭覆盖层，避免残留
 mp.register_event("end-file", function() if _stats_visible then pcall(hide_playback_stats) end end)
 
--- 画质（输出缩放）：原画=清除 vf 中的 scale；其余把输出高度限制到目标值（宽度按比例 -2 保持偶数）
-local g_quality = "原画"
-local function set_quality(q, h)
-    pcall(function()
-        if not q or q == "original" or q == "原画" then
-            mp.commandv("vf", "remove", "@fnos_q")
-            g_quality = "原画"
-            mp.osd_message("🖼 输出画质：原画（不缩放，保持片源分辨率）", 2200)
-        else
-            -- 仅本地输出缩放（把渲染高度压到目标值，省 GPU 算力/发热），不改变片源清晰度。
-            mp.commandv("vf", "remove", "@fnos_q")
-            mp.commandv("vf", "add", "@fnos_q:lavfi=[scale=-2:'min(" .. h .. ",ih)':flags=lanczos]")
-            g_quality = tostring(h) .. "p"
-            mp.osd_message("🖼 输出缩放：" .. g_quality .. "（本地降分辨率，低性能机更流畅）", 2200)
-        end
-        pcall(refresh_menu_data)
-    end)
-end
-safe_msg("fnos-quality", function(q)
-    if not q or q == "original" or q == "原画" then set_quality("original")
-    else local h = tonumber(tostring(q):match("%d+")); if h then set_quality(h, h) end end
-    close_submenu()  -- 选定画质后收起子菜单，恢复主菜单数据
+-- 清晰度说明：飞牛在线流媒体只提供单一播放地址，清晰度由片源决定，播放器无法切换源分辨率
+-- （本地 vf scale 只是把画面渲染得更糊，窗口放大反而更差）。本项仅做说明，不再做误导性"降画质"。
+-- 兼容旧消息名（OSC/旧配置可能仍发 fnos-quality*），收到时给出说明而不执行任何缩放。
+safe_msg("fnos-quality", function()
+    local vh = mp.get_property_number("height", 0) or 0
+    mp.osd_message("当前片源清晰度：" .. (vh > 0 and (vh .. "p") or "未知")
+        .. "\n在线影视清晰度由片源决定，播放器无法切换；\n如卡顿可尝试「倍速→降低」或全屏观看。", 4000)
+    pcall(close_submenu)
 end)
 
 -- 打开一个"子菜单"并保持其 menu-data 不被主菜单覆盖。
@@ -299,20 +301,17 @@ close_submenu = function()
     refresh_menu_data()
 end
 
--- 底部控制栏「画质」按钮：弹出画质子菜单（由本脚本持有 menu-data，避免与 OSC 竞态）。
+-- 底部控制栏「清晰度」按钮：在线流媒体清晰度由片源决定、不可切换，仅展示当前片源信息。
 safe_msg("fnos-quality-menu", function()
     pcall(function()
-        local qitem = function(title, val)
-            return { title = title, cmd = "script-message fnos-quality " .. val }
-        end
+        local vw = mp.get_property_number("width", 0) or 0
+        local vh = mp.get_property_number("height", 0) or 0
+        local info = (vw > 0 and vh > 0) and (vw .. " × " .. vh) or "未知"
         local data = {
-            { title = "画质（输出缩放）", state = { "disabled" }, cmd = "osd-msg show-text 画质" },
+            { title = "片源清晰度：" .. info, state = { "disabled" }, cmd = "script-message fnos-quality" },
             { type = "separator" },
-            qitem((g_quality == "原画" and "✓ " or "") .. "原画（不缩放）", "original"),
-            qitem((g_quality == "1080p" and "✓ " or "") .. "1080p", "1080"),
-            qitem((g_quality == "720p" and "✓ " or "") .. "720p", "720"),
-            qitem((g_quality == "480p" and "✓ " or "") .. "480p", "480"),
-            qitem((g_quality == "360p" and "✓ " or "") .. "360p", "360"),
+            { title = "在线影视清晰度由片源决定，无法切换", state = { "disabled" }, cmd = "script-message fnos-quality" },
+            { title = "卡顿可降低倍速或全屏观看", state = { "disabled" }, cmd = "script-message fnos-quality" },
         }
         open_submenu(data)
     end)
@@ -414,7 +413,6 @@ safe_msg("fnos-menu-main", function()
         mp.commandv("script-message-to", "context_menu", "open")
     end)
 end)
-mp.get_quality_label = function() return g_quality end
 
 -- 动态列出轨道（kind=audio/sub；prop=aid/sid）
 local function track_items(kind, prop)
@@ -546,17 +544,13 @@ build_menu = function()
         audio_submenu(),
 
         { ["title"] = "画面", ["type"] = "submenu", ["submenu"] = (function()
+            local vw = mp.get_property_number("width", 0) or 0
             local vh = mp.get_property_number("height", 0) or 0
             local t = {
                 item("切换全屏", "cycle fullscreen", "f"),
                 sep(),
-                { ["title"] = "输出缩放（当前源 " .. tostring(vh > 0 and (vh .. "p") or "?") .. "，仅本地降分辨率省性能，不改变片源）",
-                  ["selectable"] = false },
-                item((g_quality == "原画" and "✓ " or "") .. "原画（不缩放）", "script-message fnos-quality original"),
-                item((g_quality == "1080p" and "✓ " or "") .. "输出 1080p", "script-message fnos-quality 1080"),
-                item((g_quality == "720p" and "✓ " or "") .. "输出 720p", "script-message fnos-quality 720"),
-                item((g_quality == "480p" and "✓ " or "") .. "输出 480p", "script-message fnos-quality 480"),
-                item((g_quality == "360p" and "✓ " or "") .. "输出 360p（低性能机）", "script-message fnos-quality 360"),
+                { ["title"] = "片源清晰度：" .. tostring(vw > 0 and (vw .. "×" .. vh) or "未知")
+                  .. "（在线片源决定，不可切换）", ["selectable"] = false },
                 sep(),
                 item("画面比例 16:9", "set video-aspect-override 16:9"),
             item("画面比例 4:3", "set video-aspect-override 4:3"),
@@ -706,6 +700,8 @@ end)
 safe_msg("fnos-dm-pick", function(cid)
     pcall(function()
         if not cid then return end
+        -- 用户手动从菜单选择候选 = 新一轮，清空自动顺次计数
+        g_dm_fallback_count = nil
         local target = nil
         if g_dm_results then
             for _, r in ipairs(g_dm_results) do
@@ -731,9 +727,34 @@ safe_msg("fnos-dm-pick", function(cid)
             .. " source=" .. tostring(target.source) .. " cid=" .. tostring(target.cid))
         mp.osd_message("正在加载弹幕…", 1500)
         helper_async("/danmaku/download", utils.format_json({ item = target }), function(data)
-            if not (data and data.ok and (data.count or 0) > 0) then
-                mp.osd_message("弹幕加载失败：" .. ((data and data.error) or "网络错误"), 2500)
+            if data and data.ok and (data.count or 0) > 0 then
+                return  -- 成功，弹幕渲染脚本会自行 OSD
             end
+            -- 兜底：当前候选下载 0 条（如命中二创/无弹幕切片），自动尝试下一个候选，最多顺次尝试 3 个。
+            if g_dm_results then
+                local cur_idx = nil
+                for i, r in ipairs(g_dm_results) do
+                    if tostring(r.id) == tostring(cid)
+                        or tostring(r.episodeId) == tostring(cid)
+                        or tostring(r.cid) == tostring(cid)
+                        or tostring(r.bvid) == tostring(cid) then cur_idx = i; break end
+                end
+                if cur_idx then
+                    local tries = (g_dm_fallback_count or 0) + 1
+                    for j = cur_idx + 1, #g_dm_results do
+                        local nx = g_dm_results[j]
+                        local nk = nx and (nx.id or nx.episodeId or nx.cid or nx.bvid)
+                        if nk and tries <= 3 then
+                            g_dm_fallback_count = tries
+                            mp.msg.info("danmaku 候选 " .. tostring(cur_idx) .. " 下载0条，改试候选 " .. tostring(j))
+                            mp.commandv("script-message", "fnos-dm-pick", tostring(nk))
+                            return
+                        end
+                    end
+                end
+            end
+            g_dm_fallback_count = nil
+            mp.osd_message("未获取到弹幕（已尝试多个匹配源，可能该片暂无弹幕）", 3000)
         end)
     end)
 end)
@@ -976,16 +997,26 @@ local function schedule_auto_enhance()
             if g_auto_done then return end
             local title = mp.get_property("media-title") or ""
             -- 必须等到 media-title 是"合法片名"才触发（拒绝 video/URL 段/哈希/对白）。
-            -- 旧逻辑只判 != "video"，force-media-title 设置的竞态窗口里会读到 URL 末段 "video"，
-            -- 导致拿 "video" 去搜弹幕/字幕。现统一用 valid_movie_name，超时 12 次也必须拿到合法名才发。
-            if valid_movie_name(title) then
+            -- 额外：若当前是压制/抓轨文件名（如 No More Bets.2023.2160p...-BestWEB），流媒体场景
+            -- force-media-title 稍后（本日志 1.6s 后）会覆盖成正式中文片名，继续等待，避免抢跑用英文
+            -- 压制名搜弹幕/字幕。本地文件无 force-media-title，超时后用压制名兜底。
+            local fn_raw = tostring(mp.get_property("filename/no-ext") or ""):gsub("^.*[\\/]", "")
+            local title_is_fn = (title == fn_raw) or is_release_filename(title)
+            local good = valid_movie_name(title) and not is_release_filename(title) and not (title_is_fn and is_release_filename(fn_raw))
+            if good then
                 g_auto_done = true
                 run_auto_enhance(title)
                 return
             end
-            if tries >= 24 then  -- 约 12 秒仍无合法片名，放弃自动增强（避免发垃圾请求）
+            if tries >= 24 then  -- 约 12 秒：流媒体仍无正式片名，用压制文件名兜底（本地文件场景）
                 g_auto_done = true
-                mp.msg.info("auto-enhance give up: no valid title after retries, media-title=" .. title)
+                local kw = media_keyword()
+                if kw ~= "video" and valid_movie_name(kw) then
+                    mp.msg.info("auto-enhance fallback use filename kw=" .. kw)
+                    run_auto_enhance(kw)
+                else
+                    mp.msg.info("auto-enhance give up: no valid title after retries, media-title=" .. title)
+                end
                 return
             end
             mp.add_timeout(0.5, tick)

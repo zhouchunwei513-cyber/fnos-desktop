@@ -887,9 +887,14 @@ const server = http.createServer(async (req, res) => {
             log('bili mature candidates:', biliResults.length, kw);
           } catch (e) { log('bili mature search fail', e && e.stack ? e.stack : e); }
         }
-        // 弹弹play 补充（影视正片库，剧集级匹配）——B 站不足或失败时兜底
-        try { const dd = await dandanSearch(kw); if (dd && dd.length) results = dd.concat(results); }
+        // 弹弹play（影视正片库，剧集级精确匹配 + 带时长）——电影/剧集正片的弹幕以此为准，
+        // 必须排在最前；B 站候选多为用户上传，易混入同名解说/二创/切片（如本片匹配到毕导解说），
+        // 且 B 站候选常无 duration 字段、时长过滤只能放行，故统一排到弹弹play之后。
+        let ddResults = [];
+        try { ddResults = (await dandanSearch(kw)) || []; }
         catch (e) { log('dandan search fail', e && e.message ? e.message : e); }
+        // 顺序：弹弹play 正片 → B 站候选
+        results = ddResults.concat(results);
         if (results.length) diskSet(ck, results);
       }
       // 时长过滤：每次都按本次影片时长过滤+排序（即便命中缓存也重筛，

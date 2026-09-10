@@ -689,6 +689,44 @@ contextBridge.exposeInMainWorld('fnos', {
       } catch (_) { return null; }
     }
 
+    // v1.57：只把网页播放器容器背景置黑（解决 MPV 与播放器接缝处露灰），
+    // 绝不碰整页/列表/导航；关闭时由 restorePlayerContainers() 还原。
+    function darkenPlayerContainers(v) {
+      try {
+        const el = v || getMainVideo();
+        if (!el) return;
+        let node = el.parentElement;
+        let depth = 0;
+        const touched = [];
+        while (node && depth < 4 && node !== document.body && node !== document.documentElement) {
+          const cs = window.getComputedStyle(node);
+          if (cs && cs.position !== 'static' && node.getBoundingClientRect) {
+            const r = node.getBoundingClientRect();
+            // 仅当容器基本覆盖视频区（播放器外壳）才置黑，避免误伤布局列/侧栏
+            const vr = el.getBoundingClientRect();
+            if (r.width >= vr.width * 0.9 && r.height >= vr.height * 0.9 && r.width < window.innerWidth * 0.99) {
+              node.__mpvPrevBg = node.style.background || node.style.backgroundColor || '';
+              node.style.background = '#000';
+              node.style.backgroundColor = '#000';
+              touched.push(node);
+            }
+          }
+          node = node.parentElement;
+          depth++;
+        }
+        window.__mpvDarkened = (window.__mpvDarkened || []).concat(touched);
+      } catch (_) {}
+    }
+    function restorePlayerContainers() {
+      try {
+        const list = window.__mpvDarkened || [];
+        list.forEach(n => { try { n.style.background = n.__mpvPrevBg || ''; n.style.backgroundColor = n.__mpvPrevBg || ''; } catch (_) {} });
+        window.__mpvDarkened = [];
+        const b = document.getElementById('fnos-embed-black');
+        if (b) b.remove();
+      } catch (_) {}
+    }
+
     let lastRectKey = '';
     function reportRect() {
       try {
@@ -820,24 +858,12 @@ contextBridge.exposeInMainWorld('fnos', {
           } catch (_) {}
         });
       } catch (_) {}
-      // v1.54：沉浸黑底——嵌入 MPV 后，宿主页面在视频区周围的灰色背景/顶部导航
-      // 会露在原生 MPV 窗口四周（用户反馈"上边是灰的、沉浸感差"）。注入一层全屏
-      // 纯黑蒙层（z-index 极高、可穿透拖动留给顶部热区），原生 MPV 窗口盖在黑层之上，
-      // 四周即统一为纯黑；直播页左侧频道栏在黑层之上（DOM 更早，黑层 z-index 仍低于
-      // 频道栏的固定层级需要时可调），此处黑层仅压背景。
-      try {
-        let black = document.getElementById('fnos-embed-black');
-        if (!black) {
-          black = document.createElement('div');
-          black.id = 'fnos-embed-black';
-          black.style.cssText = [
-            'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0',
-            'width:100vw', 'height:100vh', 'background:#000', 'z-index:2147483645',
-            'pointer-events:none' // 不拦截鼠标；MPV 原生窗口与标题栏热区仍可交互
-          ].join(';');
-          (document.documentElement || document.body).appendChild(black);
-        }
-      } catch (_) {}
+      // v1.57：【不再注入全屏黑层】。此前的全屏 #fnos-embed-black 会盖住剧集列表、
+      // 侧边栏，甚至返回主页后残留导致整页全黑。沉浸黑改由原生 MPV 窗口自身的黑底
+      // 提供（MPV 覆盖到的区域即为纯黑，含视频上下的黑边）；网页其余部分保持原样可见。
+      // 这里仅把网页播放器所在的【容器】背景置黑（在容器上打标记、关闭时还原），
+      // 解决 MPV 与播放器容器接缝处的灰色背景，不影响列表/导航/主页。
+      try { darkenPlayerContainers(v); } catch (_) {}
       const wpLive = /\/wp\/(m3u8|flv|live)/i.test(direct.url);
       const isLiveNow = /\/v\/live\//.test(location.pathname) || wpLive || /\.(m3u8|flv)(\?|$)/i.test(direct.url) || /\/play\//i.test(direct.url);
       const payload = {
@@ -1028,7 +1054,7 @@ contextBridge.exposeInMainWorld('fnos', {
             if (state.handled && !__isPlayLikeRoute()) {
               state.handled = false;
               try { ipcRenderer.send('mpv:embed-close'); } catch (_) {}
-              try { restoreVideoDisplay(); } catch (_) {}
+              try { restoreVideoDisplay(); restorePlayerContainers(); } catch (_) {}
               log('embed.autoclose', { path: location.pathname });
             }
             // v1.52.0：播放/直播路由只要出现 <video>（无论是否已布局、尺寸大小）就安装
@@ -1052,7 +1078,7 @@ contextBridge.exposeInMainWorld('fnos', {
             triggerEmbed(v, 'menu');
           } catch (_) {}
         });
-        ipcRenderer.on('mpv:embed-closed', () => { try { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); const b = document.getElementById('fnos-embed-black'); if (b) b.remove(); log('embed.closed', {}); } catch (_) {} });
+        ipcRenderer.on('mpv:embed-closed', () => { try { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); restorePlayerContainers(); log('embed.closed', {}); } catch (_) {} });
         log('preload.boot', { path: location.pathname });
       } catch (_) {}
     };

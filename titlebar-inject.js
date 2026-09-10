@@ -84,8 +84,10 @@ module.exports = function injectTitleBar(ctx) {
           'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
-          'pointer-events:auto', 'background:rgba(0,0,0,0.55)',
-          'backdrop-filter:blur(6px)', '-webkit-backdrop-filter:blur(6px)',
+          'pointer-events:auto',
+          // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
+          // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
+          'background:transparent', 'backdrop-filter:none', '-webkit-backdrop-filter:none',
           '-webkit-app-region:drag', 'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -96,7 +98,7 @@ module.exports = function injectTitleBar(ctx) {
         const menuBtn = document.createElement('button');
         menuBtn.id = 'fnos-tb-menu';
         menuBtn.title = '菜单（文件/下载/编辑/视图/工具/设置/帮助）';
-        menuBtn.style.cssText = 'width:40px;height:28px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;';
+        menuBtn.style.cssText = 'width:40px;height:28px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.85));';
         menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.95)" stroke-width="1.5" stroke-linecap="round"/></svg>';
         menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = 'rgba(255,255,255,0.12)'; });
         menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
@@ -121,7 +123,8 @@ module.exports = function injectTitleBar(ctx) {
             'width:46px', 'height:34px', 'border:none', 'outline:none',
             'background:transparent', 'color:#fff',
             'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
-            'padding:0', '-webkit-app-region:no-drag', 'flex:0 0 auto'
+            'padding:0', '-webkit-app-region:no-drag', 'flex:0 0 auto',
+            'filter:drop-shadow(0 1px 2px rgba(0,0,0,0.85))'
           ].join(';');
           b.innerHTML = svg;
           b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });

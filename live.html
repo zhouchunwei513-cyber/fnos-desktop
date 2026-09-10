@@ -993,15 +993,12 @@ async function init() {
       if (res && res.ok) {
         setPh('已用 MPV 应用内播放', '频道：' + name + '（HEVC/4K 兼容）', false, false);
         try { api.liveLog('info', 'mpv.click', { ch: name }); } catch (_) {}
-        // v1.54：沉浸黑底——给视频区之外（频道栏右侧空白/顶部）铺纯黑，原生 MPV 盖在其上
+        // v1.57：【移除全屏黑层】。此前 inset:0 黑层把左侧频道列表也盖黑，用户看不到节目单。
+        // 沉浸黑改由原生 MPV 窗口自身黑底提供（MPV 仅覆盖视频区 rect，左侧频道栏保持可见可点）。
+        // 这里仅把视频播放器容器背景置黑，接缝处不露灰，关闭时还原。
         try {
-          let b = document.getElementById('fnos-embed-black');
-          if (!b) {
-            b = document.createElement('div');
-            b.id = 'fnos-embed-black';
-            b.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:#000;z-index:5;pointer-events:none';
-            document.body.appendChild(b);
-          }
+          var stage = document.getElementById('videoArea') || document.getElementById('playerWrap') || document.getElementById('stage');
+          if (stage) { stage.__mpvPrevBg = stage.style.background || ''; stage.style.background = '#000'; window.__mpvLiveStage = stage; }
         } catch (_) {}
         // 关键：MPV 接管后立即销毁网页 hls.js 并释放 <video>，避免网页与 MPV 同时解码同一路 4K（N100 双路解码会卡）
         try { destroyHls(); } catch (_) {}
@@ -1018,8 +1015,8 @@ async function init() {
         try {
           api.onMpvEmbedClosed && api.onMpvEmbedClosed(() => {
             if (window.__mpvRectTimer) { clearInterval(window.__mpvRectTimer); window.__mpvRectTimer = null; }
-            // v1.54：移除沉浸黑底
-            try { const b = document.getElementById('fnos-embed-black'); if (b && b.parentNode) b.parentNode.removeChild(b); } catch (_) {}
+            // v1.57：还原视频容器背景（不再有全屏黑层）
+            try { if (window.__mpvLiveStage) { window.__mpvLiveStage.style.background = window.__mpvLiveStage.__mpvPrevBg || ''; window.__mpvLiveStage = null; } } catch (_) {}
             // MPV 关闭后自动恢复网页播放器继续播放当前频道，避免黑屏
             try { if (currentCh) { playWithHls(currentCh); } } catch (_) {}
           });

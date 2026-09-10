@@ -297,12 +297,23 @@
 
   // --------- 界面开关 ---------
   // v1.48.0：窗口已改为无边框 + 自定义标题栏，无系统菜单栏，"自动隐藏菜单栏"选项已移除。
+  // v1.52.0：标题栏自动隐藏开关
+  const optTbAutoHide = document.getElementById('opt-titlebar-autohide');
+  const optTbLabel = document.getElementById('opt-titlebar-autohide-label');
+  const syncTbLabel = () => { if (optTbLabel) optTbLabel.textContent = optTbAutoHide && optTbAutoHide.checked ? '已开启（悬停顶部/按ALT调出）' : '已关闭（标题栏常驻）'; };
+  if (optTbAutoHide) {
+    optTbAutoHide.addEventListener('change', syncTbLabel);
+    fnosSettings.getSettings().then((info) => {
+      try { optTbAutoHide.checked = info ? info.titleBarAutoHide !== false : true; syncTbLabel(); } catch (_) {}
+    }).catch(() => {});
+  }
+
   const optSave = document.getElementById('opt-save');
   if (optSave) {
     optSave.addEventListener('click', async () => {
       optSave.disabled = true; optSave.textContent = '保 存 中';
       try {
-        const res = await fnosSettings.setUIOptions({});
+        const res = await fnosSettings.setUIOptions({ titleBarAutoHide: !!(optTbAutoHide && optTbAutoHide.checked) });
         if (res && res.ok) {
           optSave.textContent = '已 保 存（重启后完全生效）';
           setTimeout(() => { optSave.textContent = '保存界面设置'; }, 1800);

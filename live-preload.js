@@ -80,77 +80,80 @@ contextBridge.exposeInMainWorld('fnosLive', {
 // ============================================================================
 (function injectLiveTitleBar() {
   try {
-    const BTN_HOVER_BG = 'rgba(128,128,128,0.35)';
-    const CLOSE_HOVER_BG = 'rgba(232,17,35,0.85)';
-    const iconStroke = 'rgba(255,255,255,0.92)';
+    let AUTO_HIDE = true;
+    try { const r = ipcRenderer.sendSync('settings:get-titlebar'); if (r && typeof r.autoHide === 'boolean') AUTO_HIDE = r.autoHide; } catch (_) {}
+    const root = () => document.documentElement || document.body || document;
 
     function buildBar() {
       if (document.getElementById('fnos-titlebar')) return;
+
+      // 顶部 8px 常驻拖动热区（标题栏隐藏时鼠标到顶部即可拖动）
+      const hot = document.createElement('div');
+      hot.id = 'fnos-titlebar-hotzone';
+      hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:8px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;';
+      root().appendChild(hot);
+
       const bar = document.createElement('div');
       bar.id = 'fnos-titlebar';
       bar.style.cssText = [
         'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
         'z-index:2147483647', 'display:flex', 'align-items:center',
-        'justify-content:space-between', 'pointer-events:none',
-        'background:transparent',
-        '-webkit-app-region:drag', 'user-select:none',
-        'transform:translateY(-100%)', 'transition:transform .18s ease', 'opacity:0'
+        'justify-content:space-between', 'box-sizing:border-box', 'pointer-events:none',
+        'background:transparent', '-webkit-app-region:drag', 'user-select:none',
+        'transition:transform .16s ease,opacity .16s ease'
       ].join(';');
 
       const left = document.createElement('div');
-      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-left:6px;margin-left:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
+      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:6px;margin-left:4px;';
       const menuBtn = document.createElement('button');
       menuBtn.title = '菜单';
-      menuBtn.style.cssText = 'width:40px;height:30px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;';
-      menuBtn.innerHTML = '<svg width="15" height="15" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="' + iconStroke + '" stroke-width="1.4" stroke-linecap="round"/></svg>';
-      menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = BTN_HOVER_BG; });
+      menuBtn.style.cssText = 'width:40px;height:28px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;';
+      menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.95)" stroke-width="1.5" stroke-linecap="round"/></svg>';
+      menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = 'rgba(255,255,255,0.12)'; });
       menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
       menuBtn.addEventListener('click', () => { try { ipcRenderer.send('app-popup-menu'); } catch (_) {} });
       left.appendChild(menuBtn);
 
       const btns = document.createElement('div');
-      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-right:6px;margin-right:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
+      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;overflow:hidden;';
       const mkBtn = (id, svg, hoverBg, onClick) => {
         const b = document.createElement('button');
         b.id = id;
         b.title = id === 'fnos-tb-min' ? '最小化' : id === 'fnos-tb-max' ? '最大化/还原' : '关闭';
-        b.style.cssText = 'width:40px;height:30px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;';
+        b.style.cssText = 'width:46px;height:34px;border:none;outline:none;background:rgba(0,0,0,0.45);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;-webkit-app-region:no-drag;';
         b.innerHTML = svg;
         b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
-        b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+        b.addEventListener('mouseleave', () => { b.style.background = 'rgba(0,0,0,0.45)'; });
         b.addEventListener('click', onClick);
         return b;
       };
-      const minBtn = mkBtn('fnos-tb-min',
-        '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M3 8H13" stroke="' + iconStroke + '" stroke-width="1.4" stroke-linecap="round"/></svg>',
-        BTN_HOVER_BG, () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
-      const maxBtn = mkBtn('fnos-tb-max',
-        '<svg width="13" height="13" viewBox="0 0 16 16"><rect x="3.2" y="3.2" width="9.6" height="9.6" rx="1.4" fill="none" stroke="' + iconStroke + '" stroke-width="1.4"/></svg>',
-        BTN_HOVER_BG, () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
-      const closeBtn = mkBtn('fnos-tb-close',
-        '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" stroke="' + iconStroke + '" stroke-width="1.4" stroke-linecap="round"/></svg>',
-        CLOSE_HOVER_BG, () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
+      const minBtn = mkBtn('fnos-tb-min', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', 'rgba(255,255,255,0.22)', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
+      const maxBtn = mkBtn('fnos-tb-max', '<svg width="12" height="12" viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" fill="none" stroke="#fff" stroke-width="1.3"/></svg>', 'rgba(255,255,255,0.22)', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
+      const closeBtn = mkBtn('fnos-tb-close', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', '#E81123', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
 
-      bar.addEventListener('dblclick', (ev) => { if (ev.target === bar || ev.target === btns) { try { ipcRenderer.send('window-maximize'); } catch (_) {} } });
+      bar.addEventListener('dblclick', (ev) => { if (ev.target === bar || ev.target === hot) { try { ipcRenderer.send('window-maximize'); } catch (_) {} } });
       btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
       bar.appendChild(left); bar.appendChild(btns);
-      (document.body || document.documentElement).appendChild(bar);
+      root().appendChild(bar);
 
-      // 自动显隐
       let hideTimer = null;
       const showBar = () => { try { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } bar.style.transform = 'translateY(0)'; bar.style.opacity = '1'; bar.style.pointerEvents = 'auto'; } catch (_) {} };
-      const hideBar = () => { try { if (bar.__menuOpen || bar.__hover) return; bar.style.transform = 'translateY(-100%)'; bar.style.opacity = '0'; bar.style.pointerEvents = 'none'; } catch (_) {} };
-      const scheduleHide = (d) => { try { if (hideTimer) clearTimeout(hideTimer); hideTimer = setTimeout(() => { hideTimer = null; hideBar(); }, d || 350); if (hideTimer.unref) hideTimer.unref(); } catch (_) {} };
-      bar.addEventListener('mouseenter', () => { bar.__hover = true; showBar(); });
-      bar.addEventListener('mouseleave', () => { bar.__hover = false; scheduleHide(300); });
-      menuBtn.addEventListener('click', () => { try { bar.__menuOpen = true; setTimeout(() => { bar.__menuOpen = false; scheduleHide(400); }, 1500); } catch (_) {} });
-
-      const hot = document.createElement('div');
-      hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:8px;z-index:2147483646;pointer-events:auto;-webkit-app-region:drag;user-select:none;';
+      const hideBar = () => { try { if (!AUTO_HIDE || bar.__menuOpen) return; bar.style.transform = 'translateY(-100%)'; bar.style.opacity = '0'; bar.style.pointerEvents = 'none'; } catch (_) {} };
+      const scheduleHide = (d) => { try { if (!AUTO_HIDE) return; if (hideTimer) clearTimeout(hideTimer); hideTimer = setTimeout(() => { hideTimer = null; hideBar(); }, d || 350); if (hideTimer.unref) hideTimer.unref(); } catch (_) {} };
+      bar.addEventListener('mouseenter', showBar);
+      bar.addEventListener('mouseleave', () => scheduleHide(300));
+      menuBtn.addEventListener('click', () => { try { bar.__menuOpen = true; setTimeout(() => { bar.__menuOpen = false; scheduleHide(400); }, 1600); } catch (_) {} });
       hot.addEventListener('mouseenter', showBar);
       hot.addEventListener('mouseleave', () => scheduleHide(300));
-      // v1.51.0：移除全局 capture mousemove（卡顿源），显隐由热区/标题栏 hover 事件驱动。
-      (document.body || document.documentElement).appendChild(hot);
+      window.addEventListener('keydown', (ev) => { try { if (ev.key === 'Alt' || ev.altKey) { showBar(); if (AUTO_HIDE) scheduleHide(2200); } } catch (_) {} }, true);
+
+      if (AUTO_HIDE) { bar.style.transform = 'translateY(-100%)'; bar.style.opacity = '0'; } else { showBar(); }
+
+      // 防直播页重渲染清除
+      try {
+        const mo = new MutationObserver(() => { try { if (!document.getElementById('fnos-titlebar') || !document.getElementById('fnos-titlebar-hotzone')) { mo.disconnect(); buildBar(); } } catch (_) {} });
+        mo.observe(document.documentElement || document, { childList: true, subtree: true });
+      } catch (_) {}
     }
 
     const start = () => { try { buildBar(); } catch (_) {} };

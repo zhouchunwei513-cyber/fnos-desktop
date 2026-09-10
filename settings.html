@@ -153,7 +153,17 @@
         <span class="bar"></span>
         <h2>界面</h2>
       </div>
-      <!-- v1.48.0：窗口改为无边框 + 自定义标题栏，已无系统菜单栏，"自动隐藏菜单栏"选项移除 -->
+      <!-- v1.52.0：自定义标题栏自动隐藏开关 -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">自动隐藏标题栏</div>
+          <div class="hotkey-sub">开启：鼠标移到窗口顶部才显示标题栏，按 ALT 键也可调出；关闭：标题栏常驻显示。所有窗口统一生效</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+          <input type="checkbox" id="opt-titlebar-autohide" style="width:18px;height:18px;cursor:pointer" />
+          <span id="opt-titlebar-autohide-label" style="font-size:13px;color:var(--text-secondary,#aab0c0)">已开启</span>
+        </label>
+      </div>
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
           <div class="hotkey-title">主题色</div>

@@ -991,40 +991,41 @@ contextBridge.exposeInMainWorld('fnos', {
             return false;
           } catch (_) { return false; }
         };
-        const __videoProbe = setInterval(() => {
+        // v1.52.0：文档级 capture 阶段 error 监听——媒体 error 不冒泡但可在捕获阶段拦截。
+        // MKV/HEVC 原生不支持时 <video> 触发 error(code=4)，即使 MutationObserver 因视频
+        // 尚未布局/尺寸不足而没安装，这里也能直接捕获并自动接管。单监听器、零 DOM 扫描，
+        // 非播放路由直接 return，对 FNDESK/文件管理等应用零开销。
+        window.addEventListener('error', (ev) => {
           try {
-            // v1.50.0：已接管 MPV（嵌入覆盖在视频区）后，若用户导航离开播放/直播页
-            // （SPA 路由变化），或页面上主播放 <video> 已消失，主动关闭嵌入 MPV，
-            // 否则全屏覆盖的 mpv 会停留在飞牛主界面之上，挡住文件/影视等其它操作。
-            if (state.handled) {
-              const stillPlay = __isPlayLikeRoute();
-              let hasMain = false;
-              const coll0 = document.getElementsByTagName('video');
-              for (let i = 0; i < coll0.length; i++) {
-                const r = coll0[i].getBoundingClientRect();
-                if (r.width > 320 && r.height > 180) { hasMain = true; break; }
-              }
-              if (!stillPlay || !hasMain) {
-                state.handled = false;
-                try { ipcRenderer.send('mpv:embed-close'); } catch (_) {}
-                try { restoreVideoDisplay(); } catch (_) {}
-                log('embed.autoclose', { path: location.pathname, stillPlay, hasMain });
-              }
-            }
-            if (document.readyState === 'complete' && __isPlayLikeRoute()) {
-              const coll = document.getElementsByTagName('video');
-              if (coll.length > 0) {
-                // 找到可见的主播放视频（足够大）才安装 observer
-                let big = false;
-                for (let i = 0; i < coll.length; i++) {
-                  const r = coll[i].getBoundingClientRect();
-                  if (r.width > 320 && r.height > 180) { big = true; break; }
-                }
-                if (big) { installDomObserver(); }
-              }
+            if (!__isPlayLikeRoute()) return;
+            const t = ev && ev.target;
+            if (t && t.tagName === 'VIDEO') {
+              installDomObserver();
+              const v = getMainVideo() || t;
+              log('video.error.global', { path: location.pathname, code: (t.error && t.error.code) || 0 });
+              triggerEmbed(v, 'error-global');
             }
           } catch (_) {}
-        }, 1500);
+        }, true);
+        const __videoProbe = setInterval(() => {
+          try {
+            // v1.52.0：已接管 MPV 后，仅在【导航离开播放/直播路由】时关闭嵌入 MPV。
+            // 注意：接管后网页 <video> 会被我们隐藏(coverVideo)，不能再用"视频消失"判断，
+            // 否则会把刚启动的 mpv 立刻关掉（v1.50/v1.51 的回归）。
+            if (state.handled && !__isPlayLikeRoute()) {
+              state.handled = false;
+              try { ipcRenderer.send('mpv:embed-close'); } catch (_) {}
+              try { restoreVideoDisplay(); } catch (_) {}
+              log('embed.autoclose', { path: location.pathname });
+            }
+            // v1.52.0：播放/直播路由只要出现 <video>（无论是否已布局、尺寸大小）就安装
+            // observer，绑定 error/stalled 监听。MKV 文件刚打开时 video 可能还没尺寸，
+            // 之前要求"可见且>320x180"导致漏装、无法自动接管。视频路由本身数量有限，开销安全。
+            if (__isPlayLikeRoute() && document.getElementsByTagName('video').length > 0) {
+              installDomObserver();
+            }
+          } catch (_) {}
+        }, 1000);
         if (__videoProbe.unref) __videoProbe.unref();
         // 菜单/快捷键强制接管：不依赖 DOM 监听是否安装，始终响应（即使页面无 <video> 也按路由解析直链）
         window.addEventListener('fnos:mpv-embed', () => {
@@ -1092,142 +1093,167 @@ contextBridge.exposeInMainWorld('fnos', {
 // ============================================================================
 (function injectCustomTitleBar() {
   try {
-    if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') return;
     if (window.top !== window) return; // 仅顶层框架
+    // 注入范围：飞牛远程网页(http/https) + 本地主壳 shell.html(file://)。
+    // login/settings 等本地页面不注入。
+    const proto = window.location.protocol;
+    const isShellFile = proto === 'file:' && /shell\.html?$/i.test(window.location.pathname || '');
+    if (proto !== 'http:' && proto !== 'https:' && !isShellFile) return;
 
-    const BTN_HOVER_BG = 'rgba(128,128,128,0.25)';
-    const CLOSE_HOVER_BG = 'rgba(232,17,35,0.85)';
+    let AUTO_HIDE = true;
+    try { const r = ipcRenderer.sendSync('settings:get-titlebar'); if (r && typeof r.autoHide === 'boolean') AUTO_HIDE = r.autoHide; } catch (_) {}
 
-    function buildBar() {
-      if (document.getElementById('fnos-titlebar')) return;
-      const bar = document.createElement('div');
-      bar.id = 'fnos-titlebar';
-      // v1.50.0：默认隐藏（移到屏幕顶部之外、不拦截事件），鼠标移到窗口顶部热区才下滑显示，
-      // 移开自动上滑隐藏。避免常驻标题栏遮挡网页内容；风格在所有应用窗口保持一致。
-      bar.style.cssText = [
-        'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
-        'z-index:2147483647', 'display:flex', 'align-items:center',
-        'justify-content:space-between', 'pointer-events:none',
-        'background:transparent',
-        '-webkit-app-region:drag', 'user-select:none',
-        'transform:translateY(-100%)', 'transition:transform .18s ease',
-        'opacity:0'
-      ].join(';');
+    const root = () => document.documentElement || document.body || document;
 
-      // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）+ FNOS 标识
-      const left = document.createElement('div');
-      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-left:6px;margin-left:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
-      const menuBtn = document.createElement('button');
-      menuBtn.id = 'fnos-tb-menu';
-      menuBtn.title = '菜单（文件/下载/编辑/视图/工具/设置/帮助）';
-      menuBtn.style.cssText = [
-        'width:40px', 'height:30px', 'border:none', 'outline:none', 'background:transparent',
-        'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
-        'border-radius:6px', 'padding:0', '-webkit-app-region:no-drag'
-      ].join(';');
-      menuBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.92)" stroke-width="1.4" stroke-linecap="round"/></svg>`;
-      menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = BTN_HOVER_BG; });
-      menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
-      menuBtn.addEventListener('click', () => { try { ipcRenderer.send('app-popup-menu'); } catch (_) {} });
-      left.appendChild(menuBtn);
+    function build() {
+      try {
+        if (document.getElementById('fnos-titlebar')) return;
 
-      const btns = document.createElement('div');
-      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-right:6px;margin-right:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
-
-      const mkBtn = (id, svg, hoverBg) => {
-        const b = document.createElement('button');
-        b.id = id;
-        b.title = id === 'fnos-tb-min' ? '最小化' : id === 'fnos-tb-max' ? '最大化/还原' : '关闭';
-        b.style.cssText = [
-          'width:40px', 'height:30px', 'border:none', 'outline:none', 'background:transparent',
-          'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
-          'border-radius:6px', 'padding:0', '-webkit-app-region:no-drag'
+        // ---- 顶部拖动热区：高 8px 隐形条，始终存在、始终可拖动（即使标题栏隐藏） ----
+        const hot = document.createElement('div');
+        hot.id = 'fnos-titlebar-hotzone';
+        hot.setAttribute('aria-hidden', 'true');
+        hot.style.cssText = [
+          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:8px',
+          'z-index:2147483646', 'pointer-events:auto', 'background:transparent',
+          '-webkit-app-region:drag', 'user-select:none'
         ].join(';');
-        b.innerHTML = svg;
-        b.addEventListener('mouseenter', () => { b.style.background = hoverBg; b.querySelectorAll('path,rect').forEach(el => el.setAttribute('stroke', '#fff')); });
-        b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; b.querySelectorAll('path,rect').forEach(el => el.setAttribute('stroke', 'rgba(255,255,255,0.92)')); });
-        return b;
-      };
+        root().appendChild(hot);
 
-      const iconStroke = 'rgba(255,255,255,0.92)';
-      const minBtn = mkBtn('fnos-tb-min',
-        `<svg width="13" height="13" viewBox="0 0 16 16"><path d="M3 8H13" stroke="${iconStroke}" stroke-width="1.4" stroke-linecap="round"/></svg>`, BTN_HOVER_BG);
-      const maxBtn = mkBtn('fnos-tb-max',
-        `<svg width="13" height="13" viewBox="0 0 16 16"><rect x="3.2" y="3.2" width="9.6" height="9.6" rx="1.4" fill="none" stroke="${iconStroke}" stroke-width="1.4"/></svg>`, BTN_HOVER_BG);
-      const closeBtn = mkBtn('fnos-tb-close',
-        `<svg width="13" height="13" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" stroke="${iconStroke}" stroke-width="1.4" stroke-linecap="round"/></svg>`, CLOSE_HOVER_BG);
+        // ---- 标题栏 ----
+        const bar = document.createElement('div');
+        bar.id = 'fnos-titlebar';
+        bar.style.cssText = [
+          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
+          'z-index:2147483647', 'display:flex', 'align-items:center',
+          'justify-content:space-between', 'box-sizing:border-box',
+          'pointer-events:none', 'background:transparent',
+          '-webkit-app-region:drag', 'user-select:none',
+          'transition:transform .16s ease,opacity .16s ease'
+        ].join(';');
 
-      minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
-      maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
-      closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
+        // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
+        const left = document.createElement('div');
+        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:6px;margin-left:4px;';
+        const menuBtn = document.createElement('button');
+        menuBtn.id = 'fnos-tb-menu';
+        menuBtn.title = '菜单（文件/下载/编辑/视图/工具/设置/帮助）';
+        menuBtn.style.cssText = 'width:40px;height:28px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;';
+        menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.95)" stroke-width="1.5" stroke-linecap="round"/></svg>';
+        menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = 'rgba(255,255,255,0.12)'; });
+        menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
+        menuBtn.addEventListener('click', () => { try { ipcRenderer.send('app-popup-menu'); } catch (_) {} });
+        left.appendChild(menuBtn);
 
-      // 双击拖拽区最大化/还原
-      bar.addEventListener('dblclick', (ev) => {
-        if (ev.target === bar || ev.target === btns) { try { ipcRenderer.send('window-maximize'); } catch (_) {} }
-      });
+        // 右侧：最小化/最大化/关闭——实心 Windows 风格按钮组，保证任意背景上清晰可见
+        const btns = document.createElement('div');
+        btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:0;overflow:hidden;';
 
-      btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
-      bar.appendChild(left);
-      bar.appendChild(btns);
-      (document.body || document.documentElement).appendChild(bar);
+        const mkBtn = (id, svg, hoverBg) => {
+          const b = document.createElement('button');
+          b.id = id;
+          b.title = id === 'fnos-tb-min' ? '最小化' : id === 'fnos-tb-max' ? '最大化/还原' : '关闭';
+          b.style.cssText = [
+            'width:46px', 'height:34px', 'border:none', 'outline:none',
+            'background:rgba(0,0,0,0.45)', 'color:#fff',
+            'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
+            'padding:0', '-webkit-app-region:no-drag'
+          ].join(';');
+          b.innerHTML = svg;
+          b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
+          b.addEventListener('mouseleave', () => { b.style.background = 'rgba(0,0,0,0.45)'; });
+          return b;
+        };
 
-      // ---- v1.50.0 自动显隐 ----
-      let hideTimer = null;
-      const showBar = () => {
+        const minBtn = mkBtn('fnos-tb-min',
+          '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', 'rgba(255,255,255,0.22)');
+        const maxBtn = mkBtn('fnos-tb-max',
+          '<svg width="12" height="12" viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" fill="none" stroke="#fff" stroke-width="1.3"/></svg>', 'rgba(255,255,255,0.22)');
+        const closeBtn = mkBtn('fnos-tb-close',
+          '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', '#E81123');
+
+        minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
+        maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
+        closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
+        bar.addEventListener('dblclick', (ev) => { if (ev.target === bar || ev.target === hot) { try { ipcRenderer.send('window-maximize'); } catch (_) {} } });
+
+        btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
+        bar.appendChild(left);
+        bar.appendChild(btns);
+        root().appendChild(bar);
+
+        // ---- 显隐控制 ----
+        let hideTimer = null;
+        const show = () => {
+          try {
+            if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+            bar.style.transform = 'translateY(0)';
+            bar.style.opacity = '1';
+            bar.style.pointerEvents = 'auto';
+          } catch (_) {}
+        };
+        const hide = () => {
+          try {
+            if (!AUTO_HIDE) return;            // 常驻模式不隐藏
+            if (bar.__menuOpen) return;
+            bar.style.transform = 'translateY(-100%)';
+            bar.style.opacity = '0';
+            bar.style.pointerEvents = 'none';
+          } catch (_) {}
+        };
+        const scheduleHide = (ms) => {
+          try {
+            if (!AUTO_HIDE) return;
+            if (hideTimer) clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => { hideTimer = null; hide(); }, ms || 350);
+            if (hideTimer.unref) hideTimer.unref();
+          } catch (_) {}
+        };
+
+        bar.addEventListener('mouseenter', show);
+        bar.addEventListener('mouseleave', () => scheduleHide(300));
+        menuBtn.addEventListener('click', () => {
+          try { bar.__menuOpen = true; setTimeout(() => { bar.__menuOpen = false; scheduleHide(400); }, 1600); } catch (_) {}
+        });
+
+        // 鼠标到顶部热区：唤出标题栏（热区本身已可拖动）
+        hot.addEventListener('mouseenter', show);
+        hot.addEventListener('mouseleave', () => scheduleHide(300));
+
+        // ALT 键调出标题栏（自动隐藏模式下）；再次按或移出后自动隐藏
+        window.addEventListener('keydown', (ev) => {
+          try {
+            if (ev.key === 'Alt' || ev.altKey) {
+              show();
+              if (AUTO_HIDE) scheduleHide(2200);
+            }
+          } catch (_) {}
+        }, true);
+
+        // 初始状态
+        if (AUTO_HIDE) { bar.style.transform = 'translateY(-100%)'; bar.style.opacity = '0'; }
+        else { show(); }
+
+        // ---- 防 SPA 重渲染清除：节点被移除则重注 ----
         try {
-          if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-          bar.style.transform = 'translateY(0)';
-          bar.style.opacity = '1';
-          bar.style.pointerEvents = 'auto';
+          const mo = new MutationObserver(() => {
+            try {
+              if (!document.getElementById('fnos-titlebar') || !document.getElementById('fnos-titlebar-hotzone')) {
+                mo.disconnect();
+                build();
+              }
+            } catch (_) {}
+          });
+          mo.observe(document.documentElement || document, { childList: true, subtree: true });
         } catch (_) {}
-      };
-      const hideBar = () => {
-        try {
-          // 菜单弹出/鼠标仍悬停在按钮上时不隐藏
-          if (bar.__menuOpen || bar.__hover) return;
-          bar.style.transform = 'translateY(-100%)';
-          bar.style.opacity = '0';
-          bar.style.pointerEvents = 'none';
-        } catch (_) {}
-      };
-      const scheduleHide = (delay) => {
-        try {
-          if (hideTimer) clearTimeout(hideTimer);
-          hideTimer = setTimeout(() => { hideTimer = null; hideBar(); }, delay || 350);
-          if (hideTimer.unref) hideTimer.unref();
-        } catch (_) {}
-      };
-      // 鼠标进入标题栏：保持显示
-      bar.addEventListener('mouseenter', () => { bar.__hover = true; showBar(); });
-      bar.addEventListener('mouseleave', () => { bar.__hover = false; scheduleHide(300); });
-      // 菜单按钮点击：标记菜单打开，弹出菜单期间不自动隐藏；菜单关闭后延时隐藏
-      menuBtn.addEventListener('click', () => {
-        try {
-          bar.__menuOpen = true;
-          // 主进程菜单是异步 popup，无法直接监听关闭；用较长延时兜底恢复自动隐藏
-          setTimeout(() => { bar.__menuOpen = false; scheduleHide(400); }, 1500);
-        } catch (_) {}
-      });
 
-      // 顶部热区：一条高 8px 的隐形条，鼠标移到窗口最顶部即唤出标题栏；
-      // 关键：该热区本身是可拖动区域（-webkit-app-region:drag），标题栏隐藏时
-      // 鼠标悬停到最顶部即可直接拖动窗口（无需等栏出现）。栏显示后由标题栏覆盖。
-      const hot = document.createElement('div');
-      hot.id = 'fnos-titlebar-hotzone';
-      hot.style.cssText = [
-        'position:fixed', 'top:0', 'left:0', 'right:0', 'height:8px',
-        'z-index:2147483646', 'pointer-events:auto',
-        '-webkit-app-region:drag', 'user-select:none'
-      ].join(';');
-      hot.addEventListener('mouseenter', showBar);
-      hot.addEventListener('mouseleave', () => scheduleHide(300));
-      // 标题栏显示后，鼠标移出标题栏本身即延时隐藏（由 bar 的 mouseleave 处理）。
-      // v1.51.0：移除全局 capture mousemove 监听器——它在 FNDESK 等 DOM 密集应用上
-      // 每次鼠标移动都触发，是卡顿源之一；显隐完全由热区/标题栏自身的 hover 事件驱动，零轮询零全局监听。
-      (document.body || document.documentElement).appendChild(hot);
+        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.injected', autoHide: AUTO_HIDE, path: (location.pathname || '').slice(0, 50) }); } catch (_) {}
+      } catch (e) {
+        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.build.ex', err: String(e && e.message || e) }); } catch (_) {}
+      }
     }
 
-    const start = () => { try { buildBar(); } catch (_) {} };
+    const start = () => { try { build(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

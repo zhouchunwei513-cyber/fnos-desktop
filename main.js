@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.51.0';
+const APP_VERSION = '1.52.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3484,6 +3484,8 @@ ipcMain.handle('settings:get', async () => {
     shortcuts: { ...DEFAULT_SHORTCUTS, ...(s.shortcuts || {}) },
     urlRewrites: Array.isArray(s.urlRewrites) ? s.urlRewrites : [],
     autoHideMenuBar: !!s.autoHideMenuBar,
+    // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示
+    titleBarAutoHide: s.titleBarAutoHide === undefined ? true : !!s.titleBarAutoHide,
     themeColor: String(s.themeColor || '#4F6EF7'),
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
@@ -3569,10 +3571,13 @@ ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
 ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
   try {
     const autoHide = !!opts?.autoHideMenuBar;
+    // v1.52.0：自定义标题栏自动隐藏开关
+    const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide !== false);
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
-    const patch = { autoHideMenuBar: autoHide, themeColor: accent };
+    const patch = { autoHideMenuBar: autoHide, titleBarAutoHide: tbAutoHide, themeColor: accent };
     saveSettings(patch);
     cachedSettings.autoHideMenuBar = autoHide;
+    cachedSettings.titleBarAutoHide = tbAutoHide;
     cachedSettings.themeColor = accent;
     for (const w of BrowserWindow.getAllWindows()) {
       try {
@@ -3590,6 +3595,14 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
   } catch (err) {
     return { ok: false, error: err?.message || '保存失败' };
   }
+});
+
+// v1.52.0：preload 注入自定义标题栏时同步读取标题栏自动隐藏设置
+ipcMain.on('settings:get-titlebar', (e) => {
+  try {
+    const s = loadSettings();
+    e.returnValue = { autoHide: s.titleBarAutoHide === undefined ? true : !!s.titleBarAutoHide };
+  } catch (_) { e.returnValue = { autoHide: true }; }
 });
 
 ipcMain.on('settings:close', (e) => {

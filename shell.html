@@ -20,9 +20,10 @@
 
   /* 自定义标题栏 */
   #titlebar {
+    /* v1.52.0：主壳改用 preload 注入的统一自动隐藏标题栏，隐藏原静态标题栏 */
+    display: none !important;
     height: var(--tb-height);
     flex: 0 0 var(--tb-height);
-    display: flex;
     align-items: stretch;
     background: var(--tb-bg);
     backdrop-filter: blur(18px) saturate(1.4);

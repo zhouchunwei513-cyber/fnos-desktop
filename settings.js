@@ -489,7 +489,6 @@
       }
       loadLiveConfig();
       loadVlcConfig();
-      loadEnhanceConfig();
     } catch (err) {
       showError(hkError, err?.message || '加载设置失败');
     }

@@ -897,13 +897,32 @@ class MpvPlayer extends EventEmitter {
     if (!this.connected) { this.once('ipc-ready', apply); return; }
     apply();
   }
-  hideWindow() { return this.command(['set_property', 'visibility', 'no']).catch(() => {}); }
+  // v1.49.0：隐藏/显示窗口。
+  // 关键：实测 `visibility` 属性在 d3d11 VO 上 Set property 返回 -3（UNAVAILABLE/不可用），
+  //       是个空操作，导致一键隐藏/锁定时 MPV 窗口仍停留在屏幕上。改用 `window-minimized`
+  //       属性（日志确认可成功设置）最小化原生窗口，真正让它离开画面。
+  hideWindow() {
+    this._userHidden = true;
+    const apply = () => {
+      try { this.command(['set_property', 'window-minimized', 'yes']).catch(() => {}); } catch (_) {}
+    };
+    if (!this.connected) { this.once('ipc-ready', apply); return Promise.resolve(); }
+    apply();
+    return Promise.resolve();
+  }
   showWindow() {
     this._forceVisible = true;
-    if (!this.connected) { Promise.resolve().then(() => this.once('ipc-ready', () => this.showWindow())); return Promise.resolve(); }
-    return Promise.resolve()
-      .then(() => this.command(['set_property', 'visibility', 'yes']).catch(() => {}))
-      .then(() => { if (this._geometry) this.setGeometry(this._geometry); });
+    this._userHidden = false;
+    const apply = () => {
+      try {
+        this.command(['set_property', 'window-minimized', 'no']).catch(() => {});
+      } catch (_) {}
+      // 还原最小化后重新贴合几何，确保回到正确位置
+      try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {}
+    };
+    if (!this.connected) { Promise.resolve().then(() => this.once('ipc-ready', () => apply())); return Promise.resolve(); }
+    apply();
+    return Promise.resolve();
   }
 
   // ---- v1.32.0 首帧前隐藏窗口（黑屏/待机闪屏修复）----
@@ -914,17 +933,21 @@ class MpvPlayer extends EventEmitter {
     this._forceVisible = false;
     this._firstFrameShown = false;
     if (this._revealFallback) { clearTimeout(this._revealFallback); this._revealFallback = null; }
-    try { this.command(['set_property', 'visibility', 'no']).catch(() => {}); } catch (_) {}
-    // 兜底：若长时间没有 video-params（纯音频/异常源），最多 6s 后强制显示，避免永久黑窗
+    // v1.49.0：visibility 在 d3d11 为空操作（-3 UNAVAILABLE），改用 geometry 把窗口移出屏幕，
+    // 露出网页自身的加载/封面界面；首帧就绪后由 _revealOnFirstFrame 移回。
+    this._offscreenHidden = true;
+    try { this.setGeometry({ x: -32000, y: -32000, w: 160, h: 90 }); } catch (_) {}
+    // 兜底：若长时间没有 video-params（纯音频/异常源），最多 6s 后强制显示，避免永久离屏
     this._revealFallback = setTimeout(() => { try { this._revealOnFirstFrame(); } catch (_) {} }, 6000);
     if (this._revealFallback.unref) this._revealFallback.unref();
   }
   _revealOnFirstFrame() {
     if (this._firstFrameShown || this._forceVisible) return;
     this._firstFrameShown = true;
+    this._offscreenHidden = false;
     if (this._revealFallback) { clearTimeout(this._revealFallback); this._revealFallback = null; }
-    try { this.command(['set_property', 'visibility', 'yes']).catch(() => {}); } catch (_) {}
-    try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {}
+    // 若用户在此期间手动最小化（一键隐藏），则不移回，保持最小化状态
+    if (!this._userHidden) { try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {} }
     this.emit('log', 'first-frame revealed');
   }
   async _maybeRevealByTracks() {

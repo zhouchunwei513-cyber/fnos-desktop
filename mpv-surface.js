@@ -35,20 +35,11 @@ class MpvSurface {
     this._pipSavedWin = null;
     // 注：log/end-file/exit 监听由 main.js（embedMpvPlay）统一绑定，这里不重复绑定。
 
-    // 独立窗口：不跟随父窗、不绑定父窗生命周期（由 main.js 在 mpv 退出时回收）
+    // 独立窗口：不跟随父窗、不绑定父窗生命周期（由 main.js 在 mpv 退出时回收）。
+    // v1.49.0：移除 v1.48 的"拖回自动吸附"——它会把独立 mpv 窗口强制 resize 成整个主窗口
+    // 尺寸覆盖上去，挡住飞牛界面操作。独立窗口应始终保持独立、可自由拖动/缩放。
     if (this._standalone) {
-      // v1.48.0：拖回吸附。opts.resolveDockTarget() 由 main.js 提供，返回当前飞牛主窗口
-      // 内容区屏幕几何 {x,y,width,height}（不可吸附时返回 null）。独立 mpv 窗口被拖到主窗口
-      // 区域内、且重叠面积达到阈值时，自动贴合主窗口并进入跟随模式；用户把窗口拖出主窗口则脱离。
-      this._resolveDockTarget = (typeof opts.resolveDockTarget === 'function') ? opts.resolveDockTarget : null;
-      this._docked = false;
       this._start();
-      if (this._resolveDockTarget) {
-        // 等 IPC 就绪后再开始几何轮询
-        const startDockPoll = () => { try { this._startDockPolling(); } catch (_) {} };
-        if (this.player.connected) setTimeout(startDockPoll, 1200);
-        else this.player.once('ipc-ready', () => setTimeout(startDockPoll, 800));
-      }
       return;
     }
 

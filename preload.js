@@ -938,6 +938,23 @@ contextBridge.exposeInMainWorld('fnos', {
         } catch (_) {}
         // 启动时若已在播放页（DOMContentLoaded 后），尝试一次性轻量探测 video
         if (isVideoRoute()) installDomObserver();
+        // v1.49.0：兜底捕获"无播放接口驱动"的视频（如飞牛本地 MKV/HEVC 文件，浏览器原生
+        // 不支持、走文件流直链，可能不经过 /v/api/... 接口，导致 MutationObserver 永不安装、
+        // <video> 的 error 事件无人监听而无法自动接管）。
+        // 用极低频（1.5s）、零遍历的 probe：只看是否存在 <video> 元素（getElementsByTagName
+        // 是 O(1) 实时集合，不 querySelectorAll、不读属性），一旦出现才惰性安装 observer。
+        // 文件管理/相册/设置/第三方大型 FPK 应用页面永远没有 <video>，probe 每次空转，开销可忽略。
+        const __videoProbe = setInterval(() => {
+          try {
+            if (document.readyState === 'complete') {
+              if (document.getElementsByTagName('video').length > 0) {
+                installDomObserver();
+                clearInterval(__videoProbe);
+              }
+            }
+          } catch (_) {}
+        }, 1500);
+        if (__videoProbe.unref) __videoProbe.unref();
         // 菜单/快捷键强制接管：不依赖 DOM 监听是否安装，始终响应（即使页面无 <video> 也按路由解析直链）
         window.addEventListener('fnos:mpv-embed', () => {
           try {
@@ -996,7 +1013,7 @@ contextBridge.exposeInMainWorld('fnos', {
         'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
         'z-index:2147483647', 'display:flex', 'align-items:center',
         'justify-content:space-between', 'pointer-events:none',
-        'background:linear-gradient(to bottom,rgba(10,12,18,0.82),rgba(10,12,18,0.32))',
+        'background:transparent',
         '-webkit-app-region:drag', 'user-select:none'
       ].join(';');
 

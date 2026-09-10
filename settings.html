@@ -178,8 +178,57 @@
           <span class="accent-dot" data-color="#06B6D4" style="background:#06B6D4" title="青色"></span>
         </div>
       </div>
+      <!-- v1.58：标题栏材质（透明/磨砂） -->
+      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">标题栏材质</div>
+          <div class="hotkey-sub">透明：完全透出网页内容；磨砂：毛玻璃质感，由下方滑块调节</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="tb-mat-btn" id="tb-mat-transparent">透明</button>
+          <button type="button" class="tb-mat-btn" id="tb-mat-frosted">磨砂</button>
+        </div>
+      </div>
+      <!-- v1.58：不透明度滑块 -->
+      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">标题栏不透明度</div>
+          <div class="hotkey-sub">0 为完全透明；数值越大底色越明显（磨砂材质下为毛玻璃底色深浅）</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
+          <input type="range" id="tb-opacity" min="0" max="100" value="0" class="tb-range" style="flex:1" />
+          <span id="tb-opacity-val" class="tb-range-val">0%</span>
+        </div>
+      </div>
+      <!-- v1.58：磨砂程度滑块（仅磨砂材质生效） -->
+      <div class="color-picker-row" id="tb-blur-row" hidden style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">磨砂程度</div>
+          <div class="hotkey-sub">仅磨砂材质生效，数值越大背景模糊越强</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
+          <input type="range" id="tb-blur" min="0" max="40" value="12" class="tb-range" style="flex:1" />
+          <span id="tb-blur-val" class="tb-range-val">12px</span>
+        </div>
+      </div>
+      <!-- v1.58：标题栏颜色 -->
+      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">标题栏颜色</div>
+          <div class="hotkey-sub">标题栏底色色调（独立于上方界面主题色）</div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap" id="tb-color-dots">
+          <button type="button" class="accent-dot tb-color-dot" data-color="#3B82F6" style="background:#3B82F6" title="蓝"></button>
+          <button type="button" class="accent-dot tb-color-dot" data-color="#8B5CF6" style="background:#8B5CF6" title="紫"></button>
+          <button type="button" class="accent-dot tb-color-dot" data-color="#EC4899" style="background:#EC4899" title="粉"></button>
+          <button type="button" class="accent-dot tb-color-dot" data-color="#10B981" style="background:#10B981" title="绿"></button>
+          <button type="button" class="accent-dot tb-color-dot" data-color="#F59E0B" style="background:#F59E0B" title="橙"></button>
+          <button type="button" class="accent-dot tb-color-dot" data-color="#06B6D4" style="background:#06B6D4" title="青"></button>
+        </div>
+      </div>
       <div class="setup-actions" style="margin-top:14px">
         <button type="button" class="btn-primary" id="opt-save">保存界面设置</button>
+        <span id="opt-status" class="lock-status" style="margin-left:12px"></span>
       </div>
     </section>
 

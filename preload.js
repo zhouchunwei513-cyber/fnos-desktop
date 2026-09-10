@@ -672,21 +672,52 @@ contextBridge.exposeInMainWorld('fnos', {
         .sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
           return (rb.width * rb.height) - (ra.width * ra.height); })[0] || null;
     }
-    function getMainVideoRect(v) {
+    function _normRect(r) {
+      if (!r || r.width < 160 || r.height < 100) return null;
+      return { x: Math.max(0, Math.round(r.left)), y: Math.max(0, Math.round(r.top)),
+        width: Math.round(r.width), height: Math.round(r.height) };
+    }
+    // v1.58：找到网页播放器的【容器】（紧贴 video 的播放区外壳）。接管后 video 被
+    // display:none，但该容器仍在页面上、位置即播放区，用它定位 MPV 才能"内嵌在播放器内"
+    // 而不是铺满整窗；向上遍历时排除几乎覆盖整窗的页面布局列（剧集列表/侧栏应保留可见）。
+    function findPlayerBox(v) {
       try {
         const el = v || getMainVideo();
         if (!el) return null;
-        // 网页 video 被接管后会 display:none（见 triggerEmbed），其 rect 归零/失效；
-        // 此时返回 null，让调用方保持上一次有效矩形，避免回退到整窗把 mpv 铺满。
-        if (el.offsetParent === null || el.style.display === 'none') return null;
-        const r = el.getBoundingClientRect();
-        if (!r || r.width < 160 || r.height < 100) return null;
-        // v1.54：嵌入 MPV 顶部与主窗口对齐（y 取 video 实际 top，不再强制 +34）；
-        // 标题栏为自动隐藏/热区在更高 z-index，需要拖动时鼠标贴最顶部即可，
-        // 沉浸黑层已填充周围灰色背景，故 MPV 顶边对齐窗口顶边即可。
-        return { x: Math.max(0, Math.round(r.left)), y: Math.max(0, Math.round(r.top)),
-          width: Math.round(r.width), height: Math.round(r.height) };
+        const vr = el.getBoundingClientRect();
+        if (!vr || vr.width < 160 || vr.height < 100) return null;
+        let node = el.parentElement;
+        let depth = 0;
+        let best = el;
+        while (node && depth < 5 && node !== document.body && node !== document.documentElement) {
+          const r = node.getBoundingClientRect();
+          const cs = window.getComputedStyle(node);
+          if (r && r.width >= vr.width * 0.92 && r.height >= vr.height * 0.92 &&
+              r.width < window.innerWidth * 0.92 && r.height < window.innerHeight * 0.92 &&
+              cs.display !== 'none' && cs.visibility !== 'hidden') {
+            best = node;
+            node = node.parentElement; depth++;
+          } else break;
+        }
+        return best;
       } catch (_) { return null; }
+    }
+    function getMainVideoRect(v) {
+      try {
+        // 接管后（video 被隐藏）：优先用播放器容器实测矩形（内嵌在播放器区）
+        if (state.handled && state.playerBox) {
+          const br = _normRect(state.playerBox.getBoundingClientRect());
+          if (br) return br;
+          if (state.cachedRect) return state.cachedRect;
+        }
+        const el = v || getMainVideo();
+        if (!el) return state.cachedRect || null;
+        // 网页 video 被接管后会 display:none，其 rect 归零；回退缓存（不整窗铺满）。
+        if (el.offsetParent === null || el.style.display === 'none') return state.cachedRect || null;
+        const rect = _normRect(el.getBoundingClientRect());
+        if (rect) state.cachedRect = rect;
+        return rect;
+      } catch (_) { return state.cachedRect || null; }
     }
 
     // v1.57：只把网页播放器容器背景置黑（解决 MPV 与播放器接缝处露灰），
@@ -826,13 +857,22 @@ contextBridge.exposeInMainWorld('fnos', {
 
     async function triggerEmbed(v, reason) {
       if (state.handled || state.resolving) return;
-      // 视频区坐标：优先网页 <video>；没有（如 MKV 菜单直调）时用铺满内容区的兜底矩形
-      let rect = (v || getMainVideo()) ? getMainVideoRect(v) : null;
+      // v1.58：在接管前先用【可见的 video】定位播放器容器并缓存，接管后 video 会被隐藏，
+      // 之后用该容器实测矩形定位 MPV，保证"内嵌在播放器区"而不是铺满整窗（列表/侧栏保留）。
+      try {
+        const mainV = v || getMainVideo();
+        if (mainV) {
+          const box = findPlayerBox(mainV);
+          if (box) { state.playerBox = box; state.cachedRect = _normRect(box.getBoundingClientRect()) || state.cachedRect; }
+        }
+      } catch (_) {}
+      // 视频区坐标：优先播放器容器/video；拿不到时才用铺满内容区的兜底矩形
+      let rect = getMainVideoRect(v);
       if (!rect) {
-        // v1.54：回退矩形铺满内容区（顶边对齐窗口顶部），配合沉浸黑层实现全屏沉浸；
-        // 退出播放由"离开播放页"自动关闭 MPV，标题栏热区仍可贴最顶部拖动/ALT 调出。
         rect = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
         log('embed.fallbackrect', { reason: reason || '' });
+      } else {
+        log('embed.rect', { rect: JSON.stringify(rect), reason: reason || '', hasBox: !!state.playerBox });
       }
       state.resolving = true;
       startRectLoop();
@@ -912,6 +952,7 @@ contextBridge.exposeInMainWorld('fnos', {
 
     function restoreVideoDisplay() {
       try {
+        state.playerBox = null; state.cachedRect = null; lastRectKey = '';
         document.querySelectorAll('video').forEach(v => {
           try {
             if (typeof v.__mpvPrevDisplay !== 'undefined') { v.style.display = v.__mpvPrevDisplay; v.__mpvPrevDisplay = undefined; }

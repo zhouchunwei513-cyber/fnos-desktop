@@ -185,6 +185,55 @@ html, body {
 .accent-dot:hover { transform: scale(1.15); }
 .accent-dot.active { border-color: #fff; box-shadow: 0 0 12px rgba(255,255,255,.3); }
 
+/* v1.58：标题栏材质切换按钮（透明/磨砂） */
+.tb-mat-btn {
+  min-width: 74px; height: 36px; padding: 0 16px;
+  border-radius: 12px; cursor: pointer;
+  font-size: 13px; font-weight: 700; letter-spacing: 1px;
+  color: rgba(233,239,255,.75);
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.14);
+  transition: all .15s;
+}
+.tb-mat-btn:hover { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.28); }
+.tb-mat-btn.active {
+  color: #fff;
+  background: linear-gradient(135deg, rgba(61,123,255,.9), rgba(122,92,255,.9));
+  border-color: transparent;
+  box-shadow: 0 6px 18px -6px rgba(99,120,255,.7);
+}
+
+/* v1.58：标题栏滑块（与整体玻璃风格一致） */
+.tb-range {
+  -webkit-appearance: none; appearance: none;
+  height: 6px; border-radius: 6px; outline: none; cursor: pointer;
+  background: rgba(255,255,255,.14);
+}
+.tb-range::-webkit-slider-runnable-track { height: 6px; border-radius: 6px; }
+.tb-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  margin-top: -6px;
+  background: linear-gradient(135deg,#3d7bff,#7a5cff);
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(61,123,255,.6);
+  transition: transform .12s;
+}
+.tb-range::-webkit-slider-thumb:hover { transform: scale(1.18); }
+.tb-range::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: linear-gradient(135deg,#3d7bff,#7a5cff);
+  border: 2px solid #fff;
+}
+.tb-range-val {
+  flex: 0 0 46px; text-align: right;
+  font-size: 13px; font-weight: 700; color: #e9efff;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 标题栏颜色点略小，保持一行 */
+.tb-color-dot { width: 30px; height: 30px; }
+
 /* v1.16.2：统一 select 玻璃样式，避免出现系统原生白色下拉菜单 */
 select,
 select.glass-input,

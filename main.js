@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.57.0';
+const APP_VERSION = '1.58.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3484,8 +3484,13 @@ ipcMain.handle('settings:get', async () => {
     shortcuts: { ...DEFAULT_SHORTCUTS, ...(s.shortcuts || {}) },
     urlRewrites: Array.isArray(s.urlRewrites) ? s.urlRewrites : [],
     autoHideMenuBar: !!s.autoHideMenuBar,
-    // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示
-    titleBarAutoHide: s.titleBarAutoHide === undefined ? true : !!s.titleBarAutoHide,
+    // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示（默认）
+    titleBarAutoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
+    // v1.58：标题栏材质/不透明度/磨砂程度/颜色（标题栏颜色独立于界面主题色）
+    titleBarMaterial: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
+    titleBarOpacity: clampInt(s.titleBarOpacity, 0, 100, 0),
+    titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 12),
+    titleBarColor: String(s.titleBarColor || '#3B82F6'),
     themeColor: String(s.themeColor || '#4F6EF7'),
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
@@ -3571,26 +3576,47 @@ ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
 ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
   try {
     const autoHide = !!opts?.autoHideMenuBar;
-    // v1.54：自定义标题栏自动隐藏开关（默认【不】自动隐藏=常驻）
+    // v1.54/v1.58：标题栏自动隐藏（默认 false=常驻）+ 材质/不透明度/磨砂/颜色
     const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide === true);
+    const tbMaterial = opts?.titleBarMaterial === 'frosted' ? 'frosted' : (cachedSettings.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent');
+    const tbOpacity = opts && opts.titleBarOpacity != null && Number.isFinite(Number(opts.titleBarOpacity))
+      ? clampInt(opts.titleBarOpacity, 0, 100, 0)
+      : clampInt(cachedSettings.titleBarOpacity, 0, 100, 0);
+    const tbBlur = opts && opts.titleBarBlur != null && Number.isFinite(Number(opts.titleBarBlur))
+      ? clampInt(opts.titleBarBlur, 0, 40, 12)
+      : clampInt(cachedSettings.titleBarBlur, 0, 40, 12);
+    const tbColor = opts?.titleBarColor ? String(opts.titleBarColor) : String(cachedSettings.titleBarColor || '#3B82F6');
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
-    const patch = { autoHideMenuBar: autoHide, titleBarAutoHide: tbAutoHide, themeColor: accent };
-    saveSettings(patch);
+    saveSettings({
+      autoHideMenuBar: autoHide,
+      titleBarAutoHide: tbAutoHide,
+      titleBarMaterial: tbMaterial,
+      titleBarOpacity: tbOpacity,
+      titleBarBlur: tbBlur,
+      titleBarColor: tbColor,
+      themeColor: accent,
+    });
     cachedSettings.autoHideMenuBar = autoHide;
     cachedSettings.titleBarAutoHide = tbAutoHide;
+    cachedSettings.titleBarMaterial = tbMaterial;
+    cachedSettings.titleBarOpacity = tbOpacity;
+    cachedSettings.titleBarBlur = tbBlur;
+    cachedSettings.titleBarColor = tbColor;
     cachedSettings.themeColor = accent;
+    // v1.58：广播【完整标题栏样式对象】（autoHide+material+opacity+blur+color）
+    // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
+    const tbPayload = { autoHide: tbAutoHide, material: tbMaterial, opacity: tbOpacity, blur: tbBlur, color: tbColor };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
         w.setMenuBarVisibility(!autoHide);
-        // v1.54：广播标题栏自动隐藏设置，各窗口标题栏实时切换（含 webview guest）
-        try { w.webContents.send('settings:titlebar-changed', tbAutoHide); } catch (_) {}
+        try { w.webContents.send('settings:titlebar-changed', tbPayload); } catch (_) {}
       } catch (_) {}
     }
     // 同步到所有渲染进程（含 webview guest：飞牛桌面/FNDESK 内的应用窗）
     try {
       for (const wc of require('electron').webContents.getAllWebContents()) {
-        try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbAutoHide); } catch (_) {}
+        try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
       }
     } catch (_) {}
     try {
@@ -3609,9 +3635,17 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
 ipcMain.on('settings:get-titlebar', (e) => {
   try {
     const s = loadSettings();
-    // v1.54：默认【不】自动隐藏（常驻标题栏）
-    e.returnValue = { autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide };
-  } catch (_) { e.returnValue = { autoHide: false }; }
+    // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；返回完整材质/颜色样式
+    e.returnValue = {
+      autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
+      material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
+      opacity: clampInt(s.titleBarOpacity, 0, 100, 0),
+      blur: clampInt(s.titleBarBlur, 0, 40, 12),
+      color: String(s.titleBarColor || '#3B82F6'),
+    };
+  } catch (_) {
+    e.returnValue = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
+  }
 });
 
 ipcMain.on('settings:close', (e) => {

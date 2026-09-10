@@ -13,24 +13,86 @@ module.exports = function injectTitleBar(ctx) {
     if (typeof window === 'undefined') return;
     if (window.top !== window) return; // 仅顶层框架
 
-    // 默认【不】自动隐藏标题栏（常驻）。用户在设置中开启后才自动隐藏。
-    let AUTO_HIDE = false;
+    // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
+    const TB = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
-      if (r && typeof r.autoHide === 'boolean') AUTO_HIDE = r.autoHide;
+      if (r && typeof r === 'object') {
+        if (typeof r.autoHide === 'boolean') TB.autoHide = r.autoHide;
+        if (r.material === 'frosted' || r.material === 'transparent') TB.material = r.material;
+        if (r.opacity != null) TB.opacity = Math.max(0, Math.min(100, Number(r.opacity) || 0));
+        if (r.blur != null) TB.blur = Math.max(0, Math.min(40, Number(r.blur) || 0));
+        if (r.color) TB.color = String(r.color);
+      }
     } catch (_) {}
+    let AUTO_HIDE = TB.autoHide;
 
     const root = () => document.documentElement || document.body || document;
 
-    // 监听设置变化（设置页切换开关后实时生效，无需重启）
+    // 把 #RRGGBB + 不透明度(0~100) 转成 rgba()
+    function hexToRgba(hex, a) {
+      try {
+        let h = String(hex || '').replace('#', '').trim();
+        if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+        const n = parseInt(h, 16);
+        if (!isFinite(n) || h.length !== 6) return `rgba(0,0,0,${a})`;
+        const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+        return `rgba(${r},${g},${b},${a})`;
+      } catch (_) { return `rgba(0,0,0,${a})`; }
+    }
+
+    // 根据设置计算标题栏背景/模糊并应用；同时调整图标配色
+    function applyStyle(bar) {
+      try {
+        if (!bar) return;
+        if (TB.material === 'frosted') {
+          // 磨砂：带颜色底色（不透明度滑块控制深浅）+ backdrop 模糊（磨砂滑块）
+          const a = TB.opacity / 100 * 0.72; // 磨砂模式底色最高约 72%
+          bar.style.background = hexToRgba(TB.color, a);
+          const blur = Math.max(2, TB.blur);
+          bar.style.backdropFilter = `blur(${blur}px) saturate(1.4)`;
+          bar.style.webkitBackdropFilter = `blur(${blur}px) saturate(1.4)`;
+        } else {
+          // 透明：底色由不透明度滑块控制（默认 0=完全透明），无模糊
+          const a = TB.opacity / 100;
+          bar.style.background = a > 0.001 ? hexToRgba(TB.color, a) : 'transparent';
+          bar.style.backdropFilter = 'none';
+          bar.style.webkitBackdropFilter = 'none';
+        }
+        // 底色较深时图标用白，较浅时图标用深色——保证对比
+        const darkBg = TB.material === 'frosted' || (TB.material === 'transparent' && TB.opacity > 45);
+        bar.__useDarkIcon = !darkBg; // true = 浅底用深图标
+        const iconStroke = darkBg ? 'rgba(255,255,255,0.95)' : 'rgba(20,20,20,0.92)';
+        const iconShadow = darkBg
+          ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))'
+          : 'drop-shadow(0 1px 1px rgba(255,255,255,0.6))';
+        bar.querySelectorAll('svg').forEach((svg) => {
+          svg.querySelectorAll('path,line').forEach((p) => { p.setAttribute('stroke', iconStroke); });
+          svg.style.filter = iconShadow;
+        });
+      } catch (_) {}
+    }
+
+    // 监听设置变化（设置页切换后实时生效，无需重启）。payload 为完整样式对象
     try {
       ipcRenderer.on('settings:titlebar-changed', (_e, val) => {
         try {
-          const on = !!val;
-          AUTO_HIDE = on;
-          const bar = document.getElementById('fnos-titlebar');
-          if (bar) {
-            if (on) { hide(bar); } else { show(bar); }
+          if (val && typeof val === 'object') {
+            if (typeof val.autoHide === 'boolean') { TB.autoHide = val.autoHide; AUTO_HIDE = val.autoHide; }
+            if (val.material === 'frosted' || val.material === 'transparent') TB.material = val.material;
+            if (val.opacity != null) TB.opacity = Math.max(0, Math.min(100, Number(val.opacity) || 0));
+            if (val.blur != null) TB.blur = Math.max(0, Math.min(40, Number(val.blur) || 0));
+            if (val.color) TB.color = String(val.color);
+            const bar0 = document.getElementById('fnos-titlebar');
+            if (bar0) {
+              applyStyle(bar0);
+              if (AUTO_HIDE) hide(bar0); else show(bar0);
+            }
+          } else if (typeof val === 'boolean') {
+            // 兼容旧版裸布尔消息
+            TB.autoHide = val; AUTO_HIDE = val;
+            const bar0 = document.getElementById('fnos-titlebar');
+            if (bar0) { if (val) hide(bar0); else show(bar0); }
           }
         } catch (_) {}
       });
@@ -167,7 +229,8 @@ module.exports = function injectTitleBar(ctx) {
           } catch (_) {}
         }, true);
 
-        // 初始状态
+        // 初始状态：先应用材质/颜色样式，再按自动隐藏决定显隐
+        applyStyle(bar);
         if (AUTO_HIDE) hide(bar); else show(bar);
 
         // ---- 防 SPA 重渲染清除：节点被移除则重注 ----

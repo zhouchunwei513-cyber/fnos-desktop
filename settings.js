@@ -2,6 +2,11 @@
 // 设置页：启动密码 + 快捷键自定义
 (() => {
   const $ = (id) => document.getElementById(id);
+  const clampInt = (v, min, max, dflt) => {
+    const n = Math.round(Number(v));
+    if (!isFinite(n)) return dflt;
+    return Math.max(min, Math.min(max, n));
+  };
 
   // 玻璃自定义下拉：统一处理 open/选中/取值，并暴露 value/disable 兼容旧调用
   function bindGlassSelect(el, onChange) {
@@ -303,19 +308,65 @@
   const syncTbLabel = () => { if (optTbLabel) optTbLabel.textContent = optTbAutoHide && optTbAutoHide.checked ? '已开启（悬停顶部/按ALT调出）' : '已关闭（标题栏常驻）'; };
   if (optTbAutoHide) {
     optTbAutoHide.addEventListener('change', syncTbLabel);
-    fnosSettings.getSettings().then((info) => {
-      try { optTbAutoHide.checked = info ? info.titleBarAutoHide === true : false; syncTbLabel(); } catch (_) {}
-    }).catch(() => {});
   }
+
+  // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
+  const tbState = { material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
+  const tbMatTrans = document.getElementById('tb-mat-transparent');
+  const tbMatFrost = document.getElementById('tb-mat-frosted');
+  const tbOpacity = document.getElementById('tb-opacity');
+  const tbOpacityVal = document.getElementById('tb-opacity-val');
+  const tbBlur = document.getElementById('tb-blur');
+  const tbBlurVal = document.getElementById('tb-blur-val');
+  const tbBlurRow = document.getElementById('tb-blur-row');
+  const tbColorDots = [...document.querySelectorAll('.tb-color-dot')];
+
+  const syncTbMaterialBtns = () => {
+    if (tbMatTrans) tbMatTrans.classList.toggle('active', tbState.material !== 'frosted');
+    if (tbMatFrost) tbMatFrost.classList.toggle('active', tbState.material === 'frosted');
+    // 磨砂程度滑块仅磨砂材质可见
+    if (tbBlurRow) tbBlurRow.hidden = tbState.material !== 'frosted';
+  };
+  const syncTbSliders = () => {
+    if (tbOpacity) { tbOpacity.value = String(tbState.opacity); if (tbOpacityVal) tbOpacityVal.textContent = tbState.opacity + '%'; }
+    if (tbBlur) { tbBlur.value = String(tbState.blur); if (tbBlurVal) tbBlurVal.textContent = tbBlur.value + 'px'; }
+  };
+  const syncTbColorDots = () => {
+    tbColorDots.forEach((d) => { d.classList.toggle('active', (d.getAttribute('data-color') || '').toLowerCase() === tbState.color.toLowerCase()); });
+  };
+  if (tbMatTrans) tbMatTrans.addEventListener('click', () => { tbState.material = 'transparent'; syncTbMaterialBtns(); });
+  if (tbMatFrost) tbMatFrost.addEventListener('click', () => { tbState.material = 'frosted'; syncTbMaterialBtns(); });
+  if (tbOpacity) tbOpacity.addEventListener('input', () => { tbState.opacity = clampInt(tbOpacity.value, 0, 100, 0); if (tbOpacityVal) tbOpacityVal.textContent = tbState.opacity + '%'; });
+  if (tbBlur) tbBlur.addEventListener('input', () => { tbState.blur = clampInt(tbBlur.value, 0, 40, 12); if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px'; });
+  tbColorDots.forEach((d) => d.addEventListener('click', () => { tbState.color = d.getAttribute('data-color') || '#3B82F6'; syncTbColorDots(); }));
+
+  // 载入当前设置填充界面
+  fnosSettings.getSettings().then((info) => {
+    try {
+      if (!info) return;
+      if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
+      tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent';
+      tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 0);
+      tbState.blur = clampInt(info.titleBarBlur, 0, 40, 12);
+      tbState.color = String(info.titleBarColor || '#3B82F6');
+      syncTbMaterialBtns(); syncTbSliders(); syncTbColorDots();
+    } catch (_) {}
+  }).catch(() => {});
 
   const optSave = document.getElementById('opt-save');
   if (optSave) {
     optSave.addEventListener('click', async () => {
       optSave.disabled = true; optSave.textContent = '保 存 中';
       try {
-        const res = await fnosSettings.setUIOptions({ titleBarAutoHide: !!(optTbAutoHide && optTbAutoHide.checked) });
+        const res = await fnosSettings.setUIOptions({
+          titleBarAutoHide: !!(optTbAutoHide && optTbAutoHide.checked),
+          titleBarMaterial: tbState.material,
+          titleBarOpacity: tbState.opacity,
+          titleBarBlur: tbState.blur,
+          titleBarColor: tbState.color,
+        });
         if (res && res.ok) {
-          optSave.textContent = '已 保 存（重启后完全生效）';
+          optSave.textContent = '已 保 存（即时生效）';
           setTimeout(() => { optSave.textContent = '保存界面设置'; }, 1800);
         }
       } finally {

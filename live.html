@@ -974,12 +974,20 @@ async function init() {
       if (!url) { setPh('未选择频道', '请先选择要在 MPV 中播放的频道', true, false); return; }
       const name = (ch && ch.name) || '';
       const title = name ? '直播 · ' + name : 'FNOS 直播';
-      // 视频区矩形（相对直播窗视口；直播窗无标题栏偏移）
+      // 视频区矩形（相对直播窗视口）。v1.51.0：直播窗已改为无边框 + 自动隐藏标题栏，
+      // 顶部需预留 34px 标题栏高度，避免 mpv 覆盖压住标题栏（鼠标移到顶部仍可唤出/拖动）。
+      const LIVE_TITLE_H = 34;
       const videoEl = document.getElementById('video');
+      const clampRect = (x, y, w, h) => {
+        const top = Math.max(LIVE_TITLE_H, Math.round(y));
+        let hh = Math.round(h) - (top - Math.round(y));
+        if (hh < 120) hh = Math.round(h);
+        return { x: Math.round(x), y: top, width: Math.round(w), height: hh };
+      };
       const rect = (() => {
-        if (!videoEl) return { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+        if (!videoEl) return { x: 0, y: LIVE_TITLE_H, width: window.innerWidth, height: window.innerHeight - LIVE_TITLE_H };
         const r = videoEl.getBoundingClientRect();
-        return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+        return clampRect(r.left, r.top, r.width, r.height);
       })();
       const res = await api.mpvEmbed({ url, title, isLive: true, scope: 'live', rect, origin: location.origin });
       if (res && res.ok) {
@@ -992,7 +1000,10 @@ async function init() {
         window.__mpvRectTimer = setInterval(() => {
           const v = document.getElementById('video'); if (!v) return;
           const r = v.getBoundingClientRect();
-          try { api.mpvEmbedRect({ scope: 'live', x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }); } catch (_) {}
+          const top = Math.max(LIVE_TITLE_H, Math.round(r.top));
+          let hh = Math.round(r.height) - (top - Math.round(r.top));
+          if (hh < 120) hh = Math.round(r.height);
+          try { api.mpvEmbedRect({ scope: 'live', x: Math.round(r.left), y: top, width: Math.round(r.width), height: hh }); } catch (_) {}
         }, 1000);
         try {
           api.onMpvEmbedClosed && api.onMpvEmbedClosed(() => {

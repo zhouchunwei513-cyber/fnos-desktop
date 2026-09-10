@@ -412,7 +412,17 @@ contextBridge.exposeInMainWorld('fnos', {
           }
           // 直播/流媒体直链：捕获响应里可能返回的真实播放地址（部分接口返回 JSON {url}/{data:{url}}）
           if (isPlayableStreamUrl(url) || /\/v\/api\/v1\/(stream|play|live|tv)|\/wp\/(m3u8|flv|live)|\/live\//i.test(url)) {
-            p.then(r => r.clone().text()).then(txt => {
+            // v1.51.0 性能保护：只缓冲小型 JSON 响应；跳过二进制流/超大响应（避免把列表/流响应体读入内存造成卡顿）
+            p.then(r => {
+              try {
+                const ct = String(r.headers && r.headers.get && r.headers.get('content-type') || '');
+                const len = parseInt(r.headers && r.headers.get && (r.headers.get('content-length') || '0'), 10) || 0;
+                if (!/json/i.test(ct)) return Promise.resolve(null);
+                if (len > 262144) return Promise.resolve(null); // >256KB 不读
+                return r.clone().text().then(t => (t && t.length <= 262144) ? t : null);
+              } catch (_) { return Promise.resolve(null); }
+            }).then(txt => {
+              if (!txt) return;
               try {
                 const j = JSON.parse(txt);
                 const d = j && (j.data || j.Data) ? (j.data || j.Data) : j;
@@ -426,7 +436,17 @@ contextBridge.exposeInMainWorld('fnos', {
             }).catch(() => {});
           }
           if (/\/v\/api\/v1\/(stream\/list|stream|play\/info|play\/quality|media|detail|item|live|tv|channel)\b/.test(url)) {
-            p.then(r => r.clone().text()).then(txt => {
+            // v1.51.0：同样只缓冲小型 JSON，避免列表/大响应被全量读入内存
+            p.then(r => {
+              try {
+                const ct = String(r.headers && r.headers.get && r.headers.get('content-type') || '');
+                const len = parseInt(r.headers && r.headers.get && (r.headers.get('content-length') || '0'), 10) || 0;
+                if (!/json/i.test(ct)) return Promise.resolve(null);
+                if (len > 262144) return Promise.resolve(null);
+                return r.clone().text().then(t => (t && t.length <= 262144) ? t : null);
+              } catch (_) { return Promise.resolve(null); }
+            }).then(txt => {
+              if (!txt) return;
               try {
                 const j = JSON.parse(txt);
                 const mg = extractMediaGuid(j);
@@ -656,9 +676,18 @@ contextBridge.exposeInMainWorld('fnos', {
       try {
         const el = v || getMainVideo();
         if (!el) return null;
+        // 网页 video 被接管后会 display:none（见 triggerEmbed），其 rect 归零/失效；
+        // 此时返回 null，让调用方保持上一次有效矩形，避免回退到整窗把 mpv 铺满。
+        if (el.offsetParent === null || el.style.display === 'none') return null;
         const r = el.getBoundingClientRect();
-        return { x: Math.max(0, Math.round(r.left)), y: Math.max(0, Math.round(r.top)),
-          width: Math.round(r.width), height: Math.round(r.height) };
+        if (!r || r.width < 160 || r.height < 100) return null;
+        // 顶部预留自定义标题栏高度（34px），避免 mpv 覆盖压住标题栏导致不对齐/无法拖动
+        const TITLE_H = 34;
+        const top = Math.max(TITLE_H, Math.round(r.top));
+        let height = Math.round(r.height) - (top - Math.round(r.top));
+        if (height < 120) { height = Math.round(r.height); }
+        return { x: Math.max(0, Math.round(r.left)), y: top,
+          width: Math.round(r.width), height };
       } catch (_) { return null; }
     }
 
@@ -764,9 +793,12 @@ contextBridge.exposeInMainWorld('fnos', {
       // 视频区坐标：优先网页 <video>；没有（如 MKV 菜单直调）时用铺满内容区的兜底矩形
       let rect = (v || getMainVideo()) ? getMainVideoRect(v) : null;
       if (!rect) {
-        rect = { x: 0, y: 0,
-          width: Math.max(320, Math.round(window.innerWidth * 0.92)),
-          height: Math.max(180, Math.round(window.innerHeight * 0.85)) };
+        // 回退矩形：居中、留出顶部 34px 标题栏高度，不铺满整窗——
+        // 这样一键隐藏之外，用户也能从顶部/边缘切回飞牛主窗口操作，mpv 不挡死整窗。
+        const TITLE_H = 34;
+        const w = Math.max(320, Math.round(window.innerWidth * 0.92));
+        const h = Math.max(180, Math.round((window.innerHeight - TITLE_H) * 0.9));
+        rect = { x: Math.round((window.innerWidth - w) / 2), y: TITLE_H, width: w, height: h };
         log('embed.fallbackrect', { reason: reason || '' });
       }
       state.resolving = true;
@@ -1084,7 +1116,7 @@ contextBridge.exposeInMainWorld('fnos', {
 
       // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）+ FNOS 标识
       const left = document.createElement('div');
-      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-left:6px;';
+      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-left:6px;margin-left:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
       const menuBtn = document.createElement('button');
       menuBtn.id = 'fnos-tb-menu';
       menuBtn.title = '菜单（文件/下载/编辑/视图/工具/设置/帮助）';
@@ -1100,7 +1132,7 @@ contextBridge.exposeInMainWorld('fnos', {
       left.appendChild(menuBtn);
 
       const btns = document.createElement('div');
-      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-right:6px;';
+      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-right:6px;margin-right:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
 
       const mkBtn = (id, svg, hoverBg) => {
         const b = document.createElement('button');
@@ -1177,25 +1209,22 @@ contextBridge.exposeInMainWorld('fnos', {
         } catch (_) {}
       });
 
-      // 顶部热区：一条高 6px 的隐形条（pointer-events:auto），鼠标移到窗口最顶部即唤出标题栏。
-      // 放在标题栏之后、独立元素，标题栏隐藏（translateY(-100%)）时它仍在顶部可接收事件。
+      // 顶部热区：一条高 8px 的隐形条，鼠标移到窗口最顶部即唤出标题栏；
+      // 关键：该热区本身是可拖动区域（-webkit-app-region:drag），标题栏隐藏时
+      // 鼠标悬停到最顶部即可直接拖动窗口（无需等栏出现）。栏显示后由标题栏覆盖。
       const hot = document.createElement('div');
       hot.id = 'fnos-titlebar-hotzone';
       hot.style.cssText = [
-        'position:fixed', 'top:0', 'left:0', 'right:0', 'height:6px',
-        'z-index:2147483646', 'pointer-events:auto'
+        'position:fixed', 'top:0', 'left:0', 'right:0', 'height:8px',
+        'z-index:2147483646', 'pointer-events:auto',
+        '-webkit-app-region:drag', 'user-select:none'
       ].join(';');
       hot.addEventListener('mouseenter', showBar);
       hot.addEventListener('mouseleave', () => scheduleHide(300));
+      // 标题栏显示后，鼠标移出标题栏本身即延时隐藏（由 bar 的 mouseleave 处理）。
+      // v1.51.0：移除全局 capture mousemove 监听器——它在 FNDESK 等 DOM 密集应用上
+      // 每次鼠标移动都触发，是卡顿源之一；显隐完全由热区/标题栏自身的 hover 事件驱动，零轮询零全局监听。
       (document.body || document.documentElement).appendChild(hot);
-
-      // 全局：鼠标离开顶部区域（Y 超过标题栏高度）即延时隐藏
-      document.addEventListener('mousemove', (ev) => {
-        try {
-          if (ev.clientY <= 36) showBar();
-          else if (!bar.__hover && !bar.__menuOpen) scheduleHide(250);
-        } catch (_) {}
-      }, true);
     }
 
     const start = () => { try { buildBar(); } catch (_) {} };

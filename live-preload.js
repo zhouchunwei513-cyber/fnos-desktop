@@ -92,13 +92,13 @@ contextBridge.exposeInMainWorld('fnosLive', {
         'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
         'z-index:2147483647', 'display:flex', 'align-items:center',
         'justify-content:space-between', 'pointer-events:none',
-        'background:linear-gradient(to bottom,rgba(10,12,18,0.82),rgba(10,12,18,0))',
+        'background:transparent',
         '-webkit-app-region:drag', 'user-select:none',
         'transform:translateY(-100%)', 'transition:transform .18s ease', 'opacity:0'
       ].join(';');
 
       const left = document.createElement('div');
-      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-left:6px;';
+      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-left:6px;margin-left:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
       const menuBtn = document.createElement('button');
       menuBtn.title = '菜单';
       menuBtn.style.cssText = 'width:40px;height:30px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;';
@@ -109,7 +109,7 @@ contextBridge.exposeInMainWorld('fnosLive', {
       left.appendChild(menuBtn);
 
       const btns = document.createElement('div');
-      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-right:6px;';
+      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-right:6px;margin-right:4px;border-radius:8px;background:rgba(10,12,18,0.55);';
       const mkBtn = (id, svg, hoverBg, onClick) => {
         const b = document.createElement('button');
         b.id = id;
@@ -146,14 +146,11 @@ contextBridge.exposeInMainWorld('fnosLive', {
       menuBtn.addEventListener('click', () => { try { bar.__menuOpen = true; setTimeout(() => { bar.__menuOpen = false; scheduleHide(400); }, 1500); } catch (_) {} });
 
       const hot = document.createElement('div');
-      hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:6px;z-index:2147483646;pointer-events:auto;';
+      hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:8px;z-index:2147483646;pointer-events:auto;-webkit-app-region:drag;user-select:none;';
       hot.addEventListener('mouseenter', showBar);
       hot.addEventListener('mouseleave', () => scheduleHide(300));
+      // v1.51.0：移除全局 capture mousemove（卡顿源），显隐由热区/标题栏 hover 事件驱动。
       (document.body || document.documentElement).appendChild(hot);
-
-      document.addEventListener('mousemove', (ev) => {
-        try { if (ev.clientY <= 36) showBar(); else if (!bar.__hover && !bar.__menuOpen) scheduleHide(250); } catch (_) {}
-      }, true);
     }
 
     const start = () => { try { buildBar(); } catch (_) {} };

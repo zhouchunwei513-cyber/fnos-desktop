@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.50.0';
+const APP_VERSION = '1.51.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2550,17 +2550,23 @@ function registerWindow(win, opts = {}) {
   // 子窗口的新窗口请求：在客户端内同 partition 打开（保持登录态 & window.opener 可用于 OAuth postMessage）
   win.webContents.setWindowOpenHandler(({ url, features, frameName }) => {
     if (/^(about:blank|javascript:)/i.test(url) || url === '') {
-      // OAuth 弹窗常先打开 about:blank 再由脚本跳转，需放行且保留 opener
+      // OAuth 弹窗常先打开 about:blank 再由脚本跳转，需放行且保留 opener；
+      // FNDESK 内置应用（NPC 等）也常以 about:blank 开窗再跳转。
+      // v1.51.0：统一无边框 + 注入同款标题栏，避免出现系统原生标题栏。
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
           width: 1024, height: 720,
           minWidth: 640, minHeight: 480,
           backgroundColor: '#0b0d12',
-          autoHideMenuBar: !!loadSettings().autoHideMenuBar,
+          autoHideMenuBar: true,
+          frame: false,
+          titleBarStyle: 'hidden',
+          titleBarOverlay: { color: '#0b0d12', symbolColor: '#ffffff', height: 34 },
           icon: ICON_PATH,
           title: APP_NAME,
           webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
             partition: entry.partition,
             contextIsolation: true,
             nodeIntegration: false,
@@ -2568,6 +2574,8 @@ function registerWindow(win, opts = {}) {
             allowRunningInsecureContent: true,
             backgroundThrottling: false,
             enableBlinkFeatures: 'CSSBackdropFilter',
+            spellcheck: false,
+            v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
           },
         },
       };

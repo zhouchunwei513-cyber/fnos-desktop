@@ -297,9 +297,12 @@ class MpvPlayer extends EventEmitter {
         '--keep-open=yes', '--force-window=yes', '--autofit-larger=82%x78%');
       // standalone 不按 opts.geometry 固定位置（允许自由摆放）
     } else {
-      // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）+ 不在任务栏重复显示
+      // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）
       args.push('--border=no', '--ontop=yes', '--osd-bar=yes',
         '--window-dragging=yes', '--title=FNOS-MPV',
+        // v1.51.0：嵌入/覆盖窗口由主客户端统一管理，不占用任务栏（skip-taskbar 启动即生效，
+        //   一键隐藏时不会在任务栏残留 FNOS-MPV 图标）。
+        '--skip-taskbar=yes',
         // v1.32.1：visibility 只是【运行时可写属性】，不是合法 CLI 选项（写成 --visibility=no
         //   会让 mpv 启动解析失败、exit 1 崩溃循环）。启动隐藏改为 IPC 连接后 set_property 实现，
         //   首帧解码就绪(video-params)后再揭示。
@@ -917,7 +920,10 @@ class MpvPlayer extends EventEmitter {
     this._forceVisible = true;
     this._userHidden = false;
     const apply = () => {
-      try { this.command(['set_property', 'skip-taskbar', 'no']).catch(() => {}); } catch (_) {}
+      // 仅独立播放器恢复任务栏图标；嵌入/覆盖窗始终不占任务栏（启动即 skip-taskbar=yes）
+      if (this._standalone) {
+        try { this.command(['set_property', 'skip-taskbar', 'no']).catch(() => {}); } catch (_) {}
+      }
       try { this.command(['set_property', 'window-minimized', 'no']).catch(() => {}); } catch (_) {}
       // 还原最小化后重新贴合几何，确保回到正确位置
       try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {}

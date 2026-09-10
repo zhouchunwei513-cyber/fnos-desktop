@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.55.0';
+const APP_VERSION = '1.56.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2566,9 +2566,10 @@ function registerWindow(win, opts = {}) {
           title: APP_NAME,
           webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
-            partition: entry.partition,
+            // window.open 弹窗继承调用方 session，不能显式设 partition（会抛 top-level only）
             contextIsolation: true,
             nodeIntegration: false,
+            sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject
             webSecurity: true,
             allowRunningInsecureContent: true,
             backgroundThrottling: false,
@@ -2683,6 +2684,7 @@ function createAppWindow(url, opts = {}) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱
       webSecurity: true,
       allowRunningInsecureContent: true,
       spellcheck: false,
@@ -2972,6 +2974,7 @@ function createMainWindow(partition, loadTarget) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱
       webSecurity: true,
       allowRunningInsecureContent: true,
       spellcheck: false,
@@ -3347,6 +3350,7 @@ function buildMenuTemplate() {
             modal: false,
             webPreferences: {
               contextIsolation: true, nodeIntegration: false,
+              sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject
               preload: path.join(__dirname, 'preload.js'),
               backgroundThrottling: false,
             },
@@ -3756,6 +3760,7 @@ function createLiveWindow(autoplayChannel) {
         partition: livePartition,
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: false, // v1.56：live-preload 需 require 本地 titlebar-inject，必须关闭沙箱
         // v1.20.0：直播窗口内 hls.js 需跨域拉取 FPK 服务端 m3u8/ts，关闭同源策略避免黑屏
         webSecurity: false,
         allowRunningInsecureContent: true,
@@ -4889,6 +4894,7 @@ try {
                 preload: path.join(__dirname, 'preload.js'),
                 contextIsolation: true,
                 nodeIntegration: false,
+                sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject
                 webSecurity: true,
                 allowRunningInsecureContent: true,
                 backgroundThrottling: false,

@@ -6,7 +6,9 @@
 'use strict';
 
 module.exports = function injectTitleBar(ctx) {
-  const ipcRenderer = (ctx && ctx.ipcRenderer) || require('electron').ipcRenderer;
+  let ipcRenderer = ctx && ctx.ipcRenderer;
+  if (!ipcRenderer) { try { ipcRenderer = require('electron').ipcRenderer; } catch (_) {} }
+  if (!ipcRenderer) return;
   try {
     if (typeof window === 'undefined') return;
     if (window.top !== window) return; // 仅顶层框架

@@ -1104,4 +1104,4 @@ contextBridge.exposeInMainWorld('fnos', {
 // 仅在飞牛远程网页（http/https）注入；本地 login/settings 页面不注入（它们自带或无需）。
 // 采用透明背景 + 半透明按钮，避免遮挡飞牛自身顶部导航的观感；拖拽区可移动窗口。
 // ============================================================================
-try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) {}
+try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }

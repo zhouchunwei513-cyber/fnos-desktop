@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.49.0';
+const APP_VERSION = '1.50.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2067,9 +2067,12 @@ function closeLockWindow() {
   lockWindow = null;
 }
 
-// v1.48.0：一键隐藏/锁定时，MPV 是独立的原生窗口（不是 Electron BrowserWindow），
-// BrowserWindow.hide() 管不到它，必须单独通过 mpv 的 visibility 属性隐藏；
-// 否则"一键呼出/一键隐藏/一键锁定"时播放器窗口仍停留在屏幕上。
+// v1.50.0：一键隐藏/锁定时，MPV 是独立的原生窗口（不是 Electron BrowserWindow），
+// BrowserWindow.hide() 管不到它，必须单独控制。
+//   - visibility 属性在 d3d11 VO 返回 -3（空操作），v1.49 起改用 window-minimized 隐藏窗口；
+//   - v1.50 新增：隐藏时同步暂停 + 静音（电影/音乐/直播全部），呼出时恢复原播放/静音状态；
+//   - 任务栏一并隐藏：Electron 窗口 hide() 后本就不在任务栏；mpv 独立窗最小化后仍可能在
+//     任务栏，用 --force-window 之外的 skipTaskbar 属性尽量隐藏（不支持时最小化已足够离开画面）。
 function setAllMpvVisibility(visible) {
   try {
     if (!mpvSurfaces || mpvSurfaces.size === 0) return;
@@ -2077,9 +2080,11 @@ function setAllMpvVisibility(visible) {
       try {
         if (!surf || !surf.player || (surf.isAlive && !surf.isAlive())) continue;
         if (visible) {
+          if (typeof surf.player.setSuspended === 'function') surf.player.setSuspended(false);
           if (typeof surf.player.showWindow === 'function') surf.player.showWindow();
           if (typeof surf.onHostShown === 'function') surf.onHostShown();
         } else {
+          if (typeof surf.player.setSuspended === 'function') surf.player.setSuspended(true);
           if (typeof surf.player.hideWindow === 'function') surf.player.hideWindow();
         }
       } catch (_) {}
@@ -2090,29 +2095,48 @@ function setAllMpvVisibility(visible) {
 
 function hideAllAppWindows() {
   try {
+    // v1.50.0：记录隐藏前可见的窗口，呼出/解锁时一并恢复（修复"只有飞牛主页面恢复、
+    // 已打开的客户端内应用不恢复"）。
+    global.__hiddenVisibleWins = [];
     BrowserWindow.getAllWindows().forEach((w) => {
-      if (w === lockWindow) return; // 不隐藏锁屏窗
-      if (!w.isDestroyed()) w.hide();
+      try {
+        if (w === lockWindow) return; // 不隐藏锁屏窗
+        if (w.isDestroyed()) return;
+        if (w.isVisible() && !w.isMinimized()) global.__hiddenVisibleWins.push(w.id);
+        w.hide();
+      } catch (_) {}
     });
+    try { dlog('info', 'app.hide', { hiddenIds: global.__hiddenVisibleWins }); } catch (_) {}
   } catch (_) {}
-  // 一键隐藏/锁定：连同所有 MPV 播放窗口（嵌入层 + 独立窗口 + 直播）一起隐藏
+  // 一键隐藏/锁定：连同所有 MPV 播放窗口（嵌入层 + 独立窗口 + 直播）一起隐藏 + 暂停 + 静音
   setAllMpvVisibility(false);
 }
 
 function showAllAppWindows() {
-  const home = appWindows.find((e) => e.isHome && e.win && !e.win.isDestroyed());
-  if (home) {
-    home.win.show();
-    home.win.focus();
-  } else if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show(); mainWindow.focus();
-  }
-  appWindows.forEach((e) => {
-    if (!e.isHome && e.win && !e.win.isDestroyed()) {
-      // 子窗口默认不抢焦点显示，但任务栏里可切回
+  try {
+    const ids = global.__hiddenVisibleWins || [];
+    if (ids.length) {
+      // 恢复隐藏前可见的所有窗口（含客户端内应用 FPK/直播/音乐等）
+      ids.forEach((id) => {
+        try {
+          const w = BrowserWindow.fromId(id);
+          if (w && !w.isDestroyed()) w.show();
+        } catch (_) {}
+      });
+      global.__hiddenVisibleWins = [];
+    } else {
+      // 兜底：没有记录时至少恢复主窗口/主页
+      const home = appWindows.find((e) => e.isHome && e.win && !e.win.isDestroyed());
+      if (home) home.win.show();
+      else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
     }
-  });
-  // 呼出/解锁：恢复所有 MPV 播放窗口可见
+    // 焦点落到主窗口/主页
+    const home = appWindows.find((e) => e.isHome && e.win && !e.win.isDestroyed());
+    if (home && home.win) home.win.focus();
+    else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+    try { dlog('info', 'app.show', { restoredIds: ids }); } catch (_) {}
+  } catch (_) {}
+  // 呼出/解锁：恢复所有 MPV 播放窗口可见 + 恢复播放/声音
   setAllMpvVisibility(true);
 }
 
@@ -3696,6 +3720,8 @@ function createLiveWindow(autoplayChannel) {
       width: 1280, height: 820, minWidth: 960, minHeight: 600,
       title: APP_NAME + ' · 电视直播',
       backgroundColor: '#0b0d12',
+      // v1.50.0：统一无边框 + 自定义标题栏（与主窗口/应用窗口风格一致）
+      frame: false,
       autoHideMenuBar: true,
       show: false,
       icon: ICON_PATH,

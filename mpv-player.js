@@ -460,7 +460,9 @@ class MpvPlayer extends EventEmitter {
       if (!this._useWid) {
         this._forceVisible = false;
         this._firstFrameShown = false;
-        try { this.command(['set_property', 'visibility', 'no']).catch(() => {}); } catch (_) {}
+        // v1.50.0：visibility 在 d3d11 为空操作；首帧前用 geometry 移出屏幕隐藏待机画面。
+        this._offscreenHidden = true;
+        try { this.setGeometry({ x: -32000, y: -32000, w: 160, h: 90 }); } catch (_) {}
       }
       // 开启属性事件观察
       this.command(['observe_property', 1, 'pause']);
@@ -904,6 +906,7 @@ class MpvPlayer extends EventEmitter {
   hideWindow() {
     this._userHidden = true;
     const apply = () => {
+      try { this.command(['set_property', 'skip-taskbar', 'yes']).catch(() => {}); } catch (_) {}
       try { this.command(['set_property', 'window-minimized', 'yes']).catch(() => {}); } catch (_) {}
     };
     if (!this.connected) { this.once('ipc-ready', apply); return Promise.resolve(); }
@@ -914,9 +917,8 @@ class MpvPlayer extends EventEmitter {
     this._forceVisible = true;
     this._userHidden = false;
     const apply = () => {
-      try {
-        this.command(['set_property', 'window-minimized', 'no']).catch(() => {});
-      } catch (_) {}
+      try { this.command(['set_property', 'skip-taskbar', 'no']).catch(() => {}); } catch (_) {}
+      try { this.command(['set_property', 'window-minimized', 'no']).catch(() => {}); } catch (_) {}
       // 还原最小化后重新贴合几何，确保回到正确位置
       try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {}
     };
@@ -959,6 +961,37 @@ class MpvPlayer extends EventEmitter {
         if (t === 'video') { this._revealOnFirstFrame(); return; }
       }
     } catch (_) {}
+  }
+
+  // v1.50.0：一键隐藏/锁定时暂停 + 静音；呼出/解锁时恢复（还原到暂停前的播放/静音状态）。
+  // 记录原状态，避免用户本来就暂停/静音时被强制改成播放。
+  setSuspended(suspend) {
+    const apply = () => {
+      try {
+        if (suspend) {
+          // 记录当前状态（仅第一次挂起时记录）
+          if (!this._suspended) {
+            this._wasPaused = !!this._paused;
+            this._wasMuted = !!this._muted;
+          }
+          this._suspended = true;
+          this.command(['set_property', 'pause', 'yes']).catch(() => {});
+          this.command(['set_property', 'mute', 'yes']).catch(() => {});
+        } else {
+          if (!this._suspended) return;
+          this._suspended = false;
+          // 恢复：原先在播则继续播；静音还原为原状态
+          this.command(['set_property', 'pause', this._wasPaused ? 'yes' : 'no']).catch(() => {});
+          this.command(['set_property', 'mute', this._wasMuted ? 'yes' : 'no']).catch(() => {});
+        }
+      } catch (_) {}
+    };
+    if (!this.connected) {
+      if (suspend) this.once('ipc-ready', apply);
+      else { this._suspended = false; }
+      return;
+    }
+    apply();
   }
 
   // 置顶开关：偏好设置/对话框等应用子窗口激活时取消 mpv 置顶（否则无边框置顶窗会盖住设置页），

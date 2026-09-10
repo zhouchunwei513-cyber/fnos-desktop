@@ -938,18 +938,57 @@ contextBridge.exposeInMainWorld('fnos', {
         } catch (_) {}
         // 启动时若已在播放页（DOMContentLoaded 后），尝试一次性轻量探测 video
         if (isVideoRoute()) installDomObserver();
-        // v1.49.0：兜底捕获"无播放接口驱动"的视频（如飞牛本地 MKV/HEVC 文件，浏览器原生
+        // v1.50.0：兜底捕获"无播放接口驱动"的视频（如飞牛本地 MKV/HEVC 文件，浏览器原生
         // 不支持、走文件流直链，可能不经过 /v/api/... 接口，导致 MutationObserver 永不安装、
         // <video> 的 error 事件无人监听而无法自动接管）。
-        // 用极低频（1.5s）、零遍历的 probe：只看是否存在 <video> 元素（getElementsByTagName
-        // 是 O(1) 实时集合，不 querySelectorAll、不读属性），一旦出现才惰性安装 observer。
-        // 文件管理/相册/设置/第三方大型 FPK 应用页面永远没有 <video>，probe 每次空转，开销可忽略。
+        // v1.50.0 性能修正：v1.49 的 probe 只要页面存在任意 <video> 就安装 subtree
+        // MutationObserver，而 FNDESK 等重前端 FPK 应用首页常有装饰/背景 <video>，
+        // 导致 observer 在非视频应用里持续跑（每次 DOM 变更全量 querySelectorAll('video')），
+        // 是"FNDESK 卡顿"的元凶。现加三重门控：
+        //   1) 必须是视频/播放/直播路由（isVideoRoute 或直播 /play/ 页），文件管理/相册/
+        //      桌面等普通应用一律不装；
+        //   2) 存在"主播放视频"（可见且宽>320 高>180，排除小装饰视频）；
+        //   3) getElementsByTagName 实时集合 O(1) 判断有无，仅命中时才读 rect。
+        // 非视频页 probe 每次只做一次 path 字符串匹配 + 一次 O(1) length 判断，开销可忽略。
+        const __isPlayLikeRoute = () => {
+          try {
+            if (isVideoRoute()) return true;
+            const p = location.pathname || '';
+            // 直播独立窗口 / 播放页（:34500/play/xxx.m3u8 等）
+            if (/\/play\//.test(p) || /\.(m3u8|flv)(\?|$)/i.test(p)) return true;
+            return false;
+          } catch (_) { return false; }
+        };
         const __videoProbe = setInterval(() => {
           try {
-            if (document.readyState === 'complete') {
-              if (document.getElementsByTagName('video').length > 0) {
-                installDomObserver();
-                clearInterval(__videoProbe);
+            // v1.50.0：已接管 MPV（嵌入覆盖在视频区）后，若用户导航离开播放/直播页
+            // （SPA 路由变化），或页面上主播放 <video> 已消失，主动关闭嵌入 MPV，
+            // 否则全屏覆盖的 mpv 会停留在飞牛主界面之上，挡住文件/影视等其它操作。
+            if (state.handled) {
+              const stillPlay = __isPlayLikeRoute();
+              let hasMain = false;
+              const coll0 = document.getElementsByTagName('video');
+              for (let i = 0; i < coll0.length; i++) {
+                const r = coll0[i].getBoundingClientRect();
+                if (r.width > 320 && r.height > 180) { hasMain = true; break; }
+              }
+              if (!stillPlay || !hasMain) {
+                state.handled = false;
+                try { ipcRenderer.send('mpv:embed-close'); } catch (_) {}
+                try { restoreVideoDisplay(); } catch (_) {}
+                log('embed.autoclose', { path: location.pathname, stillPlay, hasMain });
+              }
+            }
+            if (document.readyState === 'complete' && __isPlayLikeRoute()) {
+              const coll = document.getElementsByTagName('video');
+              if (coll.length > 0) {
+                // 找到可见的主播放视频（足够大）才安装 observer
+                let big = false;
+                for (let i = 0; i < coll.length; i++) {
+                  const r = coll[i].getBoundingClientRect();
+                  if (r.width > 320 && r.height > 180) { big = true; break; }
+                }
+                if (big) { installDomObserver(); }
               }
             }
           } catch (_) {}
@@ -986,6 +1025,28 @@ contextBridge.exposeInMainWorld('fnos', {
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();
+
+    // v1.50.0：运行期卡顿诊断（所有窗口轻量开启，零 DOM 扫描、无定时器轮询）。
+    // 用 PerformanceObserver 监听 longtask（主线程单次阻塞 >120ms），上报到诊断日志，
+    // 便于判断 FNDESK 等应用卡顿是"页面自身主线程长任务"还是"客户端/mpv 侧"造成。
+    // PerformanceObserver 回调只在真有长任务时触发，空闲时零开销。
+    try {
+      if (typeof PerformanceObserver !== 'undefined') {
+        let __ltCount = 0;
+        const __po = new PerformanceObserver((list) => {
+          try {
+            for (const en of list.getEntries()) {
+              __ltCount++;
+              // 只上报 >200ms 的明显卡顿，并限流（最多前 20 条），避免日志刷爆
+              if (en.duration > 200 && __ltCount <= 20) {
+                log('app.longtask', { ms: Math.round(en.duration), path: (location.pathname || '').slice(0, 60), n: __ltCount });
+              }
+            }
+          } catch (_) {}
+        });
+        try { __po.observe({ entryTypes: ['longtask'] }); } catch (_) {}
+      }
+    } catch (_) {}
   } catch (e) {
     try { ipcRenderer.send('fnos:media-log', { stage: 'preload.ex', err: String(e && e.message || e) }); } catch (_) {}
   }
@@ -1009,12 +1070,16 @@ contextBridge.exposeInMainWorld('fnos', {
       if (document.getElementById('fnos-titlebar')) return;
       const bar = document.createElement('div');
       bar.id = 'fnos-titlebar';
+      // v1.50.0：默认隐藏（移到屏幕顶部之外、不拦截事件），鼠标移到窗口顶部热区才下滑显示，
+      // 移开自动上滑隐藏。避免常驻标题栏遮挡网页内容；风格在所有应用窗口保持一致。
       bar.style.cssText = [
         'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
         'z-index:2147483647', 'display:flex', 'align-items:center',
         'justify-content:space-between', 'pointer-events:none',
         'background:transparent',
-        '-webkit-app-region:drag', 'user-select:none'
+        '-webkit-app-region:drag', 'user-select:none',
+        'transform:translateY(-100%)', 'transition:transform .18s ease',
+        'opacity:0'
       ].join(';');
 
       // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）+ FNOS 标识
@@ -1073,6 +1138,64 @@ contextBridge.exposeInMainWorld('fnos', {
       bar.appendChild(left);
       bar.appendChild(btns);
       (document.body || document.documentElement).appendChild(bar);
+
+      // ---- v1.50.0 自动显隐 ----
+      let hideTimer = null;
+      const showBar = () => {
+        try {
+          if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+          bar.style.transform = 'translateY(0)';
+          bar.style.opacity = '1';
+          bar.style.pointerEvents = 'auto';
+        } catch (_) {}
+      };
+      const hideBar = () => {
+        try {
+          // 菜单弹出/鼠标仍悬停在按钮上时不隐藏
+          if (bar.__menuOpen || bar.__hover) return;
+          bar.style.transform = 'translateY(-100%)';
+          bar.style.opacity = '0';
+          bar.style.pointerEvents = 'none';
+        } catch (_) {}
+      };
+      const scheduleHide = (delay) => {
+        try {
+          if (hideTimer) clearTimeout(hideTimer);
+          hideTimer = setTimeout(() => { hideTimer = null; hideBar(); }, delay || 350);
+          if (hideTimer.unref) hideTimer.unref();
+        } catch (_) {}
+      };
+      // 鼠标进入标题栏：保持显示
+      bar.addEventListener('mouseenter', () => { bar.__hover = true; showBar(); });
+      bar.addEventListener('mouseleave', () => { bar.__hover = false; scheduleHide(300); });
+      // 菜单按钮点击：标记菜单打开，弹出菜单期间不自动隐藏；菜单关闭后延时隐藏
+      menuBtn.addEventListener('click', () => {
+        try {
+          bar.__menuOpen = true;
+          // 主进程菜单是异步 popup，无法直接监听关闭；用较长延时兜底恢复自动隐藏
+          setTimeout(() => { bar.__menuOpen = false; scheduleHide(400); }, 1500);
+        } catch (_) {}
+      });
+
+      // 顶部热区：一条高 6px 的隐形条（pointer-events:auto），鼠标移到窗口最顶部即唤出标题栏。
+      // 放在标题栏之后、独立元素，标题栏隐藏（translateY(-100%)）时它仍在顶部可接收事件。
+      const hot = document.createElement('div');
+      hot.id = 'fnos-titlebar-hotzone';
+      hot.style.cssText = [
+        'position:fixed', 'top:0', 'left:0', 'right:0', 'height:6px',
+        'z-index:2147483646', 'pointer-events:auto'
+      ].join(';');
+      hot.addEventListener('mouseenter', showBar);
+      hot.addEventListener('mouseleave', () => scheduleHide(300));
+      (document.body || document.documentElement).appendChild(hot);
+
+      // 全局：鼠标离开顶部区域（Y 超过标题栏高度）即延时隐藏
+      document.addEventListener('mousemove', (ev) => {
+        try {
+          if (ev.clientY <= 36) showBar();
+          else if (!bar.__hover && !bar.__menuOpen) scheduleHide(250);
+        } catch (_) {}
+      }, true);
     }
 
     const start = () => { try { buildBar(); } catch (_) {} };

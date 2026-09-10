@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.52.0';
+const APP_VERSION = '1.53.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2560,9 +2560,7 @@ function registerWindow(win, opts = {}) {
           minWidth: 640, minHeight: 480,
           backgroundColor: '#0b0d12',
           autoHideMenuBar: true,
-          frame: false,
-          titleBarStyle: 'hidden',
-          titleBarOverlay: { color: '#0b0d12', symbolColor: '#ffffff', height: 34 },
+          frame: false, // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
           icon: ICON_PATH,
           title: APP_NAME,
           webPreferences: {
@@ -2673,9 +2671,10 @@ function createAppWindow(url, opts = {}) {
     backgroundColor: cachedSettings.themeColor || '#0b0d12',
     show: false,
     autoHideMenuBar: true,
+    // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +
+    //   titleBarOverlay——overlay 在 Windows 会重新绘制系统原生窗口按钮(右上角 - □ ✕)，
+    //   自定义标题栏盖不住，表现为"标题栏不统一/仍是系统按钮"。
     frame: false,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#0b0d12', symbolColor: '#ffffff', height: 34 },
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -4854,6 +4853,32 @@ try {
         contents.on('did-navigate', (_ev, url) => rememberGuest(contents, url));
         contents.on('did-navigate-in-page', (_ev, url) => rememberGuest(contents, url));
         contents.on('destroyed', () => { try { fnosGuests.delete(contents.id); } catch (_) {} });
+
+        // v1.53.0：<webview>（飞牛桌面/FNDESK）内点击应用图标是 window.open 新窗口。
+        // webview 有独立 webContents，之前没有任何 setWindowOpenHandler 覆盖它，
+        // Electron 会用默认方式建窗（带系统原生标题栏、无标题栏注入）——这就是
+        // 文件管理/FNDESK 应用窗口"标题栏不统一"的根因。这里统一接管为无边框应用窗。
+        try {
+          contents.setWindowOpenHandler(({ url }) => {
+            try {
+              if (!url || /^about:/i.test(url) || /^(devtools|chrome-extension:)/i.test(url)) {
+                return { action: 'allow' }; // DevTools/空白弹窗交给默认处理
+              }
+              // 直播/电视直播流链接走原有直播唤起流程（isIptvStreamUrl 等在别处接管），放行默认处理
+              if (isIptvStreamUrl(url)) {
+                return { action: 'allow' };
+              }
+              // 其余一律由主进程创建无边框、注入统一标题栏的应用窗口
+              setImmediate(() => {
+                try { createAppWindow(url, { partition: SHARED_PARTITION, title: APP_NAME }); } catch (_) {}
+              });
+              dlog('info', 'appwin.from-webview-open', { url: String(url).slice(0, 120) });
+              return { action: 'deny' };
+            } catch (_) {
+              return { action: 'allow' };
+            }
+          });
+        } catch (_) {}
       }
     } catch (_) {}
   });

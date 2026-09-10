@@ -300,9 +300,9 @@ class MpvPlayer extends EventEmitter {
       // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）
       args.push('--border=no', '--ontop=yes', '--osd-bar=yes',
         '--window-dragging=yes', '--title=FNOS-MPV',
-        // v1.51.0：嵌入/覆盖窗口由主客户端统一管理，不占用任务栏（skip-taskbar 启动即生效，
-        //   一键隐藏时不会在任务栏残留 FNOS-MPV 图标）。
-        '--skip-taskbar=yes',
+        // v1.53.0：注意本 Windows 构建(mpv 0.41 winbuild)无 --skip-taskbar 选项（Linux/X11 only），
+        //   传入会导致 'option not found' → 启动即 Fatal exit（直播/影视打不开 MPV 的根因）。
+        //   任务栏隐藏改由隐藏时 window-minimized 最小化实现。
         // v1.32.1：visibility 只是【运行时可写属性】，不是合法 CLI 选项（写成 --visibility=no
         //   会让 mpv 启动解析失败、exit 1 崩溃循环）。启动隐藏改为 IPC 连接后 set_property 实现，
         //   首帧解码就绪(video-params)后再揭示。

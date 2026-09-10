@@ -1114,7 +1114,7 @@ contextBridge.exposeInMainWorld('fnos', {
         hot.id = 'fnos-titlebar-hotzone';
         hot.setAttribute('aria-hidden', 'true');
         hot.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:8px',
+          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:28px',
           'z-index:2147483646', 'pointer-events:auto', 'background:transparent',
           '-webkit-app-region:drag', 'user-select:none'
         ].join(';');

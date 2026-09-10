@@ -90,7 +90,7 @@ contextBridge.exposeInMainWorld('fnosLive', {
       // 顶部 8px 常驻拖动热区（标题栏隐藏时鼠标到顶部即可拖动）
       const hot = document.createElement('div');
       hot.id = 'fnos-titlebar-hotzone';
-      hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:8px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;';
+      hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;';
       root().appendChild(hot);
 
       const bar = document.createElement('div');

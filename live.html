@@ -976,7 +976,7 @@ async function init() {
       const title = name ? '直播 · ' + name : 'FNOS 直播';
       // 视频区矩形（相对直播窗视口）。v1.51.0：直播窗已改为无边框 + 自动隐藏标题栏，
       // 顶部需预留 34px 标题栏高度，避免 mpv 覆盖压住标题栏（鼠标移到顶部仍可唤出/拖动）。
-      const LIVE_TITLE_H = 34;
+      const LIVE_TITLE_H = 0; // v1.54：顶边对齐，配合沉浸黑层
       const videoEl = document.getElementById('video');
       const clampRect = (x, y, w, h) => {
         const top = Math.max(LIVE_TITLE_H, Math.round(y));
@@ -993,6 +993,16 @@ async function init() {
       if (res && res.ok) {
         setPh('已用 MPV 应用内播放', '频道：' + name + '（HEVC/4K 兼容）', false, false);
         try { api.liveLog('info', 'mpv.click', { ch: name }); } catch (_) {}
+        // v1.54：沉浸黑底——给视频区之外（频道栏右侧空白/顶部）铺纯黑，原生 MPV 盖在其上
+        try {
+          let b = document.getElementById('fnos-embed-black');
+          if (!b) {
+            b = document.createElement('div');
+            b.id = 'fnos-embed-black';
+            b.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:#000;z-index:5;pointer-events:none';
+            document.body.appendChild(b);
+          }
+        } catch (_) {}
         // 关键：MPV 接管后立即销毁网页 hls.js 并释放 <video>，避免网页与 MPV 同时解码同一路 4K（N100 双路解码会卡）
         try { destroyHls(); } catch (_) {}
         // 持续跟随视频区尺寸（降频到 1s，减少 IPC/布局开销）
@@ -1008,6 +1018,8 @@ async function init() {
         try {
           api.onMpvEmbedClosed && api.onMpvEmbedClosed(() => {
             if (window.__mpvRectTimer) { clearInterval(window.__mpvRectTimer); window.__mpvRectTimer = null; }
+            // v1.54：移除沉浸黑底
+            try { const b = document.getElementById('fnos-embed-black'); if (b && b.parentNode) b.parentNode.removeChild(b); } catch (_) {}
             // MPV 关闭后自动恢复网页播放器继续播放当前频道，避免黑屏
             try { if (currentCh) { playWithHls(currentCh); } } catch (_) {}
           });

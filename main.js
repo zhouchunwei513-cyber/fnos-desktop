@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.53.0';
+const APP_VERSION = '1.54.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2382,6 +2382,7 @@ function createSettingsWindow() {
     title: 'FNOS 设置',
     backgroundColor: '#05060a',
     autoHideMenuBar: true,
+    frame: false, // v1.54：无边框，settings-preload 内注入与主窗口同款标题栏
     icon: ICON_PATH,
     show: false,
     webPreferences: {
@@ -3336,26 +3337,20 @@ function buildMenuTemplate() {
           const helpWin = new BrowserWindow({
             width: 720, height: 680,
             title: 'FNOS · 操作帮助',
-            autoHideMenuBar: false,
+            autoHideMenuBar: true,
+            frame: false, // v1.54：无边框，preload 注入与主窗口同款标题栏
+            backgroundColor: '#0b0d12',
             icon: ICON_PATH,
             parent: mainWindow || undefined,
             modal: false,
-            webPreferences: { contextIsolation: true, nodeIntegration: false },
+            webPreferences: {
+              contextIsolation: true, nodeIntegration: false,
+              preload: path.join(__dirname, 'preload.js'),
+              backgroundThrottling: false,
+            },
           });
-          helpWin.setAutoHideMenuBar(false);
-          helpWin.setMenuBarVisibility(true);
+          helpWin.setMenuBarVisibility(false);
           helpWin.loadFile(HELP_PAGE).catch(() => {});
-        }},
-        { type: 'separator' },
-        { label: `关于 ${APP_NAME}`, click: () => {
-          glassMessageBox(mainWindow, {
-            type: 'info',
-            title: `关于 ${APP_NAME}`,
-            message: `${APP_NAME}  v${APP_VERSION}`,
-            detail: 'FNOS 桌面客户端\n\n为 FNOS 提供更好的桌面使用体验。',
-            buttons: ['确定'],
-            width: 380,
-          });
         }},
       ],
     },
@@ -3570,8 +3565,8 @@ ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
 ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
   try {
     const autoHide = !!opts?.autoHideMenuBar;
-    // v1.52.0：自定义标题栏自动隐藏开关
-    const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide !== false);
+    // v1.54：自定义标题栏自动隐藏开关（默认【不】自动隐藏=常驻）
+    const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide === true);
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
     const patch = { autoHideMenuBar: autoHide, titleBarAutoHide: tbAutoHide, themeColor: accent };
     saveSettings(patch);
@@ -3582,8 +3577,16 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       try {
         w.setAutoHideMenuBar(autoHide);
         w.setMenuBarVisibility(!autoHide);
+        // v1.54：广播标题栏自动隐藏设置，各窗口标题栏实时切换（含 webview guest）
+        try { w.webContents.send('settings:titlebar-changed', tbAutoHide); } catch (_) {}
       } catch (_) {}
     }
+    // 同步到所有渲染进程（含 webview guest：飞牛桌面/FNDESK 内的应用窗）
+    try {
+      for (const wc of require('electron').webContents.getAllWebContents()) {
+        try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbAutoHide); } catch (_) {}
+      }
+    } catch (_) {}
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('shell:theme', { themeColor: accent });
@@ -3600,8 +3603,9 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
 ipcMain.on('settings:get-titlebar', (e) => {
   try {
     const s = loadSettings();
-    e.returnValue = { autoHide: s.titleBarAutoHide === undefined ? true : !!s.titleBarAutoHide };
-  } catch (_) { e.returnValue = { autoHide: true }; }
+    // v1.54：默认【不】自动隐藏（常驻标题栏）
+    e.returnValue = { autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide };
+  } catch (_) { e.returnValue = { autoHide: false }; }
 });
 
 ipcMain.on('settings:close', (e) => {
@@ -4847,39 +4851,70 @@ function pickMenuGuest() {
 try {
   app.on('web-contents-created', (_e, contents) => {
     try {
+      // 记录 webview guest（用于 mpv 嵌入坐标测量）
       if (contents.getType() === 'webview') {
         rememberGuest(contents, contents.getURL ? contents.getURL() : '');
         dlog('info', 'mpv.guest.attached', { guestId: contents.id });
         contents.on('did-navigate', (_ev, url) => rememberGuest(contents, url));
         contents.on('did-navigate-in-page', (_ev, url) => rememberGuest(contents, url));
         contents.on('destroyed', () => { try { fnosGuests.delete(contents.id); } catch (_) {} });
-
-        // v1.53.0：<webview>（飞牛桌面/FNDESK）内点击应用图标是 window.open 新窗口。
-        // webview 有独立 webContents，之前没有任何 setWindowOpenHandler 覆盖它，
-        // Electron 会用默认方式建窗（带系统原生标题栏、无标题栏注入）——这就是
-        // 文件管理/FNDESK 应用窗口"标题栏不统一"的根因。这里统一接管为无边框应用窗。
-        try {
-          contents.setWindowOpenHandler(({ url }) => {
-            try {
-              if (!url || /^about:/i.test(url) || /^(devtools|chrome-extension:)/i.test(url)) {
-                return { action: 'allow' }; // DevTools/空白弹窗交给默认处理
-              }
-              // 直播/电视直播流链接走原有直播唤起流程（isIptvStreamUrl 等在别处接管），放行默认处理
-              if (isIptvStreamUrl(url)) {
-                return { action: 'allow' };
-              }
-              // 其余一律由主进程创建无边框、注入统一标题栏的应用窗口
-              setImmediate(() => {
-                try { createAppWindow(url, { partition: SHARED_PARTITION, title: APP_NAME }); } catch (_) {}
-              });
-              dlog('info', 'appwin.from-webview-open', { url: String(url).slice(0, 120) });
-              return { action: 'deny' };
-            } catch (_) {
+      }
+      // v1.54.0：【全局开窗兜底】对所有 webContents（webview guest、飞牛官方应用、
+      // FNDESK 内置应用等）统一安装 setWindowOpenHandler。此前只拦了部分路径，导致
+      // 文件管理等飞牛官方应用仍用 Electron 默认方式开窗（带系统原生标题栏、无注入）。
+      // 主窗口 / createAppWindow / 直播窗 在自身创建后会再次 setWindowOpenHandler，
+      // 后设置的会覆盖此兜底，故不影响它们的既有逻辑。
+      try {
+        contents.setWindowOpenHandler(({ url, frameName }) => {
+          try {
+            const u = String(url || '');
+            // DevTools / 空白弹窗 / 外部协议交给默认处理
+            if (!u || /^(devtools|chrome-extension:|chrome:)/i.test(u)) {
               return { action: 'allow' };
             }
-          });
-        } catch (_) {}
-      }
+            // about:blank 由自身脚本跳转：直接用无边框 + preload 开窗，保证标题栏统一
+            if (/^about:blank/i.test(u) || /^javascript:/i.test(u)) {
+              dlog('info', 'appwin.open.aboutblank-frameless', { frameName: String(frameName || '').slice(0, 40) });
+              return {
+                action: 'allow',
+                overrideBrowserWindowOptions: {
+                  frame: false,
+                  backgroundColor: '#0b0d12',
+                  autoHideMenuBar: true,
+                  icon: ICON_PATH,
+                  title: APP_NAME,
+                  webPreferences: {
+                    preload: path.join(__dirname, 'preload.js'),
+                    partition: SHARED_PARTITION,
+                    contextIsolation: true,
+                    nodeIntegration: false,
+                    webSecurity: true,
+                    allowRunningInsecureContent: true,
+                    backgroundThrottling: false,
+                    spellcheck: false,
+                  },
+                },
+              };
+            }
+            // 直播/电视直播流链接走原有直播唤起流程，放行
+            if (isIptvStreamUrl(u)) {
+              return { action: 'allow' };
+            }
+            // http(s)/飞牛应用链接：由主进程创建无边框、注入统一标题栏的应用窗口
+            if (/^https?:/i.test(u)) {
+              setImmediate(() => {
+                try { createAppWindow(u, { partition: SHARED_PARTITION, title: APP_NAME }); } catch (_) {}
+              });
+              dlog('info', 'appwin.open.catchall', { url: u.slice(0, 120) });
+              return { action: 'deny' };
+            }
+            // mailto/tel 等交给系统
+            return { action: 'allow' };
+          } catch (_) {
+            return { action: 'allow' };
+          }
+        });
+      } catch (_) {}
     } catch (_) {}
   });
 } catch (_) {}

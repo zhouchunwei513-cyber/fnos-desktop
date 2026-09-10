@@ -681,13 +681,11 @@ contextBridge.exposeInMainWorld('fnos', {
         if (el.offsetParent === null || el.style.display === 'none') return null;
         const r = el.getBoundingClientRect();
         if (!r || r.width < 160 || r.height < 100) return null;
-        // 顶部预留自定义标题栏高度（34px），避免 mpv 覆盖压住标题栏导致不对齐/无法拖动
-        const TITLE_H = 34;
-        const top = Math.max(TITLE_H, Math.round(r.top));
-        let height = Math.round(r.height) - (top - Math.round(r.top));
-        if (height < 120) { height = Math.round(r.height); }
-        return { x: Math.max(0, Math.round(r.left)), y: top,
-          width: Math.round(r.width), height };
+        // v1.54：嵌入 MPV 顶部与主窗口对齐（y 取 video 实际 top，不再强制 +34）；
+        // 标题栏为自动隐藏/热区在更高 z-index，需要拖动时鼠标贴最顶部即可，
+        // 沉浸黑层已填充周围灰色背景，故 MPV 顶边对齐窗口顶边即可。
+        return { x: Math.max(0, Math.round(r.left)), y: Math.max(0, Math.round(r.top)),
+          width: Math.round(r.width), height: Math.round(r.height) };
       } catch (_) { return null; }
     }
 
@@ -793,12 +791,9 @@ contextBridge.exposeInMainWorld('fnos', {
       // 视频区坐标：优先网页 <video>；没有（如 MKV 菜单直调）时用铺满内容区的兜底矩形
       let rect = (v || getMainVideo()) ? getMainVideoRect(v) : null;
       if (!rect) {
-        // 回退矩形：居中、留出顶部 34px 标题栏高度，不铺满整窗——
-        // 这样一键隐藏之外，用户也能从顶部/边缘切回飞牛主窗口操作，mpv 不挡死整窗。
-        const TITLE_H = 34;
-        const w = Math.max(320, Math.round(window.innerWidth * 0.92));
-        const h = Math.max(180, Math.round((window.innerHeight - TITLE_H) * 0.9));
-        rect = { x: Math.round((window.innerWidth - w) / 2), y: TITLE_H, width: w, height: h };
+        // v1.54：回退矩形铺满内容区（顶边对齐窗口顶部），配合沉浸黑层实现全屏沉浸；
+        // 退出播放由"离开播放页"自动关闭 MPV，标题栏热区仍可贴最顶部拖动/ALT 调出。
+        rect = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
         log('embed.fallbackrect', { reason: reason || '' });
       }
       state.resolving = true;
@@ -824,6 +819,24 @@ contextBridge.exposeInMainWorld('fnos', {
             v.style.display = 'none';
           } catch (_) {}
         });
+      } catch (_) {}
+      // v1.54：沉浸黑底——嵌入 MPV 后，宿主页面在视频区周围的灰色背景/顶部导航
+      // 会露在原生 MPV 窗口四周（用户反馈"上边是灰的、沉浸感差"）。注入一层全屏
+      // 纯黑蒙层（z-index 极高、可穿透拖动留给顶部热区），原生 MPV 窗口盖在黑层之上，
+      // 四周即统一为纯黑；直播页左侧频道栏在黑层之上（DOM 更早，黑层 z-index 仍低于
+      // 频道栏的固定层级需要时可调），此处黑层仅压背景。
+      try {
+        let black = document.getElementById('fnos-embed-black');
+        if (!black) {
+          black = document.createElement('div');
+          black.id = 'fnos-embed-black';
+          black.style.cssText = [
+            'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0',
+            'width:100vw', 'height:100vh', 'background:#000', 'z-index:2147483645',
+            'pointer-events:none' // 不拦截鼠标；MPV 原生窗口与标题栏热区仍可交互
+          ].join(';');
+          (document.documentElement || document.body).appendChild(black);
+        }
       } catch (_) {}
       const wpLive = /\/wp\/(m3u8|flv|live)/i.test(direct.url);
       const isLiveNow = /\/v\/live\//.test(location.pathname) || wpLive || /\.(m3u8|flv)(\?|$)/i.test(direct.url) || /\/play\//i.test(direct.url);
@@ -1039,7 +1052,7 @@ contextBridge.exposeInMainWorld('fnos', {
             triggerEmbed(v, 'menu');
           } catch (_) {}
         });
-        ipcRenderer.on('mpv:embed-closed', () => { try { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); log('embed.closed', {}); } catch (_) {} });
+        ipcRenderer.on('mpv:embed-closed', () => { try { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); const b = document.getElementById('fnos-embed-black'); if (b) b.remove(); log('embed.closed', {}); } catch (_) {} });
         log('preload.boot', { path: location.pathname });
       } catch (_) {}
     };
@@ -1091,172 +1104,4 @@ contextBridge.exposeInMainWorld('fnos', {
 // 仅在飞牛远程网页（http/https）注入；本地 login/settings 页面不注入（它们自带或无需）。
 // 采用透明背景 + 半透明按钮，避免遮挡飞牛自身顶部导航的观感；拖拽区可移动窗口。
 // ============================================================================
-(function injectCustomTitleBar() {
-  try {
-    if (window.top !== window) return; // 仅顶层框架
-    // 注入范围：飞牛远程网页(http/https) + 本地主壳 shell.html(file://)。
-    // login/settings 等本地页面不注入。
-    const proto = window.location.protocol;
-    const isShellFile = proto === 'file:' && /shell\.html?$/i.test(window.location.pathname || '');
-    if (proto !== 'http:' && proto !== 'https:' && !isShellFile) return;
-
-    let AUTO_HIDE = true;
-    try { const r = ipcRenderer.sendSync('settings:get-titlebar'); if (r && typeof r.autoHide === 'boolean') AUTO_HIDE = r.autoHide; } catch (_) {}
-
-    const root = () => document.documentElement || document.body || document;
-
-    function build() {
-      try {
-        if (document.getElementById('fnos-titlebar')) return;
-
-        // ---- 顶部拖动热区：高 8px 隐形条，始终存在、始终可拖动（即使标题栏隐藏） ----
-        const hot = document.createElement('div');
-        hot.id = 'fnos-titlebar-hotzone';
-        hot.setAttribute('aria-hidden', 'true');
-        hot.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:28px',
-          'z-index:2147483646', 'pointer-events:auto', 'background:transparent',
-          '-webkit-app-region:drag', 'user-select:none'
-        ].join(';');
-        root().appendChild(hot);
-
-        // ---- 标题栏 ----
-        const bar = document.createElement('div');
-        bar.id = 'fnos-titlebar';
-        bar.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
-          'z-index:2147483647', 'display:flex', 'align-items:center',
-          'justify-content:space-between', 'box-sizing:border-box',
-          'pointer-events:none', 'background:transparent',
-          '-webkit-app-region:drag', 'user-select:none',
-          'transition:transform .16s ease,opacity .16s ease'
-        ].join(';');
-
-        // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
-        const left = document.createElement('div');
-        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:6px;margin-left:4px;';
-        const menuBtn = document.createElement('button');
-        menuBtn.id = 'fnos-tb-menu';
-        menuBtn.title = '菜单（文件/下载/编辑/视图/工具/设置/帮助）';
-        menuBtn.style.cssText = 'width:40px;height:28px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;';
-        menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.95)" stroke-width="1.5" stroke-linecap="round"/></svg>';
-        menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = 'rgba(255,255,255,0.12)'; });
-        menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
-        menuBtn.addEventListener('click', () => { try { ipcRenderer.send('app-popup-menu'); } catch (_) {} });
-        left.appendChild(menuBtn);
-
-        // 右侧：最小化/最大化/关闭——实心 Windows 风格按钮组，保证任意背景上清晰可见
-        const btns = document.createElement('div');
-        btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:0;overflow:hidden;';
-
-        const mkBtn = (id, svg, hoverBg) => {
-          const b = document.createElement('button');
-          b.id = id;
-          b.title = id === 'fnos-tb-min' ? '最小化' : id === 'fnos-tb-max' ? '最大化/还原' : '关闭';
-          b.style.cssText = [
-            'width:46px', 'height:34px', 'border:none', 'outline:none',
-            'background:rgba(0,0,0,0.45)', 'color:#fff',
-            'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
-            'padding:0', '-webkit-app-region:no-drag'
-          ].join(';');
-          b.innerHTML = svg;
-          b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
-          b.addEventListener('mouseleave', () => { b.style.background = 'rgba(0,0,0,0.45)'; });
-          return b;
-        };
-
-        const minBtn = mkBtn('fnos-tb-min',
-          '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', 'rgba(255,255,255,0.22)');
-        const maxBtn = mkBtn('fnos-tb-max',
-          '<svg width="12" height="12" viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" fill="none" stroke="#fff" stroke-width="1.3"/></svg>', 'rgba(255,255,255,0.22)');
-        const closeBtn = mkBtn('fnos-tb-close',
-          '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', '#E81123');
-
-        minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
-        maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
-        closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
-        bar.addEventListener('dblclick', (ev) => { if (ev.target === bar || ev.target === hot) { try { ipcRenderer.send('window-maximize'); } catch (_) {} } });
-
-        btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
-        bar.appendChild(left);
-        bar.appendChild(btns);
-        root().appendChild(bar);
-
-        // ---- 显隐控制 ----
-        let hideTimer = null;
-        const show = () => {
-          try {
-            if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-            bar.style.transform = 'translateY(0)';
-            bar.style.opacity = '1';
-            bar.style.pointerEvents = 'auto';
-          } catch (_) {}
-        };
-        const hide = () => {
-          try {
-            if (!AUTO_HIDE) return;            // 常驻模式不隐藏
-            if (bar.__menuOpen) return;
-            bar.style.transform = 'translateY(-100%)';
-            bar.style.opacity = '0';
-            bar.style.pointerEvents = 'none';
-          } catch (_) {}
-        };
-        const scheduleHide = (ms) => {
-          try {
-            if (!AUTO_HIDE) return;
-            if (hideTimer) clearTimeout(hideTimer);
-            hideTimer = setTimeout(() => { hideTimer = null; hide(); }, ms || 350);
-            if (hideTimer.unref) hideTimer.unref();
-          } catch (_) {}
-        };
-
-        bar.addEventListener('mouseenter', show);
-        bar.addEventListener('mouseleave', () => scheduleHide(300));
-        menuBtn.addEventListener('click', () => {
-          try { bar.__menuOpen = true; setTimeout(() => { bar.__menuOpen = false; scheduleHide(400); }, 1600); } catch (_) {}
-        });
-
-        // 鼠标到顶部热区：唤出标题栏（热区本身已可拖动）
-        hot.addEventListener('mouseenter', show);
-        hot.addEventListener('mouseleave', () => scheduleHide(300));
-
-        // ALT 键调出标题栏（自动隐藏模式下）；再次按或移出后自动隐藏
-        window.addEventListener('keydown', (ev) => {
-          try {
-            if (ev.key === 'Alt' || ev.altKey) {
-              show();
-              if (AUTO_HIDE) scheduleHide(2200);
-            }
-          } catch (_) {}
-        }, true);
-
-        // 初始状态
-        if (AUTO_HIDE) { bar.style.transform = 'translateY(-100%)'; bar.style.opacity = '0'; }
-        else { show(); }
-
-        // ---- 防 SPA 重渲染清除：节点被移除则重注 ----
-        try {
-          const mo = new MutationObserver(() => {
-            try {
-              if (!document.getElementById('fnos-titlebar') || !document.getElementById('fnos-titlebar-hotzone')) {
-                mo.disconnect();
-                build();
-              }
-            } catch (_) {}
-          });
-          mo.observe(document.documentElement || document, { childList: true, subtree: true });
-        } catch (_) {}
-
-        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.injected', autoHide: AUTO_HIDE, path: (location.pathname || '').slice(0, 50) }); } catch (_) {}
-      } catch (e) {
-        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.build.ex', err: String(e && e.message || e) }); } catch (_) {}
-      }
-    }
-
-    const start = () => { try { build(); } catch (_) {} };
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
-    else start();
-  } catch (e) {
-    try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.ex', err: String(e && e.message || e) }); } catch (_) {}
-  }
-})();
+try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) {}

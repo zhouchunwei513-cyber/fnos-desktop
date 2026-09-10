@@ -41,3 +41,6 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   restartApp: () => ipcRenderer.invoke('app:restart'),
   close: () => ipcRenderer.send('settings:close'),
 });
+
+// v1.54：设置窗注入与主窗口同款无边框标题栏
+try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }

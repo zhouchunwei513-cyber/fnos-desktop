@@ -304,7 +304,7 @@
   if (optTbAutoHide) {
     optTbAutoHide.addEventListener('change', syncTbLabel);
     fnosSettings.getSettings().then((info) => {
-      try { optTbAutoHide.checked = info ? info.titleBarAutoHide !== false : true; syncTbLabel(); } catch (_) {}
+      try { optTbAutoHide.checked = info ? info.titleBarAutoHide === true : false; syncTbLabel(); } catch (_) {}
     }).catch(() => {});
   }
 

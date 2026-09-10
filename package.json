@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "1.54.0",
+  "version": "1.55.0",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -33,6 +33,7 @@
       "lock-preload.js",
       "settings-preload.js",
       "shell-preload.js",
+      "titlebar-inject.js",
       "login.html",
       "login.css",
       "login.js",

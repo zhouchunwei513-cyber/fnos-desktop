@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.54.0';
+const APP_VERSION = '1.55.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2586,7 +2586,9 @@ function registerWindow(win, opts = {}) {
     }
     if (/^(mailto|tel|sms):/i.test(url)) {
       setImmediate(() => shell.openExternal(url).catch(() => {}));
+      return { action: 'deny' };
     }
+    // v1.55：其余链接（含未识别协议）一律拒绝系统默认开窗，杜绝带系统原生标题栏的窗口
     return { action: 'deny' };
   });
 
@@ -4868,37 +4870,40 @@ try {
         contents.setWindowOpenHandler(({ url, frameName }) => {
           try {
             const u = String(url || '');
-            // DevTools / 空白弹窗 / 外部协议交给默认处理
-            if (!u || /^(devtools|chrome-extension:|chrome:)/i.test(u)) {
+            // DevTools / chrome 内部页交给默认处理
+            if (/^(devtools|chrome-extension:|chrome:)/i.test(u)) {
               return { action: 'allow' };
             }
-            // about:blank 由自身脚本跳转：直接用无边框 + preload 开窗，保证标题栏统一
-            if (/^about:blank/i.test(u) || /^javascript:/i.test(u)) {
+            // 统一的无边框 + preload 开窗覆盖项（所有由网页 window.open 弹出的窗口都走这个，
+            // 彻底杜绝 Electron 默认带系统原生标题栏的窗口）
+            const frameLessOverride = () => ({
+              frame: false,
+              backgroundColor: '#0b0d12',
+              autoHideMenuBar: true,
+              icon: ICON_PATH,
+              title: APP_NAME,
+              // 注意：这里【不能】设置 webPreferences.partition——window.open 弹窗继承调用方
+              // 的 session，显式指定 partition 会抛 "partition can only be set on top-level windows"
+              // 导致开窗失败；登录态由继承的 session 保证（webview/app 窗本身已用共享 partition）。
+              webPreferences: {
+                preload: path.join(__dirname, 'preload.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+                webSecurity: true,
+                allowRunningInsecureContent: true,
+                backgroundThrottling: false,
+                spellcheck: false,
+                enableBlinkFeatures: 'CSSBackdropFilter',
+              },
+            });
+            // 空 URL / about:blank / javascript：由自身脚本跳转，直接无边框放行（保留 opener）
+            if (!u || /^(about:blank|javascript:)/i.test(u)) {
               dlog('info', 'appwin.open.aboutblank-frameless', { frameName: String(frameName || '').slice(0, 40) });
-              return {
-                action: 'allow',
-                overrideBrowserWindowOptions: {
-                  frame: false,
-                  backgroundColor: '#0b0d12',
-                  autoHideMenuBar: true,
-                  icon: ICON_PATH,
-                  title: APP_NAME,
-                  webPreferences: {
-                    preload: path.join(__dirname, 'preload.js'),
-                    partition: SHARED_PARTITION,
-                    contextIsolation: true,
-                    nodeIntegration: false,
-                    webSecurity: true,
-                    allowRunningInsecureContent: true,
-                    backgroundThrottling: false,
-                    spellcheck: false,
-                  },
-                },
-              };
+              return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride() };
             }
-            // 直播/电视直播流链接走原有直播唤起流程，放行
+            // 直播/电视直播流链接走原有直播唤起流程，放行（仍无边框）
             if (isIptvStreamUrl(u)) {
-              return { action: 'allow' };
+              return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride() };
             }
             // http(s)/飞牛应用链接：由主进程创建无边框、注入统一标题栏的应用窗口
             if (/^https?:/i.test(u)) {
@@ -4908,10 +4913,16 @@ try {
               dlog('info', 'appwin.open.catchall', { url: u.slice(0, 120) });
               return { action: 'deny' };
             }
-            // mailto/tel 等交给系统
-            return { action: 'allow' };
+            // mailto/tel/sms 等外部协议交给系统
+            if (/^(mailto|tel|sms):/i.test(u)) {
+              setImmediate(() => { try { shell.openExternal(u); } catch (_) {} });
+              return { action: 'deny' };
+            }
+            // 其它一律无边框放行（兜底，避免出现系统原生标题栏）
+            dlog('info', 'appwin.open.fallback-frameless', { url: u.slice(0, 80) });
+            return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride() };
           } catch (_) {
-            return { action: 'allow' };
+            return { action: 'deny' };
           }
         });
       } catch (_) {}

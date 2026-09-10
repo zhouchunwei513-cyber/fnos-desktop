@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.47.1';
+const APP_VERSION = '1.48.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -795,6 +795,38 @@ ipcMain.on('fnos:media-log', (e, data) => {
       wcId,
       ...(data && typeof data === 'object' ? (() => { const { stage, ...rest } = data; return rest; })() : {})
     });
+  } catch (_) {}
+});
+
+// v1.48.0：无边框自定义标题栏的窗口控制（与参考客户端 fntv 一致）
+ipcMain.on('window-minimize', (e) => {
+  try { const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null; if (w) w.minimize(); } catch (_) {}
+});
+ipcMain.on('window-maximize', (e) => {
+  try {
+    const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
+    if (!w) return;
+    if (w.isMaximized()) w.unmaximize(); else w.maximize();
+  } catch (_) {}
+});
+ipcMain.on('window-close', (e) => {
+  try { const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null; if (w) w.close(); } catch (_) {}
+});
+// v1.48.0：无边框标题栏的「☰ 菜单」按钮——弹出与原系统菜单栏完全一致的应用菜单
+// （文件/下载/编辑/视图/工具/设置/帮助），内容与逻辑复用 buildMenuTemplate，零改动。
+ipcMain.on('app-popup-menu', (e) => {
+  try {
+    const w = (e && e.sender && BrowserWindow.fromWebContents(e.sender)) || BrowserWindow.getFocusedWindow() || null;
+    const menu = Menu.buildFromTemplate(buildMenuTemplate());
+    menu.popup({ window: w || undefined });
+  } catch (err) {
+    dlog && dlog('warn', 'app.menu.popup', { err: String(err && err.message || err) });
+  }
+});
+ipcMain.on('window-is-maximized', (e) => {
+  try {
+    const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
+    if (w && !w.isDestroyed()) e.sender.send('window-maximized-state', { maximized: w.isMaximized() });
   } catch (_) {}
 });
 
@@ -2035,6 +2067,27 @@ function closeLockWindow() {
   lockWindow = null;
 }
 
+// v1.48.0：一键隐藏/锁定时，MPV 是独立的原生窗口（不是 Electron BrowserWindow），
+// BrowserWindow.hide() 管不到它，必须单独通过 mpv 的 visibility 属性隐藏；
+// 否则"一键呼出/一键隐藏/一键锁定"时播放器窗口仍停留在屏幕上。
+function setAllMpvVisibility(visible) {
+  try {
+    if (!mpvSurfaces || mpvSurfaces.size === 0) return;
+    for (const surf of mpvSurfaces.values()) {
+      try {
+        if (!surf || !surf.player || (surf.isAlive && !surf.isAlive())) continue;
+        if (visible) {
+          if (typeof surf.player.showWindow === 'function') surf.player.showWindow();
+          if (typeof surf.onHostShown === 'function') surf.onHostShown();
+        } else {
+          if (typeof surf.player.hideWindow === 'function') surf.player.hideWindow();
+        }
+      } catch (_) {}
+    }
+    try { dlog('info', 'mpv.visibility', { visible: !!visible, count: mpvSurfaces.size }); } catch (_) {}
+  } catch (_) {}
+}
+
 function hideAllAppWindows() {
   try {
     BrowserWindow.getAllWindows().forEach((w) => {
@@ -2042,6 +2095,8 @@ function hideAllAppWindows() {
       if (!w.isDestroyed()) w.hide();
     });
   } catch (_) {}
+  // 一键隐藏/锁定：连同所有 MPV 播放窗口（嵌入层 + 独立窗口 + 直播）一起隐藏
+  setAllMpvVisibility(false);
 }
 
 function showAllAppWindows() {
@@ -2057,6 +2112,8 @@ function showAllAppWindows() {
       // 子窗口默认不抢焦点显示，但任务栏里可切回
     }
   });
+  // 呼出/解锁：恢复所有 MPV 播放窗口可见
+  setAllMpvVisibility(true);
 }
 
 function lockApp() {
@@ -2583,9 +2640,10 @@ function createAppWindow(url, opts = {}) {
     title: opts.title || APP_NAME,
     backgroundColor: cachedSettings.themeColor || '#0b0d12',
     show: false,
-    autoHideMenuBar: false,
-    frame: true,
-    titleBarStyle: 'default',
+    autoHideMenuBar: true,
+    frame: false,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#0b0d12', symbolColor: '#ffffff', height: 34 },
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -2601,15 +2659,48 @@ function createAppWindow(url, opts = {}) {
     },
   });
 
-  // 菜单栏自动隐藏开关（v1.10.0）
-  const autoHide = !!loadSettings().autoHideMenuBar;
-  win.setAutoHideMenuBar(autoHide);
-  win.setMenuBarVisibility(!autoHide);
+  // v1.48.0：无边框窗口，无系统菜单栏；菜单功能改由自定义标题栏「☰ 菜单」按钮弹出。
+  try { win.setMenuBarVisibility(false); } catch (_) {}
 
   const isHome = !!opts.isHome;
   registerWindow(win, {
     url, title: opts.title || APP_NAME, isMain: isHome, isHome, partition,
   });
+
+  // v1.48.0：应用窗口完整启动/加载/运行链路日志（便于分析 FNDESK 等大型应用卡顿）
+  const __appLabel = (opts.title || APP_NAME);
+  const __t0 = Date.now();
+  dlog && dlog('info', 'appwin.create', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120) });
+  try {
+    win.webContents.on('did-start-loading', () => {
+      try {
+        win.__appNavStart = Date.now();
+        win.__appResPending = true;
+        dlog && dlog('info', 'appwin.load.start', { app: __appLabel, winId: win.id, url: String(win.webContents.getURL()).slice(0, 120) });
+      } catch (_) {}
+    });
+    win.webContents.on('dom-ready', () => {
+      try { dlog && dlog('info', 'appwin.dom-ready', { app: __appLabel, winId: win.id, ms: Date.now() - (win.__appNavStart || __t0) }); } catch (_) {}
+    });
+    win.webContents.on('did-finish-load', () => {
+      try {
+        win.__appResPending = false;
+        dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
+      } catch (_) {}
+    });
+    win.webContents.on('unresponsive', () => {
+      try { dlog && dlog('warn', 'appwin.unresponsive', { app: __appLabel, winId: win.id, ms: Date.now() - __t0 }); } catch (_) {}
+    });
+    win.webContents.on('responsive', () => {
+      try { dlog && dlog('info', 'appwin.responsive', { app: __appLabel, winId: win.id }); } catch (_) {}
+    });
+    win.webContents.on('render-process-gone', (_e, detail) => {
+      try { dlog && dlog('error', 'appwin.render-gone', { app: __appLabel, winId: win.id, reason: detail && detail.reason }); } catch (_) {}
+    });
+    win.once('ready-to-show', () => {
+      try { dlog && dlog('info', 'appwin.ready-show', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0 }); } catch (_) {}
+    });
+  } catch (_) {}
 
   if (url) {
     if (/^https?:/i.test(url)) {
@@ -2837,7 +2928,11 @@ function createMainWindow(partition, loadTarget) {
     backgroundColor: '#1a1a1a',
     show: false,
     paintWhenInitiallyHidden: true,
-    autoHideMenuBar: false,
+    // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。
+    // 标题栏 DOM 由 preload.js 注入（可拖拽 + 最小化/最大化/关闭按钮），系统菜单栏随之移除，
+    // 原"隐藏菜单栏"设置项不再需要（始终无系统菜单栏）。
+    frame: false,
+    autoHideMenuBar: true,
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -4406,7 +4501,21 @@ async function playMediaWithMpv(mediaUrl, opts) {
     let surf = mpvSurfaces.get(STANDALONE_KEY);
     if (surf && !surf.isAlive()) { try { surf.destroy(); } catch (_) {} mpvSurfaces.delete(STANDALONE_KEY); surf = null; }
     if (!surf) {
-      surf = new MpvSurfaceMod.MpvSurface(null, null, { standalone: true, settings: st });
+      surf = new MpvSurfaceMod.MpvSurface(null, null, {
+        standalone: true,
+        settings: st,
+        // v1.48.0：拖回吸附——返回当前飞牛主窗口内容区屏幕几何，独立播放器窗口拖入即自动贴合跟随。
+        resolveDockTarget: () => {
+          try {
+            const host = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()
+              ? mainWindow
+              : (appWindows.find(e => e.isHome && e.win && !e.win.isDestroyed() && e.win.isVisible() && !e.win.isMinimized()) || {}).win;
+            if (!host) return null;
+            const cb = host.getContentBounds();
+            return { x: cb.x, y: cb.y, width: cb.width, height: cb.height };
+          } catch (_) { return null; }
+        }
+      });
       mpvSurfaces.set(STANDALONE_KEY, surf);
       surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
       surf.player.on('end-file', reason => dlog('info', 'mpv.player.end', { reason: String(reason) }));

@@ -867,6 +867,9 @@ contextBridge.exposeInMainWorld('fnos', {
         v.addEventListener('stalled', () => {
           if (v.readyState === 0 && v.networkState !== 0) setTimeout(fail, 800);
         }, true);
+        // v1.48.0：惰性 observer 可能在 <video> 已经报错之后才安装（MKV/HEVC 等浏览器不支持的格式，
+        // error 事件在 watch 注册前就已派发）。绑定后立即补判一次当前状态，避免错过自动接管。
+        try { if (isUnsupported(v)) { triggerEmbed(v, 'error-late'); return; } } catch (_) {}
         // 起播后长时间无画面（有 src 但一直没有视频尺寸/进度）才判定为不支持。
         // 关键：播放页 URL 自带 media_guid 且网页正在缓冲（readyState 增长中）时不接管，
         // 避免把"正在加载/可正常播放"的普通视频误判为失败而双开 MPV 造成画面抖动。
@@ -968,5 +971,97 @@ contextBridge.exposeInMainWorld('fnos', {
     else boot();
   } catch (e) {
     try { ipcRenderer.send('fnos:media-log', { stage: 'preload.ex', err: String(e && e.message || e) }); } catch (_) {}
+  }
+})();
+
+// ============================================================================
+// v1.48.0：无边框窗口自定义标题栏（与参考客户端 fntv-electron 一致）
+// 主窗口 frame:false，这里在页面顶部注入一条可拖拽标题栏 + 最小化/最大化/关闭按钮。
+// 仅在飞牛远程网页（http/https）注入；本地 login/settings 页面不注入（它们自带或无需）。
+// 采用透明背景 + 半透明按钮，避免遮挡飞牛自身顶部导航的观感；拖拽区可移动窗口。
+// ============================================================================
+(function injectCustomTitleBar() {
+  try {
+    if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') return;
+    if (window.top !== window) return; // 仅顶层框架
+
+    const BTN_HOVER_BG = 'rgba(128,128,128,0.25)';
+    const CLOSE_HOVER_BG = 'rgba(232,17,35,0.85)';
+
+    function buildBar() {
+      if (document.getElementById('fnos-titlebar')) return;
+      const bar = document.createElement('div');
+      bar.id = 'fnos-titlebar';
+      bar.style.cssText = [
+        'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
+        'z-index:2147483647', 'display:flex', 'align-items:center',
+        'justify-content:space-between', 'pointer-events:none',
+        'background:linear-gradient(to bottom,rgba(10,12,18,0.82),rgba(10,12,18,0.32))',
+        '-webkit-app-region:drag', 'user-select:none'
+      ].join(';');
+
+      // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）+ FNOS 标识
+      const left = document.createElement('div');
+      left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-left:6px;';
+      const menuBtn = document.createElement('button');
+      menuBtn.id = 'fnos-tb-menu';
+      menuBtn.title = '菜单（文件/下载/编辑/视图/工具/设置/帮助）';
+      menuBtn.style.cssText = [
+        'width:40px', 'height:30px', 'border:none', 'outline:none', 'background:transparent',
+        'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
+        'border-radius:6px', 'padding:0', '-webkit-app-region:no-drag'
+      ].join(';');
+      menuBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.92)" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+      menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = BTN_HOVER_BG; });
+      menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
+      menuBtn.addEventListener('click', () => { try { ipcRenderer.send('app-popup-menu'); } catch (_) {} });
+      left.appendChild(menuBtn);
+
+      const btns = document.createElement('div');
+      btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;gap:2px;padding-right:6px;';
+
+      const mkBtn = (id, svg, hoverBg) => {
+        const b = document.createElement('button');
+        b.id = id;
+        b.title = id === 'fnos-tb-min' ? '最小化' : id === 'fnos-tb-max' ? '最大化/还原' : '关闭';
+        b.style.cssText = [
+          'width:40px', 'height:30px', 'border:none', 'outline:none', 'background:transparent',
+          'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
+          'border-radius:6px', 'padding:0', '-webkit-app-region:no-drag'
+        ].join(';');
+        b.innerHTML = svg;
+        b.addEventListener('mouseenter', () => { b.style.background = hoverBg; b.querySelectorAll('path,rect').forEach(el => el.setAttribute('stroke', '#fff')); });
+        b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; b.querySelectorAll('path,rect').forEach(el => el.setAttribute('stroke', 'rgba(255,255,255,0.92)')); });
+        return b;
+      };
+
+      const iconStroke = 'rgba(255,255,255,0.92)';
+      const minBtn = mkBtn('fnos-tb-min',
+        `<svg width="13" height="13" viewBox="0 0 16 16"><path d="M3 8H13" stroke="${iconStroke}" stroke-width="1.4" stroke-linecap="round"/></svg>`, BTN_HOVER_BG);
+      const maxBtn = mkBtn('fnos-tb-max',
+        `<svg width="13" height="13" viewBox="0 0 16 16"><rect x="3.2" y="3.2" width="9.6" height="9.6" rx="1.4" fill="none" stroke="${iconStroke}" stroke-width="1.4"/></svg>`, BTN_HOVER_BG);
+      const closeBtn = mkBtn('fnos-tb-close',
+        `<svg width="13" height="13" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" stroke="${iconStroke}" stroke-width="1.4" stroke-linecap="round"/></svg>`, CLOSE_HOVER_BG);
+
+      minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
+      maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
+      closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
+
+      // 双击拖拽区最大化/还原
+      bar.addEventListener('dblclick', (ev) => {
+        if (ev.target === bar || ev.target === btns) { try { ipcRenderer.send('window-maximize'); } catch (_) {} }
+      });
+
+      btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
+      bar.appendChild(left);
+      bar.appendChild(btns);
+      (document.body || document.documentElement).appendChild(bar);
+    }
+
+    const start = () => { try { buildBar(); } catch (_) {} };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+    else start();
+  } catch (e) {
+    try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.ex', err: String(e && e.message || e) }); } catch (_) {}
   }
 })();

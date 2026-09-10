@@ -36,7 +36,21 @@ class MpvSurface {
     // 注：log/end-file/exit 监听由 main.js（embedMpvPlay）统一绑定，这里不重复绑定。
 
     // 独立窗口：不跟随父窗、不绑定父窗生命周期（由 main.js 在 mpv 退出时回收）
-    if (this._standalone) { this._start(); return; }
+    if (this._standalone) {
+      // v1.48.0：拖回吸附。opts.resolveDockTarget() 由 main.js 提供，返回当前飞牛主窗口
+      // 内容区屏幕几何 {x,y,width,height}（不可吸附时返回 null）。独立 mpv 窗口被拖到主窗口
+      // 区域内、且重叠面积达到阈值时，自动贴合主窗口并进入跟随模式；用户把窗口拖出主窗口则脱离。
+      this._resolveDockTarget = (typeof opts.resolveDockTarget === 'function') ? opts.resolveDockTarget : null;
+      this._docked = false;
+      this._start();
+      if (this._resolveDockTarget) {
+        // 等 IPC 就绪后再开始几何轮询
+        const startDockPoll = () => { try { this._startDockPolling(); } catch (_) {} };
+        if (this.player.connected) setTimeout(startDockPoll, 1200);
+        else this.player.once('ipc-ready', () => setTimeout(startDockPoll, 800));
+      }
+      return;
+    }
 
     // 父窗移动/缩放/最小化时跟随
     if (parentWin && !parentWin.isDestroyed()) {
@@ -44,11 +58,17 @@ class MpvSurface {
       this._resizeHandler = () => this._applyGeometry();
       this._minHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
       this._restoreHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} };
+      // v1.48.0：父窗被一键隐藏/锁定（hide）/重新呼出（show）时，嵌入 mpv 原生窗口也要跟随，
+      // 否则主窗隐藏后播放器仍停留在屏幕上。
+      this._hideHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
+      this._showHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} };
       this._closedHandler = () => this.destroy();
       parentWin.on('move', this._moveHandler);
       parentWin.on('resize', this._resizeHandler);
       parentWin.on('minimize', this._minHandler);
       parentWin.on('restore', this._restoreHandler);
+      parentWin.on('hide', this._hideHandler);
+      parentWin.on('show', this._showHandler);
       parentWin.on('closed', this._closedHandler);
 
       // 轮询兜底：拖动/缩放窗口时 'move'/'resize' 事件在部分平台不连续触发，
@@ -130,6 +150,77 @@ class MpvSurface {
     if (this._pip) return;
     const geo = this._computeScreenGeometry();
     if (geo && this._started) { try { this.player.setGeometry(geo); } catch (_) {} }
+  }
+
+  // v1.48.0：宿主窗口重新显示（一键呼出/解锁）后调用：恢复可见并重新贴合视频区。
+  onHostShown() {
+    try {
+      if (this._dead || this._standalone) return;
+      try { this.player.showWindow(); } catch (_) {}
+      this._applyGeometry();
+    } catch (_) {}
+  }
+
+  // ---------------- 独立窗口拖回吸附（v1.48.0） ----------------
+  _startDockPolling() {
+    if (this._dockTimer || this._dead) return;
+    let lastMpvKey = '';
+    this._dockTimer = setInterval(async () => {
+      try {
+        if (this._dead || this._pip) return;
+        const p = this.player;
+        if (!p.connected) return;
+        // 读 mpv 原生窗口当前几何（屏幕 DIP）
+        let gx, gy, gw, gh;
+        try {
+          const [x, y, w, h] = await Promise.all([
+            p.getProperty('x'), p.getProperty('y'), p.getProperty('width'), p.getProperty('height')
+          ]);
+          gx = parseInt(x, 10); gy = parseInt(y, 10); gw = parseInt(w, 10); gh = parseInt(h, 10);
+        } catch (_) { return; }
+        if (!isFinite(gx) || !isFinite(gw) || gw <= 0) return;
+        const mpvKey = `${gx},${gy},${gw},${gh}`;
+        const target = this._resolveDockTarget ? this._resolveDockTarget() : null;
+        if (!target) { // 无可吸附宿主：若已吸附则脱离
+          if (this._docked) { this._docked = false; try { p.command(['set_property', 'ontop', 'no']); } catch (_) {} }
+          lastMpvKey = mpvKey; return;
+        }
+        // mpv 窗口与宿主内容区的重叠面积占比
+        const ox = Math.max(0, Math.min(gx + gw, target.x + target.width) - Math.max(gx, target.x));
+        const oy = Math.max(0, Math.min(gy + gh, target.y + target.height) - Math.max(gy, target.y));
+        const overlap = ox * oy;
+        const mpvArea = gw * gh;
+        const ratio = mpvArea > 0 ? overlap / mpvArea : 0;
+        // 吸附阈值：窗口超过 55% 面积进入宿主区域 → 吸附贴合
+        const shouldDock = ratio >= 0.55;
+        if (shouldDock && !this._docked) {
+          this._docked = true;
+          try {
+            // 贴合到宿主内容区（留边），置顶并跟随
+            this._dockTarget = target;
+            await p.command(['set_property', 'ontop', 'yes']);
+            p.setGeometry({ x: target.x, y: target.y, width: target.width, height: target.height });
+            this._emit('log', 'dock.attach ' + JSON.stringify(target));
+          } catch (_) {}
+        } else if (!shouldDock && this._docked) {
+          // 拖出宿主区域 → 脱离，恢复自由窗口
+          this._docked = false;
+          try { p.command(['set_property', 'ontop', 'no']); } catch (_) {}
+          this._dockTarget = null;
+          this._emit('log', 'dock.detach');
+        } else if (this._docked) {
+          // 已吸附：宿主移动/缩放时持续贴合（独立窗口没有父窗 move 事件，靠轮询对齐）
+          const tk = `${target.x},${target.y},${target.width},${target.height}`;
+          if (tk !== this._lastDockTargetKey) {
+            this._lastDockTargetKey = tk;
+            this._dockTarget = target;
+            try { p.setGeometry({ x: target.x, y: target.y, width: target.width, height: target.height }); } catch (_) {}
+          }
+        }
+        lastMpvKey = mpvKey;
+      } catch (_) {}
+    }, 600);
+    if (this._dockTimer.unref) this._dockTimer.unref();
   }
 
   // 画中画：true=进入小窗（记录当前几何，缩到宿主内容区右下角 420px 宽、保持置顶、可拖动）；
@@ -260,12 +351,15 @@ class MpvSurface {
     if (this._dead) return;
     this._dead = true;
     try { if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; } } catch (_) {}
+    try { if (this._dockTimer) { clearInterval(this._dockTimer); this._dockTimer = null; } } catch (_) {}
     try {
       if (this.parent && !this.parent.isDestroyed()) {
         this.parent.removeListener('move', this._moveHandler);
         this.parent.removeListener('resize', this._resizeHandler);
         this.parent.removeListener('minimize', this._minHandler);
         this.parent.removeListener('restore', this._restoreHandler);
+        this.parent.removeListener('hide', this._hideHandler);
+        this.parent.removeListener('show', this._showHandler);
         this.parent.removeListener('closed', this._closedHandler);
       }
     } catch (_) {}

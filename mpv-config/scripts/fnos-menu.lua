@@ -76,7 +76,7 @@ local function helper_async(route, bodyJson, onDone)
         local port = os.getenv and os.getenv("FNOS_MPV_HELPER_PORT")
         local token = (os.getenv and os.getenv("FNOS_MPV_HELPER_TOKEN")) or ""
         if not port or port == "" then
-            mp.osd_message("字幕服务未就绪（请更新客户端）", 3000); onDone(nil); return
+            mp.osd_message("字幕服务未就绪（请更新客户端）", 3); onDone(nil); return
         end
         local windir = (os.getenv and os.getenv("WINDIR")) or "C:\\Windows"
         local curl = windir .. "\\System32\\curl.exe"
@@ -294,7 +294,7 @@ local function set_speed(s)
         mp.set_property_number("speed", v)
         local back = mp.get_property_number("speed", v)
         local tag = (math.abs(back - 1.0) < 0.001) and "（正常速度）" or "（音频变速不变调）"
-        mp.osd_message("▶ 播放倍速：" .. string.format("%.2f", back) .. "x  " .. tag, 2200)
+        mp.osd_message("▶ 播放倍速：" .. string.format("%.2f", back) .. "x  " .. tag, 1.5)
         pcall(refresh_menu_data)
     end)
 end
@@ -517,14 +517,14 @@ end
 -- ---------------- 脚本消息：本地字幕加载（v1.47.0 起移除在线字幕搜索/下载） ----------------
 safe_msg("fnos-sub-local", function()
     pcall(function()
-        mp.osd_message("请在弹出的对话框选择字幕文件…", 4000)
+        mp.osd_message("请在弹出的对话框选择字幕文件…", 4)
         helper_async("/subtitle/open-dialog", "{}", function(data)
             if data and data.ok and not data.cancelled then
-                mp.osd_message("本地字幕已加载", 3000)
+                mp.osd_message("本地字幕已加载", 2)
             elseif data and data.cancelled then
-                mp.osd_message("已取消选择字幕", 2000)
+                mp.osd_message("已取消选择字幕", 1.5)
             else
-                mp.osd_message("加载本地字幕失败：" .. ((data and data.error) or "未知错误"), 4000)
+                mp.osd_message("加载本地字幕失败：" .. ((data and data.error) or "未知错误"), 3)
             end
         end)
     end)

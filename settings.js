@@ -296,21 +296,23 @@
   });
 
   // --------- 界面开关 ---------
-  const optAutohide = document.getElementById('opt-autohide');
+  // v1.48.0：窗口已改为无边框 + 自定义标题栏，无系统菜单栏，"自动隐藏菜单栏"选项已移除。
   const optSave = document.getElementById('opt-save');
-  optSave.addEventListener('click', async () => {
-    optSave.disabled = true; optSave.textContent = '保 存 中';
-    try {
-      const res = await fnosSettings.setUIOptions({ autoHideMenuBar: !!optAutohide.checked });
-      if (res && res.ok) {
-        optSave.textContent = '已 保 存（重启后完全生效）';
-        setTimeout(() => { optSave.textContent = '保存界面设置'; }, 1800);
+  if (optSave) {
+    optSave.addEventListener('click', async () => {
+      optSave.disabled = true; optSave.textContent = '保 存 中';
+      try {
+        const res = await fnosSettings.setUIOptions({});
+        if (res && res.ok) {
+          optSave.textContent = '已 保 存（重启后完全生效）';
+          setTimeout(() => { optSave.textContent = '保存界面设置'; }, 1800);
+        }
+      } finally {
+        optSave.disabled = false;
+        if (optSave.textContent === '保 存 中') optSave.textContent = '保存界面设置';
       }
-    } finally {
-      optSave.disabled = false;
-      if (optSave.textContent === '保 存 中') optSave.textContent = '保存界面设置';
-    }
-  });
+    });
+  }
 
   // --------- 主题色 ---------
   const accentDot = document.getElementById('accent-dot');
@@ -480,7 +482,6 @@
       const rewrites = info?.urlRewrites || [];
       if (rewrites.length === 0) rwTpl();
       else rewrites.forEach((r) => rwTpl(r.match || '', r.replace || ''));
-      optAutohide.checked = !!info?.autoHideMenuBar;
       if (autoLockSel) {
         const mins = Number(info?.autoLockMinutes) || 0;
         autoLockSel.value = String(mins);

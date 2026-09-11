@@ -98,13 +98,6 @@ module.exports = function injectTitleBar(ctx) {
       });
     } catch (_) {}
 
-    // 监听 mpv 嵌入状态：嵌入时在标题栏区域垫纯黑条（自动隐藏后顶部与 mpv 黑边一致）
-    try {
-      ipcRenderer.on('mpv:embed-state', (_e, val) => {
-        try { setEmbedBlack(!!(val && val.active)); } catch (_) {}
-      });
-    } catch (_) {}
-
     function show(bar) {
       try {
         if (bar.__hideTimer) { clearTimeout(bar.__hideTimer); bar.__hideTimer = null; }
@@ -131,36 +124,19 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
-    // ---- 沉浸黑条：mpv 嵌入时垫在标题栏区域（最底层），mpv 顶边压在标题栏下沿；
-    //      自动隐藏标题栏后顶部即为纯黑，与 mpv 黑边无缝一致；标题栏按钮/热区在其上层仍可操作 ----
-    function setEmbedBlack(active) {
-      try {
-        let el = document.getElementById('fnos-embed-topbar');
-        if (active) {
-          if (!el) {
-            el = document.createElement('div');
-            el.id = 'fnos-embed-topbar';
-            el.setAttribute('aria-hidden', 'true');
-            el.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;background:#000;z-index:2147483644;pointer-events:none;-webkit-app-region:no-drag;user-select:none;';
-            root().appendChild(el);
-          }
-          el.style.display = 'block';
-        } else if (el) {
-          el.style.display = 'none';
-        }
-      } catch (_) {}
-    }
-
     function build() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
 
-        // ---- 顶部拖动热区：高 28px 隐形条，始终存在、始终可拖动（含标题栏隐藏时） ----
+        // 清理可能残留的旧沉浸黑条（v1.60~v1.61 引入，v1.62 移除：它是 no-drag 层会干扰拖动、且强制黑底）
+        try { const old = document.getElementById('fnos-embed-topbar'); if (old) old.remove(); } catch (_) {}
+
+        // ---- 顶部拖动热区：高 34px（与标题栏同高），始终存在、始终可拖动（含标题栏隐藏时） ----
         const hot = document.createElement('div');
         hot.id = 'fnos-titlebar-hotzone';
         hot.setAttribute('aria-hidden', 'true');
         hot.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:28px',
+          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
           'z-index:2147483646', 'pointer-events:auto', 'background:transparent',
           '-webkit-app-region:drag', 'user-select:none'
         ].join(';');
@@ -235,16 +211,40 @@ module.exports = function injectTitleBar(ctx) {
           if (ev.target === bar || ev.target === hot) { try { ipcRenderer.send('window-maximize'); } catch (_) {} }
         });
 
+        // v1.62：原生拖拽兜底。-webkit-app-region:drag 在置顶嵌入 mpv 存在时可能失灵，
+        // 这里在顶部热区/标题栏空白处左键 mousedown 主动调 startDrag；点按钮/☰ 时 target
+        // 命中按钮（no-drag 区）不触发，避免影响点击。
+        const startNativeDrag = (ev) => {
+          try {
+            if (ev.button !== 0) return;
+            const t = ev.target;
+            if (t && t.closest && t.closest('button, .fnos-tb-no-drag, #fnos-tb-min, #fnos-tb-max, #fnos-tb-close, #fnos-tb-menu')) return;
+            ipcRenderer.send('window-drag');
+          } catch (_) {}
+        };
+        hot.addEventListener('mousedown', startNativeDrag);
+        bar.addEventListener('mousedown', startNativeDrag);
+
         btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
         bar.appendChild(left);
         bar.appendChild(btns);
         root().appendChild(bar);
 
-        // ---- 显隐：标题栏/热区 hover 时保持显示，移出后延迟隐藏（常驻模式永不隐藏） ----
+        // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级
+        //      被其它内容干扰时也能触发）。进入顶部 34px 显示，移出后延迟隐藏（常驻模式永不隐藏） ----
+        let __inTop = false;
+        document.addEventListener('mousemove', (ev) => {
+          try {
+            const inTop = (ev.clientY != null && ev.clientY <= 34);
+            if (inTop && !__inTop) { __inTop = true; show(bar); }
+            else if (!inTop && __inTop) { __inTop = false; scheduleHide(bar, 450); }
+          } catch (_) {}
+        }, true);
+        // 元素级 hover 兜底（某些场景 mousemove target 为窗口按钮等不冒泡到 document 时）
         bar.addEventListener('mouseenter', () => show(bar));
-        bar.addEventListener('mouseleave', () => scheduleHide(bar, 500));
+        bar.addEventListener('mouseleave', () => scheduleHide(bar, 450));
         hot.addEventListener('mouseenter', () => show(bar));
-        hot.addEventListener('mouseleave', () => scheduleHide(bar, 500));
+        hot.addEventListener('mouseleave', () => scheduleHide(bar, 450));
 
         // ALT 键调出标题栏（自动隐藏模式下），2.2s 后收回
         window.addEventListener('keydown', (ev) => {

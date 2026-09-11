@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.61.0';
+const APP_VERSION = '1.62.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -811,6 +811,11 @@ ipcMain.on('window-maximize', (e) => {
 });
 ipcMain.on('window-close', (e) => {
   try { const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null; if (w) w.close(); } catch (_) {}
+});
+// v1.62.0：无边框标题栏原生拖拽兜底（-webkit-app-region:drag 在置顶嵌入 mpv 存在时
+// 可能被系统拖拽消息环影响而失灵）。renderer 在顶部热区 mousedown(左键) 时调用 startDrag。
+ipcMain.on('window-drag', (e) => {
+  try { const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null; if (w && !w.isDestroyed()) w.startDrag(); } catch (_) {}
 });
 // v1.48.0：无边框标题栏的「☰ 菜单」按钮——弹出与原系统菜单栏完全一致的应用菜单
 // （文件/下载/编辑/视图/工具/设置/帮助），内容与逻辑复用 buildMenuTemplate，零改动。

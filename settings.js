@@ -376,14 +376,7 @@
     });
   }
 
-  // --------- 主题色 ---------
-  const accentDot = document.getElementById('accent-dot');
-  if (accentDot) {
-    accentDot.addEventListener('input', async () => {
-      await fnosSettings.setAccentColor(accentDot.value);
-    });
-  }
-
+  // v1.59：界面主题色选项已移除（标题栏颜色独立可配），不再设置 accentColor
   btnClose.addEventListener('click', () => fnosSettings.close());
 
   // --------- 直播与播放（v1.18.0：本地代理与外部播放器路径已移除） ---------

@@ -689,12 +689,13 @@ contextBridge.exposeInMainWorld('fnos', {
         let node = el.parentElement;
         let depth = 0;
         let best = el;
-        while (node && depth < 5 && node !== document.body && node !== document.documentElement) {
+        while (node && depth < 6 && node !== document.documentElement) {
           const r = node.getBoundingClientRect();
           const cs = window.getComputedStyle(node);
-          if (r && r.width >= vr.width * 0.92 && r.height >= vr.height * 0.92 &&
-              r.width < window.innerWidth * 0.92 && r.height < window.innerHeight * 0.92 &&
-              cs.display !== 'none' && cs.visibility !== 'hidden') {
+          const coversVideo = r && r.width >= vr.width * 0.9 && r.height >= vr.height * 0.9;
+          const nearFull = r && (r.width >= window.innerWidth * 0.85 && r.height >= window.innerHeight * 0.85);
+          if (coversVideo && cs.display !== 'none' && cs.visibility !== 'hidden') {
+            if (node === document.body || nearFull) break; // 到整页层就停（主播放页有侧栏/列表）
             best = node;
             node = node.parentElement; depth++;
           } else break;
@@ -702,22 +703,37 @@ contextBridge.exposeInMainWorld('fnos', {
         return best;
       } catch (_) { return null; }
     }
+    // 悬浮透明标题栏高度：MPV 铺满播放弹窗时顶部预留，避免盖住标题栏按钮/拖动用热区
+    var TITLE_RESERVE = 34;
+    // 兜底矩形：留出顶部悬浮标题栏的客户区（用于纯播放器弹窗里播放器容器检测失败时，
+    // 让 MPV 铺满播放区而不是不启动；带侧栏/列表的主播放页因能测到容器不会走到这里）
+    function _fallbackRect() {
+      try {
+        var y = TITLE_RESERVE;
+        var h = window.innerHeight - TITLE_RESERVE;
+        if (h < 200) { y = 0; h = window.innerHeight; }
+        return { x: 0, y: y, width: window.innerWidth, height: h };
+      } catch (_) { return null; }
+    }
     function getMainVideoRect(v) {
       try {
         // 接管后（video 被隐藏）：优先用播放器容器实测矩形（内嵌在播放器区）
         if (state.handled && state.playerBox) {
           const br = _normRect(state.playerBox.getBoundingClientRect());
-          if (br) return br;
+          if (br && br.width >= 120 && br.height >= 120) return br;
           if (state.cachedRect) return state.cachedRect;
         }
         const el = v || getMainVideo();
-        if (!el) return state.cachedRect || null;
-        // 网页 video 被接管后会 display:none，其 rect 归零；回退缓存（不整窗铺满）。
-        if (el.offsetParent === null || el.style.display === 'none') return state.cachedRect || null;
-        const rect = _normRect(el.getBoundingClientRect());
-        if (rect) state.cachedRect = rect;
-        return rect;
-      } catch (_) { return state.cachedRect || null; }
+        if (el) {
+          // 网页 video 正常显示时：测 video 自身
+          if (!(el.offsetParent === null || el.style.display === 'none')) {
+            const rect = _normRect(el.getBoundingClientRect());
+            if (rect && rect.width >= 120 && rect.height >= 120) { state.cachedRect = rect; return rect; }
+          }
+        }
+        // video 已隐藏或测不到：优先缓存，最后回退客户区（纯播放器弹窗铺满）
+        return state.cachedRect || _fallbackRect();
+      } catch (_) { return state.cachedRect || _fallbackRect(); }
     }
 
     // v1.57：只把网页播放器容器背景置黑（解决 MPV 与播放器接缝处露灰），

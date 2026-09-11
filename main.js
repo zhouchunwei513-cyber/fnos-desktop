@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.63.0';
+const APP_VERSION = '1.64.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4689,6 +4689,7 @@ function _clearTitlebarForce() {
 setInterval(() => {
   try {
     let activeHost = null;
+    let activeSurf = null;
     for (const [, surf] of mpvSurfaces) {
       try {
         if (!surf || surf._standalone || surf._dead || surf._pip) continue;
@@ -4696,7 +4697,7 @@ setInterval(() => {
         if (!w || w.isDestroyed() || w.isMinimized() || !w.isVisible()) continue;
         if (!surf.isAlive || !surf.isAlive()) continue;
         if (!w.isFocused()) continue; // 只处理当前聚焦窗口
-        activeHost = w; break;
+        activeHost = w; activeSurf = surf; break;
       } catch (_) {}
     }
     if (!activeHost) { if (_titlebarForceShow) _clearTitlebarForce(); return; }
@@ -4705,8 +4706,14 @@ setInterval(() => {
     const cb = activeHost.getContentBounds();
     const inStrip = pt.x >= cb.x && pt.x <= cb.x + cb.width &&
                     pt.y >= cb.y && pt.y <= cb.y + TITLEBAR_STRIP;
-    if (inStrip && !_titlebarForceShow) {
-      _titlebarForceShow = true; _titlebarForceWin = activeHost; _broadcastTitlebarForce(activeHost, true);
+    if (inStrip) {
+      // 用户鼠标推到顶部标题栏带（正要去点最小化/最大化/关闭或拖动）：
+      // 立即把嵌入 mpv 强制对齐到标题栏【下方】(y=34) 并置顶，确保顶部 34px 按钮区
+      // 不被 mpv 原生窗盖住——即使 mpv 此前发生位置漂移，伸手点按钮这一刻也会被压回。
+      try { if (activeSurf) { activeSurf._applyGeometry && activeSurf._applyGeometry(); activeSurf._raiseMpv && activeSurf._raiseMpv(); } } catch (_) {}
+      if (!_titlebarForceShow) {
+        _titlebarForceShow = true; _titlebarForceWin = activeHost; _broadcastTitlebarForce(activeHost, true);
+      }
     } else if (!inStrip && _titlebarForceShow) {
       _clearTitlebarForce();
     }

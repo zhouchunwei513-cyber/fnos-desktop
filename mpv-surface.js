@@ -84,7 +84,7 @@ class MpvSurface {
           // player.setGeometry 内部按几何串去抖，位置正确时不产生额外 IPC。
           this._applyGeometry();
         } catch (_) {}
-      }, 500);
+      }, 200);
       if (this._pollTimer.unref) this._pollTimer.unref();
     }
 

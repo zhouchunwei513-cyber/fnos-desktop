@@ -98,6 +98,13 @@ module.exports = function injectTitleBar(ctx) {
       });
     } catch (_) {}
 
+    // 监听 mpv 嵌入状态：嵌入时在标题栏区域垫纯黑条（自动隐藏后顶部与 mpv 黑边一致）
+    try {
+      ipcRenderer.on('mpv:embed-state', (_e, val) => {
+        try { setEmbedBlack(!!(val && val.active)); } catch (_) {}
+      });
+    } catch (_) {}
+
     function show(bar) {
       try {
         if (bar.__hideTimer) { clearTimeout(bar.__hideTimer); bar.__hideTimer = null; }
@@ -121,6 +128,26 @@ module.exports = function injectTitleBar(ctx) {
         if (bar.__hideTimer) clearTimeout(bar.__hideTimer);
         bar.__hideTimer = setTimeout(() => { bar.__hideTimer = null; hide(bar); }, ms || 600);
         if (bar.__hideTimer.unref) bar.__hideTimer.unref();
+      } catch (_) {}
+    }
+
+    // ---- 沉浸黑条：mpv 嵌入时垫在标题栏区域（最底层），mpv 顶边压在标题栏下沿；
+    //      自动隐藏标题栏后顶部即为纯黑，与 mpv 黑边无缝一致；标题栏按钮/热区在其上层仍可操作 ----
+    function setEmbedBlack(active) {
+      try {
+        let el = document.getElementById('fnos-embed-topbar');
+        if (active) {
+          if (!el) {
+            el = document.createElement('div');
+            el.id = 'fnos-embed-topbar';
+            el.setAttribute('aria-hidden', 'true');
+            el.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;background:#000;z-index:2147483644;pointer-events:none;-webkit-app-region:no-drag;user-select:none;';
+            root().appendChild(el);
+          }
+          el.style.display = 'block';
+        } else if (el) {
+          el.style.display = 'none';
+        }
       } catch (_) {}
     }
 

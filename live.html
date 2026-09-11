@@ -13,7 +13,9 @@
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%;width:100%;overflow:hidden;background:var(--bg);color:var(--txt);
     font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-  #app{display:flex;height:100%;width:100%}
+  /* v1.60：为悬浮自定义标题栏预留 34px 顶部空间，侧栏/视频区/控制条整体下移，
+     节目单✕等顶部按钮不再与窗口✕重叠；标题栏下方即播放器黑底 */
+  #app{display:flex;height:100%;width:100%;padding-top:34px;box-sizing:border-box}
 
   /* 左侧频道栏 */
   #sidebar{width:300px;min-width:300px;display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--line)}

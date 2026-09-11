@@ -94,10 +94,21 @@ class MpvSurface {
     const win = this.parent;
     if (!win || win.isDestroyed()) return null;
     const cb = win.getContentBounds();      // 内容区屏幕 DIP 坐标
-    const x = cb.x + (off.x || 0) + (r.x || 0);
-    const y = cb.y + (off.y || 0) + (r.y || 0);
-    const width = Math.max(160, r.width);
-    const height = Math.max(90, r.height);
+    let x = cb.x + (off.x || 0) + (r.x || 0);
+    let y = cb.y + (off.y || 0) + (r.y || 0);
+    let width = Math.max(160, r.width);
+    let height = Math.max(90, r.height);
+    // v1.60：内嵌 mpv 是无边框置顶窗，会盖住宿主悬浮标题栏区域。强制把 mpv 顶边压到
+    // 标题栏(34px)下方，标题栏永远在 mpv 之上（可拖动/点按钮），标题栏下方即为 mpv 黑底，
+    // 自动隐藏标题栏后顶部纯黑与 mpv 黑边一致。standalone（菜单"用mpv打开"）不绑定父窗，不约束。
+    if (!this._standalone && !this._pip) {
+      const minY = cb.y + (off.y || 0) + 34;
+      if (y < minY) {
+        const dy = minY - y;
+        y = minY;
+        height = Math.max(90, height - dy);
+      }
+    }
     return {
       x: Math.round(x),
       y: Math.round(y),

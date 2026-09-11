@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.59.0';
+const APP_VERSION = '1.60.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -5024,6 +5024,26 @@ function notifyGuestMpvClosed(guestWc) {
       try { wc.send('mpv:embed-closed'); } catch (_) {}
     }
   } catch (_) {}
+  // v1.60：同时广播给全部 webContents，标题栏模块据此撤除标题栏下方的沉浸黑条
+  try {
+    for (const w of require('electron').webContents.getAllWebContents()) {
+      try { if (!w.isDestroyed()) w.send('mpv:embed-state', { active: false }); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+// v1.60：嵌入激活时广播（标题栏模块据此在标题栏区域垫一条纯黑，保证自动隐藏后顶部与 mpv 黑边一致）
+function broadcastMpvEmbedActive(hostWin) {
+  try {
+    const hostId = hostWin && !hostWin.isDestroyed() ? hostWin.id : -1;
+    for (const w of require('electron').webContents.getAllWebContents()) {
+      try {
+        if (w.isDestroyed()) continue;
+        const same = hostId === -1 || (() => { try { return BrowserWindow.fromWebContents(w) && BrowserWindow.fromWebContents(w).id === hostId; } catch (_) { return true; } })();
+        w.send('mpv:embed-state', { active: true, hostId, same: !!same });
+      } catch (_) {}
+    }
+  } catch (_) {}
 }
 
 // 点播断流恢复：让飞牛网页（preload）重新走 play/info → media/range 取一条新鲜签名地址。
@@ -5177,6 +5197,7 @@ async function embedMpvPlay(hostWin, payload) {
   try {
     await surf.play(url, headers, { isLive: !!payload.isLive || payload.scope === 'live', title: payload.title || '' });
     dlog('info', 'mpv.embed.ok', { host: hostId, hasCookie: !!headers['Cookie'], hasAuth: !!headers['Authorization'], isLive: !!payload.isLive || payload.scope === 'live' });
+    try { broadcastMpvEmbedActive(hostWin); } catch (_) {}
     return { ok: true };
   } catch (err) {
     dlog('warn', 'mpv.embed.fail', { err: String(err && err.message || err) });

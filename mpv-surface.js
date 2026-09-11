@@ -65,6 +65,7 @@ class MpvSurface {
       // 轮询兜底：拖动/缩放窗口时 'move'/'resize' 事件在部分平台不连续触发，
       // 定时比对内容区位置，变化即重新定位，保证 mpv 窗口始终贴合视频区。
       this._lastBoundsKey = '';
+      this._pollTick = 0;
       this._pollTimer = setInterval(() => {
         try {
           const w = this.parent;
@@ -72,7 +73,12 @@ class MpvSurface {
           if (w.isMinimized() || !w.isVisible()) return;
           const cb = w.getContentBounds();
           const key = `${cb.x},${cb.y},${cb.width},${cb.height}`;
-          if (key !== this._lastBoundsKey) { this._lastBoundsKey = key; this._applyGeometry(); }
+          this._lastBoundsKey = key;
+          // v1.61：嵌入窗【每 500ms 强制对齐】纠偏。mpv 在首帧离屏隐藏→恢复、IPC geometry
+          // 时序等情况下自身位置会漂移（恢复时可能套用离屏 -32000 旧几何），宿主不动时旧逻辑
+          // 不会重定位，导致 mpv 上沿盖住悬浮标题栏（无法拖动/改样式）。这里无条件 _applyGeometry，
+          // player.setGeometry 内部按几何串去抖，位置正确时不产生额外 IPC。
+          this._applyGeometry();
         } catch (_) {}
       }, 500);
       if (this._pollTimer.unref) this._pollTimer.unref();
@@ -139,6 +145,9 @@ class MpvSurface {
       // 正是 player 自身，回抛会再次触发本处理器形成无限递归（事件风暴，主线程卡死/日志刷爆）。
       // main.js 直接在 player 上监听 'user-closed'/'exit' 做回收与通知网页，这里不中转。
       this.player.on('user-closed', () => { this._dead = true; });
+      // 首帧就绪、mpv 窗口从离屏隐藏移回时，立即按当前视频区几何对齐（含 34px 标题栏下压），
+      // 不必等 500ms 轮询，避免首帧短暂盖住悬浮标题栏。
+      this.player.on('first-frame', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); } catch (_) {} });
       this._started = true;
     } catch (e) {
       this._emit('log', 'surface start failed: ' + (e && e.message));
@@ -151,7 +160,17 @@ class MpvSurface {
     // 不再随宿主窗移动/滚动重定位。
     if (this._pip) return;
     const geo = this._computeScreenGeometry();
-    if (geo && this._started) { try { this.player.setGeometry(geo); } catch (_) {} }
+    if (geo && this._started) {
+      try {
+        const before = this.player._lastGeoStr;
+        this.player.setGeometry(geo);
+        const after = `${Math.max(160, geo.width)}x${Math.max(90, geo.height)}+${geo.x}+${geo.y}`;
+        if (before !== after) {
+          const cb = this.parent && !this.parent.isDestroyed() ? this.parent.getContentBounds() : null;
+          this._emit('log', 'embed.align ' + JSON.stringify(geo) + (cb ? ' contentTop=' + cb.y : ''));
+        }
+      } catch (_) {}
+    }
   }
 
   // v1.48.0：宿主窗口重新显示（一键呼出/解锁）后调用：恢复可见并重新贴合视频区。

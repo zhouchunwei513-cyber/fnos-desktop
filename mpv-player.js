@@ -957,6 +957,7 @@ class MpvPlayer extends EventEmitter {
     // 若用户在此期间手动最小化（一键隐藏），则不移回，保持最小化状态
     if (!this._userHidden) { try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {} }
     this.emit('log', 'first-frame revealed');
+    try { this.emit('first-frame'); } catch (_) {}
   }
   async _maybeRevealByTracks() {
     try {

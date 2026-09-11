@@ -45,14 +45,17 @@ class MpvSurface {
 
     // 父窗移动/缩放/最小化时跟随
     if (parentWin && !parentWin.isDestroyed()) {
-      this._moveHandler = () => this._applyGeometry();
-      this._resizeHandler = () => this._applyGeometry();
+      // v1.63：嵌入 mpv 虽常驻 ontop，但宿主窗口拖动/激活时偶尔会被系统提到 mpv 之上
+      // （mpv 跑到飞牛窗口后面被盖住）。移动结束/恢复/首帧后强制重新置顶 mpv 一次。
+      this._raiseMpv = () => { try { if (this.player && this.player.isRunning() && !this._pip && !this._docked) this.player.setOntop(true); } catch (_) {} };
+      this._moveHandler = () => { this._applyGeometry(); this._raiseMpv(); };
+      this._resizeHandler = () => { this._applyGeometry(); this._raiseMpv(); };
       this._minHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
-      this._restoreHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} };
+      this._restoreHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} this._raiseMpv(); };
       // v1.48.0：父窗被一键隐藏/锁定（hide）/重新呼出（show）时，嵌入 mpv 原生窗口也要跟随，
       // 否则主窗隐藏后播放器仍停留在屏幕上。
       this._hideHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
-      this._showHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} };
+      this._showHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} this._raiseMpv(); };
       this._closedHandler = () => this.destroy();
       parentWin.on('move', this._moveHandler);
       parentWin.on('resize', this._resizeHandler);
@@ -60,6 +63,7 @@ class MpvSurface {
       parentWin.on('restore', this._restoreHandler);
       parentWin.on('hide', this._hideHandler);
       parentWin.on('show', this._showHandler);
+      parentWin.on('focus', this._raiseMpv);
       parentWin.on('closed', this._closedHandler);
 
       // 轮询兜底：拖动/缩放窗口时 'move'/'resize' 事件在部分平台不连续触发，
@@ -381,6 +385,7 @@ class MpvSurface {
         this.parent.removeListener('restore', this._restoreHandler);
         this.parent.removeListener('hide', this._hideHandler);
         this.parent.removeListener('show', this._showHandler);
+        try { this.parent.removeListener('focus', this._raiseMpv); } catch (_) {}
         this.parent.removeListener('closed', this._closedHandler);
       }
     } catch (_) {}

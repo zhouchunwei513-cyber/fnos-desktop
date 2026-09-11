@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.62.0';
+const APP_VERSION = '1.63.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4663,6 +4663,57 @@ ipcMain.handle('mpv:play', async (_e, payload) => {
 // ---------- 应用内"视觉嵌入" MPV（mpv 原生无边框置顶窗口覆盖视频区，fntv 同款）----------
 const mpvSurfaces = new Map(); // key(hostWinId) -> MpvSurface
 try { global.__mpvSettings = getMpvSettings(); } catch (_) {}
+
+// v1.63：嵌入 mpv 存活时，置顶 mpv 会挡住宿主顶部标题栏区域的鼠标事件，渲染进程的
+// mouseenter/mousemove 有时收不到，导致"自动隐藏标题栏后打开 mpv，鼠标推到顶部调不出来"。
+// 主进程用全局光标位置兜底：光标进入【聚焦宿主】的顶部 34px 带内 -> 通知强制显示标题栏；
+// 离开 -> 通知恢复（由标题栏模块按自动隐藏设置决定是否淡出）。不依赖渲染进程是否收到鼠标事件。
+const TITLEBAR_STRIP = 34;
+let _titlebarForceShow = false; // 当前是否处于"顶部强制显示"
+let _titlebarForceWin = null;   // 被强制显示标题栏的宿主窗口
+function _broadcastTitlebarForce(hostWin, show) {
+  try {
+    hostWin.webContents.send('titlebar:force-show', { show: !!show });
+    try {
+      for (const wc of require('electron').webContents.getAllWebContents()) {
+        try { if (hostWin && wc.hostWebContents === hostWin.webContents) wc.send('titlebar:force-show', { show: !!show }); } catch (_) {}
+      }
+    } catch (_) {}
+  } catch (_) {}
+}
+function _clearTitlebarForce() {
+  if (_titlebarForceWin && !_titlebarForceWin.isDestroyed()) { try { _broadcastTitlebarForce(_titlebarForceWin, false); } catch (_) {} }
+  _titlebarForceWin = null;
+  _titlebarForceShow = false;
+}
+setInterval(() => {
+  try {
+    let activeHost = null;
+    for (const [, surf] of mpvSurfaces) {
+      try {
+        if (!surf || surf._standalone || surf._dead || surf._pip) continue;
+        const w = surf.parent;
+        if (!w || w.isDestroyed() || w.isMinimized() || !w.isVisible()) continue;
+        if (!surf.isAlive || !surf.isAlive()) continue;
+        if (!w.isFocused()) continue; // 只处理当前聚焦窗口
+        activeHost = w; break;
+      } catch (_) {}
+    }
+    if (!activeHost) { if (_titlebarForceShow) _clearTitlebarForce(); return; }
+    const { screen } = require('electron');
+    const pt = screen.getCursorScreenPoint();
+    const cb = activeHost.getContentBounds();
+    const inStrip = pt.x >= cb.x && pt.x <= cb.x + cb.width &&
+                    pt.y >= cb.y && pt.y <= cb.y + TITLEBAR_STRIP;
+    if (inStrip && !_titlebarForceShow) {
+      _titlebarForceShow = true; _titlebarForceWin = activeHost; _broadcastTitlebarForce(activeHost, true);
+    } else if (!inStrip && _titlebarForceShow) {
+      _clearTitlebarForce();
+    }
+  } catch (_) {}
+}, 120);
+
+
 
 // ---- 内置 MPV 本地助手（mpv-helper.js）需要的全局钩子 ----
 // mpv 内中文右键菜单 lua 经 curl 调本地助手完成"在线字幕/本地字幕/画中画"。

@@ -73,6 +73,20 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
+    // v1.63：主进程全局光标轮询兜底——嵌入置顶 mpv 会挡住顶部鼠标事件，
+    // 光标进入宿主顶部 34px 带时主进程发 force-show:true 强制显示标题栏，离开发 false 恢复。
+    try {
+      ipcRenderer.on('titlebar:force-show', (_e, data) => {
+        try {
+          const bar0 = document.getElementById('fnos-titlebar');
+          if (!bar0) return;
+          forceShow = !!(data && data.show);
+          if (forceShow) show(bar0);
+          else { if (AUTO_HIDE) hide(bar0); else show(bar0); }
+        } catch (_) {}
+      });
+    } catch (_) {}
+
     // 监听设置变化（设置页切换后实时生效，无需重启）。payload 为完整样式对象
     try {
       ipcRenderer.on('settings:titlebar-changed', (_e, val) => {
@@ -98,6 +112,7 @@ module.exports = function injectTitleBar(ctx) {
       });
     } catch (_) {}
 
+    let forceShow = false; // v1.63：主进程光标轮询判定"鼠标在宿主顶部带"时强制显示
     function show(bar) {
       try {
         if (bar.__hideTimer) { clearTimeout(bar.__hideTimer); bar.__hideTimer = null; }
@@ -109,6 +124,7 @@ module.exports = function injectTitleBar(ctx) {
     function hide(bar) {
       try {
         if (!AUTO_HIDE) return;
+        if (forceShow) return;   // 主进程判定鼠标在顶部带，保持显示
         if (bar.__menuOpen) return;
         bar.style.transform = 'translateY(-100%)';
         bar.style.opacity = '0';

@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.64.0';
+const APP_VERSION = '1.65.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -474,7 +474,7 @@ async function checkForUpdates(interactive = true) {
           backgroundColor: '#00000000',
           icon: ICON_PATH,
           webPreferences: {
-            contextIsolation: true, nodeIntegration: false, sandbox: false,
+            contextIsolation: true, webviewTag: true, nodeIntegration: false, sandbox: false,
             spellcheck: false, backgroundThrottling: false,
           },
         });
@@ -1258,8 +1258,21 @@ function onBeforeRequestHandler(details, callback) {
 // 将 extensions/ 目录下的解压扩展加载到应用的各个 session 中，
 // content script 会自动注入到应用内打开的所有页面（飞牛影视/直播/Jellyfin 等）。
 const loadedExtensions = new Set();
+// v1.65.0（Electron 44）：扩展加载迁移到 session.extensions.loadExtension，旧 API 已废弃
+function loadExtensionCompat(ses, extPath, opts) {
+  if (ses && ses.extensions && typeof ses.extensions.loadExtension === 'function') {
+    return ses.extensions.loadExtension(extPath, opts);
+  }
+  if (ses && typeof ses.loadExtension === 'function') {
+    return ses.loadExtension(extPath, opts);
+  }
+  return Promise.reject(new Error('loadExtension unavailable'));
+}
 async function loadExtensionIntoSession(ses, allowFileAccess) {
-  if (!ses || typeof ses.loadExtension !== 'function') return;
+  if (!ses) return;
+  const hasLoader = (ses.extensions && typeof ses.extensions.loadExtension === 'function') ||
+    typeof ses.loadExtension === 'function';
+  if (!hasLoader) return;
   const extDir = path.join(__dirname, 'extensions');
   let entries = [];
   try { entries = fs.readdirSync(extDir, { withFileTypes: true }); } catch (_) { return; }
@@ -1271,7 +1284,7 @@ async function loadExtensionIntoSession(ses, allowFileAccess) {
     const tag = `${ses.storagePath || 'default'}::${entry.name}`;
     if (loadedExtensions.has(tag)) continue;
     try {
-      const ext = await ses.loadExtension(extPath, { allowFileAccess: !!allowFileAccess });
+      const ext = await loadExtensionCompat(ses, extPath, { allowFileAccess: !!allowFileAccess });
       loadedExtensions.add(tag);
       console.log(`[FNOS] extension loaded: ${ext.name} v${ext.version} into ${ses.storagePath || 'default'}`);
     } catch (e) {
@@ -1548,7 +1561,7 @@ function showDownloadProgress(item, finalPath, tmpPath) {
     webPreferences: {
       preload: path.join(__dirname, 'download-preload.js'),
       additionalArguments: [`--dl-id=${dlId}`],
-      contextIsolation: true,
+      contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false,
       spellcheck: false,
@@ -1898,7 +1911,7 @@ function showGlassDialog(parent, options = {}) {
       backgroundColor: '#00000000',
       webPreferences: {
         preload: DIALOG_PRELOAD,
-        contextIsolation: true,
+        contextIsolation: true, webviewTag: true,
         nodeIntegration: false,
         sandbox: false,
         spellcheck: false,
@@ -2036,7 +2049,7 @@ function createLockWindow(mode /* 'unlock' | 'setup' | 'change' */ = 'unlock') {
     thickFrame: false,
     webPreferences: {
       preload: LOCK_PRELOAD,
-      contextIsolation: true,
+      contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false,
       spellcheck: false,
@@ -2392,7 +2405,7 @@ function createSettingsWindow() {
     show: false,
     webPreferences: {
       preload: SETTINGS_PRELOAD,
-      contextIsolation: true,
+      contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false,
       spellcheck: false,
@@ -2572,7 +2585,7 @@ function registerWindow(win, opts = {}) {
           webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             // window.open 弹窗继承调用方 session，不能显式设 partition（会抛 top-level only）
-            contextIsolation: true,
+            contextIsolation: true, webviewTag: true,
             nodeIntegration: false,
             sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject
             webSecurity: true,
@@ -2615,7 +2628,15 @@ function registerWindow(win, opts = {}) {
   // v1.23.0：捕获 webview/渲染端视频播放相关错误与控制台输出，写入 fnos-web.log 便于排查
   // （飞牛影视部分视频不能播放时，可据此定位是编码不支持、CORS、Range 还是网络错误）
   try {
-    win.webContents.on('console-message', (_ev, level, message, line, sourceId) => {
+    win.webContents.on('console-message', (evt) => {
+      // v1.65.0（Electron 44）：签名改为单个 event 对象 { level, message, lineNumber, sourceId }
+      let level, message, line, sourceId;
+      if (evt && typeof evt === 'object' && 'message' in evt) {
+        ({ level, message, lineNumber: line, sourceId } = evt);
+      } else {
+        // 兼容旧版 Electron（多参数形式，理论不会走到，因本版本已锁定 44）
+        level = 2; message = String(evt); line = 0; sourceId = '';
+      }
       if (!message) return;
       // 只记录与媒体/解码/网络相关的告警和错误，避免刷屏
       if (level < 2) return; // 0=verbose 1=info 2=warning 3=error
@@ -2687,7 +2708,7 @@ function createAppWindow(url, opts = {}) {
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
+      contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱
       webSecurity: true,
@@ -2977,7 +2998,7 @@ function createMainWindow(partition, loadTarget) {
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
+      contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱
       webSecurity: true,
@@ -3354,7 +3375,7 @@ function buildMenuTemplate() {
             parent: mainWindow || undefined,
             modal: false,
             webPreferences: {
-              contextIsolation: true, nodeIntegration: false,
+              contextIsolation: true, webviewTag: true, nodeIntegration: false,
               sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject
               preload: path.join(__dirname, 'preload.js'),
               backgroundThrottling: false,
@@ -3797,7 +3818,7 @@ function createLiveWindow(autoplayChannel) {
       webPreferences: {
         preload: LIVE_PRELOAD,
         partition: livePartition,
-        contextIsolation: true,
+        contextIsolation: true, webviewTag: true,
         nodeIntegration: false,
         sandbox: false, // v1.56：live-preload 需 require 本地 titlebar-inject，必须关闭沙箱
         // v1.20.0：直播窗口内 hls.js 需跨域拉取 FPK 服务端 m3u8/ts，关闭同源策略避免黑屏
@@ -4989,7 +5010,7 @@ try {
               // 导致开窗失败；登录态由继承的 session 保证（webview/app 窗本身已用共享 partition）。
               webPreferences: {
                 preload: path.join(__dirname, 'preload.js'),
-                contextIsolation: true,
+                contextIsolation: true, webviewTag: true,
                 nodeIntegration: false,
                 sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject
                 webSecurity: true,
@@ -5598,6 +5619,21 @@ app.whenReady().then(() => {
   applyUA('persist:default');
   // v1.16.3：初始化共享 session（CORS、cookie SameSite、权限、UA），全应用复用
   try { initSharedSession(); } catch (e) { console.error('[FNOS] initSharedSession error', e); }
+  // v1.65.0：Electron 30+ 默认 webviewTag=false，飞牛主界面以 <webview> 承载，
+  // 已在每个 BrowserWindow 显式开启；这里再全局兜底，任何容器内附着 webview 时强制允许，
+  // 避免升级新内核后页面白屏。保留既有 preload / partition / allowpopups 设置。
+  app.on('web-contents-created', (_evt, contents) => {
+    if (!contents.isDestroyed()) {
+      contents.on('will-attach-webview', (e, webPreferences, params) => {
+        webPreferences.webviewTag = true;
+        webPreferences.contextIsolation = true;
+        webPreferences.nodeIntegration = false;
+        webPreferences.sandbox = false;
+        webPreferences.spellcheck = false;
+        if (SHARED_PARTITION && !params.partition) params.partition = SHARED_PARTITION;
+      });
+    }
+  });
   // v1.16.3：异步迁移旧版 persist:nas-* 分区的 cookie 到共享分区，不阻塞窗口启动
   setImmediate(() => { migrateLegacyCookiesOnce().catch((e) => console.error('[FNOS] cookie migrate error', e)); });
   // v1.15.0：兜底——defaultSession 也必须装上拦截器，防止 webview 因 partition

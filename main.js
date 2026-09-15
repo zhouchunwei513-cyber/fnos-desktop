@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.72.0';
+const APP_VERSION = '1.73.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2877,11 +2877,21 @@ const APP_UI_INJECT_CSS = [
 // 图标优先用应用 favicon 转 ico，失败则用客户端图标）。
 async function downloadAppIcon(url, dest) {
   try {
-    const ses = session.fromPartition(SHARED_PARTITION);
-    const res = await ses.fetch(url, { credentials: 'include' });
-    if (!res.ok) return false;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 64) return false;
+    let buf = null;
+    // v1.73.0：支持 data: URL 图标（内联 SVG/PNG），无需网络请求
+    if (/^data:image\//i.test(String(url))) {
+      try {
+        const img = nativeImage.createFromDataURL(url);
+        if (img.isEmpty()) return false;
+        buf = img.toPNG();
+      } catch (_) { return false; }
+    } else {
+      const ses = session.fromPartition(SHARED_PARTITION);
+      const res = await ses.fetch(url, { credentials: 'include' });
+      if (!res.ok) return false;
+      buf = Buffer.from(await res.arrayBuffer());
+    }
+    if (!buf || buf.length < 64) return false;
     fs.writeFileSync(dest, buf);
     return true;
   } catch (_) { return false; }
@@ -2910,7 +2920,11 @@ function buildShortcutPs1(exe, apps, iconDir) {
     }
     const iconLoc = (app.iconPng && fs.existsSync(app.iconPng)) ? ico : exe;
     const args = '--open-app "' + String(app.url).replace(/"/g, '\\"') + '"';
-    L.push(`$sc = $ws.CreateShortcut((Join-Path $desktop '${esc(safeName)}.lnk'))`);
+    // v1.73.0：幂等——桌面已存在同名快捷方式则跳过，不覆盖（应用减少时手动删除即可；
+    // 自动同步/重复扫描不会产生重复创建与弹窗）
+    L.push(`$lnkPath = Join-Path $desktop '${esc(safeName)}.lnk'`);
+    L.push('if (Test-Path $lnkPath) { continue }');
+    L.push(`$sc = $ws.CreateShortcut($lnkPath)`);
     L.push(`$sc.TargetPath = '${esc(exe)}'`);
     L.push(`$sc.Arguments = '${args}'`);
     L.push(`$sc.IconLocation = '${esc(iconLoc)}'`);
@@ -2943,7 +2957,8 @@ async function createDesktopShortcuts(win) {
     const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
     const dest = path.join(iconDir, hash + '.png');
     let iconPng = '';
-    if (app.icon && /^https?:/i.test(app.icon) && await downloadAppIcon(app.icon, dest)) iconPng = dest;
+    // v1.73.0：downloadAppIcon 已支持 data: URL 图标，这里不再只认 http(s)
+    if (app.icon && (await downloadAppIcon(app.icon, dest))) iconPng = dest;
     downloaded.push({ name: app.name, url: app.url, iconPng });
   }
   const ps1 = buildShortcutPs1(exe, downloaded, iconDir);
@@ -2963,6 +2978,47 @@ async function createDesktopShortcuts(win) {
     try { fs.unlinkSync(psFile); } catch (_) {}
     notify('创建桌面快捷方式', '执行失败：' + String(e && e.message || e).slice(0, 120));
   }
+}
+
+// v1.73.0：静默自动创建桌面快捷方式——应用列表扫描到「新增」应用时自动触发，
+// 无需用户手动点菜单；桌面已存在同名快捷方式的自动跳过（buildShortcutPs1 内
+// Test-Path 幂等），因此应用增减时自动同步，不会重复创建或频繁打扰。
+let __autoShortcutLastTs = 0;
+function autoCreateDesktopShortcuts(newApps, source) {
+  try {
+    if (process.platform !== 'win32') return;
+    const apps = (Array.isArray(newApps) ? newApps : []).filter((a) => a && a.name && a.url);
+    if (!apps.length) return;
+    // 节流：1.5s 内只执行一次（主页 SPA 多轮扫描会连续上报）
+    const now = Date.now();
+    if (now - __autoShortcutLastTs < 1500) return;
+    __autoShortcutLastTs = now;
+    const userData = app.getPath('userData');
+    const iconDir = path.join(userData, 'app-icons');
+    try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
+    const exe = process.execPath;
+    (async () => {
+      const downloaded = [];
+      for (const app of apps) {
+        const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
+        const dest = path.join(iconDir, hash + '.png');
+        let iconPng = '';
+        if (app.icon && (await downloadAppIcon(app.icon, dest))) iconPng = dest;
+        downloaded.push({ name: app.name, url: app.url, iconPng });
+      }
+      const ps1 = buildShortcutPs1(exe, downloaded, iconDir);
+      const psFile = path.join(userData, 'fnos-auto-shortcuts.ps1');
+      try { fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8'); } catch (_) { return; }
+      cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 60000, windowsHide: true }, (err) => {
+        try { fs.unlinkSync(psFile); } catch (_) {}
+        if (err) {
+          dlog && dlog('warn', 'shortcut.auto-fail', { n: downloaded.length, source: source || '', err: String(err && err.message || err).slice(0, 160) });
+          return;
+        }
+        dlog && dlog('info', 'shortcut.auto-ok', { n: downloaded.length, source: source || '' });
+      });
+    })();
+  } catch (_) {}
 }
 
 function createAppWindow(url, opts = {}) {
@@ -3067,23 +3123,40 @@ function createAppWindow(url, opts = {}) {
         win.__appResPending = false;
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
-      // v1.72.0：应用窗口任务栏图标 = 应用 favicon（尽量还原应用自身图标）
-      try {
-        if (!win.isDestroyed() && win.webContents) {
+      // v1.73.0：应用窗口任务栏图标 = 应用 favicon（增强提取）
+      //   1) 选择器链：icon → apple-touch-icon → shortcut icon → /favicon.ico
+      //   2) 支持 data: URL（内联 SVG/PNG 图标，现代 SPA 常见）——
+      //      v1.72.0 只认 http(s)，导致部分应用（图标为 data URL 或只在
+      //      apple-touch-icon 里）任务栏图标没改过来
+      //   3) 两阶段提取：加载完成立即 + 1.5s 延迟再试（SPA 动态注入 favicon）
+      const __applyAppIcon = () => {
+        try {
+          if (win.isDestroyed() || !win.webContents) return;
           win.webContents.executeJavaScript(`(function(){
             try {
-              var l = document.querySelector('link[rel~="icon"]');
-              if (l && l.href) return l.href;
-              var s = document.querySelector('link[rel~="shortcut icon"]');
-              if (s && s.href) return s.href;
-              return location.origin + '/favicon.ico';
+              var pick = function(sel){ var n = document.querySelector(sel); return n && n.href ? n.href : ''; };
+              var href = pick('link[rel~="icon"]') || pick('link[rel~="apple-touch-icon"]') || pick('link[rel~="shortcut icon"]');
+              if (!href) href = location.origin + '/favicon.ico';
+              return href;
             } catch (e) { return ''; }
-          })()`, true).then((iconUrl) => {
+          })()`, true).then((iconRef) => {
             try {
-              if (!iconUrl || !/^https?:/i.test(iconUrl) || win.isDestroyed()) return;
+              if (!iconRef || win.isDestroyed()) return;
+              // data URL：直接解码为图片（无需网络请求）
+              if (/^data:image\//i.test(iconRef)) {
+                try {
+                  const img = nativeImage.createFromDataURL(iconRef);
+                  if (!img.isEmpty()) {
+                    win.setIcon(img);
+                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, data: 1 });
+                  }
+                } catch (_) {}
+                return;
+              }
+              if (!/^https?:/i.test(iconRef)) return;
               const ses = win.webContents ? win.webContents.session : null;
               if (!ses) return;
-              ses.fetch(iconUrl, { credentials: 'include' }).then((res) => {
+              ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
                 if (!res.ok) throw new Error('bad status ' + res.status);
                 return res.arrayBuffer();
               }).then((buf) => {
@@ -3092,14 +3165,16 @@ function createAppWindow(url, opts = {}) {
                   const img = nativeImage.createFromBuffer(Buffer.from(buf));
                   if (!img.isEmpty()) {
                     win.setIcon(img);
-                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, url: String(iconUrl).slice(0, 100) });
+                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, url: String(iconRef).slice(0, 120) });
                   }
                 } catch (_) {}
               }).catch(() => {});
             } catch (_) {}
           }).catch(() => {});
-        }
-      } catch (_) {}
+        } catch (_) {}
+      };
+      __applyAppIcon();
+      setTimeout(() => { try { __applyAppIcon(); } catch (_) {} }, 1500);
     });
     win.webContents.on('unresponsive', () => {
       try { dlog && dlog('warn', 'appwin.unresponsive', { app: __appLabel, winId: win.id, ms: Date.now() - __t0 }); } catch (_) {}
@@ -3854,7 +3929,9 @@ ipcMain.on('shell:report-apps', (_e, apps) => {
     if (!Array.isArray(apps) || !apps.length) return;
     const s = loadSettings();
     const cur = Array.isArray(s.apps) ? s.apps : [];
+    const curUrls = new Set(cur.map((a) => a.url).filter(Boolean));
     const byUrl = new Map(cur.map((a) => [a.url, a]));
+    const fresh = [];
     for (const a of apps) {
       if (!a || !a.url || !a.name) continue;
       byUrl.set(a.url, {
@@ -3863,11 +3940,14 @@ ipcMain.on('shell:report-apps', (_e, apps) => {
         icon: String(a.icon || ''),
         addedAt: Date.now(),
       });
+      // v1.73.0：识别「新增」应用（之前没扫到过）→ 触发桌面快捷方式自动创建
+      if (!curUrls.has(a.url)) fresh.push(byUrl.get(a.url));
     }
     const merged = Array.from(byUrl.values());
     saveSettings({ apps: merged.slice(0, 50) });
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
-    dlog && dlog('info', 'apps.scanned', { count: merged.length });
+    dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length });
+    if (fresh.length) autoCreateDesktopShortcuts(fresh, 'scan');
   } catch (_) {}
 });
 

@@ -87,34 +87,61 @@
     } catch (_) {}
   }
 
-  // v1.72.0：扫描主页中的应用入口（a[href] 指向同主机不同端口的独立应用），
-  // 上报主进程保存，供「创建桌面快捷方式」使用。SPA 渲染完成后延迟重试几次。
+  // v1.73.0：扫描主页中的应用入口（SPA 渲染完成后的应用卡片）
+  //   1) a[href] 指向同主机不同端口的独立应用（原有）
+  //   2) 常见应用卡片容器（app-card/app-item/app-entry/desktop-app 等，应用可能
+  //      不是 <a> 而是 div+图标+onclick 结构）——应用增减时都能扫到
+  //   3) 图标支持 data: URL（内联 SVG/PNG），名称做空白清理
   function collectApps(wv) {
     try {
       wv.executeJavaScript(`(function(){
         try {
-          var out = [];
-          var links = document.querySelectorAll('a[href]');
           var host = location.hostname;
           var port = location.port;
+          var res = [];
+          var seen = {};
+          var clean = function(s){ return String(s||'').replace(/\\s+/g,' ').trim(); };
+          var pushApp = function(name, url, icon){
+            if (!name || !url) return;
+            if (name.length > 40) name = name.slice(0, 40);
+            if (!/^https?:\\/\\//i.test(url)) return;
+            var u; try { u = new URL(url); } catch (e) { return; }
+            if (u.hostname !== host) return;
+            if (!u.port || u.port === port) return;
+            if (seen[url]) return;
+            seen[url] = 1;
+            res.push({ name: name, url: url, icon: icon || '' });
+          };
+          // 1) 直接链接：a[href] 同主机不同端口
+          var links = document.querySelectorAll('a[href]');
           for (var i = 0; i < links.length; i++) {
             var a = links[i];
-            var href = a.href || '';
-            if (!/^https?:\/\//i.test(href)) continue;
-            var u;
-            try { u = new URL(href); } catch (e) { continue; }
-            if (u.hostname !== host) continue;
-            if (!u.port || u.port === port) continue;
-            var name = (a.innerText || a.title || '').trim();
-            if (!name || name.length > 40) continue;
             var img = a.querySelector('img');
             var icon = img ? (img.currentSrc || img.src || '') : '';
-            out.push({ name: name, url: href, icon: icon });
+            var name = clean(a.innerText || a.title || (img && img.alt) || '');
+            pushApp(name, a.href, icon);
           }
-          var seen = {}, res = [];
-          for (var j = 0; j < out.length; j++) {
-            var k = out[j].url;
-            if (!seen[k]) { seen[k] = 1; res.push(out[j]); }
+          // 2) 应用卡片容器（可能不是 <a>）：优先 title/alt/子链接取名称
+          var cards = document.querySelectorAll(
+            '[class*="app-card"],[class*="app-item"],[class*="app-entry"],[class*="entry-card"],' +
+            '[class*="desktop-app"],[class*="app-grid"] [class*="item"],[class*="app-list"] [class*="item"]'
+          );
+          for (var k = 0; k < cards.length; k++) {
+            var c = cards[k];
+            var img2 = c.querySelector('img');
+            var link2 = c.querySelector('a[href]');
+            var target = link2 ? link2.href : '';
+            var name2 = clean(
+              c.getAttribute('title') ||
+              (link2 && (link2.innerText || link2.title)) ||
+              (img2 && img2.alt) || ''
+            );
+            var icon2 = img2 ? (img2.currentSrc || img2.src || '') : '';
+            if (target) { pushApp(name2, target, icon2); }
+            else if (img2 && img2.src && name2 && name2.length <= 40) {
+              // 无链接但有图标+短名称的卡片：记录（url 用当前页，可能重复由去重兜底）
+              pushApp(name2, location.href.split('#')[0], icon2);
+            }
           }
           return JSON.stringify(res);
         } catch (e) { return '[]'; }
@@ -169,10 +196,12 @@ aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar
       injectHomeScale(wv);
       setTimeout(() => collectApps(wv), 1500);
       setTimeout(() => collectApps(wv), 4000);
+      setTimeout(() => collectApps(wv), 8000);
     });
     wv.addEventListener('did-navigate', () => {
       injectHomeScale(wv);
       setTimeout(() => collectApps(wv), 1500);
+      setTimeout(() => collectApps(wv), 4000);
     });
     wv.addEventListener('did-stop-loading', () => hideLoader());
     wv.addEventListener('did-fail-load', (e) => { if (e.errorCode !== -3) hideLoader(); });

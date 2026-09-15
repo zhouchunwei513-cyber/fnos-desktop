@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.69.0';
+const APP_VERSION = '1.70.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -744,6 +744,18 @@ function loadSettings() {
   cachedSettings = { ...defaultSettings(), ...raw };
   if (!Array.isArray(cachedSettings.history)) cachedSettings.history = [];
   if (!Array.isArray(cachedSettings.urlMappings)) cachedSettings.urlMappings = [];
+  // v1.70.0：清理历史 urlRewrites 中的不可见/异常字符（旧版本输入框 HTML 转义
+  // 不完整，可能把带乱码的地址存进设置，导致重写目标无效、应用外网打不开）。
+  // 只保留可打印 ASCII，并剔除空规则。
+  if (Array.isArray(cachedSettings.urlRewrites)) {
+    cachedSettings.urlRewrites = cachedSettings.urlRewrites
+      .filter((r) => r && typeof r.match === 'string' && typeof r.replace === 'string')
+      .map((r) => ({
+        match: r.match.replace(/[^\x20-\x7E]/g, '').trim(),
+        replace: r.replace.replace(/[^\x20-\x7E]/g, '').trim(),
+      }))
+      .filter((r) => r.match && r.replace);
+  }
   cachedSettings.shortcuts = { ...DEFAULT_SHORTCUTS, ...(raw.shortcuts || {}) };
   // v1.17.7：IPTV 仅保留收藏/线路/基地址，历史代理字段自动清理。
   const rawIptv = (raw.iptv && typeof raw.iptv === 'object') ? raw.iptv : {};
@@ -908,6 +920,29 @@ function rewriteUrl(url) {
         const prefix = u.origin + match.replace(/\/+$/, '');
         return joinRewriteBase(replace, rewritten.slice(prefix.length));
       }
+      // 5) 端口映射：URL 主机已是 replace 的主机、但端口仍是 match 的端口。
+      //    v1.70.0：飞牛主页点击 Docker 应用时生成的地址常为"外网IP+内网端口"
+      //    （如 http://121.40.186.165:3000/），与用户配置的内网规则（如
+      //    192.168.31.101:3000 → http://121.40.186.165:10305）主机不一致，
+      //    前 4 种匹配都命中不了。此时若 URL 的主机 == 规则外网地址的主机、
+      //    URL 的端口 == 规则内网地址的端口，则把整个 origin 替换为外网地址。
+      try {
+        let mPort = '';
+        let mHost = '';
+        if (/^\d+$/.test(match)) {
+          mPort = match;
+        } else {
+          const mUrl = /^https?:\/\//i.test(match) ? new URL(match) : new URL('http://' + match);
+          mPort = mUrl.port;
+          mHost = mUrl.hostname;
+        }
+        const rUrl = new URL(replace);
+        if (mPort && mHost &&
+            u.hostname.toLowerCase() === rUrl.hostname.toLowerCase() &&
+            u.port === mPort) {
+          return joinRewriteBase(replace, rewritten.slice(u.origin.length));
+        }
+      } catch (_) {}
     }
     return rewritten;
   } catch (_) { return url; }
@@ -2819,6 +2854,25 @@ function createAppWindow(url, opts = {}) {
   }
   applyUA(partition);
 
+  // v1.70.0：应用窗口打开前主动应用 URL 重写（外网端口/域名映射）。
+  // 飞牛主页点击 Docker 应用时生成的地址常为"外网IP+内网端口"（如
+  // http://121.40.186.165:3000/），与用户配置的内网规则（如
+  // 192.168.31.101:3000 → http://121.40.186.165:10305）不完全一致，
+  // 直接 loadURL 会导致重写不命中、外网端口打不开。这里统一先过一遍
+  // rewriteUrl（含端口映射场景），并记录重写前后地址，便于日志排查。
+  if (typeof url === 'string' && /^https?:/i.test(url)) {
+    try {
+      const mapped = rewriteUrl(url);
+      if (mapped && mapped !== url) {
+        dlog && dlog('info', 'appwin.rewrite', {
+          from: String(url).slice(0, 120),
+          to: String(mapped).slice(0, 120),
+        });
+        url = mapped;
+      }
+    } catch (_) {}
+  }
+
   // v1.66.0：应用窗口打开前预预热（DNS 预解析 + 预连接），显著缩短应用首屏加载——
   // 用户点开应用时 DNS/TLS 建连已在后台完成，避免首次访问"转圈"。
   try {
@@ -2897,6 +2951,41 @@ function createAppWindow(url, opts = {}) {
     win.webContents.on('render-process-gone', (_e, detail) => {
       try { dlog && dlog('error', 'appwin.render-gone', { app: __appLabel, winId: win.id, reason: detail && detail.reason }); } catch (_) {}
     });
+    // v1.70.0：应用运行日志增强——
+    //   1) console error 节流采样（每窗口每 10s 至多 1 条），便于捕获 Docker 应用内 JS 报错；
+    //   2) 主框架加载超时（30s 未完成）告警，用于定位"应用转圈/打不开"；
+    //   3) did-fail-load 重试耗尽后的最终失败记录。
+    try {
+      win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+        try {
+          if (level >= 3) {
+            const now = Date.now();
+            if (!win.__appConsoleErrTs || now - win.__appConsoleErrTs > 10000) {
+              win.__appConsoleErrTs = now;
+              dlog && dlog('error', 'appwin.console-error', {
+                app: __appLabel, winId: win.id,
+                msg: String(message || '').slice(0, 160),
+                line, src: String(sourceId || '').slice(0, 80),
+              });
+            }
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
+    try {
+      setTimeout(() => {
+        try {
+          if (win.isDestroyed()) return;
+          if (win.__appResPending !== false) {
+            dlog && dlog('warn', 'appwin.load.timeout', {
+              app: __appLabel, winId: win.id, ms: 30000,
+              url: String(win.webContents.getURL()).slice(0, 120),
+            });
+          }
+        } catch (_) {}
+      }, 30000);
+      win.__appResPending = true;
+    } catch (_) {}
     win.once('ready-to-show', () => {
       try { dlog && dlog('info', 'appwin.ready-show', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0 }); } catch (_) {}
     });
@@ -2923,7 +3012,14 @@ function createAppWindow(url, opts = {}) {
         // -3 = ABORTED（我们自己 setWindowOpenHandler 取消/导航中被替换），不当错误
         if (errorCode === -3 || errorCode === 0) return;
         if (failUrl && /^file:/.test(failUrl)) return; // 本地页面失败交给各自逻辑
-        if (_loadFailTries >= 4) return;
+        if (_loadFailTries >= 4) {
+          // v1.70.0：重试耗尽，记录最终失败（含错误码），便于排查外网地址/端口映射问题
+          dlog && dlog('error', 'appwin.fail-load.final', {
+            app: __appLabel, winId: win.id, errorCode, errorDesc,
+            url: String(failUrl || '').slice(0, 120),
+          });
+          return;
+        }
         _loadFailTries++;
         dlog && dlog('warn', 'appwin.fail-load.retry', { errorCode, errorDesc, try: _loadFailTries, url: String(failUrl).slice(0, 90) });
         setTimeout(() => {

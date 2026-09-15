@@ -93,7 +93,7 @@ function renderDropdown() {
         <span class="title">${escapeHtml(value)}</span>
         <span class="sub">${escapeHtml(sub)}</span>
       </span>
-      <button type="button" class="del" data-del="${escapeHtml(h.partition || '')}" aria-label="删除此历史" title="删除">
+      <button type="button" class="del" data-del="${escapeHtml(h.href || h.origin || '')}" aria-label="删除此历史" title="删除">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
       </button>
     </div>`;
@@ -122,9 +122,9 @@ function fillFromHistory(item) {
   input.select();
 }
 
-async function removeHistory(partition) {
+async function removeHistory(href) {
   try {
-    const res = await API.removeHistory(partition);
+    const res = await API.removeHistory(href);
     if (res && res.ok && Array.isArray(res.history)) {
       state.history = res.history;
       if (state.open) renderDropdown();
@@ -144,7 +144,11 @@ dropdown && dropdown.addEventListener('mousedown', (e) => {
   if (item) {
     e.preventDefault();
     const i = parseInt(item.getAttribute('data-index'), 10);
-    if (!Number.isNaN(i) && state.history[i]) fillFromHistory(state.history[i]);
+    if (!Number.isNaN(i) && state.history[i]) {
+      fillFromHistory(state.history[i]);
+      // v1.72.0：点下拉历史直接发起连接，无需再点登录
+      handleSubmit(e);
+    }
   }
 });
 

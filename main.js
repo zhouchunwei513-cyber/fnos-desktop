@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.71.0';
+const APP_VERSION = '1.72.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -599,6 +599,8 @@ function defaultSettings() {
     origin: '',
     lastConnectHref: '',
     history: [],
+    // v1.72.0：主页扫描到的应用列表 [{name,url,icon}]，供创建桌面快捷方式
+    apps: [],
     currentPartition: 'persist:connect',
     closeAction: '', // 'tray' | 'exit'
     // 启动密码（scrypt 哈希 + 随机 salt），明文永不落盘
@@ -1128,7 +1130,10 @@ function upsertHistory(serverInput, parsed) {
   const s = loadSettings();
   const list = Array.isArray(s.history) ? s.history.slice() : [];
   const partition = partitionForServer(parsed);
-  const idx = list.findIndex((h) => h.partition === partition);
+  // v1.72.0：去重键改用 href/origin。此前用 partition，而 v1.16.3 起所有
+  // 服务器共用同一 partition，导致不同地址互相覆盖，历史永远只保留 1 条。
+  const key = parsed.href || parsed.origin;
+  const idx = list.findIndex((h) => (h.href || h.origin) === key);
   const entry = {
     partition,
     label: parsed.isFnId ? `FN ID: ${parsed.fnId}` : (serverInput.trim() || parsed.origin),
@@ -1159,11 +1164,12 @@ function upsertHistory(serverInput, parsed) {
   });
 }
 
-function removeHistoryByPartition(partition) {
+function removeHistoryByKey(href) {
   const s = loadSettings();
-  const list = (s.history || []).filter((h) => h.partition !== partition);
+  // v1.72.0：按 href/origin 删除（原按 partition，因所有服务器共用同一 partition 会误删）
+  const list = (s.history || []).filter((h) => (h.href || h.origin) !== href);
   const patch = { history: list };
-  if (s.currentPartition === partition) {
+  if ((s.lastConnectHref || s.origin) === href) {
     patch.server = ''; patch.origin = ''; patch.lastConnectHref = '';
     patch.currentPartition = 'persist:connect';
   }
@@ -1171,9 +1177,9 @@ function removeHistoryByPartition(partition) {
   // v1.12.1：同步更新独立历史文件
   try {
     const hs = readHistoryStore();
-    const hsList = (Array.isArray(hs.history) ? hs.history : []).filter((h) => h.partition !== partition);
+    const hsList = (Array.isArray(hs.history) ? hs.history : []).filter((h) => (h.href || h.origin) !== href);
     const hsPatch = { ...hs, history: hsList };
-    if (hs.currentPartition === partition) {
+    if ((hs.lastConnectHref || hs.origin) === href) {
       hsPatch.server = ''; hsPatch.origin = ''; hsPatch.lastConnectHref = '';
       hsPatch.currentPartition = 'persist:connect';
     }
@@ -2632,7 +2638,9 @@ function registerWindow(win, opts = {}) {
   win.on('page-title-updated', (e, title) => {
     e.preventDefault();
     entry.title = title || entry.title;
-    if (!entry.isHome && title && title.trim()) win.setTitle(`${APP_NAME} · ${title}`);
+    // v1.72.0：应用窗口任务栏直接显示应用名（去掉 "FNOS · " 前缀），
+    // 与需求「任务栏显示启动应用的名称」一致；主窗口标题仍由 safeSetTitle 控制。
+    if (!entry.isHome && title && title.trim()) win.setTitle(title);
     scheduleMenuRebuild();
   });
   win.on('closed', () => {
@@ -2865,6 +2873,98 @@ const APP_UI_INJECT_CSS = [
   '}',
 ].join('\n');
 
+// v1.72.0：为已扫描应用在 Windows 桌面创建快捷方式（.lnk 指向客户端 + --open-app 参数，
+// 图标优先用应用 favicon 转 ico，失败则用客户端图标）。
+async function downloadAppIcon(url, dest) {
+  try {
+    const ses = session.fromPartition(SHARED_PARTITION);
+    const res = await ses.fetch(url, { credentials: 'include' });
+    if (!res.ok) return false;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 64) return false;
+    fs.writeFileSync(dest, buf);
+    return true;
+  } catch (_) { return false; }
+}
+
+function buildShortcutPs1(exe, apps, iconDir) {
+  const esc = (s) => String(s).replace(/'/g, "''");
+  const L = [];
+  L.push("$ErrorActionPreference = 'Stop'");
+  L.push("Add-Type -AssemblyName System.Drawing");
+  L.push("$desktop = [Environment]::GetFolderPath('Desktop')");
+  L.push("$ws = New-Object -ComObject WScript.Shell");
+  for (const app of apps) {
+    const safeName = String(app.name || '')
+      .replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 50);
+    if (!safeName) continue;
+    const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
+    const ico = path.join(iconDir, hash + '.ico');
+    if (app.iconPng && fs.existsSync(app.iconPng)) {
+      L.push(`$img = [System.Drawing.Image]::FromFile('${esc(app.iconPng)}')`);
+      L.push('$bmp = New-Object System.Drawing.Bitmap($img, 64, 64)');
+      L.push('$h = $bmp.GetHicon()');
+      L.push('$ic = [System.Drawing.Icon]::FromHandle($h)');
+      L.push(`$fs = [System.IO.File]::Create('${esc(ico)}')`);
+      L.push('$ic.Save($fs); $fs.Close(); $ic.Dispose(); $bmp.Dispose(); $img.Dispose()');
+    }
+    const iconLoc = (app.iconPng && fs.existsSync(app.iconPng)) ? ico : exe;
+    const args = '--open-app "' + String(app.url).replace(/"/g, '\\"') + '"';
+    L.push(`$sc = $ws.CreateShortcut((Join-Path $desktop '${esc(safeName)}.lnk'))`);
+    L.push(`$sc.TargetPath = '${esc(exe)}'`);
+    L.push(`$sc.Arguments = '${args}'`);
+    L.push(`$sc.IconLocation = '${esc(iconLoc)}'`);
+    L.push(`$sc.Description = 'FNOS 应用 · ${esc(safeName)}'`);
+    L.push('$sc.Save()');
+  }
+  return L.join('\r\n');
+}
+
+async function createDesktopShortcuts(win) {
+  const notify = (title, msg) => {
+    try { glassMessageBox(win || mainWindow, { type: 'info', title, buttons: ['好的'], defaultId: 0, message: msg }); } catch (_) {}
+  };
+  if (process.platform !== 'win32') {
+    notify('创建桌面快捷方式', '该功能仅在 Windows 上可用。');
+    return;
+  }
+  const s = loadSettings();
+  const apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
+  if (!apps.length) {
+    notify('创建桌面快捷方式', '尚未扫描到应用。请先打开一次飞牛主页，让客户端自动扫描主页中的应用，然后再试。');
+    return;
+  }
+  const userData = app.getPath('userData');
+  const iconDir = path.join(userData, 'app-icons');
+  try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
+  const exe = process.execPath;
+  const downloaded = [];
+  for (const app of apps) {
+    const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
+    const dest = path.join(iconDir, hash + '.png');
+    let iconPng = '';
+    if (app.icon && /^https?:/i.test(app.icon) && await downloadAppIcon(app.icon, dest)) iconPng = dest;
+    downloaded.push({ name: app.name, url: app.url, iconPng });
+  }
+  const ps1 = buildShortcutPs1(exe, downloaded, iconDir);
+  const psFile = path.join(userData, 'fnos-create-shortcuts.ps1');
+  try { fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8'); } catch (e) {
+    notify('创建桌面快捷方式', '写入脚本失败：' + String(e && e.message || e).slice(0, 120));
+    return;
+  }
+  try {
+    cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 90000, windowsHide: true }, (err) => {
+      try { fs.unlinkSync(psFile); } catch (_) {}
+      if (err) { notify('创建桌面快捷方式', '创建失败：' + String(err && err.message || err).slice(0, 200)); return; }
+      const withIcon = downloaded.filter((d) => d.iconPng).length;
+      notify('创建桌面快捷方式', '已在桌面创建 ' + downloaded.length + ' 个应用快捷方式（其中 ' + withIcon + ' 个带应用图标）。');
+    });
+  } catch (e) {
+    try { fs.unlinkSync(psFile); } catch (_) {}
+    notify('创建桌面快捷方式', '执行失败：' + String(e && e.message || e).slice(0, 120));
+  }
+}
+
 function createAppWindow(url, opts = {}) {
   // v1.16.3：NAS 相关窗口一律走共享 partition，与主窗口/飞牛 webview/直播窗口
   // 共享登录态；只有显式传入非 NAS 的外部 partition 才允许保留。
@@ -2966,6 +3066,39 @@ function createAppWindow(url, opts = {}) {
       try {
         win.__appResPending = false;
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
+      } catch (_) {}
+      // v1.72.0：应用窗口任务栏图标 = 应用 favicon（尽量还原应用自身图标）
+      try {
+        if (!win.isDestroyed() && win.webContents) {
+          win.webContents.executeJavaScript(`(function(){
+            try {
+              var l = document.querySelector('link[rel~="icon"]');
+              if (l && l.href) return l.href;
+              var s = document.querySelector('link[rel~="shortcut icon"]');
+              if (s && s.href) return s.href;
+              return location.origin + '/favicon.ico';
+            } catch (e) { return ''; }
+          })()`, true).then((iconUrl) => {
+            try {
+              if (!iconUrl || !/^https?:/i.test(iconUrl) || win.isDestroyed()) return;
+              const ses = win.webContents ? win.webContents.session : null;
+              if (!ses) return;
+              ses.fetch(iconUrl, { credentials: 'include' }).then((res) => {
+                if (!res.ok) throw new Error('bad status ' + res.status);
+                return res.arrayBuffer();
+              }).then((buf) => {
+                try {
+                  if (win.isDestroyed()) return;
+                  const img = nativeImage.createFromBuffer(Buffer.from(buf));
+                  if (!img.isEmpty()) {
+                    win.setIcon(img);
+                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, url: String(iconUrl).slice(0, 100) });
+                  }
+                } catch (_) {}
+              }).catch(() => {});
+            } catch (_) {}
+          }).catch(() => {});
+        }
       } catch (_) {}
     });
     win.webContents.on('unresponsive', () => {
@@ -3376,6 +3509,24 @@ function connectTo(serverInput) {
   }
 }
 
+// v1.72.0：--open-app 命令行参数（桌面快捷方式启动单个应用）
+let pendingOpenAppUrl = '';
+function parseOpenAppArg() {
+  try {
+    const argv = process.argv || [];
+    for (let i = 0; i < argv.length; i++) {
+      const a = String(argv[i] || '');
+      if (a === '--open-app' && argv[i + 1]) { pendingOpenAppUrl = String(argv[i + 1]); return; }
+      if (a.startsWith('--open-app=')) { pendingOpenAppUrl = a.slice('--open-app='.length); return; }
+    }
+  } catch (_) {}
+}
+function takePendingOpenApp() {
+  const u = pendingOpenAppUrl;
+  pendingOpenAppUrl = '';
+  return u;
+}
+
 function doConnectTo(serverInput) {
   const parsed = normalizeServer(serverInput);
   const targetPartition = partitionForServer(parsed);
@@ -3408,6 +3559,13 @@ function doConnectTo(serverInput) {
       showConnectPage();
     };
     mainWindow.loadURL(parsed.href, { userAgent: getNasUA() }).catch(onFail);
+    // v1.72.0：桌面快捷方式启动 --open-app 时，登录就绪后自动打开对应应用
+    const openUrl = takePendingOpenApp();
+    if (openUrl) {
+      setTimeout(() => {
+        try { createAppWindow(openUrl, {}); } catch (_) {}
+      }, 1200);
+    }
   }
 }
 
@@ -3629,6 +3787,8 @@ function buildMenuTemplate() {
           accelerator: 'Ctrl+Shift+C',
           click: () => copyCurrentWindowLink(),
         },
+        { type: 'separator' },
+        { label: '📌 创建桌面快捷方式（主页扫描到的应用）', click: () => { createDesktopShortcuts(mainWindow); } },
       ],
     },
     {
@@ -3683,9 +3843,32 @@ ipcMain.handle('auth:load-history', async () => {
 });
 ipcMain.handle('auth:back-to-connect', async () => { showConnectPage(); return true; });
 ipcMain.handle('auth:remove-history', async (_e, payload) => {
-  const partition = payload && payload.partition;
-  if (!partition || typeof partition !== 'string') return { ok: false };
-  return { ok: true, history: removeHistoryByPartition(partition) };
+  const href = payload && payload.href;
+  if (!href || typeof href !== 'string') return { ok: false };
+  return { ok: true, history: removeHistoryByKey(href) };
+});
+
+// v1.72.0：主页扫描到的应用列表上报（创建桌面快捷方式的数据源）
+ipcMain.on('shell:report-apps', (_e, apps) => {
+  try {
+    if (!Array.isArray(apps) || !apps.length) return;
+    const s = loadSettings();
+    const cur = Array.isArray(s.apps) ? s.apps : [];
+    const byUrl = new Map(cur.map((a) => [a.url, a]));
+    for (const a of apps) {
+      if (!a || !a.url || !a.name) continue;
+      byUrl.set(a.url, {
+        name: String(a.name).slice(0, 40),
+        url: String(a.url),
+        icon: String(a.icon || ''),
+        addedAt: Date.now(),
+      });
+    }
+    const merged = Array.from(byUrl.values());
+    saveSettings({ apps: merged.slice(0, 50) });
+    try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
+    dlog && dlog('info', 'apps.scanned', { count: merged.length });
+  } catch (_) {}
 });
 
 // ---------------------- 锁屏 / 设置 IPC ----------------------
@@ -5861,6 +6044,8 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(() => {
+  // v1.72.0：解析 --open-app 参数（桌面快捷方式启动单个应用）
+  try { parseOpenAppArg(); } catch (_) {}
   // 启动内置 MPV 的本地助手服务（在线字幕/本地字幕/画中画），仅 127.0.0.1。
   // 端口与令牌写入 global，mpv-player.js spawn mpv 时经环境变量注入给中文菜单 lua。
   try {

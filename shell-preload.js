@@ -39,4 +39,6 @@ contextBridge.exposeInMainWorld('fnosShell', {
   },
   // 弹出原生菜单（在对应菜单按钮坐标处弹出，复用主进程模板）
   popupMenu: (payload) => ipcRenderer.invoke('shell:popup-menu', payload),
+  // v1.72.0：主页应用列表上报（创建桌面快捷方式用）
+  reportApps: (apps) => ipcRenderer.send('shell:report-apps', apps),
 });

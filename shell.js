@@ -87,6 +87,48 @@
     } catch (_) {}
   }
 
+  // v1.72.0：扫描主页中的应用入口（a[href] 指向同主机不同端口的独立应用），
+  // 上报主进程保存，供「创建桌面快捷方式」使用。SPA 渲染完成后延迟重试几次。
+  function collectApps(wv) {
+    try {
+      wv.executeJavaScript(`(function(){
+        try {
+          var out = [];
+          var links = document.querySelectorAll('a[href]');
+          var host = location.hostname;
+          var port = location.port;
+          for (var i = 0; i < links.length; i++) {
+            var a = links[i];
+            var href = a.href || '';
+            if (!/^https?:\/\//i.test(href)) continue;
+            var u;
+            try { u = new URL(href); } catch (e) { continue; }
+            if (u.hostname !== host) continue;
+            if (!u.port || u.port === port) continue;
+            var name = (a.innerText || a.title || '').trim();
+            if (!name || name.length > 40) continue;
+            var img = a.querySelector('img');
+            var icon = img ? (img.currentSrc || img.src || '') : '';
+            out.push({ name: name, url: href, icon: icon });
+          }
+          var seen = {}, res = [];
+          for (var j = 0; j < out.length; j++) {
+            var k = out[j].url;
+            if (!seen[k]) { seen[k] = 1; res.push(out[j]); }
+          }
+          return JSON.stringify(res);
+        } catch (e) { return '[]'; }
+      })()`, true).then((json) => {
+        try {
+          const apps = JSON.parse(json || '[]');
+          if (Array.isArray(apps) && apps.length && window.fnosShell && window.fnosShell.reportApps) {
+            window.fnosShell.reportApps(apps);
+          }
+        } catch (_) {}
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
   function createWebView(partition, src) {
     if (view) { try { view.remove(); } catch (_) {} view = null; }
     const wv = document.createElement('webview');
@@ -125,8 +167,13 @@ aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar
 }`);
       } catch (_) {}
       injectHomeScale(wv);
+      setTimeout(() => collectApps(wv), 1500);
+      setTimeout(() => collectApps(wv), 4000);
     });
-    wv.addEventListener('did-navigate', () => injectHomeScale(wv));
+    wv.addEventListener('did-navigate', () => {
+      injectHomeScale(wv);
+      setTimeout(() => collectApps(wv), 1500);
+    });
     wv.addEventListener('did-stop-loading', () => hideLoader());
     wv.addEventListener('did-fail-load', (e) => { if (e.errorCode !== -3) hideLoader(); });
     wv.addEventListener('page-title-updated', (e) => { if (e.title) titleEl.textContent = e.title; });

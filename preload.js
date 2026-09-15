@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('fnos', {
   connect: (server) => ipcRenderer.invoke('auth:connect', { server }),
   loadLastServer: () => ipcRenderer.invoke('auth:load-history'),
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
-  removeHistory: (partition) => ipcRenderer.invoke('auth:remove-history', { partition }),
+  removeHistory: (href) => ipcRenderer.invoke('auth:remove-history', { href }),
   platform: process.platform,
   version: '1.38.0',
 

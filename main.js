@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.67.0';
+const APP_VERSION = '1.68.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -573,6 +573,7 @@ let cachedSettings = null;
 let appWindows = []; // {win, title, url, isMain}
 // v1.23.6：每个 webContents 最近一次主媒体地址（飞牛影视 SPA 内播放时追踪真实视频流）
 const lastMediaByWc = new Map(); // webContentsId -> { url, at }
+let lastAbortLogTs = 0; // v1.68.0：ERR_ABORTED 媒体日志节流时间戳（正常中止不刷屏）
 let menuRebuildTimer = null;
 let g_persistTimer = null;
 
@@ -1411,6 +1412,15 @@ function installCorsBypass(ses) {
     });
     ses.webRequest.onErrorOccurred((details) => {
       if (!isMediaUrl(details.url)) return;
+      // v1.68.0：ERR_ABORTED 通常是播放器主动中止（quitPlay/切换频道/滚动页面取消
+      // 分片请求），网络层面并非故障，日志里却会刷几百条。这里只保留其中包含
+      // "ERR_ABORTED" 之外的真正网络错误；ERR_ABORTED 仅限流记录（每 30s 至多 1 条）。
+      const err = details.error || '';
+      const now = Date.now();
+      if (/ERR_ABORTED/.test(err)) {
+        if (now - lastAbortLogTs < 30000) return;
+        lastAbortLogTs = now;
+      }
       try {
         fs.appendFileSync(
           path.join(app.getPath('userData'), 'fnos-web.log'),
@@ -2700,6 +2710,10 @@ function registerWindow(win, opts = {}) {
       if (!message) return;
       // 只记录与媒体/解码/网络相关的告警和错误，避免刷屏
       if (level < 2) return; // 0=verbose 1=info 2=warning 3=error
+      // v1.68.0：过滤远程网页自身的高频噪音（与客户端无关，每次进页面都会刷几十条），
+      // 避免 fnos-web.log 被无效日志占满、掩盖真正需要排查的媒体错误。
+      if (/mediaCapabilities/i.test(message) && /\[object Object\]/.test(message)) return;
+      if (/Sync media data failed/i.test(message)) return;
       if (!/(video|media|decode|codec|mediaerror|mediasource|buffer|range|cors|跨域|播放|解码|加载失败|net::|failed to load|cannot play)/i.test(message)) return;
       try {
         fs.appendFileSync(

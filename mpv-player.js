@@ -300,6 +300,10 @@ class MpvPlayer extends EventEmitter {
       // 无边框 + 始终置顶 + 可拖动 + OSC 控制条（中文 OSC 由 --script=osc-zh-cn.lua 提供）
       args.push('--border=no', '--ontop=yes', '--osd-bar=yes',
         '--window-dragging=yes', '--title=FNOS-MPV',
+        // v1.68.0：嵌入覆盖窗需精确贴合视频区（dipRect 宽高比可能与视频 aspect
+        // 不同，如网页 <video> 被 CSS 拉伸）。keepaspect-window=no 允许窗口按
+        // 给定 WxH 自由调整，不被视频宽高比强制；渲染层 keepaspect 仍默认保持画面比例。
+        '--keepaspect-window=no',
         // v1.53.0：注意本 Windows 构建(mpv 0.41 winbuild)无 --skip-taskbar 选项（Linux/X11 only），
         //   传入会导致 'option not found' → 启动即 Fatal exit（直播/影视打不开 MPV 的根因）。
         //   任务栏隐藏改由隐藏时 window-minimized 最小化实现。
@@ -884,20 +888,44 @@ class MpvPlayer extends EventEmitter {
 
   // 运行时移动/缩放 mpv 原生窗口（屏幕物理像素坐标）
   // 注意：shinchiro Windows 构建（gpu-next）【没有】 window-resize / window-move 命令，
-  // 调用只会刷 "Command not found" 错误日志。运行时统一用可写的 geometry 属性
-  // （格式 WxH+X+Y，屏幕像素），--geometry 与它一致，窗口位置/尺寸都能联动。
+  // 调用只会刷 "Command not found" 错误日志。运行时窗口定位有两条路径：
+  //   1) mpv 0.36+：window-x / window-y / window-width / window-height 四个可写属性，
+  //      设置成功即生效（日志显示 geometry 属性在本构建返回
+  //      "unsupported format for accessing property"，故优先走 window-* 属性）。
+  //   2) 兼容回退：set_property geometry（格式 WxH+X+Y，屏幕像素）。
   setGeometry(g) {
     if (!g) return;
     this._geometry = g;
     const apply = () => {
-      const x = String(Math.round(g.x)), y = String(Math.round(g.y));
-      const w = String(Math.max(160, Math.round(g.width))), h = String(Math.max(90, Math.round(g.height)));
+      const x = Math.round(g.x), y = Math.round(g.y);
+      const w = Math.max(160, Math.round(g.width)), h = Math.max(90, Math.round(g.height));
       const geoStr = `${w}x${h}+${x}+${y}`;
       // 与上次实际下发的几何一致就不重复发 IPC（500ms 轮询会频繁调用，去抖减少主线程/IPC 负担）
       if (this._lastGeoStr === geoStr) return;
       this._lastGeoStr = geoStr;
-      this.command(['set_property', 'geometry', geoStr])
-        .catch(e => this.emit('log', 'geometry set fail: ' + (e && e.message)));
+      // v1.68.0：优先 window-* 属性（mpv 0.36+ 原生窗口定位，数字类型，最可靠）。
+      // 任一路径失败都不阻断：window-* 失败回退 geometry；geometry 失败则仅记录日志。
+      let winOk = 0, winErr = 0;
+      const winProps = [
+        ['window-x', x],
+        ['window-y', y],
+        ['window-width', w],
+        ['window-height', h]
+      ];
+      for (const [prop, val] of winProps) {
+        this.command(['set_property', prop, val])
+          .then(() => { winOk++; })
+          .catch(() => { winErr++; });
+      }
+      // 全部 window-* 都失败时才尝试 geometry 回退（避免每次抖动都双写 IPC）
+      const fallbackTimer = setTimeout(() => {
+        try {
+          if (winOk > 0) return;
+          this.command(['set_property', 'geometry', geoStr])
+            .catch(e => this.emit('log', 'geometry set fail: ' + (e && e.message)));
+        } catch (_) {}
+      }, 60);
+      if (fallbackTimer.unref) fallbackTimer.unref();
     };
     if (!this.connected) { this.once('ipc-ready', apply); return; }
     apply();
@@ -909,7 +937,8 @@ class MpvPlayer extends EventEmitter {
   hideWindow() {
     this._userHidden = true;
     const apply = () => {
-      try { this.command(['set_property', 'skip-taskbar', 'yes']).catch(() => {}); } catch (_) {}
+      // v1.53.0：本 Windows 构建(mpv 0.41 winbuild)无 skip-taskbar 选项（Linux/X11 only），
+      //   传入只会刷 "option not found"。任务栏隐藏统一由 window-minimized 最小化实现。
       try { this.command(['set_property', 'window-minimized', 'yes']).catch(() => {}); } catch (_) {}
     };
     if (!this.connected) { this.once('ipc-ready', apply); return Promise.resolve(); }
@@ -920,7 +949,7 @@ class MpvPlayer extends EventEmitter {
     this._forceVisible = true;
     this._userHidden = false;
     const apply = () => {
-      // 仅独立播放器恢复任务栏图标；嵌入/覆盖窗始终不占任务栏（启动即 skip-taskbar=yes）
+      // 仅独立播放器恢复任务栏图标；嵌入/覆盖窗始终不占任务栏（启动即最小化恢复后由宿主遮挡）
       if (this._standalone) {
         try { this.command(['set_property', 'skip-taskbar', 'no']).catch(() => {}); } catch (_) {}
       }

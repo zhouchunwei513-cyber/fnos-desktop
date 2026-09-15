@@ -171,8 +171,15 @@ class MpvSurface {
         this.player.setGeometry(geo);
         const after = `${Math.max(160, geo.width)}x${Math.max(90, geo.height)}+${geo.x}+${geo.y}`;
         if (before !== after) {
-          const cb = this.parent && !this.parent.isDestroyed() ? this.parent.getContentBounds() : null;
-          this._emit('log', 'embed.align ' + JSON.stringify(geo) + (cb ? ' contentTop=' + cb.y : ''));
+          // v1.68.0：宿主拖动/网页滚动时 setRect 上报极频繁（几百 ms 内几十次），
+          // 逐条打 embed.align 会把 fnos-diag.log 刷爆。做日志节流：几何有实质变化时
+          // 每 400ms 最多记一条，定位仍走 setGeometry 去抖后的真实 IPC。
+          const now = Date.now();
+          if (!this._lastAlignLogTs || now - this._lastAlignLogTs >= 400) {
+            this._lastAlignLogTs = now;
+            const cb = this.parent && !this.parent.isDestroyed() ? this.parent.getContentBounds() : null;
+            this._emit('log', 'embed.align ' + JSON.stringify(geo) + (cb ? ' contentTop=' + cb.y : ''));
+          }
         }
       } catch (_) {}
     }

@@ -12,7 +12,7 @@
  */
 const {
   app, BrowserWindow, Menu, shell, session, ipcMain, dialog, screen, Tray, nativeImage, safeStorage,
-  globalShortcut, net, powerMonitor, webContents,
+  globalShortcut, net, powerMonitor, webContents, clipboard,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.70.0';
+const APP_VERSION = '1.71.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2845,6 +2845,26 @@ function registerWindow(win, opts = {}) {
   return entry;
 }
 
+// v1.71.0：应用窗口统一 UI 注入（侧边栏毛玻璃 + 深色滚动条），与主窗口 shell.js 注入保持一致，
+// 避免部分 Docker 应用（如 XTE-IPTV）仍显示白色原生滚动条/原生侧边栏。
+const APP_UI_INJECT_CSS = [
+  'html,body{overscroll-behavior:none;}',
+  '::-webkit-scrollbar{width:10px;height:10px;}',
+  '::-webkit-scrollbar-track{background:transparent;}',
+  '::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:6px;}',
+  '::-webkit-scrollbar-thumb:hover{background:rgba(140,150,170,.65);}',
+  'aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar,',
+  '.el-aside, .aside-container, .menu-container, .drawer, .side-panel,',
+  '[class*="sidebar"], [class*="side-bar"], [class*="side-nav"], [class*="left-nav"],',
+  '[class*="left-sidebar"], [class*="aside"] {',
+  '  background: rgba(18, 22, 32, 0.42) !important;',
+  '  backdrop-filter: blur(18px) saturate(1.35) !important;',
+  '  -webkit-backdrop-filter: blur(18px) saturate(1.35) !important;',
+  '  border-right: 1px solid rgba(255,255,255,0.06) !important;',
+  '  box-shadow: none !important;',
+  '}',
+].join('\n');
+
 function createAppWindow(url, opts = {}) {
   // v1.16.3：NAS 相关窗口一律走共享 partition，与主窗口/飞牛 webview/直播窗口
   // 共享登录态；只有显式传入非 NAS 的外部 partition 才允许保留。
@@ -2935,6 +2955,12 @@ function createAppWindow(url, opts = {}) {
     });
     win.webContents.on('dom-ready', () => {
       try { dlog && dlog('info', 'appwin.dom-ready', { app: __appLabel, winId: win.id, ms: Date.now() - (win.__appNavStart || __t0) }); } catch (_) {}
+      // v1.71.0：应用窗口统一侧边栏毛玻璃 + 深色滚动条（与主窗口 shell.js 注入一致）
+      try {
+        if (win.webContents && !win.webContents.isDestroyed()) {
+          win.webContents.insertCSS(APP_UI_INJECT_CSS).catch(() => {});
+        }
+      } catch (_) {}
     });
     win.webContents.on('did-finish-load', () => {
       try {
@@ -3467,6 +3493,28 @@ function resolveActiveWebContents(win) {
   return win ? win.webContents : null;
 }
 
+// v1.71.0：复制当前窗口链接地址（主窗口取 webview guest 当前 URL，应用窗口取自身 URL）
+function copyCurrentWindowLink() {
+  try {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (!win || win.isDestroyed()) return;
+    let url = '';
+    if (win === mainWindow || win.__isMainShell) {
+      const guest = pickMenuGuest();
+      if (guest && !guest.isDestroyed()) {
+        const u = guest.getURL();
+        if (u && /^https?:/i.test(u)) url = u;
+      }
+    } else {
+      const u = win.webContents.getURL();
+      if (u && /^https?:/i.test(u)) url = u;
+    }
+    if (!url) { dlog && dlog('warn', 'menu.copy-link', { err: 'no-url', winId: win.id }); return; }
+    clipboard.writeText(url);
+    dlog && dlog('info', 'menu.copy-link', { url: String(url).slice(0, 120), winId: win.id });
+  } catch (e) { dlog && dlog('warn', 'menu.copy-link', { err: String(e && e.message || e) }); }
+}
+
 function buildMenuTemplate() {
   const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
 
@@ -3518,20 +3566,6 @@ function buildMenuTemplate() {
     {
       label: '下载',
       submenu: buildDownloadsMenu(),
-    },
-    {
-      label: '编辑',
-      submenu: [
-        { role: 'undo', label: '撤销' },
-        { role: 'redo', label: '重做' },
-        { type: 'separator' },
-        { role: 'cut', label: '剪切' },
-        { role: 'copy', label: '复制' },
-        { role: 'paste', label: '粘贴' },
-        { role: 'pasteAndMatchStyle', label: '粘贴并匹配样式' },
-        { role: 'delete', label: '删除' },
-        { role: 'selectAll', label: '全选' },
-      ],
     },
     {
       label: '视图',
@@ -3588,6 +3622,12 @@ function buildMenuTemplate() {
               } catch (e) { dlog('warn', 'mpv.menu.embed', { err: String(e && e.message || e) }); }
             } catch (e) { /* ignore */ }
           },
+        },
+        { type: 'separator' },
+        {
+          label: '🔗 复制当前窗口链接地址',
+          accelerator: 'Ctrl+Shift+C',
+          click: () => copyCurrentWindowLink(),
         },
       ],
     },
@@ -3951,7 +3991,7 @@ ipcMain.handle('shell:popup-menu', (_e, payload) => {
     if (!payload || !payload.id) return;
     // 用当前 buildMenu() 生成的应用菜单，取对应顶级菜单，在坐标处弹出
     const appMenu = Menu.getApplicationMenu() || Menu.buildFromTemplate(buildMenuTemplate());
-    const map = { file: '文件', downloads: '下载', edit: '编辑', view: '视图', tools: '工具', settings: '设置', help: '帮助' };
+    const map = { file: '文件', downloads: '下载', view: '视图', tools: '工具', settings: '设置', help: '帮助' };
     const label = map[payload.id];
     if (!label) return;
     for (const it of appMenu.items) {

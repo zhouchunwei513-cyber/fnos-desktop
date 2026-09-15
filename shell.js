@@ -55,6 +55,38 @@
   }
   function hideLoader() { loader.classList.add('hidden'); }
 
+  // v1.71.0：飞牛主页按窗口大小自动缩放页面及图标。
+  // 大窗口下飞牛主页图标网格偏大/错位，这里以 1440x810 为基准整体 zoom 缩放
+  // （窗口越大缩放越小，图标相对窗口变小），小窗口保持 1.0；窗口尺寸变化与
+  // SPA 路由切换时自动重新计算。
+  function injectHomeScale(wv) {
+    try {
+      wv.executeJavaScript(`(function () {
+        'use strict';
+        function isHomePage() {
+          var p = location.pathname || '/';
+          return p === '/' || p === '/apps' || p === '/desktop' || p === '/home' || p === '/app';
+        }
+        function applyScale() {
+          try {
+            if (!isHomePage()) return;
+            var s = Math.min(1440 / window.innerWidth, 810 / window.innerHeight);
+            s = Math.max(0.55, Math.min(1.0, s));
+            var el = document.documentElement;
+            var cur = parseFloat(el.style.zoom) || 1;
+            if (Math.abs(cur - s) > 0.01) el.style.zoom = s;
+          } catch (_) {}
+        }
+        window.addEventListener('resize', applyScale);
+        var _lastPath = location.pathname;
+        setInterval(function () {
+          try { if (location.pathname !== _lastPath) { _lastPath = location.pathname; applyScale(); } } catch (_) {}
+        }, 800);
+        applyScale();
+      })();`, true).catch(() => {});
+    } catch (_) {}
+  }
+
   function createWebView(partition, src) {
     if (view) { try { view.remove(); } catch (_) {} view = null; }
     const wv = document.createElement('webview');
@@ -92,7 +124,9 @@ aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar
   box-shadow: none !important;
 }`);
       } catch (_) {}
+      injectHomeScale(wv);
     });
+    wv.addEventListener('did-navigate', () => injectHomeScale(wv));
     wv.addEventListener('did-stop-loading', () => hideLoader());
     wv.addEventListener('did-fail-load', (e) => { if (e.errorCode !== -3) hideLoader(); });
     wv.addEventListener('page-title-updated', (e) => { if (e.title) titleEl.textContent = e.title; });

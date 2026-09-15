@@ -178,7 +178,7 @@ module.exports = function injectTitleBar(ctx) {
         left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:6px;margin-left:4px;';
         const menuBtn = document.createElement('button');
         menuBtn.id = 'fnos-tb-menu';
-        menuBtn.title = '菜单（文件/下载/编辑/视图/工具/设置/帮助）';
+        menuBtn.title = '菜单（文件/下载/视图/工具/设置/帮助）';
         menuBtn.style.cssText = 'width:40px;height:28px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.85));';
         menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.95)" stroke-width="1.5" stroke-linecap="round"/></svg>';
         menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = 'rgba(255,255,255,0.12)'; });

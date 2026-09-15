@@ -12,7 +12,7 @@
  */
 const {
   app, BrowserWindow, Menu, shell, session, ipcMain, dialog, screen, Tray, nativeImage, safeStorage,
-  globalShortcut, net, powerMonitor,
+  globalShortcut, net, powerMonitor, webContents,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.66.0';
+const APP_VERSION = '1.67.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2294,11 +2294,38 @@ function authHeartbeatOnce() {
       req.on('close', () => { try { authHeartbeatBusy = false; } catch (_) {} });
       req.end();
     }).catch(() => { try { authHeartbeatBusy = false; } catch (_) {} });
+    // 页面保活：向当前飞牛 webview/webContents 注入 fetch，
+    // 保持前端微服务/WebSocket 所用连接自身活跃（主进程心跳覆盖不到该连接）。
+    try { pageKeepAlive(); } catch (_) {}
   } catch (_) { try { authHeartbeatBusy = false; } catch (_) {} }
+}
+
+// 仅对加载了飞牛 NAS 页面的 webContents 注入一次轻量 fetch，使其连接持续活跃，避免 FRP 空闲回收
+function pageKeepAlive() {
+  try {
+    let wc = null;
+    if (typeof webContents !== 'undefined' && webContents && webContents.getAllWebContents) {
+      const all = webContents.getAllWebContents();
+      if (!all || !all.length) return;
+      for (let i = all.length - 1; i >= 0; i--) {
+        const c = all[i];
+        try {
+          const u = c.getURL() || '';
+          if (/^(https?:\/\/|\/)/i.test(u)) { wc = c; break; }
+        } catch (_) {}
+      }
+    }
+    if (!wc) return;
+    // 一次性注入「页面内持久保活」：每 25 秒向同源发一次带随机参数的轻量请求，
+    // 让飞牛前端自身的连接在 FRP 隧道内持续产生真实流量，避免 WS/空闲被服务端回收。
+    // 用 window.__fnKeptAlive 作幂等标记，导航后重新注入。
+    const script = `(function(){ if (window.__fnKeptAlive) return; window.__fnKeptAlive = true; var iv = setInterval(function(){ try { var u = location.origin + '/v/?_ka=' + Date.now(); fetch(u, {method:'GET', credentials:'include', cache:'no-store', mode:'cors'}).catch(function(){}); } catch (e) {} }, 25000); if (iv && iv.unref) iv.unref(); })();`;
+    try { wc.executeJavaScript(script, true).catch(function(){}); } catch (e) { try { wc.executeJavaScript(script); } catch (_) {} }
+  } catch (_) {}
 }
 function startAuthHeartbeat() {
   try { if (authHeartbeatTimer) clearInterval(authHeartbeatTimer); } catch (_) {}
-  authHeartbeatTimer = setInterval(authHeartbeatOnce, 90 * 1000); // 90 秒，FRP 保活
+  authHeartbeatTimer = setInterval(authHeartbeatOnce, 45 * 1000); // 45 秒，FRP 保活
   if (authHeartbeatTimer.unref) authHeartbeatTimer.unref();
 }
 function bumpAuthHeartbeat() {
@@ -2548,6 +2575,12 @@ function registerWindow(win, opts = {}) {
     win.on('show', unthrottle);
     win.on('blur', throttleBlur);
     win.on('focus', unthrottle);
+    // v1.67.0：任意应用/宿主窗口聚焦或失焦时统一刷新 MPV 层级——
+    // 切到普通应用窗（如文件管理）时，即使宿主窗 blur 防抖未到，也能立即降 MPV 盖窗；
+    // 切回视频宿主窗时恢复置顶。函数体内自带 live-mpv 判断与 500ms 失焦防抖，低频安全。
+    try { win.on('focus', () => { try { refreshMpvLayer(); } catch (_) {} }); } catch (_) {}
+    try { win.on('blur', () => { try { refreshMpvLayer(); } catch (_) {} }); } catch (_) {}
+    try { win.on('restore', () => { try { refreshMpvLayer(); } catch (_) {} }); } catch (_) {}
   } catch (_) {}
   win.webContents.on('did-navigate', (_e, url) => {
     entry.url = url;
@@ -3175,6 +3208,8 @@ function doConnectTo(serverInput) {
   safeSetTitle(APP_NAME);
   // v1.16.1：连上 NAS 后预热 XTE 基地址缓存（异步，不阻塞）
   setImmediate(() => { try { warmupXteBase(); } catch (_) {} });
+  // v1.67.0：登录成功后尽快注入页面级 WS/长连接保活，避免 FRP 空闲超时被回收导致"已断开"
+  setTimeout(() => { try { bumpAuthHeartbeat(); } catch (_) {} }, 3000);
   if (mainWindow && !mainWindow.isDestroyed()) {
     const onFail = (e) => {
       glassErrorBox(

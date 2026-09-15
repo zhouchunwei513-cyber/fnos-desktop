@@ -63,7 +63,7 @@
     wv.setAttribute('preload', 'preload.js');
     wv.setAttribute('allowpopups', 'true');
     wv.setAttribute('webpreferences',
-      'contextIsolation=true,nativeWindowOpen=true,allowRunningInsecureContent=true,nodeIntegration=false');
+      'contextIsolation=true,nativeWindowOpen=true,allowRunningInsecureContent=true,nodeIntegration=false,backgroundThrottling=false');
     wv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;outline:none;';
     content.appendChild(wv);
     view = wv;

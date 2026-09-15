@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.68.0';
+const APP_VERSION = '1.69.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -800,29 +800,40 @@ ipcMain.on('fnos:media-log', (e, data) => {
 });
 
 // v1.48.0：无边框自定义标题栏的窗口控制（与参考客户端 fntv 一致）
+// v1.69.0：修复"标题栏按钮有时不起作用"。主窗口实际显示的是 webview（guest）
+// 内注入的标题栏，按钮 IPC 的 sender 是 guest webContents，BrowserWindow.fromWebContents
+// 对 guest 返回 null 导致窗口控制静默失效（设置/直播等独立窗口正常，故表现为"有时候"）。
+// 统一通过 sender.hostWebContents 解析宿主窗口。
+function hostWindowFromSender(sender) {
+  try {
+    const wc = (sender && sender.hostWebContents) || sender || null;
+    if (!wc) return null;
+    return BrowserWindow.fromWebContents(wc);
+  } catch (_) { return null; }
+}
 ipcMain.on('window-minimize', (e) => {
-  try { const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null; if (w) w.minimize(); } catch (_) {}
+  try { const w = hostWindowFromSender(e && e.sender); if (w && !w.isDestroyed()) w.minimize(); } catch (_) {}
 });
 ipcMain.on('window-maximize', (e) => {
   try {
-    const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
-    if (!w) return;
+    const w = hostWindowFromSender(e && e.sender);
+    if (!w || w.isDestroyed()) return;
     if (w.isMaximized()) w.unmaximize(); else w.maximize();
   } catch (_) {}
 });
 ipcMain.on('window-close', (e) => {
-  try { const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null; if (w) w.close(); } catch (_) {}
+  try { const w = hostWindowFromSender(e && e.sender); if (w && !w.isDestroyed()) w.close(); } catch (_) {}
 });
 // v1.62.0：无边框标题栏原生拖拽兜底（-webkit-app-region:drag 在置顶嵌入 mpv 存在时
 // 可能被系统拖拽消息环影响而失灵）。renderer 在顶部热区 mousedown(左键) 时调用 startDrag。
 ipcMain.on('window-drag', (e) => {
-  try { const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null; if (w && !w.isDestroyed()) w.startDrag(); } catch (_) {}
+  try { const w = hostWindowFromSender(e && e.sender); if (w && !w.isDestroyed()) w.startDrag(); } catch (_) {}
 });
 // v1.48.0：无边框标题栏的「☰ 菜单」按钮——弹出与原系统菜单栏完全一致的应用菜单
 // （文件/下载/编辑/视图/工具/设置/帮助），内容与逻辑复用 buildMenuTemplate，零改动。
 ipcMain.on('app-popup-menu', (e) => {
   try {
-    const w = (e && e.sender && BrowserWindow.fromWebContents(e.sender)) || BrowserWindow.getFocusedWindow() || null;
+    const w = hostWindowFromSender(e && e.sender) || BrowserWindow.getFocusedWindow() || null;
     const menu = Menu.buildFromTemplate(buildMenuTemplate());
     menu.popup({ window: w || undefined });
   } catch (err) {
@@ -831,29 +842,71 @@ ipcMain.on('app-popup-menu', (e) => {
 });
 ipcMain.on('window-is-maximized', (e) => {
   try {
-    const w = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
+    const w = hostWindowFromSender(e && e.sender);
     if (w && !w.isDestroyed()) e.sender.send('window-maximized-state', { maximized: w.isMaximized() });
   } catch (_) {}
 });
 
 
 // v1.10.0：URL 重写（外网访问端口/域名映射）
-// urlMappings: [{from:'http://192.168.1.10:5666', to:'https://nas.example.com:10443'}]
-// 也支持 from 为前缀匹配（不带协议时按 host:port 匹配）
+// 设置页（settings.js）保存的是 urlRewrites: [{match, replace}]：
+//   match 支持四种写法：
+//     1) 完整 URL 前缀：  http://192.168.1.10:3000
+//     2) host:port / host：192.168.1.10:3000 或 192.168.1.10
+//     3) 纯端口：         3000
+//     4) 路径前缀：       /movie/
+//   replace 是外网完整地址：http://121.40.186.165:10301 或 https://nas.example.com:5667/base
+// v1.69.0：修复"设置后不生效"——此前 rewriteUrl 读的是 urlMappings（from/to），
+//   但设置页保存的是 urlRewrites（match/replace），字段不一致导致规则从未应用。
+//   现在以 urlRewrites 为准，并兼容旧版 urlMappings。
+function joinRewriteBase(base, rest) {
+  const b = String(base || '').replace(/\/+$/, '');
+  const r = String(rest || '');
+  if (!r) return b + '/';
+  return b + (r.startsWith('/') ? r : '/' + r);
+}
 function rewriteUrl(url) {
   if (!url) return url;
   const s = loadSettings();
-  const mappings = Array.isArray(s.urlMappings) ? s.urlMappings : [];
-  if (!mappings.length) return url;
+  // 新格式（设置页实际保存的结构）
+  const rewrites = Array.isArray(s.urlRewrites) ? s.urlRewrites : [];
+  // 旧格式兼容（v1.10 遗留字段，仅做兜底迁移）
+  const oldMappings = Array.isArray(s.urlMappings) ? s.urlMappings : [];
+  if (!rewrites.length && !oldMappings.length) return url;
   try {
     let rewritten = String(url);
-    for (const m of mappings) {
-      if (!m || !m.from || !m.to) continue;
-      const from = String(m.from).trim();
-      const to = String(m.to).trim();
-      if (!from || !to) continue;
-      if (rewritten.startsWith(from)) {
-        rewritten = to + rewritten.slice(from.length);
+    const items = rewrites
+      .map((r) => ({ m: r && r.match, t: r && r.replace }))
+      .concat(oldMappings.map((m) => ({ m: m && m.from, t: m && m.to })));
+    for (const it of items) {
+      if (!it || typeof it.m !== 'string' || typeof it.t !== 'string') continue;
+      const match = it.m.trim();
+      const replace = it.t.trim();
+      if (!match || !replace) continue;
+      let u;
+      try { u = new URL(rewritten); } catch (_) { continue; }
+      // 1) 完整 URL 前缀（含协议）
+      if (rewritten.startsWith(match)) {
+        return joinRewriteBase(replace, rewritten.slice(match.length));
+      }
+      // 2) host 或 host:port（不含协议，域名大小写不敏感）
+      if (/^[a-zA-Z0-9.\-]+(?::\d+)?$/.test(match)) {
+        if (match.includes(':')) {
+          if (u.host.toLowerCase() === match.toLowerCase()) {
+            return joinRewriteBase(replace, rewritten.slice(u.origin.length));
+          }
+        } else if (u.hostname.toLowerCase() === match.toLowerCase()) {
+          return joinRewriteBase(replace, rewritten.slice(u.origin.length));
+        }
+      }
+      // 3) 纯端口
+      if (/^\d+$/.test(match) && u.port === match) {
+        return joinRewriteBase(replace, rewritten.slice(u.origin.length));
+      }
+      // 4) 路径前缀（以 / 开头）
+      if (match.startsWith('/') && u.pathname.startsWith(match)) {
+        const prefix = u.origin + match.replace(/\/+$/, '');
+        return joinRewriteBase(replace, rewritten.slice(prefix.length));
       }
     }
     return rewritten;

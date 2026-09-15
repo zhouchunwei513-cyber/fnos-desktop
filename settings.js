@@ -260,13 +260,20 @@
   const rwAdd = document.getElementById('rw-add');
   const rwSave = document.getElementById('rw-save');
   const rwError = document.getElementById('rw-error');
+  // v1.69.0：完整 HTML 转义（原实现只转义双引号，地址含 & < > 等字符时会把
+  // value 属性截断/渲染错乱，截图里"外网地址末尾乱码 ʂ"即由此类字符污染导致）
+  const escAttr = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/'/g, '&#39;');
+  // 只保留可打印 ASCII（URL 合法字符），过滤控制符与不可见/异常 Unicode（乱码来源）
+  const cleanUrlInput = (s) => String(s == null ? '' : s).replace(/[^\x20-\x7E]/g, '');
   const rwTpl = (m = '', r = '') => {
     const row = document.createElement('div');
     row.className = 'rewrite-row';
     row.innerHTML = `
-      <div class="input-wrap glass-input"><input class="rw-match" placeholder="内网端口或路径，例如 5667 或 /movie/" value="${m.replace(/"/g,'&quot;')}" spellcheck="false"/></div>
+      <div class="input-wrap glass-input"><input class="rw-match" placeholder="内网端口或路径，例如 5667 或 /movie/" value="${escAttr(cleanUrlInput(m))}" spellcheck="false"/></div>
       <div class="rewrite-arrow">→</div>
-      <div class="input-wrap glass-input"><input class="rw-replace" placeholder="外网完整地址，例如 https://nas.example.com:5667/" value="${r.replace(/"/g,'&quot;')}" spellcheck="false"/></div>
+      <div class="input-wrap glass-input"><input class="rw-replace" placeholder="外网完整地址，例如 https://nas.example.com:5667/" value="${escAttr(cleanUrlInput(r))}" spellcheck="false"/></div>
       <button type="button" class="rewrite-del" title="删除">×</button>`;
     row.querySelector('.rewrite-del').addEventListener('click', () => row.remove());
     rwList.appendChild(row);
@@ -276,8 +283,8 @@
     const rows = [...rwList.querySelectorAll('.rewrite-row')];
     const list = [];
     for (const row of rows) {
-      const m = row.querySelector('.rw-match').value.trim();
-      const r = row.querySelector('.rw-replace').value.trim();
+      const m = cleanUrlInput(row.querySelector('.rw-match').value).trim();
+      const r = cleanUrlInput(row.querySelector('.rw-replace').value).trim();
       if (!m && !r) continue;
       if (!m || !r) { showError(rwError, '规则的左右两侧都要填'); return; }
       try { new URL(r); } catch { showError(rwError, `右侧不是有效的完整地址：${r}`); return; }

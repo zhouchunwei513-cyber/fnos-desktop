@@ -71,7 +71,26 @@
     wv.addEventListener('did-start-loading', () => showLoader('正在加载…'));
     wv.addEventListener('dom-ready', () => {
       try {
-        wv.insertCSS('html,body{overscroll-behavior:none;}::-webkit-scrollbar{width:10px;height:10px;}::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:6px;}');
+        // v1.69.0：侧边栏透明玻璃 + 滚动条美化。飞牛 NAS 网页（webview 内）的左侧
+        // 导航侧边栏默认是纯深色实底，这里统一注入半透明毛玻璃：低透明底色透出下层
+        // 内容 + backdrop blur 磨砂。选择器尽量覆盖常见 sidebar/aside 类名与属性片段，
+        // 避免命中 nav（会误伤顶部导航）等过宽元素。
+        wv.insertCSS(`
+html,body{overscroll-behavior:none;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:6px;}
+::-webkit-scrollbar-thumb:hover{background:rgba(140,150,170,.65);}
+aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar,
+.el-aside, .aside-container, .menu-container, .drawer, .side-panel,
+[class*="sidebar"], [class*="side-bar"], [class*="side-nav"], [class*="left-nav"],
+[class*="left-sidebar"], [class*="aside"] {
+  background: rgba(18, 22, 32, 0.42) !important;
+  backdrop-filter: blur(18px) saturate(1.35) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.35) !important;
+  border-right: 1px solid rgba(255,255,255,0.06) !important;
+  box-shadow: none !important;
+}`);
       } catch (_) {}
     });
     wv.addEventListener('did-stop-loading', () => hideLoader());

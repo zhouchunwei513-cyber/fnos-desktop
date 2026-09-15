@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.65.0';
+const APP_VERSION = '1.66.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2243,41 +2243,66 @@ function resetIdleAutoLock() {
   idleAutoLockLastTriggered = 0;
 }
 
-// ---------------------- 登录态心跳（v1.16.1） ----------------------
+// ---------------------- 登录态心跳（v1.65.1） ----------------------
 // 对当前 NAS 发轻量请求保持会话 Cookie / 服务端 session 不过期。
 // 不弹窗、不打扰；失败静默，由真正业务请求自然触发重新登录。
+// FRP / 内网穿透场景：隧道空闲超时易被服务端回收，导致前端 WebSocket 断开提示“已断开”。
+// 因此心跳刻意保持高频（90s）+ keep-alive，并支持网络恢复时立即补跳。
 let authHeartbeatTimer = null;
+let authHeartbeatBusy = false;
+function authHeartbeatOnce() {
+  try {
+    if (isLocked || isCompletelyHidden) return;
+    if (authHeartbeatBusy) return;
+    authHeartbeatBusy = true;
+    const origin = currentOrigin || (function () {
+      try { return lastConnectHref ? new URL(lastConnectHref).origin : ''; } catch (_) { return ''; }
+    })();
+    if (!origin) return;
+    if (!/^https?:\/\//i.test(origin)) return;
+    const u = new URL(origin);
+    const lib = u.protocol === 'https:' ? require('https') : require('http');
+    // 用当前 partition 的 Cookie 发请求
+    const ses = (currentPartition && currentPartition.startsWith('persist:'))
+      ? session.fromPartition(currentPartition)
+      : session.defaultSession;
+    const cookies = ses ? ses.cookies : null;
+    if (!cookies) return;
+    cookies.get({ url: origin }).then((ck) => {
+      // 选一个真实的登录态接口用于续期：优先 app 主页兜底根路径；
+      // 对飞牛 fnOS 使用首页（返回 200）即可刷新 LAST_ACTIVITY，维持隧道活跃。
+      const u2 = new URL(origin);
+      const paths = ['/', '/v/'];
+      const target = origin + paths[0];
+      const cookieHeader = (ck || []).map((c) => `${c.name}=${c.value}`).join('; ');
+      const req = lib.request(target, {
+        method: 'GET', timeout: 15000,
+        headers: {
+          'User-Agent': getNasUA(), 'Cookie': cookieHeader,
+          'Accept': '*/*', 'Accept-Language': 'zh-CN,zh;q=0.9',
+          'Connection': 'keep-alive',
+        },
+      }, (res) => {
+        // 读一点响应体，避免部分 FRP 实现因未读完而半关闭连接
+        res.on('data', () => {});
+        res.on('end', () => {
+          try { authHeartbeatBusy = false; } catch (_) {}
+        });
+      });
+      req.on('timeout', () => { try { req.destroy(); } catch (_) {} });
+      req.on('error', () => {}); // keep-alive 在网卡切换时报 EPIPE 属正常，忽略
+      req.on('close', () => { try { authHeartbeatBusy = false; } catch (_) {} });
+      req.end();
+    }).catch(() => { try { authHeartbeatBusy = false; } catch (_) {} });
+  } catch (_) { try { authHeartbeatBusy = false; } catch (_) {} }
+}
 function startAuthHeartbeat() {
   try { if (authHeartbeatTimer) clearInterval(authHeartbeatTimer); } catch (_) {}
-  authHeartbeatTimer = setInterval(() => {
-    try {
-      if (isLocked || isCompletelyHidden) return;
-      const origin = currentOrigin || (function () {
-        try { return lastConnectHref ? new URL(lastConnectHref).origin : ''; } catch (_) { return ''; }
-      })();
-      if (!origin) return;
-      if (!/^https?:\/\//i.test(origin)) return;
-      const u = new URL(origin);
-      const lib = u.protocol === 'https:' ? require('https') : require('http');
-      // 用当前 partition 的 Cookie 发请求
-      const ses = (currentPartition && currentPartition.startsWith('persist:'))
-        ? session.fromPartition(currentPartition)
-        : session.defaultSession;
-      const cookies = ses ? ses.cookies : null;
-      if (!cookies) return;
-      cookies.get({ url: origin }).then((ck) => {
-        const cookieHeader = (ck || []).map((c) => `${c.name}=${c.value}`).join('; ');
-        const req = lib.request(origin + '/', {
-          method: 'GET', timeout: 8000,
-          headers: { 'User-Agent': getNasUA(), 'Cookie': cookieHeader, 'Accept': '*/*' },
-        }, (res) => { res.resume(); });
-        req.on('timeout', () => { try { req.destroy(); } catch (_) {} });
-        req.on('error', () => {});
-        req.end();
-      }).catch(() => {});
-    } catch (_) {}
-  }, 5 * 60 * 1000); // 5 分钟
+  authHeartbeatTimer = setInterval(authHeartbeatOnce, 90 * 1000); // 90 秒，FRP 保活
   if (authHeartbeatTimer.unref) authHeartbeatTimer.unref();
+}
+function bumpAuthHeartbeat() {
+  try { authHeartbeatOnce(); } catch (_) {}
 }
 
 // ---------------------- 网络变化监听（v1.16.1） ----------------------
@@ -2308,6 +2333,8 @@ function startNetworkWatcher() {
         g_lastNetworkSig = sig;
         // 失效探测缓存
         g_lineProbeCache = null;
+        // 网络恢复/切换瞬间速续 FRP 心跳，避免隧道长期空闲被回收
+        try { bumpAuthHeartbeat(); } catch (_) {}
         // 通知直播窗口（如果开着）重新自动探测
         if (liveWindow && !liveWindow.isDestroyed()) {
           try { liveWindow.webContents.send('live:network-changed'); } catch (_) {}
@@ -2691,6 +2718,17 @@ function createAppWindow(url, opts = {}) {
     partition = SHARED_PARTITION;
   }
   applyUA(partition);
+
+  // v1.66.0：应用窗口打开前预预热（DNS 预解析 + 预连接），显著缩短应用首屏加载——
+  // 用户点开应用时 DNS/TLS 建连已在后台完成，避免首次访问"转圈"。
+  try {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+      const warmSession = (partition && partition !== 'default') ? session.fromPartition(partition) : session.defaultSession;
+      try { warmSession.dns.resolveHost(new URL(url).hostname, () => {}); } catch (_) {}
+      setTimeout(() => { try { warmSession.net?.preconnect?.(new URL(url).origin); } catch (_) {} }, 0);
+      setTimeout(() => { try { warmSession.net?.preconnect?.(new URL(url).origin); } catch (_) {} }, 400);
+    }
+  } catch (_) {}
 
   const win = new BrowserWindow({
     width: opts.width || 1280,
@@ -4814,10 +4852,10 @@ const _mpvHostWins = new Set(); // 挂载了 mpv 的宿主主窗口（用于跟�
 function _anyHostFocused() {
   try {
     for (const w of _mpvHostWins) {
-      try { if (w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && w.isFocused()) return true; } catch (_) {}
+      try { if (w && !w.isDestroyed() && w.isVisible() && !w.isMinimized() && w.isFocused()) return w; } catch (_) {}
     }
-    return false;
-  } catch (_) { return false; }
+    return null;
+  } catch (_) { return null; }
 }
 // 给宿主主窗口挂 blur/focus 监听（仅挂一次），切换到外部程序/回到飞牛时自动调层级。
 function attachMpvHostFocusTracking(hostWin) {
@@ -4833,12 +4871,38 @@ function attachMpvHostFocusTracking(hostWin) {
     hostWin.on('closed', () => { try { _mpvHostWins.delete(hostWin); } catch (_) {} });
   } catch (_) {}
 }
-function setAllMpvOntop(on) {
+// 依据 on 置顶所有活着 MPV：为 true 时只置顶"当前聚焦宿主"对应的那个 MPV，
+// 其余宿主的 MPV（非画中画）降层，避免多个窗口（飞牛影视/直播等各带 MPV）同时浮最上互相盖窗。
+function setAllMpvOntop(on, focusedHostId) {
   try {
-    for (const surf of mpvSurfaces.values()) {
-      // 画中画小窗始终置顶（即便切到外部 App 也浮着），不降层。
-      try { if (surf && surf.isPip && surf.isPip()) { surf.setOntop && surf.setOntop(true); continue; } } catch (_) {}
-      try { surf && surf.setOntop && surf.setOntop(on); } catch (_) {}
+    // mpvSurfaces 以"宿主窗口数字 id (win.id)" 为键；focusedHostId 也须归一为数字 id。
+    let hostKey = null;
+    if (typeof focusedHostId === 'number') hostKey = focusedHostId;
+    else if (typeof focusedHostId === 'string' && /^\d+$/.test(focusedHostId)) hostKey = Number(focusedHostId);
+    if (on && !hostKey) {
+      // 未显式给出聚焦宿主时，尝试现场探测当前聚焦宿主（窗口 id）。
+      for (const w of BrowserWindow.getAllWindows()) {
+        try {
+          if (!w || w.isDestroyed() || !w.isFocused()) continue;
+          if (w.__isSettings || w.__isGlassDialog || w.__isCheckWin) continue;
+          hostKey = w.id;
+          break;
+        } catch (_) {}
+      }
+    }
+    for (const [hostId, surf] of mpvSurfaces.entries()) {
+      try {
+        if (!surf) continue;
+        // 画中画小窗始终置顶（即便切到外部 App 也浮着），不降层。
+        if (surf.isPip && surf.isPip()) { try { surf.setOntop && surf.setOntop(true); } catch (_) {} continue; }
+        if (on) {
+          // 置顶态：是否为本宿主（聚焦宿主）——非聚焦宿主的 MPV 一律降层
+          const isSelf = hostKey ? (hostId === hostKey) : true;
+          try { surf.setOntop && surf.setOntop(isSelf); } catch (_) {}
+        } else {
+          try { surf.setOntop && surf.setOntop(false); } catch (_) {}
+        }
+      } catch (_) {}
     }
   } catch (_) {}
 }
@@ -4883,10 +4947,16 @@ function _blockingWindowsExist() {
 //    不再反复判定（此前会无意义地刷 host-blurred/host-focused）。
 //  - 外部失焦降层加防抖：宿主窗 blur 后需持续失焦 ~500ms 才真正 ontop=no；focus 立即恢复并取消。
 //    避免弹窗/菜单/网页 video 控件/mpv 自有窗等"瞬时焦点抢占"让置顶态高频横跳（连带帧率抖动）。
-function _applyMpvLayer(shouldSuppress, reason) {
+function _applyMpvLayer(shouldSuppress, reason, focusedHostId) {
   _clearMpvBlurLayerTimer();
   _mpvSuppressed = shouldSuppress;
-  setAllMpvOntop(!shouldSuppress);
+  if (!focusedHostId) {
+    const fh = _anyHostFocused();
+    if (fh && !fh.isDestroyed()) focusedHostId = fh.id;
+  }
+  // 恢复置顶时按"聚焦宿主"粒度：只置顶该宿主对应的 MPV，其余（非画中画）降层，
+  // 避免并发打开飞牛影视+直播等多宿主各带 MPV 时相互抢置顶导致不能正常前置后置。
+  setAllMpvOntop(!shouldSuppress, focusedHostId || undefined);
   _forEachBlockingWindow((w) => {
     try {
       if (shouldSuppress) {

@@ -18,6 +18,7 @@ class MpvSurface {
   //   - 画中画时缩到屏幕右下角并置顶，退出时还原到画中画前的窗口几何（而不是贴合视频区）。
   constructor(parentWin, dipRect, opts = {}) {
     this.parent = parentWin;
+    this.parentId = (parentWin && parentWin.id) || 0;
     this._dead = false;
     this._standalone = !!opts.standalone;
     this.viewOffset = { x: opts.viewOffsetX || 0, y: opts.viewOffsetY || 0 };

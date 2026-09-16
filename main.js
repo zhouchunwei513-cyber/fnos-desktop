@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.73.0';
+const APP_VERSION = '1.74.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3132,6 +3132,8 @@ function createAppWindow(url, opts = {}) {
       const __applyAppIcon = () => {
         try {
           if (win.isDestroyed() || !win.webContents) return;
+          // v1.74.0：已用扫描到的应用图标设置过窗口图标，不再用页面 favicon 覆盖
+          if (win.__appIconSet) return;
           win.webContents.executeJavaScript(`(function(){
             try {
               var pick = function(sel){ var n = document.querySelector(sel); return n && n.href ? n.href : ''; };
@@ -3223,6 +3225,39 @@ function createAppWindow(url, opts = {}) {
     win.once('ready-to-show', () => {
       try { dlog && dlog('info', 'appwin.ready-show', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0 }); } catch (_) {}
     });
+  } catch (_) {}
+
+  // v1.74.0：应用窗口打开时，URL 匹配已扫描应用 → 立即用缓存的应用图标设置窗口
+  // 图标与初始标题（不依赖页面 favicon）。解决"任务栏图标只是部分改过来"：
+  // 飞牛 appview 页面 favicon 是前端默认图标，应用图标必须从扫描数据直接取。
+  // favicon 提取仍保留作为兜底（未命中缓存图标时）。
+  try {
+    const __s = loadSettings();
+    const __apps = Array.isArray(__s.apps) ? __s.apps : [];
+    if (__apps.length && typeof url === 'string' && /^https?:/i.test(url)) {
+      const norm = String(url).split('?')[0].split('#')[0];
+      const hit = __apps.find((a) => a && a.url && (
+        String(a.url).split('?')[0] === norm ||
+        String(a.url).split('?')[0].startsWith(norm) ||
+        norm.startsWith(String(a.url).split('?')[0])
+      ));
+      if (hit) {
+        try { if (hit.name && !opts.title) win.setTitle(String(hit.name).slice(0, 40)); } catch (_) {}
+        try {
+          const __hash = require('crypto').createHash('sha1').update(hit.url).digest('hex').slice(0, 12);
+          const __png = path.join(app.getPath('userData'), 'app-icons', __hash + '.png');
+          if (fs.existsSync(__png)) {
+            const __img = nativeImage.createFromPath(__png);
+            if (!__img.isEmpty()) {
+              win.setIcon(__img);
+              win.__appIconSet = true;
+              win.__appMeta = hit;
+              dlog && dlog('info', 'appwin.icon-cache', { app: String(hit.name).slice(0, 40), winId: win.id, url: String(hit.url).slice(0, 100) });
+            }
+          }
+        } catch (_) {}
+      }
+    }
   } catch (_) {}
 
   if (url) {
@@ -3938,6 +3973,8 @@ ipcMain.on('shell:report-apps', (_e, apps) => {
         name: String(a.name).slice(0, 40),
         url: String(a.url),
         icon: String(a.icon || ''),
+        // v1.74.0：保存 appName（飞牛应用内部名，用于构造 appview anchor 打开地址）
+        appName: String(a.appName || ''),
         addedAt: Date.now(),
       });
       // v1.73.0：识别「新增」应用（之前没扫到过）→ 触发桌面快捷方式自动创建

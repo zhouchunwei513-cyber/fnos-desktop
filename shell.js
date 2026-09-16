@@ -92,56 +92,78 @@
   //   2) 常见应用卡片容器（app-card/app-item/app-entry/desktop-app 等，应用可能
   //      不是 <a> 而是 div+图标+onclick 结构）——应用增减时都能扫到
   //   3) 图标支持 data: URL（内联 SVG/PNG），名称做空白清理
+  // v1.74.0：重写应用扫描——飞牛主页应用打开走前端路由(appview?anchor)或独立端口，
+  // 卡片多为 div+图标+onclick 结构（非 <a>），且应用可增可减。多策略：
+  //   1) 所有 a[href]：不再限不同端口，同主机同端口路径/相对路径也收
+  //   2) 从图标 img 向上找名称容器：紧凑卡片（图标+短名称）即应用，高效且
+  //      不依赖具体 class 名；从图标路径提取 appName（/icons/{appName}/ 模式）
+  //      构造 appview anchor 打开地址
+  //   3) 名称清洗、图标转绝对、按最终 URL 去重——应用增减自动同步
   function collectApps(wv) {
     try {
       wv.executeJavaScript(`(function(){
         try {
-          var host = location.hostname;
-          var port = location.port;
+          var origin = location.origin;
           var res = [];
           var seen = {};
-          var clean = function(s){ return String(s||'').replace(/\\s+/g,' ').trim(); };
-          var pushApp = function(name, url, icon){
-            if (!name || !url) return;
-            if (name.length > 40) name = name.slice(0, 40);
-            if (!/^https?:\\/\\//i.test(url)) return;
-            var u; try { u = new URL(url); } catch (e) { return; }
-            if (u.hostname !== host) return;
-            if (!u.port || u.port === port) return;
-            if (seen[url]) return;
-            seen[url] = 1;
-            res.push({ name: name, url: url, icon: icon || '' });
+          var clean = function(s){ return String(s||'').replace(/\s+/g,' ').trim(); };
+          var toAbs = function(u){
+            if (!u) return '';
+            try { return new URL(u, origin).href; } catch(e){ return ''; }
           };
-          // 1) 直接链接：a[href] 同主机不同端口
+          // 飞牛应用图标常见路径：/static/app/icons/{appName}/icon.png、/icons/{appName}.png
+          var appNameFromUrl = function(u){
+            if (!u) return '';
+            var m = /\/icons\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);
+            if (m) { try { return decodeURIComponent(m[1]); } catch(e){ return m[1]; } }
+            return '';
+          };
+          var pushApp = function(name, url, icon, appName){
+            if (!name) return;
+            if (name.length > 40) name = name.slice(0, 40);
+            var abs = toAbs(url);
+            var finalUrl = /^https?:/i.test(abs) ? abs : '';
+            if (!finalUrl && appName) {
+              // 前端路由打开：/appview?anchor=https://{appName}
+              finalUrl = origin + '/appview?anchor=' + encodeURIComponent('https://' + appName);
+            }
+            if (!finalUrl) return;
+            if (seen[finalUrl]) return;
+            seen[finalUrl] = 1;
+            res.push({ name: name, url: finalUrl, icon: icon || '', appName: appName || '' });
+          };
+          // 1) 所有链接（同主机不同端口/同端口路径/相对路径都收，不再过滤端口）
           var links = document.querySelectorAll('a[href]');
           for (var i = 0; i < links.length; i++) {
             var a = links[i];
             var img = a.querySelector('img');
             var icon = img ? (img.currentSrc || img.src || '') : '';
-            var name = clean(a.innerText || a.title || (img && img.alt) || '');
-            pushApp(name, a.href, icon);
+            var nm = clean(a.innerText || a.title || (img && img.alt) || '');
+            if (!nm && img) nm = clean(img.alt || '');
+            pushApp(nm, a.href, icon, appNameFromUrl(icon));
           }
-          // 2) 应用卡片容器（可能不是 <a>）：优先 title/alt/子链接取名称
-          var cards = document.querySelectorAll(
-            '[class*="app-card"],[class*="app-item"],[class*="app-entry"],[class*="entry-card"],' +
-            '[class*="desktop-app"],[class*="app-grid"] [class*="item"],[class*="app-list"] [class*="item"]'
-          );
-          for (var k = 0; k < cards.length; k++) {
-            var c = cards[k];
-            var img2 = c.querySelector('img');
-            var link2 = c.querySelector('a[href]');
-            var target = link2 ? link2.href : '';
-            var name2 = clean(
-              c.getAttribute('title') ||
-              (link2 && (link2.innerText || link2.title)) ||
-              (img2 && img2.alt) || ''
-            );
-            var icon2 = img2 ? (img2.currentSrc || img2.src || '') : '';
-            if (target) { pushApp(name2, target, icon2); }
-            else if (img2 && img2.src && name2 && name2.length <= 40) {
-              // 无链接但有图标+短名称的卡片：记录（url 用当前页，可能重复由去重兜底）
-              pushApp(name2, location.href.split('#')[0], icon2);
+          // 2) 图标 img 向上找名称容器（应用卡片 = 图标 + 短名称，最多上溯 4 层）
+          var imgs = document.querySelectorAll('img');
+          var done = {};
+          for (var q = 0; q < imgs.length; q++) {
+            var im = imgs[q];
+            var icon2 = im.currentSrc || im.src || '';
+            var nm2 = clean(im.alt || '');
+            var href2 = '';
+            var cur = im;
+            for (var d = 0; d < 4 && cur; d++) {
+              var pe = cur.parentElement;
+              if (!pe) break;
+              if (!href2 && pe.tagName === 'A') href2 = pe.href || '';
+              var t = clean(pe.innerText || '');
+              if (t && t.length <= 40 && !/\s/.test(t)) nm2 = t;
+              cur = pe;
             }
+            if (!nm2 || nm2.length > 40) continue;
+            var k2 = href2 || icon2;
+            if (done[k2]) continue;
+            done[k2] = 1;
+            pushApp(nm2, href2, icon2, appNameFromUrl(icon2));
           }
           return JSON.stringify(res);
         } catch (e) { return '[]'; }

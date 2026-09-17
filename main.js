@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.76.0';
+const APP_VERSION = '1.77.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4070,7 +4070,9 @@ ipcMain.on('shell:report-apps', (_e, apps) => {
 //   2) 仅结果变化时上报（应用增/减自动同步）
 let __homeScanTimer = null;
 let __lastHomeAppsSig = '';
-const __HOME_SCAN_JS = `(function(){
+// v1.77.0：String.raw 保持正则转义原样（普通模板字符串会把 \\/ 解析成 /、\\s 解析成 s，
+// 导致生成的扫描 JS 语法错误、executeJavaScript 每次报 Script failed to execute）
+const __HOME_SCAN_JS = String.raw`(function(){
   try {
     // 登录页没有应用卡片，直接跳过（SPA 登录态未就绪时也是空）
     var pp = (location.pathname || '').toLowerCase();

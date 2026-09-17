@@ -99,10 +99,19 @@
   //      不依赖具体 class 名；从图标路径提取 appName（/icons/{appName}/ 模式）
   //      构造 appview anchor 打开地址
   //   3) 名称清洗、图标转绝对、按最终 URL 去重——应用增减自动同步
+  // v1.75.0：持续循环扫描应用。修复：飞牛主页未登录时是登录页（无应用卡片），
+  // 登录后 SPA 才渲染应用卡片，旧版固定次数(1.5/4/8s)扫描会错过登录后的渲染，
+  // 导致 apps 永远为空、快捷方式/任务栏图标无法创建。现在每 10s 循环扫描一次，
+  // 仅当结果变化（应用增/减）时才上报，自动同步。
+  let __lastAppsSig = '';
+  let __appScanTimer = null;
   function collectApps(wv) {
     try {
       wv.executeJavaScript(`(function(){
         try {
+          // v1.75.0：登录页没有应用卡片，直接跳过（SPA 登录态未就绪时也是空）
+          var pp = (location.pathname || '').toLowerCase();
+          if (pp.indexOf('/login') === 0 || pp === 'login') return '__SKIP__';
           var origin = location.origin;
           var res = [];
           var seen = {};
@@ -169,12 +178,25 @@
         } catch (e) { return '[]'; }
       })()`, true).then((json) => {
         try {
+          if (json === '__SKIP__') return;
           const apps = JSON.parse(json || '[]');
-          if (Array.isArray(apps) && apps.length && window.fnosShell && window.fnosShell.reportApps) {
+          const sig = JSON.stringify(apps);
+          if (sig === __lastAppsSig) return;
+          __lastAppsSig = sig;
+          if (window.fnosShell && window.fnosShell.reportApps) {
             window.fnosShell.reportApps(apps);
           }
         } catch (_) {}
       }).catch(() => {});
+    } catch (_) {}
+  }
+
+  // v1.75.0：启动持续扫描——立即扫一次 + 每 10s 循环（登录后/应用增减自动同步）
+  function startAppScan(wv) {
+    try {
+      if (__appScanTimer) { clearInterval(__appScanTimer); __appScanTimer = null; }
+      collectApps(wv);
+      __appScanTimer = setInterval(() => { try { collectApps(wv); } catch (_) {} }, 10000);
     } catch (_) {}
   }
 
@@ -216,14 +238,11 @@ aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar
 }`);
       } catch (_) {}
       injectHomeScale(wv);
-      setTimeout(() => collectApps(wv), 1500);
-      setTimeout(() => collectApps(wv), 4000);
-      setTimeout(() => collectApps(wv), 8000);
+      startAppScan(wv);
     });
     wv.addEventListener('did-navigate', () => {
       injectHomeScale(wv);
-      setTimeout(() => collectApps(wv), 1500);
-      setTimeout(() => collectApps(wv), 4000);
+      startAppScan(wv);
     });
     wv.addEventListener('did-stop-loading', () => hideLoader());
     wv.addEventListener('did-fail-load', (e) => { if (e.errorCode !== -3) hideLoader(); });

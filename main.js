@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.74.0';
+const APP_VERSION = '1.75.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3983,7 +3983,8 @@ ipcMain.on('shell:report-apps', (_e, apps) => {
     const merged = Array.from(byUrl.values());
     saveSettings({ apps: merged.slice(0, 50) });
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
-    dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length });
+    // v1.75.0：日志带上具体应用名，便于排障
+    dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length, apps: merged.map((a) => a.name + '|' + a.url).slice(0, 12) });
     if (fresh.length) autoCreateDesktopShortcuts(fresh, 'scan');
   } catch (_) {}
 });

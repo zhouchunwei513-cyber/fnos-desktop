@@ -295,7 +295,169 @@ module.exports = function injectTitleBar(ctx) {
       }
     }
 
-    const start = () => { try { build(); } catch (_) {} };
+    // ============ v2.0.0 左侧悬浮账号切换面板 ============
+    function buildAccountSwitcher() {
+      try {
+        if (document.getElementById('fnos-account-switcher')) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'fnos-account-switcher';
+        panel.innerHTML = `
+          <div id="fnos-acct-trigger" title="切换账号">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+          </div>
+          <div id="fnos-acct-dropdown" class="fnos-acct-hidden">
+            <div class="fnos-acct-header">已登录账号</div>
+            <div id="fnos-acct-list"></div>
+            <div id="fnos-acct-add" class="fnos-acct-item">+ 登录其它账号</div>
+          </div>
+        `;
+
+        // iOS27 液态玻璃风格
+        const style = document.createElement('style');
+        style.textContent = `
+          #fnos-account-switcher {
+            position: fixed; left: 0; top: 50%; transform: translateY(-50%);
+            z-index: 99999; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+          }
+          #fnos-acct-trigger {
+            width: 24px; height: 48px; display: flex; align-items: center; justify-content: center;
+            background: rgba(255,255,255,0.08);
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 0 12px 12px 0;
+            color: rgba(255,255,255,0.7); cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          }
+          #fnos-acct-trigger:hover {
+            width: 32px; background: rgba(255,255,255,0.15); color: #fff;
+          }
+          #fnos-acct-dropdown {
+            position: absolute; left: 32px; top: 50%; transform: translateY(-50%);
+            min-width: 200px; max-width: 280px;
+            background: rgba(30, 27, 46, 0.85);
+            backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.2);
+            padding: 8px 0;
+            transition: opacity 0.2s, transform 0.2s;
+          }
+          .fnos-acct-hidden { opacity: 0 !important; pointer-events: none !important; transform: translateY(-50%) translateX(-8px) !important; }
+          .fnos-acct-header {
+            padding: 8px 16px 6px; font-size: 11px; color: rgba(255,255,255,0.4);
+            text-transform: uppercase; letter-spacing: 0.5px;
+          }
+          .fnos-acct-item {
+            padding: 8px 16px; cursor: pointer; font-size: 13px;
+            color: rgba(255,255,255,0.8); display: flex; align-items: center; gap: 8px;
+            transition: background 0.15s;
+          }
+          .fnos-acct-item:hover { background: rgba(255,255,255,0.08); }
+          .fnos-acct-item.active { color: #60a5fa; }
+          .fnos-acct-item .acct-dot {
+            width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+          }
+          .fnos-acct-item.active .acct-dot { background: #60a5fa; }
+          .fnos-acct-item:not(.active) .acct-dot { background: rgba(255,255,255,0.2); }
+          .fnos-acct-item .acct-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .fnos-acct-item .acct-remove {
+            opacity: 0; font-size: 14px; color: rgba(255,255,255,0.3);
+            transition: opacity 0.15s, color 0.15s; padding: 2px 4px;
+          }
+          .fnos-acct-item:hover .acct-remove { opacity: 1; }
+          .fnos-acct-item .acct-remove:hover { color: #f87171; }
+          #fnos-acct-add { color: rgba(255,255,255,0.5); border-top: 1px solid rgba(255,255,255,0.08); margin-top: 4px; padding-top: 10px; }
+        `;
+
+        // 事件绑定
+        const trigger = panel.querySelector('#fnos-acct-trigger');
+        const dropdown = panel.querySelector('#fnos-acct-dropdown');
+        let hideTimer = null;
+
+        function showDropdown() {
+          clearTimeout(hideTimer);
+          dropdown.classList.remove('fnos-acct-hidden');
+          loadAccountList();
+        }
+        function hideDropdown() {
+          hideTimer = setTimeout(() => dropdown.classList.add('fnos-acct-hidden'), 300);
+        }
+
+        trigger.addEventListener('mouseenter', showDropdown);
+        trigger.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (dropdown.classList.contains('fnos-acct-hidden')) showDropdown();
+          else hideDropdown();
+        });
+        panel.addEventListener('mouseleave', hideDropdown);
+
+        async function loadAccountList() {
+          try {
+            const listEl = panel.querySelector('#fnos-acct-list');
+            // 通过 fnos 全局对象调用（preload 暴露的）
+            let accounts = [];
+            try {
+              const res = await (window.fnApi ? window.fnApi.listAccounts() : ipcRenderer.invoke('account:list'));
+              if (res && res.success) accounts = res.data || [];
+            } catch (_) {}
+            
+            listEl.innerHTML = '';
+            if (accounts.length === 0) {
+              listEl.innerHTML = '<div style="padding:8px 16px;font-size:12px;color:rgba(255,255,255,0.3)">暂无已登录账号</div>';
+              return;
+            }
+            accounts.forEach(acct => {
+              const item = document.createElement('div');
+              item.className = 'fnos-acct-item' + (acct.isActive ? ' active' : '');
+              item.innerHTML = `
+                <span class="acct-dot"></span>
+                <span class="acct-label">${acct.label || acct.origin || '未知'}</span>
+                <span class="acct-remove" title="移除账号">×</span>
+              `;
+              item.querySelector('.acct-label').addEventListener('click', () => {
+                if (!acct.isActive) {
+                  try {
+                    if (window.fnApi) window.fnApi.switchAccount(acct.origin);
+                    else ipcRenderer.invoke('account:switch', { origin: acct.origin });
+                  } catch (_) {}
+                  hideDropdown();
+                }
+              });
+              item.querySelector('.acct-remove').addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (confirm('确定移除账号 ' + (acct.label || acct.origin) + '？')) {
+                  try {
+                    if (window.fnApi) window.fnApi.removeAccount(acct.id);
+                    else ipcRenderer.invoke('account:remove', { accountId: acct.id });
+                  } catch (_) {}
+                  loadAccountList();
+                }
+              });
+              listEl.appendChild(item);
+            });
+          } catch (_) {}
+        }
+
+        // 添加账号按钮
+        panel.querySelector('#fnos-acct-add').addEventListener('click', () => {
+          try {
+            if (window.fnos) window.fnos.backToConnect && window.fnos.backToConnect();
+            else ipcRenderer.invoke('auth:back-to-connect');
+          } catch (_) {}
+          hideDropdown();
+        });
+
+        document.body.appendChild(style);
+        document.body.appendChild(panel);
+      } catch (_) {}
+    }
+
+    
+    const start = () => { try { build(); buildAccountSwitcher(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

@@ -456,3 +456,49 @@ body::-webkit-scrollbar-thumb:hover {
   font-size: 14px;
   color: rgba(255, 255, 255, 0.85);
 }
+
+/* v2.0.0：账号管理样式 */
+.account-list-container {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 8px;
+}
+.account-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  transition: all 0.2s;
+}
+.account-item:hover { background: rgba(255,255,255,0.08); }
+.account-item.active {
+  background: rgba(80,130,255,0.12);
+  border-color: rgba(80,130,255,0.3);
+}
+.account-item .acct-status {
+  width: 8px; height: 8px; border-radius: 50; flex-shrink: 0;
+}
+.account-item.active .acct-status { background: #4ade80; }
+.account-item:not(.active) .acct-status { background: rgba(255,255,255,0.2); }
+.account-item .acct-info { flex: 1; min-width: 0; }
+.account-item .acct-name {
+  font-size: 14px; font-weight: 500; color: #e2e8f0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.account-item .acct-addr {
+  font-size: 12px; color: rgba(255,255,255,0.4); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.account-item .acct-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.account-item .acct-btn {
+  padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7); transition: all 0.2s;
+}
+.account-item .acct-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.account-item .acct-btn.primary {
+  background: linear-gradient(135deg, rgba(80,130,255,0.4), rgba(120,90,255,0.4));
+  border-color: rgba(80,130,255,0.3); color: #fff;
+}
+.account-item .acct-btn.danger:hover {
+  background: rgba(239,68,68,0.3); border-color: rgba(239,68,68,0.4); color: #f87171;
+}
+.account-empty { color: #64748b; font-size: 13px; padding: 12px 0; }

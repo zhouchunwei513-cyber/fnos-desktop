@@ -1,5 +1,5 @@
 /**
- * FNOS 桌面客户端 - 主进程 (v1.7.0)
+ * FNOS 桌面客户端 - 主进程 (v2.0.0)
  *
  * 核心设计：
  *  - 每个服务器使用独立的 persist partition，保持各自登录态。
@@ -689,6 +689,10 @@ function defaultSettings() {
     // v1.17.7：本地代理模块已彻底移除。保留 iptv 段仅用于收藏/线路等用户数据，
     // 历史 proxy 相关字段（enabled/prefetch/maxCacheSegments/maxCacheMB/matchHosts/defaultPlayer）
     // 在 loadSettings 时会自动清理，不再生效。
+    // v2.0.0：多账号管理
+    accounts: [],
+    // 当前激活的账号 origin（用于切换后恢复）
+    activeAccountOrigin: '',
     iptv: {
       iptvBaseUrl: '',       // 自定义直播列表基地址（如 http://nas:34500），留空用 currentOrigin
       iptvLine: 'inner',     // 订阅线路：inner / ipv6 / frp
@@ -1060,9 +1064,13 @@ function normalizeServer(input) {
 // 共用同一份 cookie、localStorage，实现一次登录全模块互通、重启自动恢复登录态。
 const SHARED_PARTITION = 'persist:fnos-shared';
 
-function partitionForServer(/* parsed */) {
-  // 历史上按 host 分了独立 partition，导致登录态在主程序与 webview 之间不互通。
-  // v1.16.3 起强制统一：所有服务器都走共享 partition。
+function partitionForServer(parsed) {
+  // v2.0.0：多账号支持——每个 NAS 服务器地址使用独立 partition，
+  // 确保多个 NAS 账号的登录态互不干扰、可同时保持在线。
+  if (parsed && parsed.origin) {
+    const hash = parsed.origin.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').slice(0, 24);
+    return 'persist:nas-' + hash;
+  }
   return SHARED_PARTITION;
 }
 
@@ -3651,6 +3659,19 @@ function rebuildTrayMenu() {
   }
 
   items.push({ type: 'separator' });
+  // v2.0.0：托盘菜单中的账号切换
+  const trayAccounts = getAccounts();
+  if (trayAccounts.length > 0) {
+    const acctSubmenu = [
+      ...trayAccounts.map(a => ({
+        label: (a.isActive ? '● ' : '  ') + (a.label || a.origin),
+        click: () => { if (!a.isActive) switchAccount(a.origin); },
+      })),
+      { type: 'separator' },
+      { label: '登录其它账号…', click: () => showConnectPage() },
+    ];
+    items.push({ label: '切换账号', submenu: acctSubmenu });
+  }
   items.push({ label: '切换服务器…', click: () => showConnectPage() });
   if (hasAppPassword()) {
     items.push({ label: '锁定 FNOS', click: () => lockApp() });
@@ -3890,6 +3911,8 @@ function doConnectTo(serverInput) {
   const parsed = normalizeServer(serverInput);
   const targetPartition = partitionForServer(parsed);
   upsertHistory(serverInput, parsed);
+  // v2.0.0：同步记录到多账号列表
+  upsertAccount(serverInput, parsed);
   // v1.12.1：立即把历史写入磁盘，避免 30s 定时 flush 前进程被强杀导致历史不记录
   try { flushPartition(targetPartition); } catch (_) {}
 
@@ -4068,6 +4091,22 @@ function buildMenuTemplate() {
             if (response === 0) showConnectPage();
           });
         }},
+        // v2.0.0：多账号快速切换
+        (() => {
+          const accts = getAccounts();
+          if (accts.length === 0) return { label: '切换账号', submenu: [{ label: '（暂无已登录账号）', enabled: false }] };
+          return {
+            label: '切换账号',
+            submenu: [
+              ...accts.map(a => ({
+                label: (a.isActive ? '● ' : '  ') + (a.label || a.origin),
+                click: () => { if (!a.isActive) switchAccount(a.origin); },
+              })),
+              { type: 'separator' },
+              { label: '登录其它账号…', click: () => showConnectPage() },
+            ],
+          };
+        })(),
         { type: 'separator' },
         {
           label: '切换窗口',
@@ -4841,6 +4880,169 @@ $sc.Save()
     }
   } catch (e) {
     fnosLog('error', 'ipc', 'create-desktop-shortcut error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+
+// ===================== v2.0.0 多账号管理 =====================
+// 账号数据结构：{ id, label, origin, href, partition, lastConnectedAt, isActive }
+// 存储在 settings.accounts 数组中
+
+function getAccounts() {
+  const s = loadSettings();
+  return Array.isArray(s.accounts) ? s.accounts : [];
+}
+
+function saveAccounts(accounts) {
+  try {
+    saveSettings({ accounts });
+    fnosLog('info', 'account', '账号列表已更新', { count: accounts.length });
+    return { success: true, msg: '' };
+  } catch (e) {
+    fnosLog('error', 'account', '保存账号列表失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 登录成功后调用：将当前连接信息加入账号列表
+function upsertAccount(serverInput, parsed) {
+  try {
+    const accounts = getAccounts();
+    const key = parsed.origin || parsed.href;
+    const partition = partitionForServer(parsed);
+    const idx = accounts.findIndex(a => a.origin === key);
+    
+    const entry = {
+      id: 'acct_' + crypto.createHash('md5').update(key).digest('hex').slice(0, 12),
+      label: parsed.isFnId ? `FN ID: ${parsed.fnId}` : serverInput.trim(),
+      origin: parsed.origin,
+      href: parsed.href,
+      partition,
+      lastConnectedAt: Date.now(),
+      isActive: true,
+    };
+    
+    // 将所有账号设为非活跃，当前账号设为活跃
+    accounts.forEach(a => a.isActive = false);
+    
+    if (idx >= 0) {
+      accounts[idx] = { ...accounts[idx], ...entry };
+    } else {
+      accounts.push(entry);
+    }
+    
+    saveAccounts(accounts);
+    saveSettings({ activeAccountOrigin: key });
+    fnosLog('info', 'account', '账号已记录', { origin: key, label: entry.label });
+  } catch (e) {
+    fnosLog('error', 'account', 'upsertAccount失败', { err: e.message });
+  }
+}
+
+// 切换账号：切换到指定 origin 的账号
+function switchAccount(targetOrigin) {
+  try {
+    const accounts = getAccounts();
+    const target = accounts.find(a => a.origin === targetOrigin);
+    if (!target) {
+      fnosLog('warn', 'account', '切换账号失败：未找到目标账号', { targetOrigin });
+      return { success: false, msg: '未找到该账号' };
+    }
+    
+    // 更新活跃状态
+    accounts.forEach(a => a.isActive = (a.origin === targetOrigin));
+    saveAccounts(accounts);
+    saveSettings({ activeAccountOrigin: targetOrigin, currentPartition: target.partition });
+    
+    fnosLog('info', 'account', '切换账号', { origin: targetOrigin, label: target.label });
+    
+    // 重建主窗口使用目标 partition
+    currentPartition = target.partition;
+    currentOrigin = target.origin;
+    lastConnectHref = target.href;
+    createMainWindow(target.partition, { origin: target.origin, href: target.href });
+    
+    return { success: true, msg: '切换成功' };
+  } catch (e) {
+    fnosLog('error', 'account', 'switchAccount失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 移除账号
+function removeAccount(accountId) {
+  try {
+    const accounts = getAccounts();
+    const target = accounts.find(a => a.id === accountId);
+    if (!target) {
+      return { success: false, msg: '未找到该账号' };
+    }
+    
+    const wasActive = target.isActive;
+    const filtered = accounts.filter(a => a.id !== accountId);
+    saveAccounts(filtered);
+    
+    // 清除该 partition 的 session 数据
+    try {
+      const ses = session.fromPartition(target.partition);
+      ses.clearStorageData().catch(() => {});
+      ses.clearCache().catch(() => {});
+    } catch (_) {}
+    
+    fnosLog('info', 'account', '账号已移除', { accountId, origin: target.origin });
+    
+    // 如果移除的是当前活跃账号，跳转到连接页
+    if (wasActive) {
+      saveSettings({ activeAccountOrigin: '', currentPartition: 'persist:connect' });
+      showConnectPage();
+    }
+    
+    return { success: true, msg: '移除成功' };
+  } catch (e) {
+    fnosLog('error', 'account', 'removeAccount失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 多账号 IPC
+ipcMain.handle('account:list', async () => {
+  try {
+    const accounts = getAccounts();
+    fnosLog('info', 'ipc', 'account:list', { count: accounts.length });
+    return { success: true, msg: '', data: accounts };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'account:list error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+ipcMain.handle('account:switch', async (_e, { origin }) => {
+  try {
+    fnosLog('info', 'ipc', 'account:switch', { origin });
+    return switchAccount(origin);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'account:switch error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('account:remove', async (_e, { accountId }) => {
+  try {
+    fnosLog('info', 'ipc', 'account:remove', { accountId });
+    return removeAccount(accountId);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'account:remove error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('account:get-active', async () => {
+  try {
+    const accounts = getAccounts();
+    const active = accounts.find(a => a.isActive) || null;
+    return { success: true, msg: '', data: active };
+  } catch (e) {
     return { success: false, msg: e.message, data: null };
   }
 });

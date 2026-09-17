@@ -609,8 +609,93 @@
           }
         }
       }
+      // v2.0.0：加载账号管理
+      loadAccountManager();
     } catch (err) {
       showError(hkError, err?.message || '加载设置失败');
     }
   })();
+
+  // ============ v2.0.0 多账号管理 ============
+  async function loadAccountManager() {
+    const listEl = document.getElementById('account-list');
+    const loadingEl = document.getElementById('account-loading');
+    const addBtn = document.getElementById('account-add-btn');
+    if (!listEl) return;
+
+    async function refreshAccounts() {
+      try {
+        let accounts = [];
+        try {
+          const res = await fnosSettings.listAccounts();
+          if (res && res.success) accounts = res.data || [];
+        } catch (_) {
+          try {
+            const res = await fnosSettings._ipcInvoke && fnosSettings._ipcInvoke('account:list');
+            if (res && res.success) accounts = res.data || [];
+          } catch (_) {}
+        }
+
+        listEl.innerHTML = '';
+        if (!accounts.length) {
+          listEl.innerHTML = '<div class="account-empty">暂无已登录账号，请先连接 NAS 服务器</div>';
+          return;
+        }
+
+        accounts.forEach(acct => {
+          const item = document.createElement('div');
+          item.className = 'account-item' + (acct.isActive ? ' active' : '');
+          item.innerHTML = `
+            <span class="acct-status" style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${acct.isActive ? '#4ade80' : 'rgba(255,255,255,0.2)'}"></span>
+            <div class="acct-info">
+              <div class="acct-name">${acct.label || acct.origin || '未知账号'}${acct.isActive ? ' <span style="font-size:11px;color:#4ade80">(当前)</span>' : ''}</div>
+              <div class="acct-addr">${acct.origin || ''}</div>
+            </div>
+            <div class="acct-actions">
+              ${!acct.isActive ? '<button class="acct-btn primary" data-action="switch">切换</button>' : ''}
+              <button class="acct-btn danger" data-action="remove">移除</button>
+            </div>
+          `;
+
+          const switchBtn = item.querySelector('[data-action="switch"]');
+          if (switchBtn) {
+            switchBtn.addEventListener('click', async () => {
+              try {
+                const res = await fnosSettings.switchAccount(acct.origin);
+                if (res && res.success) {
+                  refreshAccounts();
+                } else {
+                  alert('切换失败: ' + (res?.msg || '未知错误'));
+                }
+              } catch (e) { alert('切换失败: ' + e.message); }
+            });
+          }
+
+          item.querySelector('[data-action="remove"]').addEventListener('click', async () => {
+            if (!confirm('确定移除账号 "' + (acct.label || acct.origin) + '"？\n这将清除该账号的登录状态。')) return;
+            try {
+              const res = await fnosSettings.removeAccount(acct.id);
+              if (res && res.success) {
+                refreshAccounts();
+              } else {
+                alert('移除失败: ' + (res?.msg || '未知错误'));
+              }
+            } catch (e) { alert('移除失败: ' + e.message); }
+          });
+
+          listEl.appendChild(item);
+        });
+      } catch (_) {
+        listEl.innerHTML = '<div class="account-empty">加载失败</div>';
+      }
+    }
+
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        try { fnosSettings.backToConnect(); } catch (_) {}
+      });
+    }
+
+    refreshAccounts();
+  }
 })();

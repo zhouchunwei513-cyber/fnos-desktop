@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (href) => ipcRenderer.invoke('auth:remove-history', { href }),
   platform: process.platform,
-  version: '1.38.0',
+  version: '2.0.0',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),
@@ -1198,6 +1198,11 @@ try {
     installNasApp: (payload) => { console.log('[fnApi] installNasApp', payload); return ipcRenderer.invoke('install-nas-app', payload); },
     uninstallNasApp: (payload) => { console.log('[fnApi] uninstallNasApp', payload); return ipcRenderer.invoke('uninstall-nas-app', payload); },
     createDesktopShortcut: (payload) => { console.log('[fnApi] createDesktopShortcut', payload); return ipcRenderer.invoke('create-desktop-shortcut', payload); },
+    // v2.0.0：多账号管理 API
+    listAccounts: () => { console.log('[fnApi] listAccounts'); return ipcRenderer.invoke('account:list'); },
+    switchAccount: (origin) => { console.log('[fnApi] switchAccount', origin); return ipcRenderer.invoke('account:switch', { origin }); },
+    removeAccount: (accountId) => { console.log('[fnApi] removeAccount', accountId); return ipcRenderer.invoke('account:remove', { accountId }); },
+    getActiveAccount: () => { console.log('[fnApi] getActiveAccount'); return ipcRenderer.invoke('account:get-active'); },
   });
 } catch (_) {}
 

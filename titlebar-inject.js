@@ -208,6 +208,9 @@ module.exports = function injectTitleBar(ctx) {
             'filter:drop-shadow(0 1px 2px rgba(0,0,0,0.85))'
           ].join(';');
           b.innerHTML = svg;
+          // v2.0.3：确保SVG图标不受页面CSS影响
+          const svgEl = b.querySelector('svg');
+          if (svgEl) { svgEl.style.cssText = 'display:block;pointer-events:none;flex-shrink:0;'; }
           b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
           b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
           return b;

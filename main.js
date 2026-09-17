@@ -3655,15 +3655,20 @@ const APP_UI_INJECT_CSS = [
   '  border-radius: 14px !important;',
   '  box-shadow: 0 8px 32px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.08) !important;',
   '}',
-  // v2.0.0：按钮液态玻璃
-  'button, .btn, .el-button, .ant-btn, [role="button"] {',
+  // v2.0.0：按钮液态玻璃（排除自定义标题栏按钮，避免裁剪SVG图标）
+  'button:not(#fnos-tb-min):not(#fnos-tb-max):not(#fnos-tb-close):not(#fnos-tb-menu), .btn, .el-button, .ant-btn, [role="button"] {',
   '  border-radius: 20px !important;',
   '  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;',
   '}',
-  'button:hover, .btn:hover, .el-button:hover, .ant-btn:hover, [role="button"]:hover {',
+  'button:not(#fnos-tb-min):not(#fnos-tb-max):not(#fnos-tb-close):not(#fnos-tb-menu):hover, .btn:hover, .el-button:hover, .ant-btn:hover, [role="button"]:hover {',
   '  transform: translateY(-1px) !important;',
   '  box-shadow: 0 6px 20px rgba(0,0,0,0.25) !important;',
   '}',
+  // v2.0.3：标题栏按钮SVG图标保护
+  '#fnos-tb-min svg, #fnos-tb-max svg, #fnos-tb-close svg, #fnos-tb-menu svg {',
+  '  display: block !important; pointer-events: none !important;',
+  '}',
+  '#fnos-tb-close svg path { stroke: #fff !important; }',
   // v2.0.0：输入框液态玻璃
   'input, textarea, .el-input__inner, .ant-input {',
   '  background: rgba(255,255,255,0.06) !important;',

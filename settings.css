@@ -10,7 +10,7 @@ html, body {
   position: relative;
   width: 100%; min-height: 100vh;
   display: flex; align-items: flex-start; justify-content: center;
-  padding: 40px 20px 60px;
+  padding: 20px 12px 30px;
   overflow-y: visible;
 }
 
@@ -18,7 +18,7 @@ html, body {
   position: relative; z-index: 1;
   width: 640px;
   max-width: 100%;
-  padding: 36px 40px 32px;
+  padding: 24px 24px 20px;
   border-radius: 28px;
   animation: pop .35s cubic-bezier(.2,.9,.3,1.2);
 }
@@ -53,7 +53,7 @@ html, body {
 }
 
 .settings-section {
-  padding: 24px 0 8px;
+  padding: 24px 16px 12px;
   border-bottom: 1px solid rgba(255,255,255,.06);
 }
 .settings-section:last-child { border-bottom: 0; padding-bottom: 0; }

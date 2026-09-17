@@ -903,6 +903,393 @@ ipcMain.handle('network:get-status', async () => {
   return NetworkHealth.getStatus();
 });
 
+// ===================== v2.0.0 文件下载断点续传 =====================
+const DOWNLOADS_FILE = path.join(app.getPath('userData'), 'downloads.json');
+
+// 下载任务状态
+const DOWNLOAD_STATUS = {
+  PENDING: 'pending',
+  DOWNLOADING: 'downloading',
+  PAUSED: 'paused',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+};
+
+// 下载任务管理器
+const DownloadManager = {
+  tasks: new Map(), // taskId -> task info
+  activeDownloads: new Map(), // taskId -> { abortController, writer }
+  
+  // 加载持久化的下载任务
+  loadTasks() {
+    try {
+      if (!fs.existsSync(DOWNLOADS_FILE)) return new Map();
+      const raw = fs.readFileSync(DOWNLOADS_FILE, 'utf-8');
+      const data = JSON.parse(raw);
+      if (!Array.isArray(data)) return new Map();
+      const map = new Map();
+      for (const task of data) {
+        if (task && task.id) {
+          // 恢复未完成的下载任务状态为 paused
+          if (task.status === DOWNLOAD_STATUS.DOWNLOADING) {
+            task.status = DOWNLOAD_STATUS.PAUSED;
+          }
+          map.set(task.id, task);
+        }
+      }
+      fnosLog('info', 'download', `加载 ${map.size} 个下载任务`);
+      return map;
+    } catch (e) {
+      fnosLog('error', 'download', '加载下载任务失败', { err: e.message, stack: e.stack });
+      return new Map();
+    }
+  },
+  
+  // 保存下载任务到文件
+  saveTasks() {
+    try {
+      const tasks = Array.from(this.tasks.values());
+      fs.writeFileSync(DOWNLOADS_FILE, JSON.stringify(tasks, null, 2), 'utf-8');
+    } catch (e) {
+      fnosLog('error', 'download', '保存下载任务失败', { err: e.message, stack: e.stack });
+    }
+  },
+  
+  // 创建下载任务
+  createTask(url, savePath, fileName) {
+    const taskId = 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const task = {
+      id: taskId,
+      url,
+      savePath,
+      fileName,
+      totalBytes: 0,
+      downloadedBytes: 0,
+      status: DOWNLOAD_STATUS.PENDING,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      error: null,
+    };
+    this.tasks.set(taskId, task);
+    this.saveTasks();
+    fnosLog('info', 'download', '创建下载任务', { taskId, url, savePath });
+    return task;
+  },
+  
+  // 开始/恢复下载
+  async startDownload(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    
+    // 如果已有活跃的下载，先停止
+    if (this.activeDownloads.has(taskId)) {
+      this.pauseDownload(taskId);
+    }
+    
+    task.status = DOWNLOAD_STATUS.DOWNLOADING;
+    task.error = null;
+    task.updatedAt = new Date().toISOString();
+    this.saveTasks();
+    
+    try {
+      await this._doDownload(task);
+    } catch (e) {
+      task.status = DOWNLOAD_STATUS.FAILED;
+      task.error = e.message;
+      task.updatedAt = new Date().toISOString();
+      this.saveTasks();
+      fnosLog('error', 'download', '下载失败', { taskId, error: e.message });
+      this._broadcastProgress(task);
+    }
+    
+    return { success: task.status !== DOWNLOAD_STATUS.FAILED, msg: task.error || '' };
+  },
+  
+  // 实际下载逻辑（支持断点续传）
+  async _doDownload(task) {
+    const { url, savePath, downloadedBytes } = task;
+    const u = new URL(url);
+    const lib = u.protocol === 'https:' ? require('https') : require('http');
+    
+    // 获取当前 partition 的 cookies
+    const ses = (currentPartition && currentPartition.startsWith('persist:'))
+      ? session.fromPartition(currentPartition)
+      : session.defaultSession;
+    const cookies = ses ? await ses.cookies.get({ url: url }) : [];
+    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    
+    const headers = {
+      'User-Agent': getNasUA(),
+      'Cookie': cookieHeader,
+      'Accept': '*/*',
+      'Connection': 'keep-alive',
+    };
+    
+    // 断点续传：如果已有部分下载，添加 Range 头
+    if (downloadedBytes > 0) {
+      headers['Range'] = `bytes=${downloadedBytes}-`;
+      fnosLog('info', 'download', '断点续传', { taskId: task.id, fromByte: downloadedBytes });
+    }
+    
+    return new Promise((resolve, reject) => {
+      const req = lib.request(url, { method: 'GET', headers, timeout: 30000 }, (res) => {
+        // 处理重定向
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          task.url = new URL(res.headers.location, url).href;
+          this._doDownload(task).then(resolve).catch(reject);
+          return;
+        }
+        
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        
+        // 获取文件总大小
+        const contentLength = parseInt(res.headers['content-length'] || '0', 10);
+        if (res.statusCode === 200) {
+          // 全新下载
+          task.totalBytes = contentLength;
+          task.downloadedBytes = 0;
+        } else if (res.statusCode === 206) {
+          // 断点续传，总大小 = 已下载 + 本次内容长度
+          task.totalBytes = downloadedBytes + contentLength;
+        }
+        
+        // 确保保存目录存在
+        const dir = path.dirname(savePath);
+        if (!fs.existsSync(dir)) {
+          try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+        }
+        
+        // 打开文件（断点续传时追加模式）
+        const flags = downloadedBytes > 0 ? 'a' : 'w';
+        const writer = fs.createWriteStream(savePath, { flags });
+        
+        const abortController = { aborted: false };
+        this.activeDownloads.set(task.id, { abortController, writer });
+        
+        let lastProgressTime = 0;
+        const PROGRESS_INTERVAL = 500; // 每500ms更新一次进度
+        
+        res.on('data', (chunk) => {
+          if (abortController.aborted) {
+            res.destroy();
+            return;
+          }
+          
+          writer.write(chunk);
+          task.downloadedBytes += chunk.length;
+          
+          // 节流进度广播
+          const now = Date.now();
+          if (now - lastProgressTime > PROGRESS_INTERVAL) {
+            lastProgressTime = now;
+            task.updatedAt = new Date().toISOString();
+            this.saveTasks();
+            this._broadcastProgress(task);
+          }
+        });
+        
+        res.on('end', () => {
+          writer.end();
+          this.activeDownloads.delete(task.id);
+          
+          if (abortController.aborted) {
+            task.status = DOWNLOAD_STATUS.PAUSED;
+            fnosLog('info', 'download', '下载暂停', { taskId: task.id });
+          } else {
+            task.status = DOWNLOAD_STATUS.COMPLETED;
+            fnosLog('info', 'download', '下载完成', { taskId: task.id, totalBytes: task.totalBytes });
+          }
+          
+          task.updatedAt = new Date().toISOString();
+          this.saveTasks();
+          this._broadcastProgress(task);
+          resolve();
+        });
+        
+        res.on('error', (err) => {
+          writer.end();
+          this.activeDownloads.delete(task.id);
+          reject(err);
+        });
+      });
+      
+      req.on('timeout', () => {
+        try { req.destroy(); } catch (_) {}
+        reject(new Error('Request timeout'));
+      });
+      
+      req.on('error', (err) => {
+        this.activeDownloads.delete(task.id);
+        reject(err);
+      });
+      
+      req.end();
+      
+      // 保存 abort 控制器
+      const existing = this.activeDownloads.get(task.id);
+      if (existing) {
+        existing.abort = () => {
+          existing.abortController.aborted = true;
+          try { req.destroy(); } catch (_) {}
+        };
+      }
+    });
+  },
+  
+  // 暂停下载
+  pauseDownload(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    
+    const active = this.activeDownloads.get(taskId);
+    if (active) {
+      if (active.abort) active.abort();
+      if (active.writer) {
+        try { active.writer.end(); } catch (_) {}
+      }
+      this.activeDownloads.delete(taskId);
+    }
+    
+    task.status = DOWNLOAD_STATUS.PAUSED;
+    task.updatedAt = new Date().toISOString();
+    this.saveTasks();
+    this._broadcastProgress(task);
+    fnosLog('info', 'download', '暂停下载', { taskId, downloadedBytes: task.downloadedBytes });
+    
+    return { success: true, msg: '已暂停' };
+  },
+  
+  // 取消下载
+  cancelDownload(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    
+    // 先暂停
+    this.pauseDownload(taskId);
+    
+    // 删除文件
+    try {
+      if (fs.existsSync(task.savePath)) {
+        fs.unlinkSync(task.savePath);
+      }
+    } catch (e) {
+      fnosLog('warn', 'download', '删除文件失败', { path: task.savePath, err: e.message });
+    }
+    
+    // 移除任务
+    this.tasks.delete(taskId);
+    this.saveTasks();
+    fnosLog('info', 'download', '取消下载', { taskId });
+    
+    return { success: true, msg: '已取消' };
+  },
+  
+  // 广播下载进度到所有窗口
+  _broadcastProgress(task) {
+    const progress = {
+      id: task.id,
+      fileName: task.fileName,
+      status: task.status,
+      totalBytes: task.totalBytes,
+      downloadedBytes: task.downloadedBytes,
+      progress: task.totalBytes > 0 ? Math.round((task.downloadedBytes / task.totalBytes) * 100) : 0,
+      error: task.error,
+    };
+    
+    // 广播到所有窗口
+    const allWins = BrowserWindow.getAllWindows();
+    for (const win of allWins) {
+      try {
+        if (!win.isDestroyed()) {
+          win.webContents.send('download:progress', progress);
+        }
+      } catch (_) {}
+    }
+  },
+  
+  // 获取所有下载任务
+  getAllTasks() {
+    return Array.from(this.tasks.values()).sort((a, b) => 
+      new Date(b.updatedAt) - new Date(a.updatedAt)
+    );
+  },
+};
+
+// 初始化下载管理器
+DownloadManager.tasks = DownloadManager.loadTasks();
+
+// 下载相关 IPC 接口
+ipcMain.handle('download:start', async (_e, { url, savePath, fileName }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:start', { url, savePath, fileName });
+    const task = DownloadManager.createTask(url, savePath, fileName);
+    // 异步开始下载，不阻塞 IPC 返回
+    setImmediate(() => DownloadManager.startDownload(task.id));
+    return { success: true, msg: '开始下载', data: task };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:start error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+ipcMain.handle('download:pause', async (_e, { taskId }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:pause', { taskId });
+    return DownloadManager.pauseDownload(taskId);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:pause error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('download:resume', async (_e, { taskId }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:resume', { taskId });
+    const task = DownloadManager.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    setImmediate(() => DownloadManager.startDownload(taskId));
+    return { success: true, msg: '继续下载' };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:resume error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('download:cancel', async (_e, { taskId }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:cancel', { taskId });
+    return DownloadManager.cancelDownload(taskId);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:cancel error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('download:list', async () => {
+  try {
+    const tasks = DownloadManager.getAllTasks();
+    return { success: true, msg: '', data: tasks };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:list error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+ipcMain.handle('download:get-default-path', async () => {
+  // 默认下载到 exe 同级 downloads 目录
+  const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
+  const downloadDir = path.join(exeDir, 'downloads');
+  try {
+    if (!fs.existsSync(downloadDir)) {
+      fs.mkdirSync(downloadDir, { recursive: true });
+    }
+  } catch (_) {}
+  return downloadDir;
+});
+
 // ---------------------- 启动密码哈希（scrypt + 随机 salt） ----------------------
 function hashPassword(password, saltHex) {
   const salt = Buffer.from(saltHex, 'hex');

@@ -1203,6 +1203,16 @@ try {
     switchAccount: (origin) => { console.log('[fnApi] switchAccount', origin); return ipcRenderer.invoke('account:switch', { origin }); },
     removeAccount: (accountId) => { console.log('[fnApi] removeAccount', accountId); return ipcRenderer.invoke('account:remove', { accountId }); },
     getActiveAccount: () => { console.log('[fnApi] getActiveAccount'); return ipcRenderer.invoke('account:get-active'); },
+    // v2.0.0：下载管理 API
+    startDownload: (params) => { console.log('[fnApi] startDownload', params); return ipcRenderer.invoke('download:start', params); },
+    pauseDownload: (taskId) => { console.log('[fnApi] pauseDownload', taskId); return ipcRenderer.invoke('download:pause', { taskId }); },
+    resumeDownload: (taskId) => { console.log('[fnApi] resumeDownload', taskId); return ipcRenderer.invoke('download:resume', { taskId }); },
+    cancelDownload: (taskId) => { console.log('[fnApi] cancelDownload', taskId); return ipcRenderer.invoke('download:cancel', { taskId }); },
+    getDownloadList: () => { console.log('[fnApi] getDownloadList'); return ipcRenderer.invoke('download:list'); },
+    getDefaultDownloadPath: () => { console.log('[fnApi] getDefaultDownloadPath'); return ipcRenderer.invoke('download:get-default-path'); },
+    onDownloadProgress: (callback) => { ipcRenderer.on('download:progress', (_e, data) => callback(data)); },
+    // v2.0.0：网络状态 API
+    getNetworkStatus: () => { console.log('[fnApi] getNetworkStatus'); return ipcRenderer.invoke('network:get-status'); },
   });
 } catch (_) {}
 

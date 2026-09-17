@@ -1,7 +1,7 @@
 {
   "name": "fnos-client",
-  "version": "2.0.7",
-  "description": "FNOS 桌面客户端",
+  "version": "2.0.8",
+  "description": "FNOS \u684c\u9762\u5ba2\u6237\u7aef",
   "main": "main.js",
   "author": "FNOS",
   "license": "MIT",

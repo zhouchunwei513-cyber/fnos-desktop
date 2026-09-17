@@ -4886,6 +4886,18 @@ function processScannedApps(apps) {
     const merged = Array.from(byUrl.values());
     saveSettings({ apps: merged.slice(0, 50) });
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
+    // v2.0.7: sync to apps-manifest.json for settings page app management
+    try {
+      const manifestApps = merged.map(a => ({
+        appId: Buffer.from(a.url).toString('base64').slice(0, 16),
+        appName: a.name || a.appName || '',
+        nasAddress: new URL(a.url).origin,
+        url: a.url,
+        iconData: a.icon || '',
+        iconPath: ''
+      }));
+      writeManifest({ apps: manifestApps });
+    } catch (_) {}
     // v1.75.0：日志带上具体应用名，便于排障
     dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length, apps: merged.map((a) => a.name + '|' + a.url).slice(0, 12) });
     // v1.78.0：不再自动创建桌面快捷方式（用户按需手动创建，避免桌面被自动铺满）
@@ -5360,8 +5372,30 @@ ipcMain.handle('shell:close', () => {
 ipcMain.handle('get-installed-apps', async () => {
   try {
     fnosLog('info', 'ipc', 'get-installed-apps called');
-    const data = readManifest();
-    return { success: true, msg: '', data: data.apps };
+    // v2.0.7: merge manifest + settings.json to ensure settings page shows scanned apps
+    const manifest = readManifest();
+    const byId = new Map();
+    // 1) manifest first (manual installs + processScannedApps sync writes)
+    for (const a of manifest.apps) byId.set(a.appId, a);
+    // 2) supplement from settings.json (for pre-upgrade data where manifest is empty)
+    try {
+      const s = loadSettings();
+      const scanned = Array.isArray(s.apps) ? s.apps : [];
+      for (const a of scanned) {
+        const appId = Buffer.from(a.url || '').toString('base64').slice(0, 16);
+        if (!byId.has(appId)) {
+          let nasAddr = '';
+          try { nasAddr = new URL(a.url).origin; } catch (_) {}
+          byId.set(appId, {
+            appId, appName: a.name || a.appName || '', nasAddress: nasAddr,
+            url: a.url, iconData: a.icon || '', iconPath: ''
+          });
+        }
+      }
+    } catch (_) {}
+    const merged = Array.from(byId.values());
+    fnosLog('info', 'ipc', 'get-installed-apps result', { count: merged.length });
+    return { success: true, msg: '', data: merged };
   } catch (e) {
     fnosLog('error', 'ipc', 'get-installed-apps error', { err: e.message, stack: e.stack });
     return { success: false, msg: e.message, data: [] };

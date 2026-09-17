@@ -502,3 +502,18 @@ body::-webkit-scrollbar-thumb:hover {
   background: rgba(239,68,68,0.3); border-color: rgba(239,68,68,0.4); color: #f87171;
 }
 .account-empty { color: #64748b; font-size: 13px; padding: 12px 0; }
+
+/* v2.0.0: iOS27 液态玻璃效果增强 */
+.settings-section {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: all 0.2s ease;
+}
+.settings-section:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}

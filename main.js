@@ -2930,11 +2930,13 @@ function registerWindow(win, opts = {}) {
 // v1.71.0：应用窗口统一 UI 注入（侧边栏毛玻璃 + 深色滚动条），与主窗口 shell.js 注入保持一致，
 // 避免部分 Docker 应用（如 XTE-IPTV）仍显示白色原生滚动条/原生侧边栏。
 const APP_UI_INJECT_CSS = [
+  // v2.0.0：全局 iOS27 液态玻璃效果注入
   'html,body{overscroll-behavior:none;}',
   '::-webkit-scrollbar{width:10px;height:10px;}',
   '::-webkit-scrollbar-track{background:transparent;}',
   '::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:6px;}',
   '::-webkit-scrollbar-thumb:hover{background:rgba(140,150,170,.65);}',
+  // 侧边栏液态玻璃效果
   'aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar,',
   '.el-aside, .aside-container, .menu-container, .drawer, .side-panel,',
   '[class*="sidebar"], [class*="side-bar"], [class*="side-nav"], [class*="left-nav"],',
@@ -2942,8 +2944,47 @@ const APP_UI_INJECT_CSS = [
   '  background: rgba(18, 22, 32, 0.42) !important;',
   '  backdrop-filter: blur(18px) saturate(1.35) !important;',
   '  -webkit-backdrop-filter: blur(18px) saturate(1.35) !important;',
-  '  border-right: 1px solid rgba(255,255,255,0.06) !important;',
+  '  border-right: 1px solid rgba(255,255,255,0.08) !important;',
   '  box-shadow: none !important;',
+  '}',
+  // v2.0.0：弹窗/对话框液态玻璃
+  '[role="dialog"], .modal, .dialog, .el-dialog, .ant-modal, .popup, .overlay-panel {',
+  '  background: rgba(20, 22, 35, 0.72) !important;',
+  '  backdrop-filter: blur(28px) saturate(1.8) !important;',
+  '  -webkit-backdrop-filter: blur(28px) saturate(1.8) !important;',
+  '  border: 1px solid rgba(255,255,255,0.1) !important;',
+  '  border-radius: 18px !important;',
+  '  box-shadow: 0 24px 64px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.15) !important;',
+  '}',
+  // v2.0.0：卡片/面板液态玻璃
+  '.card, .panel, .el-card, .ant-card, [class*="card"], [class*="panel"] {',
+  '  background: rgba(255,255,255,0.05) !important;',
+  '  backdrop-filter: blur(16px) saturate(1.4) !important;',
+  '  -webkit-backdrop-filter: blur(16px) saturate(1.4) !important;',
+  '  border: 1px solid rgba(255,255,255,0.08) !important;',
+  '  border-radius: 14px !important;',
+  '  box-shadow: 0 8px 32px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.08) !important;',
+  '}',
+  // v2.0.0：按钮液态玻璃
+  'button, .btn, .el-button, .ant-btn, [role="button"] {',
+  '  border-radius: 10px !important;',
+  '  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;',
+  '}',
+  'button:hover, .btn:hover, .el-button:hover, .ant-btn:hover, [role="button"]:hover {',
+  '  transform: translateY(-1px) !important;',
+  '  box-shadow: 0 6px 20px rgba(0,0,0,0.25) !important;',
+  '}',
+  // v2.0.0：输入框液态玻璃
+  'input, textarea, .el-input__inner, .ant-input {',
+  '  background: rgba(255,255,255,0.06) !important;',
+  '  border: 1px solid rgba(255,255,255,0.1) !important;',
+  '  border-radius: 10px !important;',
+  '  transition: all 0.2s ease !important;',
+  '}',
+  'input:focus, textarea:focus, .el-input__inner:focus, .ant-input:focus {',
+  '  background: rgba(255,255,255,0.1) !important;',
+  '  border-color: rgba(99,102,241,0.5) !important;',
+  '  box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important;',
   '}',
 ].join('\n');
 

@@ -399,3 +399,60 @@ html::-webkit-scrollbar-thumb:hover,
 body::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,.28);
 }
+
+/* v2.0.0：开机自启动开关（iOS27 液态玻璃风格） */
+.autostart-row {
+  margin-top: 16px;
+  padding: 16px 0;
+}
+.switch-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.switch-input {
+  display: none;
+}
+.switch-slider {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 13px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: all 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+.switch-slider::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+.switch-input:checked + .switch-slider {
+  background: linear-gradient(135deg, rgba(80, 130, 255, 0.6), rgba(120, 90, 255, 0.6));
+  border-color: rgba(80, 130, 255, 0.4);
+}
+.switch-input:checked + .switch-slider::after {
+  transform: translateX(22px);
+}
+.switch-slider:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.switch-input:checked + .switch-slider:hover {
+  background: linear-gradient(135deg, rgba(80, 130, 255, 0.7), rgba(120, 90, 255, 0.7));
+}
+.switch-text {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+}

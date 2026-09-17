@@ -3186,6 +3186,17 @@ function createAppWindow(url, opts = {}) {
   // v1.48.0：无边框窗口，无系统菜单栏；菜单功能改由自定义标题栏「☰ 菜单」按钮弹出。
   try { win.setMenuBarVisibility(false); } catch (_) {}
 
+  // v2.0.0：为每个子应用窗口设置独立 AppUserModelId，避免 Windows 任务栏图标合并/空白
+  try {
+    const appId = opts.appId || (() => {
+      try {
+        const u = new URL(url);
+        return (u.hostname + u.pathname).replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 32);
+      } catch { return 'unknown'; }
+    })();
+    win.setAppUserModelId(`com.fnos.client.app.${appId}`);
+  } catch (_) {}
+
   const isHome = !!opts.isHome;
   registerWindow(win, {
     url, title: opts.title || APP_NAME, isMain: isHome, isHome, partition,
@@ -3205,6 +3216,8 @@ function createAppWindow(url, opts = {}) {
     });
     win.webContents.on('dom-ready', () => {
       try { dlog && dlog('info', 'appwin.dom-ready', { app: __appLabel, winId: win.id, ms: Date.now() - (win.__appNavStart || __t0) }); } catch (_) {}
+      // v2.0.0：修复子应用窗口输入框无法输入——延迟强制 webContents 聚焦，避免窗口焦点被抢占
+      try { setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.focus(); }, 150); } catch (_) {}
       // v1.71.0：应用窗口统一侧边栏毛玻璃 + 深色滚动条（与主窗口 shell.js 注入一致）
       try {
         if (win.webContents && !win.webContents.isDestroyed()) {
@@ -3416,7 +3429,7 @@ function createAppWindow(url, opts = {}) {
     });
   } catch (_) {}
 
-  win.once('ready-to-show', () => { try { win.show(); } catch (_) {} });
+  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch (_) {} });
   // 兜底：极端情况下 ready-to-show 未触发（如隧道握手卡住），6s 后也展示窗口，避免"看不见窗口"
   setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 6000);
 
@@ -4656,6 +4669,48 @@ ipcMain.handle('settings:set-accent-color', async (_e, color) => {
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+// v2.0.0：设置 - 开机自启动（Windows 注册表）
+// 注册表路径：HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+// 键名：FNOS，键值：exe 完整路径
+// 支持便携版：用 PORTABLE_EXECUTABLE_FILE 稳定路径，避免解压临时目录变化导致自启失效
+ipcMain.handle('settings:get-autostart', async () => {
+  try {
+    if (process.platform !== 'win32') return { success: false, msg: '仅 Windows 支持', data: false };
+    return new Promise((resolve) => {
+      cp.exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS', { timeout: 10000, windowsHide: true }, (err, stdout) => {
+        const exists = !err && /FNOS\s+REG_SZ/i.test(stdout);
+        resolve({ success: true, msg: '', data: exists });
+      });
+    });
+  } catch (e) {
+    return { success: false, msg: String(e.message || e).slice(0, 200), data: false };
+  }
+});
+
+ipcMain.handle('settings:set-autostart', async (_e, { enabled }) => {
+  try {
+    if (process.platform !== 'win32') return { success: false, msg: '仅 Windows 支持' };
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    const safeExe = String(exe).replace(/"/g, '');
+    if (!safeExe) return { success: false, msg: '可执行文件路径为空' };
+    const cmd = enabled
+      ? 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /t REG_SZ /d "' + safeExe + '" /f'
+      : 'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /f 2>nul';
+    return new Promise((resolve) => {
+      cp.exec(cmd, { timeout: 10000, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) {
+          const msg = String(stderr || err.message || err).slice(0, 200);
+          resolve({ success: false, msg: '注册表写入失败: ' + msg });
+        } else {
+          resolve({ success: true, msg: enabled ? '已开启开机自启' : '已关闭开机自启' });
+        }
+      });
+    });
+  } catch (e) {
+    return { success: false, msg: String(e.message || e).slice(0, 200) };
   }
 });
 

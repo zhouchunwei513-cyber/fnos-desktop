@@ -194,7 +194,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // 右侧：最小化/最大化/关闭——实心 Windows 风格，按钮可点击区域充足
         const btns = document.createElement('div');
-        btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:0;overflow:hidden;';
+        btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;overflow:hidden;';
 
         const mkBtn = (id, svg, hoverBg) => {
           const b = document.createElement('button');

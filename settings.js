@@ -53,6 +53,11 @@
     return api;
   }
 
+  // v2.0.0：开机自启动 DOM
+  const autostartToggle = $('autostart-toggle');
+  const autostartText = $('autostart-text');
+  const autostartHint = $('autostart-hint');
+
   const pwdForm = $('pwd-form');
   const oldPwd = $('old-pwd');
   const newPwd = $('new-pwd');
@@ -527,6 +532,37 @@
     });
   }
 
+  // v2.0.0：开机自启动开关
+  if (autostartToggle) {
+    autostartToggle.addEventListener('change', async () => {
+      const enabled = autostartToggle.checked;
+      autostartText.textContent = enabled ? '开启中...' : '关闭中...';
+      if (autostartHint) autostartHint.textContent = '';
+      try {
+        const res = await fnosSettings.setAutoStart(enabled);
+        if (res && res.success) {
+          autostartText.textContent = enabled ? '已开启' : '已关闭';
+          if (autostartHint) autostartHint.textContent = res.msg || (enabled ? '已开启开机自启' : '已关闭开机自启');
+          if (autostartHint) autostartHint.style.color = '#4ade80';
+        } else {
+          autostartToggle.checked = !enabled; // 回滚
+          autostartText.textContent = enabled ? '开启' : '关闭';
+          if (autostartHint) {
+            autostartHint.textContent = res?.msg || '操作失败';
+            autostartHint.style.color = '#f87171';
+          }
+        }
+      } catch (err) {
+        autostartToggle.checked = !enabled;
+        autostartText.textContent = enabled ? '开启' : '关闭';
+        if (autostartHint) {
+          autostartHint.textContent = err?.message || '操作失败';
+          autostartHint.style.color = '#f87171';
+        }
+      }
+    });
+  }
+
   // F5/Esc/右键阻断
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) e.preventDefault();
@@ -551,6 +587,28 @@
       }
       loadLiveConfig();
       loadVlcConfig();
+      // v2.0.0：加载开机自启动状态
+      if (autostartToggle && fnosSettings.getAutoStart) {
+        try {
+          const res = await fnosSettings.getAutoStart();
+          if (res && res.success) {
+            autostartToggle.checked = !!res.data;
+            autostartText.textContent = res.data ? '已开启' : '已关闭';
+          } else {
+            autostartText.textContent = '获取失败';
+            if (autostartHint) {
+              autostartHint.textContent = res?.msg || '无法获取自启状态';
+              autostartHint.style.color = '#f0b429';
+            }
+          }
+        } catch (err) {
+          autostartText.textContent = '获取失败';
+          if (autostartHint) {
+            autostartHint.textContent = err?.message || '加载失败';
+            autostartHint.style.color = '#f0b429';
+          }
+        }
+      }
     } catch (err) {
       showError(hkError, err?.message || '加载设置失败');
     }

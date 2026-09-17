@@ -787,7 +787,7 @@ function defaultSettings() {
     origin: '',
     lastConnectHref: '',
     history: [],
-    // v1.72.0：主页扫描到的应用列表 [{name,url,icon}]，供创建桌面快捷方式
+    // 主页扫描到的应用列表 [{name,url,icon}]，用于应用清单管理
     apps: [],
     currentPartition: 'persist:connect',
     closeAction: '', // 'tray' | 'exit'
@@ -3683,242 +3683,6 @@ const APP_UI_INJECT_CSS = [
   '}',
 ].join('\n');
 
-// v1.72.0：为已扫描应用在 Windows 桌面创建快捷方式（.lnk 指向客户端 + --open-app 参数，
-// 图标优先用应用 favicon 转 ico，失败则用客户端图标）。
-async function downloadAppIcon(url, dest) {
-  try {
-    let buf = null;
-    // v1.73.0：支持 data: URL 图标（内联 SVG/PNG），无需网络请求
-    if (/^data:image\//i.test(String(url))) {
-      try {
-        const img = nativeImage.createFromDataURL(url);
-        if (img.isEmpty()) return false;
-        buf = img.toPNG();
-      } catch (_) { return false; }
-    } else {
-      const ses = session.fromPartition(SHARED_PARTITION);
-      const res = await ses.fetch(url, { credentials: 'include' });
-      if (!res.ok) return false;
-      buf = Buffer.from(await res.arrayBuffer());
-    }
-    if (!buf || buf.length < 64) return false;
-    fs.writeFileSync(dest, buf);
-    return true;
-  } catch (_) { return false; }
-}
-
-function buildShortcutPs1(exe, apps, iconDir) {
-  const esc = (s) => String(s).replace(/'/g, "''");
-  const L = [];
-  L.push("$ErrorActionPreference = 'Stop'");
-  L.push("Add-Type -AssemblyName System.Drawing");
-  L.push("$desktop = [Environment]::GetFolderPath('Desktop')");
-  L.push("$ws = New-Object -ComObject WScript.Shell");
-  for (const app of apps) {
-    const safeName = String(app.name || '')
-      .replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 50);
-    if (!safeName) continue;
-    const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
-    // v1.79.0：图标文件名带 -256 标记——旧快捷方式 IconLocation 指向旧名，触发重建（新图标生效）
-    const ico = path.join(iconDir, hash + '-256.ico');
-    if (app.iconPng && fs.existsSync(app.iconPng)) {
-      // v1.79.0：多尺寸 ICO（16/32/48/256 PNG 压缩）——Windows 按显示尺寸精确取图，桌面图标清晰
-      L.push(`$img = [System.Drawing.Image]::FromFile('${esc(app.iconPng)}')`);
-      L.push('$sizes = @(16, 32, 48, 256)');
-      L.push('$pngs = @()');
-      L.push('foreach ($sz in $sizes) {');
-      L.push('  $bmp = New-Object System.Drawing.Bitmap($img, $sz, $sz)');
-      L.push('  $ms = New-Object System.IO.MemoryStream');
-      L.push('  $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)');
-      L.push('  $pngs += ,$ms.ToArray()');
-      L.push('  $bmp.Dispose(); $ms.Dispose()');
-      L.push('}');
-      L.push('$ms = New-Object System.IO.MemoryStream');
-      L.push('$bw = New-Object System.IO.BinaryWriter($ms)');
-      L.push('$bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]$pngs.Length)');
-      L.push('$offset = 6 + 16 * $pngs.Length');
-      L.push('for ($i = 0; $i -lt $pngs.Length; $i++) {');
-      L.push('  $w = if ($sizes[$i] -ge 256) { 0 } else { $sizes[$i] }');
-      L.push('  $bw.Write([byte]$w); $bw.Write([byte]$w); $bw.Write([byte]0); $bw.Write([byte]0)');
-      L.push('  $bw.Write([uint16]1); $bw.Write([uint16]32)');
-      L.push('  $bw.Write([uint32]$pngs[$i].Length); $bw.Write([uint32]$offset)');
-      L.push('  $offset += $pngs[$i].Length');
-      L.push('}');
-      L.push('for ($i = 0; $i -lt $pngs.Length; $i++) { $bw.Write($pngs[$i]) }');
-      L.push('$bw.Flush()');
-      L.push(`[System.IO.File]::WriteAllBytes('${esc(ico)}', $ms.ToArray())`);
-      L.push('$bw.Dispose(); $ms.Dispose(); $img.Dispose()');
-    }
-    const iconLoc = (app.iconPng && fs.existsSync(app.iconPng)) ? ico : exe;
-    const args = '--open-app "' + String(app.url).replace(/"/g, '\\"') + '"';
-    // v1.78.0：旧快捷方式自动修复——同名快捷方式若 Arguments 未指向当前 URL 则覆盖重建
-    //（解决旧版自动创建时保存的外网/过期 URL 导致双击打不开）；指向相同则跳过。
-    L.push(`$lnkPath = Join-Path $desktop '${esc(safeName)}.lnk'`);
-    L.push('if (Test-Path $lnkPath) {');
-    L.push('  $old = $ws.CreateShortcut($lnkPath)');
-    L.push(`  $needle = '${esc(args)}'`);
-    // v1.79.0：增加 IconLocation 检查——图标文件名不符（旧 64x64/单尺寸图标）也重建，强制刷新清晰图标
-    L.push(`  $oldIcon = [string]$old.IconLocation`);
-    L.push(`  if ($old.Arguments -and $old.Arguments.Contains($needle) -and $oldIcon.Contains('${esc(path.basename(ico))}')) { continue }`);
-    L.push('}');
-    L.push(`$sc = $ws.CreateShortcut($lnkPath)`);
-    L.push(`$sc.TargetPath = '${esc(exe)}'`);
-    L.push(`$sc.Arguments = '${args}'`);
-    L.push(`$sc.IconLocation = '${esc(iconLoc)}'`);
-    L.push(`$sc.Description = 'FNOS 应用 · ${esc(safeName)}'`);
-    L.push('$sc.Save()');
-  }
-  return L.join('\r\n');
-}
-
-async function createDesktopShortcuts(win, appsFilter) {
-  const notify = (title, msg) => {
-    try { glassMessageBox(win || mainWindow, { type: 'info', title, buttons: ['好的'], defaultId: 0, message: msg }); } catch (_) {}
-  };
-  if (process.platform !== 'win32') {
-    notify('创建桌面快捷方式', '该功能仅在 Windows 上可用。');
-    return;
-  }
-  const s = loadSettings();
-  // v1.78.0：appsFilter 支持按需创建（undefined=全部；function=只创建匹配项）
-  let apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
-  if (typeof appsFilter === 'function') apps = apps.filter(appsFilter);
-  if (!apps.length) {
-    notify('创建桌面快捷方式', '尚未扫描到应用。请先打开一次飞牛主页，让客户端自动扫描主页中的应用，然后再试。');
-    return;
-  }
-  const userData = app.getPath('userData');
-  const iconDir = path.join(userData, 'app-icons');
-  try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
-  // v1.79.0：便携版每次运行解压到临时目录，process.execPath 变化导致快捷方式失效。
-  // 用 PORTABLE_EXECUTABLE_FILE（用户存放的原始 exe 稳定路径）；安装版无此变量则回退 execPath。
-  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-  const downloaded = [];
-  for (const app of apps) {
-    const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
-    const dest = path.join(iconDir, hash + '.png');
-    let iconPng = '';
-    // v1.73.0：downloadAppIcon 已支持 data: URL 图标，这里不再只认 http(s)
-    if (app.icon && (await downloadAppIcon(app.icon, dest))) iconPng = dest;
-    downloaded.push({ name: app.name, url: app.url, iconPng });
-  }
-  const ps1 = buildShortcutPs1(exe, downloaded, iconDir);
-  const psFile = path.join(userData, 'fnos-create-shortcuts.ps1');
-  try { fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8'); } catch (e) {
-    notify('创建桌面快捷方式', '写入脚本失败：' + String(e && e.message || e).slice(0, 120));
-    return;
-  }
-  try {
-    cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 90000, windowsHide: true }, (err) => {
-      try { fs.unlinkSync(psFile); } catch (_) {}
-      if (err) { notify('创建桌面快捷方式', '创建失败：' + String(err && err.message || err).slice(0, 200)); return; }
-      const withIcon = downloaded.filter((d) => d.iconPng).length;
-      notify('创建桌面快捷方式', '已在桌面创建 ' + downloaded.length + ' 个应用快捷方式（其中 ' + withIcon + ' 个带应用图标）。');
-    });
-  } catch (e) {
-    try { fs.unlinkSync(psFile); } catch (_) {}
-    notify('创建桌面快捷方式', '执行失败：' + String(e && e.message || e).slice(0, 120));
-  }
-}
-
-// v1.73.0：静默自动创建桌面快捷方式——应用列表扫描到「新增」应用时自动触发，
-// 无需用户手动点菜单；桌面已存在同名快捷方式的自动跳过（buildShortcutPs1 内
-// Test-Path 幂等），因此应用增减时自动同步，不会重复创建或频繁打扰。
-let __autoShortcutLastTs = 0;
-// v1.78.0：菜单「创建桌面快捷方式」子菜单——每个应用一项（按需创建），
-// 外加「全部创建/更新」。不再自动创建全部应用的快捷方式。
-function buildShortcutMenuItems() {
-  const items = [];
-  try {
-    const s = loadSettings();
-    const apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
-    if (!apps.length) {
-      items.push({ label: '尚未扫描到应用（请先打开飞牛主页）', enabled: false });
-      return items;
-    }
-    for (const a of apps) {
-      items.push({
-        label: a.name,
-        click: () => { createDesktopShortcuts(mainWindow, (x) => x.url === a.url); },
-      });
-    }
-    items.push({ type: 'separator' });
-    items.push({ label: '全部创建 / 更新', click: () => { createDesktopShortcuts(mainWindow); } });
-  } catch (_) {
-    items.push({ label: '尚未扫描到应用', enabled: false });
-  }
-  return items;
-}
-
-// v1.79.0：便携版每次运行解压到临时目录，旧快捷方式 TargetPath 失效（弹窗"FNOS.exe 已更改或移动"）。
-// 主程序启动后自动修复自己创建的快捷方式（Description 以 FNOS 应用 开头）：TargetPath 更新为当前 exe。
-function fixDesktopShortcuts() {
-  try {
-    if (process.platform !== 'win32') return;
-    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    const esc = (s) => String(s).replace(/'/g, "''");
-    const L = [];
-    L.push("$ErrorActionPreference = 'SilentlyContinue'");
-    L.push("$desktop = [Environment]::GetFolderPath('Desktop')");
-    L.push("$ws = New-Object -ComObject WScript.Shell");
-    L.push(`$target = '${esc(exe)}'`);
-    L.push('Get-ChildItem -Path $desktop -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {');
-    L.push('  try {');
-    L.push('    $sc = $ws.CreateShortcut($_.FullName)');
-    L.push("    if ([string]$sc.Description -notlike 'FNOS 应用*') { return }");
-    L.push('    if ($sc.TargetPath -ne $target) {');
-    L.push('      $sc.TargetPath = $target');
-    L.push('      $sc.Save()');
-    L.push('    }');
-    L.push('  } catch {}');
-    L.push('}');
-    const ps1 = L.join('\r\n');
-    const psFile = path.join(app.getPath('userData'), 'fnos-fix-shortcuts.ps1');
-    fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8');
-    cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 60000, windowsHide: true }, (err) => {
-      try { fs.unlinkSync(psFile); } catch (_) {}
-      if (err) { dlog && dlog('warn', 'shortcut.fix-fail', { err: String(err && err.message || err).slice(0, 160) }); return; }
-      dlog && dlog('info', 'shortcut.fix-ok', { exe: String(exe).slice(0, 120) });
-    });
-  } catch (_) {}
-}
-
-function autoCreateDesktopShortcuts(newApps, source) {
-  try {
-    if (process.platform !== 'win32') return;
-    const apps = (Array.isArray(newApps) ? newApps : []).filter((a) => a && a.name && a.url);
-    if (!apps.length) return;
-    // 节流：1.5s 内只执行一次（主页 SPA 多轮扫描会连续上报）
-    const now = Date.now();
-    if (now - __autoShortcutLastTs < 1500) return;
-    __autoShortcutLastTs = now;
-    const userData = app.getPath('userData');
-    const iconDir = path.join(userData, 'app-icons');
-    try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
-    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    (async () => {
-      const downloaded = [];
-      for (const app of apps) {
-        const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
-        const dest = path.join(iconDir, hash + '.png');
-        let iconPng = '';
-        if (app.icon && (await downloadAppIcon(app.icon, dest))) iconPng = dest;
-        downloaded.push({ name: app.name, url: app.url, iconPng });
-      }
-      const ps1 = buildShortcutPs1(exe, downloaded, iconDir);
-      const psFile = path.join(userData, 'fnos-auto-shortcuts.ps1');
-      try { fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8'); } catch (_) { return; }
-      cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 60000, windowsHide: true }, (err) => {
-        try { fs.unlinkSync(psFile); } catch (_) {}
-        if (err) {
-          dlog && dlog('warn', 'shortcut.auto-fail', { n: downloaded.length, source: source || '', err: String(err && err.message || err).slice(0, 160) });
-          return;
-        }
-        dlog && dlog('info', 'shortcut.auto-ok', { n: downloaded.length, source: source || '' });
-      });
-    })();
-  } catch (_) {}
-}
 
 function createAppWindow(url, opts = {}) {
   // v1.16.3：NAS 相关窗口一律走共享 partition，与主窗口/飞牛 webview/直播窗口
@@ -4932,8 +4696,6 @@ function buildMenuTemplate() {
           accelerator: 'Ctrl+Shift+C',
           click: () => copyCurrentWindowLink(),
         },
-        { type: 'separator' },
-        { label: '📌 创建桌面快捷方式', submenu: buildShortcutMenuItems() },
       ],
     },
     {
@@ -7903,7 +7665,6 @@ app.whenReady().then(() => {
   }
 
   // v1.79.0：启动后自动修复桌面快捷方式 TargetPath（便携版解压路径变化导致失效）
-  setTimeout(() => { try { fixDesktopShortcuts(); } catch (_) {} }, 8000);
 
   // 注册全局快捷键
   registerGlobalShortcuts();

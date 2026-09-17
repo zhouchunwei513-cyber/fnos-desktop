@@ -627,7 +627,7 @@ function fnosLog(level, module, msg, extra) {
     const now = new Date();
     const ts = now.toISOString();
     const dateStr = ts.slice(0, 10);
-    const logFile = path.join(LOG_DIR, \`fnos-\${dateStr}.log\`);
+    const logFile = path.join(LOG_DIR, `fnos-${dateStr}.log`);
     
     // 格式化日志行
     const levelTag = level.toUpperCase().padEnd(5);
@@ -636,7 +636,7 @@ function fnosLog(level, module, msg, extra) {
     if (sanitizedExtra) {
       try {
         if (sanitizedExtra instanceof Error || (sanitizedExtra && sanitizedExtra.stack)) {
-          extraStr = \`\n  Error: \${sanitizedExtra.message || sanitizedExtra}\n  \${(sanitizedExtra.stack || '').split('\n').join('\n  ')}\`;
+          extraStr = `\n  Error: ${sanitizedExtra.message || sanitizedExtra}\n  ${(sanitizedExtra.stack || '').split('\n').join('\n  ')}`;
         } else {
           extraStr = ' ' + JSON.stringify(sanitizedExtra);
         }
@@ -645,12 +645,12 @@ function fnosLog(level, module, msg, extra) {
       }
     }
     
-    const line = \`[\${ts}] [\${levelTag}] [\${module}] \${msg}\${extraStr}\n\`;
+    const line = `[${ts}] [${levelTag}] [${module}] ${msg}${extraStr}\n`;
     fs.appendFileSync(logFile, line);
     
     // 控制台输出
     const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-    consoleFn(\`[FNOS] [\${levelTag}] [\${module}] \${msg}\`, extra || '');
+    consoleFn(`[FNOS] [${levelTag}] [${module}] ${msg}`, extra || '');
   } catch (_) {}
 }
 

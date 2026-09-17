@@ -590,7 +590,73 @@ let isLocked = false;
 let isCompletelyHidden = false; // 一键隐藏：连托盘也隐藏
 
 // ---------------------- 单实例锁 ----------------------
-if (!app.requestSingleInstanceLock()) app.quit();
+// v2.0.0：支持多实例并行，不再限制单实例
+// if (!app.requestSingleInstanceLock()) app.quit();
+
+
+// ===================== v2.0.0 子应用系统 =====================
+// 2.1 apps-manifest.json 管理
+const MANIFEST_PATH = path.join(app.getPath('userData'), 'apps-manifest.json');
+const ASSETS_DIR = path.join(app.getPath('userData'), 'assets');
+
+// v2.0.0 日志
+function fnosLog(level, module, msg, extra) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${level}] [${module}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}\n`;
+  try {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const logFile = path.join(logDir, `fnos-${ts.slice(0,10)}.log`);
+    fs.appendFileSync(logFile, line);
+  } catch (_) {}
+  if (level === 'error') console.error('[FNOS]', module, msg, extra || '');
+  else console.log('[FNOS]', module, msg, extra || '');
+}
+
+function readManifest() {
+  try {
+    if (!fs.existsSync(MANIFEST_PATH)) return { apps: [] };
+    const raw = fs.readFileSync(MANIFEST_PATH, 'utf-8');
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.apps)) {
+      fnosLog('warn', 'manifest', 'manifest格式异常，重置为空');
+      return { apps: [] };
+    }
+    return data;
+  } catch (e) {
+    fnosLog('error', 'manifest', '读取manifest失败', { err: e.message, stack: e.stack });
+    return { apps: [] };
+  }
+}
+
+function writeManifest(data) {
+  try {
+    fs.writeFileSync(MANIFEST_PATH, JSON.stringify(data, null, 2), 'utf-8');
+    fnosLog('info', 'manifest', 'manifest写入成功');
+    return { success: true, msg: '' };
+  } catch (e) {
+    fnosLog('error', 'manifest', '写入manifest失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 确保 assets 目录存在
+try { if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true }); } catch (_) {}
+
+// 2.2 命令行参数解析
+function parseAppArgs() {
+  const args = process.argv.slice(1);
+  const result = { appId: null, nas: null };
+  for (const arg of args) {
+    const m1 = arg.match(/^--app=(.+)$/);
+    if (m1) result.appId = m1[1];
+    const m2 = arg.match(/^--nas=(.+)$/);
+    if (m2) result.nas = m2[1];
+  }
+  fnosLog('info', 'args', '命令行参数解析', result);
+  return result;
+}
+const launchArgs = parseAppArgs();
 
 // ---------------------- 设置持久化 ----------------------
 function defaultSettings() {
@@ -4642,6 +4708,180 @@ ipcMain.handle('shell:close', () => {
     mainWindow.close();
   } catch (_) {}
 });
+
+// ===================== v2.0.0 子应用 IPC =====================
+// 2.3 四个 IPC 接口
+
+// (1) get-installed-apps
+ipcMain.handle('get-installed-apps', async () => {
+  try {
+    fnosLog('info', 'ipc', 'get-installed-apps called');
+    const data = readManifest();
+    return { success: true, msg: '', data: data.apps };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'get-installed-apps error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+// (2) install-nas-app
+ipcMain.handle('install-nas-app', async (_e, payload) => {
+  try {
+    fnosLog('info', 'ipc', 'install-nas-app called', payload);
+    const { appId, appName, iconData, iconExt, nasAddress } = payload || {};
+    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+    
+    const data = readManifest();
+    // 检查是否已存在
+    const existIdx = data.apps.findIndex(a => a.appId === appId);
+    
+    // 保存图标
+    let iconPath = '';
+    if (iconData) {
+      const ext = iconExt || 'png';
+      iconPath = path.join(ASSETS_DIR, `${appId}.${ext}`);
+      const buf = Buffer.from(iconData, 'base64');
+      fs.writeFileSync(iconPath, buf);
+      fnosLog('info', 'ipc', '图标保存成功', { iconPath });
+    }
+    
+    const appEntry = {
+      appId,
+      appName,
+      iconPath,
+      nasAddress: nasAddress || '',
+      installedAt: new Date().toISOString(),
+    };
+    
+    if (existIdx >= 0) {
+      data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+    } else {
+      data.apps.push(appEntry);
+    }
+    
+    const res = writeManifest(data);
+    return { success: res.success, msg: res.msg || '安装成功', data: appEntry };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'install-nas-app error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+// (3) uninstall-nas-app
+ipcMain.handle('uninstall-nas-app', async (_e, payload) => {
+  try {
+    fnosLog('info', 'ipc', 'uninstall-nas-app called', payload);
+    const { appId } = payload || {};
+    if (!appId) return { success: false, msg: '缺少 appId', data: null };
+    
+    const data = readManifest();
+    const appEntry = data.apps.find(a => a.appId === appId);
+    data.apps = data.apps.filter(a => a.appId !== appId);
+    const res = writeManifest(data);
+    
+    // 删除图标
+    if (appEntry && appEntry.iconPath) {
+      try { fs.unlinkSync(appEntry.iconPath); } catch (_) {}
+    }
+    
+    // 删除桌面快捷方式
+    try {
+      const desktop = path.join(os.homedir(), 'Desktop');
+      if (fs.existsSync(desktop)) {
+        const files = fs.readdirSync(desktop);
+        for (const f of files) {
+          if (f.toLowerCase().endsWith('.lnk') && f.toLowerCase().includes(appId.toLowerCase())) {
+            fs.unlinkSync(path.join(desktop, f));
+            fnosLog('info', 'ipc', '删除桌面快捷方式', { file: f });
+          }
+        }
+      }
+    } catch (e) {
+      fnosLog('warn', 'ipc', '删除快捷方式失败', { err: e.message });
+    }
+    
+    return { success: res.success, msg: res.msg || '卸载成功', data: null };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'uninstall-nas-app error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+// (4) create-desktop-shortcut
+ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
+  try {
+    fnosLog('info', 'ipc', 'create-desktop-shortcut called', payload);
+    const { appId, appName, iconPath, nasAddress } = payload || {};
+    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+    
+    const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    const args = `--app=${appId} --nas=${encodeURIComponent(nasAddress || '')}`;
+    const desktop = path.join(os.homedir(), 'Desktop');
+    const lnkPath = path.join(desktop, `${appName}.lnk`);
+    
+    // PowerShell 创建 .lnk
+    const ps = `
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')
+$sc.TargetPath = '${exePath.replace(/'/g, "''")}'
+$sc.Arguments = '${args}'
+$sc.WorkingDirectory = '${path.dirname(exePath).replace(/'/g, "''")}'
+$sc.Description = 'FNOS 应用: ${appName}'
+${iconPath ? `$sc.IconLocation = '${iconPath.replace(/'/g, "''")}'` : ''}
+$sc.Save()
+`;
+    const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    
+    if (result.status === 0) {
+      fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath });
+      return { success: true, msg: '快捷方式已创建', data: { path: lnkPath } };
+    } else {
+      fnosLog('error', 'ipc', '快捷方式创建失败', { stderr: result.stderr });
+      return { success: false, msg: result.stderr || '创建失败', data: null };
+    }
+  } catch (e) {
+    fnosLog('error', 'ipc', 'create-desktop-shortcut error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+// 2.2 命令行启动：携带 --app 参数时直接创建子应用窗口，跳过主界面
+function launchSubAppFromArgs() {
+  if (!launchArgs.appId) return false;
+  fnosLog('info', 'launch', '检测到命令行启动参数，跳过主界面', launchArgs);
+  
+  const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
+  const url = nasAddr || '';
+  if (!url) {
+    fnosLog('warn', 'launch', '缺少 nas 地址参数');
+    return false;
+  }
+  
+  // 延迟到 app ready 后创建
+  const doLaunch = () => {
+    const appId = launchArgs.appId;
+    const subWin = new BrowserWindow({
+      width: 1280,
+      height: 800,
+      title: `FNOS - ${appId}`,
+      webPreferences: {
+        partition: `persist:${appId}`,
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'subapp-preload.js'),
+      },
+    });
+    const subAppId = `com.fnos.client.app.${appId}`;
+    subWin.setAppUserModelId(subAppId);
+    fnosLog('info', 'launch', '子应用窗口已创建', { appId, subAppId, url });
+    subWin.loadURL(url);
+  };
+  
+  if (app.isReady()) doLaunch();
+  else app.once('ready', doLaunch);
+  return true;
+}
+
 ipcMain.handle('shell:popup-menu', (_e, payload) => {
   try {
     if (!payload || !payload.id) return;
@@ -6587,6 +6827,8 @@ app.on('second-instance', (_e, commandLine) => {
   }
 });
 
+// v2.0.0: 命令行参数启动时跳过主界面
+const subAppLaunched = launchSubAppFromArgs();
 app.whenReady().then(() => {
   // v1.72.0：解析 --open-app 参数（桌面快捷方式启动单个应用）
   try { parseOpenAppArg(); } catch (_) {}

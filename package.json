@@ -62,7 +62,8 @@
       "assets/**/*",
       "icon.ico",
       "icon.png",
-      "package.json"
+      "package.json",
+      "subapp-preload.js"
     ],
     "extraResources": [
       {

@@ -1191,4 +1191,14 @@ contextBridge.exposeInMainWorld('fnos', {
 // 仅在飞牛远程网页（http/https）注入；本地 login/settings 页面不注入（它们自带或无需）。
 // 采用透明背景 + 半透明按钮，避免遮挡飞牛自身顶部导航的观感；拖拽区可移动窗口。
 // ============================================================================
+// v2.0.0：暴露 fnApi 给子应用 Vue 页面使用（子应用管理 IPC 桥接）
+try {
+  contextBridge.exposeInMainWorld('fnApi', {
+    getInstalledApps: () => { console.log('[fnApi] getInstalledApps'); return ipcRenderer.invoke('get-installed-apps'); },
+    installNasApp: (payload) => { console.log('[fnApi] installNasApp', payload); return ipcRenderer.invoke('install-nas-app', payload); },
+    uninstallNasApp: (payload) => { console.log('[fnApi] uninstallNasApp', payload); return ipcRenderer.invoke('uninstall-nas-app', payload); },
+    createDesktopShortcut: (payload) => { console.log('[fnApi] createDesktopShortcut', payload); return ipcRenderer.invoke('create-desktop-shortcut', payload); },
+  });
+} catch (_) {}
+
 try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }

@@ -733,6 +733,176 @@ function hexToRgba(hex, alpha) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255, alpha == null ? 190 : alpha];
 }
 
+// ===================== v2.0.0 外网网络稳定性优化 =====================
+// 网络健康监控系统：区分「瞬时抖动」和「真正断开」，抑制抖动期间的"已断开"弹窗，
+// 内部自动重试；只有重试多次仍然失败才视为真实断连并通知用户。
+
+const NetworkHealth = {
+  // 状态
+  isOnline: true,
+  isStable: true,         // 当前是否"稳定"（非抖动状态）
+  consecutiveFailures: 0,  // 连续失败次数
+  lastSuccessTime: Date.now(),
+  lastFailureTime: 0,
+  jitterWindowMs: 8000,   // 抖动判定窗口：8秒内的失败视为抖动
+  maxJitterFailures: 3,   // 窗口内允许的最大失败次数（超过则视为真断连）
+  retryTimers: [],        // 活跃的重试定时器
+  suppressedPopups: 0,    // 已抑制的弹窗计数（诊断用）
+  listeners: [],          // 状态变化监听器
+
+  // 记录一次网络探测/请求成功
+  recordSuccess(context) {
+    this.consecutiveFailures = 0;
+    this.lastSuccessTime = Date.now();
+    this.isOnline = true;
+    this.isStable = true;
+    fnosLog('info', 'network', `连接正常 [${context || 'general'}]`);
+    this._notify('online');
+  },
+
+  // 记录一次网络探测/请求失败
+  recordFailure(context, error) {
+    this.consecutiveFailures++;
+    this.lastFailureTime = Date.now();
+    const timeSinceLastSuccess = Date.now() - this.lastSuccessTime;
+    
+    // 判断是否为瞬时抖动：上次成功在抖动窗口内，且失败次数未超阈值
+    const isJitter = this.consecutiveFailures <= this.maxJitterFailures && timeSinceLastSuccess < 60000;
+    
+    if (isJitter) {
+      this.isStable = false;
+      fnosLog('warn', 'network', `网络抖动 [${context || 'general'}] 连续失败 ${this.consecutiveFailures}/${this.maxJitterFailures}`, { error });
+      this._notify('jitter');
+    } else {
+      this.isOnline = false;
+      this.isStable = false;
+      fnosLog('error', 'network', `网络断开 [${context || 'general'}] 连续失败 ${this.consecutiveFailures}`, { error });
+      this._notify('offline');
+    }
+    return isJitter; // 返回 true 表示是抖动，调用方可抑制弹窗
+  },
+
+  // 判断当前是否应抑制"已断开"弹窗（抖动期间抑制）
+  shouldSuppressPopup() {
+    if (!this.isOnline) {
+      // 真断连时也不频繁弹窗——同一断连周期只弹一次
+      if (this.suppressedPopups > 0) return true;
+    }
+    return !this.isOnline || !this.isStable;
+  },
+
+  // 标记已弹窗（用于去重）
+  markPopupShown() {
+    this.suppressedPopups = 0;
+  },
+
+  // 注册状态变化监听
+  onStatusChange(listener) {
+    this.listeners.push(listener);
+  },
+
+  _notify(status) {
+    for (const fn of this.listeners) {
+      try { fn(status, { online: this.isOnline, stable: this.isStable, failures: this.consecutiveFailures }); } catch (_) {}
+    }
+  },
+
+  // 创建带重试的网络请求包装器（指数退避）
+  createRetryableRequest(fn, opts = {}) {
+    const maxRetries = opts.maxRetries || 3;
+    const baseDelay = opts.baseDelay || 1000;
+    const maxDelay = opts.maxDelay || 15000;
+    const context = opts.context || 'request';
+    let attempt = 0;
+
+    const doRetry = () => {
+      if (attempt >= maxRetries) {
+        fnosLog('error', 'network', `${context} 重试耗尽 (${maxRetries}次)`);
+        NetworkHealth.recordFailure(context, 'max retries exceeded');
+        return Promise.reject(new Error('Network request failed after retries'));
+      }
+      attempt++;
+      const delay = Math.min(maxDelay, baseDelay * Math.pow(2, attempt - 1) + Math.random() * 500);
+      fnosLog('info', 'network', `${context} 第${attempt}次重试，${Math.round(delay)}ms后执行`);
+      return new Promise(resolve => {
+        const timer = setTimeout(resolve, delay);
+        NetworkHealth.retryTimers.push(timer);
+      }).then(() => fn()).then(result => {
+        NetworkHealth.recordSuccess(context);
+        return result;
+      }).catch(err => {
+        const isJitter = NetworkHealth.recordFailure(context, err?.message);
+        if (!isJitter || attempt >= maxRetries) throw err;
+        return doRetry();
+      });
+    };
+
+    return fn().then(result => {
+      NetworkHealth.recordSuccess(context);
+      return result;
+    }).catch(err => {
+      const isJitter = NetworkHealth.recordFailure(context, err?.message);
+      if (!isJitter) throw err;
+      return doRetry();
+    });
+  },
+
+  // 获取状态摘要（诊断用）
+  getStatus() {
+    return {
+      isOnline: this.isOnline,
+      isStable: this.isStable,
+      consecutiveFailures: this.consecutiveFailures,
+      lastSuccessTime: new Date(this.lastSuccessTime).toISOString(),
+      lastFailureTime: this.lastFailureTime ? new Date(this.lastFailureTime).toISOString() : null,
+      suppressedPopups: this.suppressedPopups,
+    };
+  }
+};
+
+// 增强型网络健康探测：定时向 NAS 发轻量请求，检测真实连通性
+let networkProbeTimer = null;
+function startNetworkProbe() {
+  if (networkProbeTimer) clearInterval(networkProbeTimer);
+  networkProbeTimer = setInterval(() => {
+    try {
+      const origin = currentOrigin;
+      if (!origin || !/^https?:\/\//i.test(origin)) return;
+      const u = new URL(origin);
+      const lib = u.protocol === 'https:' ? require('https') : require('http');
+      const ses = (currentPartition && currentPartition.startsWith('persist:'))
+        ? session.fromPartition(currentPartition)
+        : session.defaultSession;
+      if (!ses || !ses.cookies) return;
+      ses.cookies.get({ url: origin }).then((ck) => {
+        const cookieHeader = (ck || []).map((c) => `${c.name}=${c.value}`).join('; ');
+        const req = lib.request(origin + '/v/', {
+          method: 'GET', timeout: 8000,
+          headers: { 'User-Agent': getNasUA(), 'Cookie': cookieHeader, 'Accept': '*/*', 'Connection': 'keep-alive' },
+        }, (res) => {
+          res.on('data', () => {});
+          res.on('end', () => {
+            if (res.statusCode >= 200 && res.statusCode < 500) {
+              NetworkHealth.recordSuccess('probe');
+            } else {
+              NetworkHealth.recordFailure('probe', `HTTP ${res.statusCode}`);
+            }
+          });
+        });
+        req.on('error', (e) => { NetworkHealth.recordFailure('probe', e.message); });
+        req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (_) {} });
+        req.end();
+      }).catch(() => {});
+    } catch (_) {}
+  }, 30000); // 每30秒探测一次
+  if (networkProbeTimer.unref) networkProbeTimer.unref();
+}
+
+// IPC: 获取网络健康状态（供前端使用）
+ipcMain.handle('network:get-status', async () => {
+  return NetworkHealth.getStatus();
+});
+
 // ---------------------- 启动密码哈希（scrypt + 随机 salt） ----------------------
 function hashPassword(password, saltHex) {
   const salt = Buffer.from(saltHex, 'hex');
@@ -2465,10 +2635,21 @@ function authHeartbeatOnce() {
         res.on('data', () => {});
         res.on('end', () => {
           try { authHeartbeatBusy = false; } catch (_) {}
+          // v2.0.0：记录心跳成功到网络健康监控
+          try {
+            if (res.statusCode >= 200 && res.statusCode < 500) {
+              NetworkHealth.recordSuccess('heartbeat');
+            } else {
+              NetworkHealth.recordFailure('heartbeat', `HTTP ${res.statusCode}`);
+            }
+          } catch (_) {}
         });
       });
       req.on('timeout', () => { try { req.destroy(); } catch (_) {} });
-      req.on('error', () => {}); // keep-alive 在网卡切换时报 EPIPE 属正常，忽略
+      req.on('error', (err) => {
+        // v2.0.0：记录心跳失败到网络健康监控
+        try { NetworkHealth.recordFailure('heartbeat', err?.message || 'error'); } catch (_) {}
+      });
       req.on('close', () => { try { authHeartbeatBusy = false; } catch (_) {} });
       req.end();
     }).catch(() => { try { authHeartbeatBusy = false; } catch (_) {} });
@@ -3514,6 +3695,7 @@ function createAppWindow(url, opts = {}) {
   //    兜底展示从 300ms 放宽到 6s（NAS 首次响应/隧道握手较慢时也不至于先弹一个黑窗）。
   // 2) did-fail-load 自动重试：仅对主框架网络错误（-3 中止/-137 命名解析等）重试，避免偶发
   //    隧道/内网抖动导致应用区停在错误页/黑屏；子资源失败不重试，且 404/鉴权跳转不触发。
+  //    v2.0.0：集成 NetworkHealth 抖动判定，瞬时失败仅日志不弹窗，重试使用指数退避。
   let _loadFailTries = 0;
   try {
     win.webContents.on('did-fail-load', (_e, errorCode, errorDesc, failUrl, isMainFrame) => {
@@ -3522,6 +3704,8 @@ function createAppWindow(url, opts = {}) {
         // -3 = ABORTED（我们自己 setWindowOpenHandler 取消/导航中被替换），不当错误
         if (errorCode === -3 || errorCode === 0) return;
         if (failUrl && /^file:/.test(failUrl)) return; // 本地页面失败交给各自逻辑
+        // v2.0.0：记录到网络健康监控
+        const isJitter = NetworkHealth.recordFailure(`appwin:${__appLabel}`, `${errorCode} ${errorDesc}`);
         if (_loadFailTries >= 4) {
           // v1.70.0：重试耗尽，记录最终失败（含错误码），便于排查外网地址/端口映射问题
           dlog && dlog('error', 'appwin.fail-load.final', {
@@ -3531,7 +3715,9 @@ function createAppWindow(url, opts = {}) {
           return;
         }
         _loadFailTries++;
-        dlog && dlog('warn', 'appwin.fail-load.retry', { errorCode, errorDesc, try: _loadFailTries, url: String(failUrl).slice(0, 90) });
+        // v2.0.0：指数退避 + 抖动（1s/2s/4s/8s + 随机500ms）
+        const retryDelay = Math.min(8000, 1000 * Math.pow(2, _loadFailTries - 1) + Math.random() * 500);
+        dlog && dlog('warn', 'appwin.fail-load.retry', { errorCode, errorDesc, try: _loadFailTries, delay: Math.round(retryDelay), isJitter, url: String(failUrl).slice(0, 90) });
         setTimeout(() => {
           try {
             if (win.isDestroyed()) return;
@@ -3539,7 +3725,7 @@ function createAppWindow(url, opts = {}) {
             const target = (cur && /^https?:/.test(cur)) ? cur : url;
             if (/^https?:/i.test(target)) win.loadURL(target, { userAgent: getNasUA() }).catch(() => {});
           } catch (_) {}
-        }, Math.min(4000, 600 * _loadFailTries + 600));
+        }, retryDelay);
       } catch (_) {}
     });
   } catch (_) {}
@@ -3782,16 +3968,20 @@ function createMainWindow(partition, loadTarget) {
       try {
         if (!isMainFrame || errorCode === -3 || errorCode === 0) return;
         if (failUrl && /^file:/.test(failUrl)) return;
+        // v2.0.0：记录到网络健康监控
+        const isJitter = NetworkHealth.recordFailure('mainwindow', `${errorCode} ${errorDesc}`);
         if (_mainFailTries >= 4) return;
         _mainFailTries++;
-        dlog && dlog('warn', 'main.fail-load.retry', { errorCode, errorDesc, try: _mainFailTries, url: String(failUrl).slice(0, 90) });
+        // v2.0.0：指数退避 + 抖动
+        const retryDelay = Math.min(8000, 1000 * Math.pow(2, _mainFailTries - 1) + Math.random() * 500);
+        dlog && dlog('warn', 'main.fail-load.retry', { errorCode, errorDesc, try: _mainFailTries, delay: Math.round(retryDelay), isJitter, url: String(failUrl).slice(0, 90) });
         setTimeout(() => {
           try {
             if (!mainWindow || mainWindow.isDestroyed()) return;
             const target = lastConnectHref || mainWindow.webContents.getURL();
             if (target && /^https?:/i.test(target)) mainWindow.loadURL(target, { userAgent: getNasUA() }).catch(() => {});
           } catch (_) {}
-        }, Math.min(4000, 600 * _mainFailTries + 600));
+        }, retryDelay);
       } catch (_) {}
     });
   } catch (_) {}
@@ -3973,6 +4163,8 @@ function doConnectTo(serverInput) {
   setImmediate(() => { try { warmupXteBase(); } catch (_) {} });
   // v1.67.0：登录成功后尽快注入页面级 WS/长连接保活，避免 FRP 空闲超时被回收导致"已断开"
   setTimeout(() => { try { bumpAuthHeartbeat(); } catch (_) {} }, 3000);
+  // v2.0.0：启动网络健康探测（每30s检测NAS连通性，区分抖动/真断连）
+  setImmediate(() => { try { startNetworkProbe(); } catch (_) {} });
   if (mainWindow && !mainWindow.isDestroyed()) {
     const onFail = (e) => {
       glassErrorBox(

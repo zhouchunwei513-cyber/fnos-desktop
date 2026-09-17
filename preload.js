@@ -1213,6 +1213,10 @@ try {
     onDownloadProgress: (callback) => { ipcRenderer.on('download:progress', (_e, data) => callback(data)); },
     // v2.0.0：网络状态 API
     getNetworkStatus: () => { console.log('[fnApi] getNetworkStatus'); return ipcRenderer.invoke('network:get-status'); },
+    // v2.0.0：日志系统 API
+    listLogFiles: () => { console.log('[fnApi] listLogFiles'); return ipcRenderer.invoke('log:list-files'); },
+    readLogFile: (params) => { console.log('[fnApi] readLogFile', params); return ipcRenderer.invoke('log:read', params); },
+    getLogStatus: () => { console.log('[fnApi] getLogStatus'); return ipcRenderer.invoke('log:get-status'); },
   });
 } catch (_) {}
 

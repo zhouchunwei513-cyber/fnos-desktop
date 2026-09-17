@@ -599,19 +599,141 @@ let isCompletelyHidden = false; // 一键隐藏：连托盘也隐藏
 const MANIFEST_PATH = path.join(app.getPath('userData'), 'apps-manifest.json');
 const ASSETS_DIR = path.join(app.getPath('userData'), 'assets');
 
-// v2.0.0 日志
-function fnosLog(level, module, msg, extra) {
-  const ts = new Date().toISOString();
-  const line = `[${ts}] [${level}] [${module}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}\n`;
+// ===================== v2.0.0 全局日志系统 =====================
+const LOG_DIR = path.join(app.getPath('userData'), 'logs');
+const LOG_RETENTION_DAYS = 30;
+const SENSITIVE_KEYS = ['password', 'passwd', 'pwd', 'secret', 'token', 'sessionId', 'session_id', 'auth'];
+
+function sanitizeForLog(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
   try {
-    const logDir = path.join(app.getPath('userData'), 'logs');
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-    const logFile = path.join(logDir, `fnos-${ts.slice(0,10)}.log`);
-    fs.appendFileSync(logFile, line);
-  } catch (_) {}
-  if (level === 'error') console.error('[FNOS]', module, msg, extra || '');
-  else console.log('[FNOS]', module, msg, extra || '');
+    const clone = Array.isArray(obj) ? [...obj] : { ...obj };
+    for (const key of Object.keys(clone)) {
+      if (SENSITIVE_KEYS.some(sk => key.toLowerCase().includes(sk.toLowerCase()))) {
+        clone[key] = '***REDACTED***';
+      } else if (typeof clone[key] === 'object' && clone[key] !== null) {
+        clone[key] = sanitizeForLog(clone[key]);
+      }
+    }
+    return clone;
+  } catch (_) {
+    return obj;
+  }
 }
+
+function fnosLog(level, module, msg, extra) {
+  try {
+    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+    const now = new Date();
+    const ts = now.toISOString();
+    const dateStr = ts.slice(0, 10);
+    const logFile = path.join(LOG_DIR, \`fnos-\${dateStr}.log\`);
+    
+    // 格式化日志行
+    const levelTag = level.toUpperCase().padEnd(5);
+    const sanitizedExtra = extra ? sanitizeForLog(extra) : null;
+    let extraStr = '';
+    if (sanitizedExtra) {
+      try {
+        if (sanitizedExtra instanceof Error || (sanitizedExtra && sanitizedExtra.stack)) {
+          extraStr = \`\n  Error: \${sanitizedExtra.message || sanitizedExtra}\n  \${(sanitizedExtra.stack || '').split('\n').join('\n  ')}\`;
+        } else {
+          extraStr = ' ' + JSON.stringify(sanitizedExtra);
+        }
+      } catch (_) {
+        extraStr = ' [serialize error]';
+      }
+    }
+    
+    const line = \`[\${ts}] [\${levelTag}] [\${module}] \${msg}\${extraStr}\n\`;
+    fs.appendFileSync(logFile, line);
+    
+    // 控制台输出
+    const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+    consoleFn(\`[FNOS] [\${levelTag}] [\${module}] \${msg}\`, extra || '');
+  } catch (_) {}
+}
+
+// 日志清理：删除超过保留天数的旧日志文件
+function cleanupOldLogs() {
+  try {
+    if (!fs.existsSync(LOG_DIR)) return;
+    const files = fs.readdirSync(LOG_DIR);
+    const cutoff = Date.now() - LOG_RETENTION_DAYS * 86400000;
+    for (const f of files) {
+      if (!f.startsWith('fnos-') || !f.endsWith('.log')) continue;
+      const fp = path.join(LOG_DIR, f);
+      try {
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs < cutoff) {
+          fs.unlinkSync(fp);
+          fnosLog('info', 'log', '清理过期日志', { file: f });
+        }
+      } catch (_) {}
+    }
+  } catch (e) {
+    fnosLog('error', 'log', '清理日志失败', { err: e.message });
+  }
+}
+
+// 启动时清理旧日志
+try { cleanupOldLogs(); } catch (_) {}
+
+// 日志查看 IPC
+ipcMain.handle('log:list-files', async () => {
+  try {
+    if (!fs.existsSync(LOG_DIR)) return { success: true, data: [] };
+    const files = fs.readdirSync(LOG_DIR)
+      .filter(f => f.startsWith('fnos-') && f.endsWith('.log'))
+      .sort()
+      .reverse()
+      .map(f => {
+        const fp = path.join(LOG_DIR, f);
+        try {
+          const stat = fs.statSync(fp);
+          return { name: f, size: stat.size, mtime: stat.mtime.toISOString() };
+        } catch (_) {
+          return { name: f, size: 0, mtime: '' };
+        }
+      });
+    return { success: true, data: files };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'log:list-files error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+ipcMain.handle('log:read', async (_e, { fileName, lines }) => {
+  try {
+    if (!fileName || !/^[\w-]+\.log$/.test(fileName)) {
+      return { success: false, msg: '无效文件名' };
+    }
+    const fp = path.join(LOG_DIR, fileName);
+    if (!fs.existsSync(fp)) return { success: false, msg: '文件不存在' };
+    const content = fs.readFileSync(fp, 'utf-8');
+    const allLines = content.split('\n');
+    const maxLines = Math.min(lines || 200, 2000);
+    const result = allLines.slice(-maxLines).join('\n');
+    return { success: true, data: result, totalLines: allLines.length };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'log:read error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('log:get-status', async () => {
+  try {
+    if (!fs.existsSync(LOG_DIR)) return { success: true, data: { dir: LOG_DIR, fileCount: 0, totalSize: 0 } };
+    const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith('.log'));
+    let totalSize = 0;
+    for (const f of files) {
+      try { totalSize += fs.statSync(path.join(LOG_DIR, f)).size; } catch (_) {}
+    }
+    return { success: true, data: { dir: LOG_DIR, fileCount: files.length, totalSize, retentionDays: LOG_RETENTION_DAYS } };
+  } catch (e) {
+    return { success: false, msg: e.message };
+  }
+});
 
 function readManifest() {
   try {

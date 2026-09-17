@@ -52,6 +52,10 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   removeAccount: (accountId) => ipcRenderer.invoke('account:remove', { accountId }),
   getActiveAccount: () => ipcRenderer.invoke('account:get-active'),
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
+  // v2.0.0：日志系统
+  listLogFiles: () => ipcRenderer.invoke('log:list-files'),
+  readLogFile: (params) => ipcRenderer.invoke('log:read', params),
+  getLogStatus: () => ipcRenderer.invoke('log:get-status'),
   // v1.47.0：ZDY 增强服务（在线弹幕/字幕/片头片尾）及设置模块已整体下线移除。
   restartApp: () => ipcRenderer.invoke('app:restart'),
   close: () => ipcRenderer.send('settings:close'),

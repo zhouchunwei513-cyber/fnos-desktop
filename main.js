@@ -3733,7 +3733,26 @@ function createAppWindow(url, opts = {}) {
     //   titleBarOverlay——overlay 在 Windows 会重新绘制系统原生窗口按钮(右上角 - □ ✕)，
     //   自定义标题栏盖不住，表现为"标题栏不统一/仍是系统按钮"。
     frame: false,
-    icon: ICON_PATH,
+    // v2.0.6：优先使用 manifest 中存储的应用图标，避免初始显示主图标
+    icon: (() => {
+      try {
+        const manifest = readManifest();
+        if (manifest && Array.isArray(manifest.apps)) {
+          const urlObj = typeof url === 'string' ? new URL(url) : null;
+          const matched = manifest.apps.find(a => {
+            if (!a.nasAddress || !urlObj) return false;
+            try {
+              const aUrl = new URL(a.nasAddress);
+              return aUrl.origin === urlObj.origin;
+            } catch { return false; }
+          });
+          if (matched && matched.iconPath && fs.existsSync(matched.iconPath)) {
+            return matched.iconPath;
+          }
+        }
+      } catch (_) {}
+      return ICON_PATH;
+    })(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, webviewTag: true,
@@ -3805,60 +3824,97 @@ function createAppWindow(url, opts = {}) {
         win.__appResPending = false;
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
-      // v1.73.0：应用窗口任务栏图标 = 应用 favicon（增强提取）
-      //   1) 选择器链：icon → apple-touch-icon → shortcut icon → /favicon.ico
-      //   2) 支持 data: URL（内联 SVG/PNG 图标，现代 SPA 常见）——
-      //      v1.72.0 只认 http(s)，导致部分应用（图标为 data URL 或只在
-      //      apple-touch-icon 里）任务栏图标没改过来
-      //   3) 两阶段提取：加载完成立即 + 1.5s 延迟再试（SPA 动态注入 favicon）
+      // v2.0.6：增强版任务栏图标提取
+      //   1) 收集页面所有 favicon 候选（icon/apple-touch-icon/shortcut icon），排除 SVG
+      //   2) data URL 区分 SVG/PNG：SVG 跳过，PNG 直接使用
+      //   3) HTTP 图标先检查 Content-Type，SVG 跳过尝试下一个候选
+      //   4) 三阶段重试：立即 + 1.5s + 4s（覆盖 SPA 动态注入 favicon 的场景）
+      //   5) 移除 __appIconSet 守卫，允许 favicon 覆盖扫描结果（页面 favicon 更准确）
+      const __allIconCandidates = () => {
+        return win.webContents.executeJavaScript(`(function(){
+          try {
+            var candidates = [];
+            var seen = {};
+            var addCandidate = function(href) {
+              if (!href || seen[href]) return;
+              seen[href] = true;
+              if (/\\.svg$/i.test(href) || /^data:image\\/svg/i.test(href)) return;
+              candidates.push(href);
+            };
+            var allLinks = document.querySelectorAll('link[rel]');
+            for (var i = 0; i < allLinks.length; i++) {
+              var lnk = allLinks[i];
+              var rel = (lnk.getAttribute('rel') || '').toLowerCase();
+              if (rel.indexOf('icon') === -1) continue;
+              var href = lnk.href || lnk.getAttribute('href') || '';
+              var type = (lnk.getAttribute('type') || '').toLowerCase();
+              if (type === 'image/svg+xml' || type === 'image/svg') continue;
+              if (href) addCandidate(href);
+            }
+            if (!candidates.length) {
+              try { addCandidate(location.origin + '/favicon.ico'); } catch(_) {}
+            }
+            return candidates;
+          } catch (e) { return []; }
+        })()`, true);
+      };
+
+      const __trySetIconFromBuffer = (buf, url) => {
+        try {
+          if (win.isDestroyed()) return false;
+          const img = nativeImage.createFromBuffer(Buffer.from(buf));
+          if (!img.isEmpty()) {
+            win.setIcon(img);
+            dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120) });
+            return true;
+          }
+        } catch (_) {}
+        return false;
+      };
+
       const __applyAppIcon = () => {
         try {
           if (win.isDestroyed() || !win.webContents) return;
-          // v1.74.0：已用扫描到的应用图标设置过窗口图标，不再用页面 favicon 覆盖
-          if (win.__appIconSet) return;
-          win.webContents.executeJavaScript(`(function(){
+          __allIconCandidates().then((candidates) => {
             try {
-              var pick = function(sel){ var n = document.querySelector(sel); return n && n.href ? n.href : ''; };
-              var href = pick('link[rel~="icon"]') || pick('link[rel~="apple-touch-icon"]') || pick('link[rel~="shortcut icon"]');
-              if (!href) href = location.origin + '/favicon.ico';
-              return href;
-            } catch (e) { return ''; }
-          })()`, true).then((iconRef) => {
-            try {
-              if (!iconRef || win.isDestroyed()) return;
-              // data URL：直接解码为图片（无需网络请求）
-              if (/^data:image\//i.test(iconRef)) {
-                try {
-                  const img = nativeImage.createFromDataURL(iconRef);
-                  if (!img.isEmpty()) {
-                    win.setIcon(img);
-                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, data: 1 });
-                  }
-                } catch (_) {}
-                return;
-              }
-              if (!/^https?:/i.test(iconRef)) return;
+              if (!Array.isArray(candidates) || !candidates.length || win.isDestroyed()) return;
               const ses = win.webContents ? win.webContents.session : null;
-              if (!ses) return;
-              ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
-                if (!res.ok) throw new Error('bad status ' + res.status);
-                return res.arrayBuffer();
-              }).then((buf) => {
-                try {
-                  if (win.isDestroyed()) return;
-                  const img = nativeImage.createFromBuffer(Buffer.from(buf));
-                  if (!img.isEmpty()) {
-                    win.setIcon(img);
-                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, url: String(iconRef).slice(0, 120) });
+              const tryNext = (idx) => {
+                if (idx >= candidates.length || win.isDestroyed()) return;
+                const iconRef = candidates[idx];
+                if (/^data:image\//i.test(iconRef)) {
+                  try {
+                    const img = nativeImage.createFromDataURL(iconRef);
+                    if (!img.isEmpty()) {
+                      win.setIcon(img);
+                      dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, data: 1 });
+                      return;
+                    }
+                  } catch (_) {}
+                  tryNext(idx + 1);
+                  return;
+                }
+                if (!/^https?:/i.test(iconRef) || !ses) { tryNext(idx + 1); return; }
+                ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
+                  if (!res.ok) throw new Error('bad status ' + res.status);
+                  const ct = (res.headers.get('content-type') || '').toLowerCase();
+                  if (ct.includes('svg')) { tryNext(idx + 1); return null; }
+                  return res.arrayBuffer();
+                }).then((buf) => {
+                  if (!buf) return;
+                  if (!__trySetIconFromBuffer(buf, iconRef)) {
+                    tryNext(idx + 1);
                   }
-                } catch (_) {}
-              }).catch(() => {});
+                }).catch(() => { tryNext(idx + 1); });
+              };
+              tryNext(0);
             } catch (_) {}
           }).catch(() => {});
         } catch (_) {}
       };
       __applyAppIcon();
       setTimeout(() => { try { __applyAppIcon(); } catch (_) {} }, 1500);
+      setTimeout(() => { try { __applyAppIcon(); } catch (_) {} }, 4000);
     });
     win.webContents.on('unresponsive', () => {
       try { dlog && dlog('warn', 'appwin.unresponsive', { app: __appLabel, winId: win.id, ms: Date.now() - __t0 }); } catch (_) {}
@@ -5550,6 +5606,7 @@ ipcMain.handle('account:get-active', async () => {
 });
 
 // 2.2 命令行启动：携带 --app 参数时直接创建子应用窗口，跳过主界面
+// v2.0.6：修复 partition 使用共享分区（与主窗口一致），从 manifest 读取应用名和图标
 function launchSubAppFromArgs() {
   if (!launchArgs.appId) return false;
   fnosLog('info', 'launch', '检测到命令行启动参数，跳过主界面', launchArgs);
@@ -5561,24 +5618,117 @@ function launchSubAppFromArgs() {
     return false;
   }
   
+  // 从 manifest 读取应用信息
+  let appName = launchArgs.appId;
+  let iconPath = '';
+  try {
+    const manifest = readManifest();
+    const entry = manifest.apps.find(a => a.appId === launchArgs.appId);
+    if (entry) {
+      appName = entry.appName || entry.name || appName;
+      iconPath = entry.iconPath || '';
+    }
+  } catch (_) {}
+  
   // 延迟到 app ready 后创建
   const doLaunch = () => {
     const appId = launchArgs.appId;
-    const subWin = new BrowserWindow({
+    // v2.0.6：使用与主窗口相同的 partition，共享登录态
+    const partition = partitionForServer({ origin: url });
+    currentPartition = partition;
+    applyUA(partition);
+
+    const winOpts = {
       width: 1280,
       height: 800,
-      title: `FNOS - ${appId}`,
+      minWidth: 900,
+      minHeight: 600,
+      title: `FNOS - ${appName}`,
+      backgroundColor: '#0b0d12',
+      frame: false,
+      autoHideMenuBar: true,
+      show: false,
+      icon: iconPath && fs.existsSync(iconPath) ? iconPath : ICON_PATH,
       webPreferences: {
-        partition: `persist:${appId}`,
-        nodeIntegration: false,
-        contextIsolation: true,
+        partition,
         preload: path.join(__dirname, 'subapp-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        webSecurity: true,
+        allowRunningInsecureContent: true,
+        spellcheck: false,
+        backgroundThrottling: false,
+        enableBlinkFeatures: 'CSSBackdropFilter',
       },
-    });
+    };
+    const subWin = new BrowserWindow(winOpts);
     const subAppId = `com.fnos.client.app.${appId}`;
     subWin.setAppUserModelId(subAppId);
-    fnosLog('info', 'launch', '子应用窗口已创建', { appId, subAppId, url });
-    subWin.loadURL(url);
+    try { subWin.setMenuBarVisibility(false); } catch (_) {}
+
+    fnosLog('info', 'launch', '子应用窗口已创建', { appId, subAppId, url, partition });
+
+    // v2.0.6：子应用窗口也启用 favicon 提取（与 createAppWindow 一致）
+    subWin.webContents.on('did-finish-load', () => {
+      try {
+        const __applyIcon = () => {
+          try {
+            if (subWin.isDestroyed() || !subWin.webContents) return;
+            subWin.webContents.executeJavaScript(`(function(){
+              try {
+                var cands = [], seen = {};
+                var all = document.querySelectorAll('link[rel]');
+                for (var i = 0; i < all.length; i++) {
+                  var l = all[i], rel = (l.getAttribute('rel')||'').toLowerCase();
+                  if (rel.indexOf('icon') === -1) continue;
+                  var h = l.href || l.getAttribute('href') || '';
+                  var t = (l.getAttribute('type')||'').toLowerCase();
+                  if (t === 'image/svg+xml' || t === 'image/svg') continue;
+                  if (/\\.svg$/i.test(h) || /^data:image\\/svg/i.test(h)) continue;
+                  if (h && !seen[h]) { seen[h] = true; cands.push(h); }
+                }
+                if (!cands.length) try { cands.push(location.origin + '/favicon.ico'); } catch(_){}
+                return cands;
+              } catch(e) { return []; }
+            })()`, true).then((cands) => {
+              try {
+                if (!cands.length || subWin.isDestroyed()) return;
+                const ses = subWin.webContents.session;
+                const tryNext = (idx) => {
+                  if (idx >= cands.length || subWin.isDestroyed()) return;
+                  const ref = cands[idx];
+                  if (/^data:image\//i.test(ref)) {
+                    try { const img = nativeImage.createFromDataURL(ref); if (!img.isEmpty()) { subWin.setIcon(img); return; } } catch(_){}
+                    tryNext(idx+1); return;
+                  }
+                  if (!/^https?:/i.test(ref)) { tryNext(idx+1); return; }
+                  ses.fetch(ref, { credentials: 'include' }).then(r => {
+                    if (!r.ok) throw new Error('bad status');
+                    if ((r.headers.get('content-type')||'').includes('svg')) { tryNext(idx+1); return null; }
+                    return r.arrayBuffer();
+                  }).then(buf => {
+                    if (!buf) return;
+                    const img = nativeImage.createFromBuffer(Buffer.from(buf));
+                    if (!img.isEmpty()) subWin.setIcon(img); else tryNext(idx+1);
+                  }).catch(() => tryNext(idx+1));
+                };
+                tryNext(0);
+              } catch(_) {}
+            }).catch(() => {});
+          } catch(_) {}
+        };
+        __applyIcon();
+        setTimeout(() => { try { __applyIcon(); } catch(_) {} }, 2000);
+      } catch(_) {}
+    });
+
+    subWin.once('ready-to-show', () => {
+      try { if (!subWin.isDestroyed()) subWin.show(); } catch (_) {}
+    });
+    subWin.loadURL(url, { userAgent: getNasUA() }).catch((e) => {
+      fnosLog('error', 'launch', '子应用加载失败', { err: e.message });
+    });
   };
   
   if (app.isReady()) doLaunch();
@@ -5747,6 +5897,8 @@ function createLiveWindow(autoplayChannel) {
       },
     });
     liveWindow.setMenuBarVisibility(false);
+    // v2.0.6：直播窗口独立 AppUserModelId，任务栏不与其他窗口合并
+    try { liveWindow.setAppUserModelId('com.fnos.client.app.live'); } catch (_) {}
     // v1.16.1：直播窗口与主窗口共享同一会话 partition（Cookie / 登录态互通）
     try {
       const ses = liveWindow.webContents.session;
@@ -5765,6 +5917,66 @@ function createLiveWindow(autoplayChannel) {
       console.warn('[FNOS] live window load fail', code, desc);
     };
     liveWindow.webContents.on('did-fail-load', loadFail);
+    // v2.0.6：直播窗口也提取页面图标作为任务栏图标
+    liveWindow.webContents.on('did-finish-load', () => {
+      try {
+        const __liveApplyIcon = () => {
+          try {
+            if (!liveWindow || liveWindow.isDestroyed() || !liveWindow.webContents) return;
+            liveWindow.webContents.executeJavaScript(`(function(){
+              try {
+                var candidates = [];
+                var seen = {};
+                var allLinks = document.querySelectorAll('link[rel]');
+                for (var i = 0; i < allLinks.length; i++) {
+                  var lnk = allLinks[i];
+                  var rel = (lnk.getAttribute('rel') || '').toLowerCase();
+                  if (rel.indexOf('icon') === -1) continue;
+                  var href = lnk.href || lnk.getAttribute('href') || '';
+                  var type = (lnk.getAttribute('type') || '').toLowerCase();
+                  if (type === 'image/svg+xml' || type === 'image/svg') continue;
+                  if (/\\.svg$/i.test(href) || /^data:image\\/svg/i.test(href)) continue;
+                  if (href && !seen[href]) { seen[href] = true; candidates.push(href); }
+                }
+                if (!candidates.length) { try { candidates.push(location.origin + '/favicon.ico'); } catch(_) {} }
+                return candidates;
+              } catch (e) { return []; }
+            })()`, true).then((candidates) => {
+              try {
+                if (!Array.isArray(candidates) || !candidates.length || !liveWindow || liveWindow.isDestroyed()) return;
+                const ses = liveWindow.webContents ? liveWindow.webContents.session : null;
+                const tryNext = (idx) => {
+                  if (idx >= candidates.length || !liveWindow || liveWindow.isDestroyed()) return;
+                  const iconRef = candidates[idx];
+                  if (/^data:image\//i.test(iconRef)) {
+                    try {
+                      const img = nativeImage.createFromDataURL(iconRef);
+                      if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
+                    } catch (_) {}
+                    tryNext(idx + 1); return;
+                  }
+                  if (!/^https?:/i.test(iconRef) || !ses) { tryNext(idx + 1); return; }
+                  ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
+                    if (!res.ok) throw new Error('bad status');
+                    const ct = (res.headers.get('content-type') || '').toLowerCase();
+                    if (ct.includes('svg')) { tryNext(idx + 1); return null; }
+                    return res.arrayBuffer();
+                  }).then((buf) => {
+                    if (!buf) return;
+                    const img = nativeImage.createFromBuffer(Buffer.from(buf));
+                    if (!img.isEmpty()) { liveWindow.setIcon(img); }
+                    else { tryNext(idx + 1); }
+                  }).catch(() => { tryNext(idx + 1); });
+                };
+                tryNext(0);
+              } catch (_) {}
+            }).catch(() => {});
+          } catch (_) {}
+        };
+        __liveApplyIcon();
+        setTimeout(() => { try { __liveApplyIcon(); } catch (_) {} }, 2000);
+      } catch (_) {}
+    });
     liveWindow.webContents.on('render-process-gone', (_e, details) => {
       console.error('[FNOS] live render-process-gone', details);
       // v1.16.2：渲染器崩溃时 2 秒后自动重载，避免直接闪退 / 白屏

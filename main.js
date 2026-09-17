@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.75.0';
+const APP_VERSION = '1.76.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3086,6 +3086,11 @@ function createAppWindow(url, opts = {}) {
       partition,
       enableBlinkFeatures: 'CSSBackdropFilter',
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
+      // v1.76.0：应用窗口禁用硬件加速（软件渲染）。修复部分 Docker 应用
+      // （影视/音乐等）在 Windows 上触发 GPU 进程崩溃，导致窗口创建即崩、
+      // 后续所有应用窗口连锁打不开（render-process-gone crashed 0x80000003）。
+      // 主窗口/主页仍保留硬件加速；视频播放走 MPV 外部播放器不受影响。
+      disableHardwareAcceleration: true,
     },
   });
 
@@ -3185,7 +3190,26 @@ function createAppWindow(url, opts = {}) {
       try { dlog && dlog('info', 'appwin.responsive', { app: __appLabel, winId: win.id }); } catch (_) {}
     });
     win.webContents.on('render-process-gone', (_e, detail) => {
-      try { dlog && dlog('error', 'appwin.render-gone', { app: __appLabel, winId: win.id, reason: detail && detail.reason }); } catch (_) {}
+      try {
+        const reason = detail && detail.reason;
+        dlog && dlog('error', 'appwin.render-gone', { app: __appLabel, winId: win.id, reason });
+        // v1.76.0：渲染进程崩溃自动恢复（最多 2 次），避免应用窗口直接消失
+        if (reason === 'crashed' && win && !win.isDestroyed()) {
+          const tries = (win.__appCrashTries || 0) + 1;
+          win.__appCrashTries = tries;
+          if (tries <= 2) {
+            dlog && dlog('info', 'appwin.render-restart', { app: __appLabel, winId: win.id, try: tries });
+            setTimeout(() => {
+              try {
+                if (win.isDestroyed()) return;
+                const cur = win.webContents.getURL();
+                if (cur && /^https?:/i.test(cur)) win.loadURL(cur, { userAgent: getNasUA() }).catch(() => {});
+                else win.reloadIgnoringCache();
+              } catch (_) {}
+            }, 800);
+          }
+        }
+      } catch (_) {}
     });
     // v1.70.0：应用运行日志增强——
     //   1) console error 节流采样（每窗口每 10s 至多 1 条），便于捕获 Docker 应用内 JS 报错；
@@ -3555,6 +3579,18 @@ function createMainWindow(partition, loadTarget) {
     partition: currentPartition,
   });
 
+  // v1.76.0：主页加载/导航时启动应用扫描 + 处理待打开应用（快捷方式 --open-app）。
+  // 主页未登录(/login)时扫描自动跳过；用户登录跳回主页后立即扫描并打开 pending 应用。
+  try {
+    mainWindow.webContents.on('dom-ready', () => { try { startHomeScan(); } catch (_) {} });
+    mainWindow.webContents.on('did-navigate', () => {
+      try { startHomeScan(); tryOpenPendingApp(); } catch (_) {}
+    });
+    mainWindow.webContents.on('did-navigate-in-page', () => {
+      try { tryOpenPendingApp(); } catch (_) {}
+    });
+  } catch (_) {}
+
   if (loadTarget && loadTarget.href) {
     currentOrigin = loadTarget.origin || '';
     lastConnectHref = loadTarget.href;
@@ -3637,6 +3673,31 @@ function takePendingOpenApp() {
   return u;
 }
 
+// v1.76.0：待打开应用（快捷方式 --open-app）。不立即强开，等主页登录就绪再打开：
+// 未登录时应用窗口打开是登录页（无意义），用户登录完成后自动打开对应应用。
+let __pendingAppUrl = '';
+let __pendingAppStart = 0;
+function queuePendingApp(u) {
+  __pendingAppUrl = String(u || '');
+  __pendingAppStart = Date.now();
+}
+function tryOpenPendingApp() {
+  try {
+    if (!__pendingAppUrl) return;
+    const u = __pendingAppUrl;
+    let ready = false;
+    try {
+      const cur = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.getURL() : '';
+      const p = String(cur || '').toLowerCase();
+      if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) ready = true;
+    } catch (_) {}
+    const elapsed = Date.now() - __pendingAppStart;
+    if (!ready && elapsed < 25000) return; // 未登录且未超时 → 等登录
+    __pendingAppUrl = '';
+    if (u) { try { createAppWindow(u, {}); } catch (_) {} }
+  } catch (_) {}
+}
+
 function doConnectTo(serverInput) {
   const parsed = normalizeServer(serverInput);
   const targetPartition = partitionForServer(parsed);
@@ -3669,12 +3730,20 @@ function doConnectTo(serverInput) {
       showConnectPage();
     };
     mainWindow.loadURL(parsed.href, { userAgent: getNasUA() }).catch(onFail);
-    // v1.72.0：桌面快捷方式启动 --open-app 时，登录就绪后自动打开对应应用
+    // v1.76.0：桌面快捷方式启动 --open-app 时，等待主页登录就绪后自动打开对应应用。
+    // 旧版固定 1200ms 强开：未登录时应用窗口打开的是登录页（打不开）。
+    // 现在：主页已登录（URL 非 /login）→ 立即打开；停在 /login → 等用户登录后
+    // （did-navigate 离开 login）再打开；25s 超时兜底强开（部分应用独立认证）。
     const openUrl = takePendingOpenApp();
     if (openUrl) {
-      setTimeout(() => {
-        try { createAppWindow(openUrl, {}); } catch (_) {}
-      }, 1200);
+      queuePendingApp(openUrl);
+      tryOpenPendingApp();
+      const pt = setInterval(() => {
+        try {
+          tryOpenPendingApp();
+          if (!__pendingAppUrl) clearInterval(pt);
+        } catch (_) {}
+      }, 1500);
     }
   }
 }
@@ -3958,8 +4027,10 @@ ipcMain.handle('auth:remove-history', async (_e, payload) => {
   return { ok: true, history: removeHistoryByKey(href) };
 });
 
-// v1.72.0：主页扫描到的应用列表上报（创建桌面快捷方式的数据源）
-ipcMain.on('shell:report-apps', (_e, apps) => {
+// v1.72.0：主页扫描到的应用列表上报（创建桌面快捷方式的数据源）。
+// v1.76.0：抽成独立函数 processScannedApps——主进程直接扫描主页时也复用，
+// IPC（shell 页面上报）仅作兼容保留。
+function processScannedApps(apps) {
   try {
     if (!Array.isArray(apps) || !apps.length) return;
     const s = loadSettings();
@@ -3987,7 +4058,112 @@ ipcMain.on('shell:report-apps', (_e, apps) => {
     dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length, apps: merged.map((a) => a.name + '|' + a.url).slice(0, 12) });
     if (fresh.length) autoCreateDesktopShortcuts(fresh, 'scan');
   } catch (_) {}
+}
+ipcMain.on('shell:report-apps', (_e, apps) => {
+  try { processScannedApps(apps); } catch (_) {}
 });
+
+// v1.76.0：主窗口（NAS 主页）应用扫描——旧版扫描代码写在 shell.js 里，
+// 但主窗口从未加载 shell.html（直接 loadURL NAS 主页），导致扫描从未执行、
+// apps 永远为空、快捷方式无法创建。这里把扫描逻辑直接注入主窗口执行：
+//   1) dom-ready / did-navigate / 每 10s 循环扫描（登录页跳过）
+//   2) 仅结果变化时上报（应用增/减自动同步）
+let __homeScanTimer = null;
+let __lastHomeAppsSig = '';
+const __HOME_SCAN_JS = `(function(){
+  try {
+    // 登录页没有应用卡片，直接跳过（SPA 登录态未就绪时也是空）
+    var pp = (location.pathname || '').toLowerCase();
+    if (pp.indexOf('/login') === 0 || pp === 'login') return null;
+    var origin = location.origin;
+    var res = [];
+    var seen = {};
+    var clean = function(s){ return String(s||'').replace(/\s+/g,' ').trim(); };
+    var toAbs = function(u){
+      if (!u) return '';
+      try { return new URL(u, origin).href; } catch(e){ return ''; }
+    };
+    var appNameFromUrl = function(u){
+      if (!u) return '';
+      var m = /\/icons\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);
+      if (m) { try { return decodeURIComponent(m[1]); } catch(e){ return m[1]; } }
+      return '';
+    };
+    var pushApp = function(name, url, icon, appName){
+      if (!name) return;
+      if (name.length > 40) name = name.slice(0, 40);
+      var abs = toAbs(url);
+      var finalUrl = /^https?:/i.test(abs) ? abs : '';
+      if (!finalUrl && appName) {
+        finalUrl = origin + '/appview?anchor=' + encodeURIComponent('https://' + appName);
+      }
+      if (!finalUrl) return;
+      if (seen[finalUrl]) return;
+      seen[finalUrl] = 1;
+      res.push({ name: name, url: finalUrl, icon: icon || '', appName: appName || '' });
+    };
+    var links = document.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var a = links[i];
+      var img = a.querySelector('img');
+      var icon = img ? (img.currentSrc || img.src || '') : '';
+      var nm = clean(a.innerText || a.title || (img && img.alt) || '');
+      if (!nm && img) nm = clean(img.alt || '');
+      pushApp(nm, a.href, icon, appNameFromUrl(icon));
+    }
+    var imgs = document.querySelectorAll('img');
+    var done = {};
+    for (var q = 0; q < imgs.length; q++) {
+      var im = imgs[q];
+      var icon2 = im.currentSrc || im.src || '';
+      var nm2 = clean(im.alt || '');
+      var href2 = '';
+      var cur = im;
+      for (var d = 0; d < 4 && cur; d++) {
+        var pe = cur.parentElement;
+        if (!pe) break;
+        if (!href2 && pe.tagName === 'A') href2 = pe.href || '';
+        var t = clean(pe.innerText || '');
+        if (t && t.length <= 40 && !/\s/.test(t)) nm2 = t;
+        cur = pe;
+      }
+      if (!nm2 || nm2.length > 40) continue;
+      var k2 = href2 || icon2;
+      if (done[k2]) continue;
+      done[k2] = 1;
+      pushApp(nm2, href2, icon2, appNameFromUrl(icon2));
+    }
+    return res;
+  } catch (e) { return null; }
+})()`;
+function scanHomeApps(force) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const wc = mainWindow.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    wc.executeJavaScript(__HOME_SCAN_JS, true).then((apps) => {
+      try {
+        const found = Array.isArray(apps) ? apps.length : -1;
+        // v1.76.0：记录每次扫描执行结果（即使空），便于区分"扫描没跑"与"扫到0个"
+        dlog && dlog('info', 'apps.scan.exec', { found, url: String(wc.getURL()).slice(0, 100) });
+        if (!Array.isArray(apps)) return;
+        const sig = JSON.stringify(apps);
+        if (!force && sig === __lastHomeAppsSig) return;
+        __lastHomeAppsSig = sig;
+        processScannedApps(apps);
+      } catch (_) {}
+    }).catch((e) => {
+      try { dlog && dlog('warn', 'apps.scan.err', { err: String(e && e.message || e).slice(0, 120) }); } catch (_) {}
+    });
+  } catch (_) {}
+}
+function startHomeScan() {
+  try {
+    if (__homeScanTimer) { clearInterval(__homeScanTimer); __homeScanTimer = null; }
+    scanHomeApps(true);
+    __homeScanTimer = setInterval(() => { try { scanHomeApps(false); } catch (_) {} }, 10000);
+  } catch (_) {}
+}
 
 // ---------------------- 锁屏 / 设置 IPC ----------------------
 ipcMain.handle('lock:get-info', async (e) => {
@@ -6144,7 +6320,20 @@ ipcMain.handle('iptv:set-config', async (_e, patch) => {
 ipcMain.handle('iptv:clear-cache', async () => ({ ok: true, status: { listening: false, port: 0, segments: 0, bytes: 0, sessions: 0 } }));
 
 // ---------------------- 生命周期 ----------------------
-app.on('second-instance', () => {
+app.on('second-instance', (_e, commandLine) => {
+  // v1.76.0：第二次双击桌面快捷方式时，把 --open-app 应用转交给主实例打开
+  try {
+    const argv = commandLine || [];
+    let u = '';
+    for (let i = 0; i < argv.length; i++) {
+      const a = String(argv[i] || '');
+      if (a === '--open-app' && argv[i + 1]) { u = String(argv[i + 1]); break; }
+      if (a.startsWith('--open-app=')) { u = a.slice('--open-app='.length); break; }
+    }
+    if (u && mainWindow && !mainWindow.isDestroyed()) {
+      setTimeout(() => { try { createAppWindow(u, {}); } catch (_) {} }, 300);
+    }
+  } catch (_) {}
   if (isCompletelyHidden) {
     restoreFromCompletelyHidden();
     return;

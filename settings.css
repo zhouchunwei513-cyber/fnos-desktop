@@ -14,12 +14,12 @@ html, body {
   overflow-y: visible;
 }
 
+/* v2.0.5：去掉 .settings-card 的玻璃背景，只保留布局；背景框由 .settings-section 负责 */
 .settings-card {
   position: relative; z-index: 1;
   width: 640px;
   max-width: 100%;
-  padding: 24px 24px 20px;
-  border-radius: 28px;
+  padding: 16px 0 12px;
   animation: pop .35s cubic-bezier(.2,.9,.3,1.2);
 }
 
@@ -52,11 +52,12 @@ html, body {
   color: rgba(233,239,255,.55);
 }
 
+/* v2.0.5：增加内边距，文字离边框更远 */
 .settings-section {
-  padding: 24px 16px 12px;
+  padding: 28px 24px 16px;
   border-bottom: 1px solid rgba(255,255,255,.06);
 }
-.settings-section:last-child { border-bottom: 0; padding-bottom: 0; }
+.settings-section:last-child { border-bottom: 0; padding-bottom: 8px; }
 
 .section-title {
   display: flex; align-items: center; gap: 10px;

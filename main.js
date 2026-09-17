@@ -3685,12 +3685,9 @@ const APP_UI_INJECT_CSS = [
 
 
 function createAppWindow(url, opts = {}) {
-  // v1.16.3：NAS 相关窗口一律走共享 partition，与主窗口/飞牛 webview/直播窗口
-  // 共享登录态；只有显式传入非 NAS 的外部 partition 才允许保留。
+  // v2.0.5：修复——子应用窗口必须与主窗口使用同一 partition，否则 cookie/session 不共享，
+  // 导致子应用打开后被重定向到登录页。不再将 persist:nas-* 替换为 SHARED_PARTITION。
   let partition = opts.partition || currentPartition;
-  if (!partition || partition === 'persist:connect' || /^persist:nas-/.test(partition)) {
-    partition = SHARED_PARTITION;
-  }
   applyUA(partition);
 
   // v1.70.0：应用窗口打开前主动应用 URL 重写（外网端口/域名映射）。
@@ -3792,10 +3789,14 @@ function createAppWindow(url, opts = {}) {
       try { dlog && dlog('info', 'appwin.dom-ready', { app: __appLabel, winId: win.id, ms: Date.now() - (win.__appNavStart || __t0) }); } catch (_) {}
       // v2.0.0：修复子应用窗口输入框无法输入——延迟强制 webContents 聚焦，避免窗口焦点被抢占
       try { setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.focus(); }, 150); } catch (_) {}
-      // v1.71.0：应用窗口统一侧边栏毛玻璃 + 深色滚动条（与主窗口 shell.js 注入一致）
-      try {
+      // v2.0.5：CSS 注入范围限定——只对客户端自身页面（file:// 协议的 login.html/lock.html/settings.html）
+    // 注入 APP_UI_INJECT_CSS，不对 NAS 应用页面（http/https）注入，避免破坏 NAS 应用的原始 UI。
+    try {
         if (win.webContents && !win.webContents.isDestroyed()) {
-          win.webContents.insertCSS(APP_UI_INJECT_CSS).catch(() => {});
+          const pageUrl = win.webContents.getURL();
+          if (pageUrl && pageUrl.startsWith('file://')) {
+            win.webContents.insertCSS(APP_UI_INJECT_CSS).catch(() => {});
+          }
         }
       } catch (_) {}
     });

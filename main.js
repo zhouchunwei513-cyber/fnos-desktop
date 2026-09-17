@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.77.0';
+const APP_VERSION = '1.78.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2912,7 +2912,8 @@ function buildShortcutPs1(exe, apps, iconDir) {
     const ico = path.join(iconDir, hash + '.ico');
     if (app.iconPng && fs.existsSync(app.iconPng)) {
       L.push(`$img = [System.Drawing.Image]::FromFile('${esc(app.iconPng)}')`);
-      L.push('$bmp = New-Object System.Drawing.Bitmap($img, 64, 64)');
+      // v1.78.0：256x256 高清图标（旧版 64x64 在桌面放大显示模糊）
+      L.push('$bmp = New-Object System.Drawing.Bitmap($img, 256, 256)');
       L.push('$h = $bmp.GetHicon()');
       L.push('$ic = [System.Drawing.Icon]::FromHandle($h)');
       L.push(`$fs = [System.IO.File]::Create('${esc(ico)}')`);
@@ -2920,10 +2921,14 @@ function buildShortcutPs1(exe, apps, iconDir) {
     }
     const iconLoc = (app.iconPng && fs.existsSync(app.iconPng)) ? ico : exe;
     const args = '--open-app "' + String(app.url).replace(/"/g, '\\"') + '"';
-    // v1.73.0：幂等——桌面已存在同名快捷方式则跳过，不覆盖（应用减少时手动删除即可；
-    // 自动同步/重复扫描不会产生重复创建与弹窗）
+    // v1.78.0：旧快捷方式自动修复——同名快捷方式若 Arguments 未指向当前 URL 则覆盖重建
+    //（解决旧版自动创建时保存的外网/过期 URL 导致双击打不开）；指向相同则跳过。
     L.push(`$lnkPath = Join-Path $desktop '${esc(safeName)}.lnk'`);
-    L.push('if (Test-Path $lnkPath) { continue }');
+    L.push('if (Test-Path $lnkPath) {');
+    L.push('  $old = $ws.CreateShortcut($lnkPath)');
+    L.push(`  $needle = '${esc(args)}'`);
+    L.push('  if ($old.Arguments -and $old.Arguments.Contains($needle)) { continue }');
+    L.push('}');
     L.push(`$sc = $ws.CreateShortcut($lnkPath)`);
     L.push(`$sc.TargetPath = '${esc(exe)}'`);
     L.push(`$sc.Arguments = '${args}'`);
@@ -2934,7 +2939,7 @@ function buildShortcutPs1(exe, apps, iconDir) {
   return L.join('\r\n');
 }
 
-async function createDesktopShortcuts(win) {
+async function createDesktopShortcuts(win, appsFilter) {
   const notify = (title, msg) => {
     try { glassMessageBox(win || mainWindow, { type: 'info', title, buttons: ['好的'], defaultId: 0, message: msg }); } catch (_) {}
   };
@@ -2943,7 +2948,9 @@ async function createDesktopShortcuts(win) {
     return;
   }
   const s = loadSettings();
-  const apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
+  // v1.78.0：appsFilter 支持按需创建（undefined=全部；function=只创建匹配项）
+  let apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
+  if (typeof appsFilter === 'function') apps = apps.filter(appsFilter);
   if (!apps.length) {
     notify('创建桌面快捷方式', '尚未扫描到应用。请先打开一次飞牛主页，让客户端自动扫描主页中的应用，然后再试。');
     return;
@@ -2984,6 +2991,31 @@ async function createDesktopShortcuts(win) {
 // 无需用户手动点菜单；桌面已存在同名快捷方式的自动跳过（buildShortcutPs1 内
 // Test-Path 幂等），因此应用增减时自动同步，不会重复创建或频繁打扰。
 let __autoShortcutLastTs = 0;
+// v1.78.0：菜单「创建桌面快捷方式」子菜单——每个应用一项（按需创建），
+// 外加「全部创建/更新」。不再自动创建全部应用的快捷方式。
+function buildShortcutMenuItems() {
+  const items = [];
+  try {
+    const s = loadSettings();
+    const apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
+    if (!apps.length) {
+      items.push({ label: '尚未扫描到应用（请先打开飞牛主页）', enabled: false });
+      return items;
+    }
+    for (const a of apps) {
+      items.push({
+        label: a.name,
+        click: () => { createDesktopShortcuts(mainWindow, (x) => x.url === a.url); },
+      });
+    }
+    items.push({ type: 'separator' });
+    items.push({ label: '全部创建 / 更新', click: () => { createDesktopShortcuts(mainWindow); } });
+  } catch (_) {
+    items.push({ label: '尚未扫描到应用', enabled: false });
+  }
+  return items;
+}
+
 function autoCreateDesktopShortcuts(newApps, source) {
   try {
     if (process.platform !== 'win32') return;
@@ -3582,12 +3614,14 @@ function createMainWindow(partition, loadTarget) {
   // v1.76.0：主页加载/导航时启动应用扫描 + 处理待打开应用（快捷方式 --open-app）。
   // 主页未登录(/login)时扫描自动跳过；用户登录跳回主页后立即扫描并打开 pending 应用。
   try {
-    mainWindow.webContents.on('dom-ready', () => { try { startHomeScan(); } catch (_) {} });
+    mainWindow.webContents.on('dom-ready', () => {
+      try { consumePendingOpenApp(); startHomeScan(); } catch (_) {}
+    });
     mainWindow.webContents.on('did-navigate', () => {
-      try { startHomeScan(); tryOpenPendingApp(); } catch (_) {}
+      try { consumePendingOpenApp(); startHomeScan(); tryOpenPendingApp(); } catch (_) {}
     });
     mainWindow.webContents.on('did-navigate-in-page', () => {
-      try { tryOpenPendingApp(); } catch (_) {}
+      try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
     });
   } catch (_) {}
 
@@ -3681,6 +3715,24 @@ function queuePendingApp(u) {
   __pendingAppUrl = String(u || '');
   __pendingAppStart = Date.now();
 }
+// v1.78.0：消费 --open-app（桌面快捷方式冷启动）。旧版只在 doConnectTo（手动连接服务器）
+// 时取用，冷启动走 createMainWindow 直接 loadURL，pending 应用永远不会被打开——
+// 这就是"快捷方式点了没反应"的根因。这里在主页加载/导航时统一取用一次。
+function consumePendingOpenApp() {
+  try {
+    const u = takePendingOpenApp();
+    if (!u) return;
+    queuePendingApp(u);
+    tryOpenPendingApp();
+    const pt = setInterval(() => {
+      try {
+        tryOpenPendingApp();
+        if (!__pendingAppUrl) clearInterval(pt);
+      } catch (_) {}
+    }, 1500);
+  } catch (_) {}
+}
+
 function tryOpenPendingApp() {
   try {
     if (!__pendingAppUrl) return;
@@ -3967,7 +4019,7 @@ function buildMenuTemplate() {
           click: () => copyCurrentWindowLink(),
         },
         { type: 'separator' },
-        { label: '📌 创建桌面快捷方式（主页扫描到的应用）', click: () => { createDesktopShortcuts(mainWindow); } },
+        { label: '📌 创建桌面快捷方式', submenu: buildShortcutMenuItems() },
       ],
     },
     {
@@ -4056,7 +4108,7 @@ function processScannedApps(apps) {
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
     // v1.75.0：日志带上具体应用名，便于排障
     dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length, apps: merged.map((a) => a.name + '|' + a.url).slice(0, 12) });
-    if (fresh.length) autoCreateDesktopShortcuts(fresh, 'scan');
+    // v1.78.0：不再自动创建桌面快捷方式（用户按需手动创建，避免桌面被自动铺满）
   } catch (_) {}
 }
 ipcMain.on('shell:report-apps', (_e, apps) => {
@@ -6333,7 +6385,23 @@ app.on('second-instance', (_e, commandLine) => {
       if (a.startsWith('--open-app=')) { u = a.slice('--open-app='.length); break; }
     }
     if (u && mainWindow && !mainWindow.isDestroyed()) {
-      setTimeout(() => { try { createAppWindow(u, {}); } catch (_) {} }, 300);
+      setTimeout(() => {
+        try {
+          const cur = mainWindow.webContents.getURL() || '';
+          const p = String(cur).toLowerCase();
+          const loggedIn = /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
+          if (loggedIn) {
+            createAppWindow(u, {});
+          } else {
+            // v1.78.0：主程序已运行但未登录 → 等待登录后自动打开（不再直接开登录页）
+            queuePendingApp(u);
+            tryOpenPendingApp();
+            const pt = setInterval(() => {
+              try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
+            }, 1500);
+          }
+        } catch (_) { try { createAppWindow(u, {}); } catch (_) {} }
+      }, 300);
     }
   } catch (_) {}
   if (isCompletelyHidden) {

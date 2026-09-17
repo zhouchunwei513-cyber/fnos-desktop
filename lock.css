@@ -148,7 +148,7 @@ html, body {
 
 .btn-primary {
   position: relative;
-  border: 0;
+  border: 0; border-radius: 22px;
   font-weight: 800; letter-spacing: 8px;
   color: #04131f;
   background: linear-gradient(90deg, #7cecff, #7c83ff, #ff6bcb);
@@ -174,7 +174,7 @@ html, body {
 
 .btn-ghost {
   height: 44px; padding: 0 20px;
-  border-radius: 12px;
+  border-radius: 22px;
   background: rgba(255,255,255,.06);
   border: 1px solid rgba(255,255,255,.18);
   color: #e9efff; font-weight: 700; letter-spacing: 2px;

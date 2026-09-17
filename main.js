@@ -3657,7 +3657,7 @@ const APP_UI_INJECT_CSS = [
   '}',
   // v2.0.0：按钮液态玻璃
   'button, .btn, .el-button, .ant-btn, [role="button"] {',
-  '  border-radius: 10px !important;',
+  '  border-radius: 20px !important;',
   '  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;',
   '}',
   'button:hover, .btn:hover, .el-button:hover, .ant-btn:hover, [role="button"]:hover {',
@@ -4408,7 +4408,7 @@ function rebuildTrayMenu() {
     ];
     items.push({ label: '切换账号', submenu: acctSubmenu });
   }
-  items.push({ label: '切换服务器…', click: () => showConnectPage() });
+  // v2.0.1：已移除"切换服务器"，多账号切换已足够
   if (hasAppPassword()) {
     items.push({ label: '锁定 FNOS', click: () => lockApp() });
   }
@@ -4823,16 +4823,8 @@ function buildMenuTemplate() {
     {
       label: '文件',
       submenu: [
+        // v2.0.1：已移除"切换服务器"菜单项，多账号切换已足够
         { label: '返回 FNOS 主页', accelerator: 'Alt+H', click: goHomeWithPrompt },
-        { label: '切换服务器…', accelerator: 'Ctrl+Shift+L', click: () => {
-          glassMessageBox(mainWindow, {
-            type: 'question', buttons: ['切换', '取消'],
-            defaultId: 0, cancelId: 1,
-            title: '切换服务器',
-          }).then(({ response }) => {
-            if (response === 0) showConnectPage();
-          });
-        }},
         // v2.0.0：多账号快速切换
         (() => {
           const accts = getAccounts();

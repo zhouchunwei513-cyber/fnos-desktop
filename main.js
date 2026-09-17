@@ -645,12 +645,12 @@ function fnosLog(level, module, msg, extra) {
       }
     }
     
-    const line = `[${ts}] [${levelTag}] [${module}] ${msg}${extraStr}\n`;
+    const line = `[${ts}] [${levelTag}] [${module}] [${__RUN_MODE}] ${msg}${extraStr}\n`;
     fs.appendFileSync(logFile, line);
     
     // 控制台输出
     const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-    consoleFn(`[FNOS] [${levelTag}] [${module}] ${msg}`, extra || '');
+    consoleFn(`[FNOS] [${levelTag}] [${module}] [${__RUN_MODE}] ${msg}`, extra || '');
   } catch (_) {}
 }
 
@@ -779,6 +779,8 @@ function parseAppArgs() {
   return result;
 }
 const launchArgs = parseAppArgs();
+// v2.0.7：运行模式标记——日志中区分主程序/独立子应用
+const __RUN_MODE = launchArgs.appId ? 'subapp:' + launchArgs.appId : 'main';
 
 // ---------------------- 设置持久化 ----------------------
 function defaultSettings() {
@@ -3824,6 +3826,15 @@ function createAppWindow(url, opts = {}) {
         win.__appResPending = false;
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
+      // v2.0.7：注入 CSS 隐藏 NAS 页面的「连接已断开」弹窗（外网抖动时避免打扰用户）
+      try {
+        win.webContents.insertCSS(`
+.f-error, .connection-error, .network-error, .offline-notice, .disconnect-notice,
+[class*="offline"], [class*="disconnect"], [class*="connection-lost"], [class*="network-error"],
+.toast-error, .el-message--error, .ant-message-error { display: none !important; visibility: hidden !important; }
+`).catch(() => {});
+      } catch (_) {}
+
       // v2.0.6：增强版任务栏图标提取
       //   1) 收集页面所有 favicon 候选（icon/apple-touch-icon/shortcut icon），排除 SVG
       //   2) data URL 区分 SVG/PNG：SVG 跳过，PNG 直接使用
@@ -3835,11 +3846,10 @@ function createAppWindow(url, opts = {}) {
           try {
             var candidates = [];
             var seen = {};
-            var addCandidate = function(href) {
+            var addCandidate = function(href, isSvg) {
               if (!href || seen[href]) return;
               seen[href] = true;
-              if (/\\.svg$/i.test(href) || /^data:image\\/svg/i.test(href)) return;
-              candidates.push(href);
+              candidates.push({ href: href, isSvg: !!isSvg });
             };
             var allLinks = document.querySelectorAll('link[rel]');
             for (var i = 0; i < allLinks.length; i++) {
@@ -3848,11 +3858,21 @@ function createAppWindow(url, opts = {}) {
               if (rel.indexOf('icon') === -1) continue;
               var href = lnk.href || lnk.getAttribute('href') || '';
               var type = (lnk.getAttribute('type') || '').toLowerCase();
-              if (type === 'image/svg+xml' || type === 'image/svg') continue;
-              if (href) addCandidate(href);
+              var isSvg = type === 'image/svg+xml' || type === 'image/svg' || /\.svg($|[?#])/i.test(href);
+              if (href) addCandidate(href, isSvg);
             }
             if (!candidates.length) {
-              try { addCandidate(location.origin + '/favicon.ico'); } catch(_) {}
+              try { addCandidate(location.origin + '/favicon.ico', false); } catch(_) {}
+            }
+            // v2.0.7：同时收集 SVG 候选作为备用
+            if (!candidates.some(function(c){ return !c.isSvg; })) {
+              for (var j = 0; j < allLinks.length; j++) {
+                var lnk2 = allLinks[j];
+                var rel2 = (lnk2.getAttribute('rel') || '').toLowerCase();
+                if (rel2.indexOf('icon') === -1) continue;
+                var href2 = lnk2.href || lnk2.getAttribute('href') || '';
+                if (href2 && !seen[href2]) { seen[href2] = true; candidates.push({ href: href2, isSvg: true }); }
+              }
             }
             return candidates;
           } catch (e) { return []; }
@@ -3881,24 +3901,51 @@ function createAppWindow(url, opts = {}) {
               const ses = win.webContents ? win.webContents.session : null;
               const tryNext = (idx) => {
                 if (idx >= candidates.length || win.isDestroyed()) return;
-                const iconRef = candidates[idx];
+                const c = candidates[idx];
+                const iconRef = typeof c === 'string' ? c : c.href;
+                const isSvg = typeof c === 'object' && c.isSvg;
                 if (/^data:image\//i.test(iconRef)) {
-                  try {
-                    const img = nativeImage.createFromDataURL(iconRef);
-                    if (!img.isEmpty()) {
-                      win.setIcon(img);
-                      dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, data: 1 });
-                      return;
-                    }
-                  } catch (_) {}
-                  tryNext(idx + 1);
+                  if (/^data:image\/svg/i.test(iconRef) || isSvg) {
+                    // SVG data URL，通过隐藏窗口转 PNG
+                    ipcRenderer.invoke('app:convert-svg-icon', { svgDataUrl: iconRef, appId: __appLabel.replace(/[^a-zA-Z0-9_-]/g, '_'), size: 128 }).then((result) => {
+                      if (result && result.success && result.data && result.data.iconPath && fs.existsSync(result.data.iconPath)) {
+                        try {
+                          const img = nativeImage.createFromPath(result.data.iconPath);
+                          if (!img.isEmpty()) { win.setIcon(img); dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, svg: 1 }); return; }
+                        } catch (_) {}
+                      }
+                      tryNext(idx + 1);
+                    }).catch(() => tryNext(idx + 1));
+                  } else {
+                    try {
+                      const img = nativeImage.createFromDataURL(iconRef);
+                      if (!img.isEmpty()) {
+                        win.setIcon(img);
+                        dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, data: 1 });
+                        return;
+                      }
+                    } catch (_) {}
+                    tryNext(idx + 1);
+                  }
                   return;
                 }
                 if (!/^https?:/i.test(iconRef) || !ses) { tryNext(idx + 1); return; }
                 ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
                   if (!res.ok) throw new Error('bad status ' + res.status);
                   const ct = (res.headers.get('content-type') || '').toLowerCase();
-                  if (ct.includes('svg')) { tryNext(idx + 1); return null; }
+                  if (ct.includes('svg') || isSvg) {
+                    return res.text().then((svgText) => {
+                      return __svgToPng(svgText, 128).then((pngBuf) => {
+                        if (pngBuf) {
+                          const iconPath = path.join(ASSETS_DIR, (__appLabel || 'app').replace(/[^a-zA-Z0-9_-]/g, '_') + '.png');
+                          try { fs.writeFileSync(iconPath, Buffer.from(pngBuf)); } catch (_) {}
+                          const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                          if (!img.isEmpty()) { win.setIcon(img); dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, svg: 1 }); return; }
+                        }
+                        tryNext(idx + 1);
+                      });
+                    });
+                  }
                   return res.arrayBuffer();
                 }).then((buf) => {
                   if (!buf) return;
@@ -5357,6 +5404,46 @@ ipcMain.handle('install-nas-app', async (_e, payload) => {
     }
     
     const res = writeManifest(data);
+    // v2.0.7：如果图标是 SVG 格式或为空，尝试从 NAS 获取 favicon 并转换为 PNG
+    if ((!iconPath || iconPath.endsWith('.svg')) && nasAddress) {
+      try {
+        const favUrl = nasAddress.replace(/\/$/, '') + '/favicon.ico';
+        const ses = session.defaultSession;
+        const resp = await ses.fetch(favUrl, { credentials: 'include' });
+        if (resp.ok) {
+          const ct = (resp.headers.get('content-type') || '').toLowerCase();
+          const buf = Buffer.from(await resp.arrayBuffer());
+          if (ct.includes('svg') || buf.slice(0, 5).toString().includes('svg') || buf.slice(0, 4).toString() === '<svg' || buf.slice(0, 100).toString().includes('<svg')) {
+            // SVG favicon，通过隐藏窗口转换为 PNG
+            const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(buf.toString('utf-8'));
+            const convertResult = await (async () => {
+              const pngBuf = await __svgToPng(buf.toString('utf-8'), 128);
+              if (!pngBuf) return null;
+              const savePath = path.join(ASSETS_DIR, appId + '.png');
+              fs.writeFileSync(savePath, Buffer.from(pngBuf));
+              return { iconPath: savePath };
+            })();
+            if (convertResult && convertResult.iconPath) {
+              appEntry.iconPath = convertResult.iconPath;
+              if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+              writeManifest(data);
+              fnosLog('info', 'ipc', 'install时SVG图标已转换', { appId, iconPath: convertResult.iconPath });
+            }
+          } else if (!ct.includes('svg') && !buf.slice(0, 100).toString().includes('<svg')) {
+            // 非 SVG，直接保存为 PNG/ICO
+            const ext = ct.includes('png') ? 'png' : (ct.includes('x-icon') || ct.includes('vnd.microsoft.icon') ? 'ico' : 'png');
+            const savePath = path.join(ASSETS_DIR, appId + '.' + ext);
+            fs.writeFileSync(savePath, buf);
+            appEntry.iconPath = savePath;
+            if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+            writeManifest(data);
+            fnosLog('info', 'ipc', 'install时favicon已缓存', { appId, iconPath: savePath });
+          }
+        }
+      } catch (e) {
+        fnosLog('warn', 'ipc', 'install时获取favicon失败', { appId, err: e.message });
+      }
+    }
     return { success: res.success, msg: res.msg || '安装成功', data: appEntry };
   } catch (e) {
     fnosLog('error', 'ipc', 'install-nas-app error', { err: e.message, stack: e.stack });
@@ -5442,6 +5529,61 @@ $sc.Save()
   }
 });
 
+
+// v2.0.7：SVG 转 PNG——创建隐藏窗口渲染 SVG 并截图为 PNG buffer
+async function __svgToPng(svgText, size) {
+  size = size || 128;
+  let hiddenWin;
+  try {
+    hiddenWin = new BrowserWindow({
+      show: false, width: size + 20, height: size + 20,
+      webPreferences: { offscreen: true, sandbox: true },
+    });
+    const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+    const html = '<!DOCTYPE html><html><body style="margin:0;background:transparent;display:flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;">' +
+      '<img src="' + dataUrl + '" width="' + size + '" height="' + size + '" style="max-width:100%;max-height:100%;" />' +
+      '</body></html>';
+    await hiddenWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await new Promise(r => setTimeout(r, 600));
+    const img = await hiddenWin.webContents.capturePage();
+    try { hiddenWin.close(); } catch (_) {}
+    return img.toPNG();
+  } catch (e) {
+    try { if (hiddenWin && !hiddenWin.isDestroyed()) hiddenWin.close(); } catch (_) {}
+    fnosLog('error', 'icon', 'SVG转PNG失败', { err: e.message });
+    return null;
+  }
+}
+ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
+  try {
+    const { svgDataUrl, appId, size } = payload || {};
+    if (!svgDataUrl || !appId) return { success: false, msg: '缺少参数' };
+    // 解码 SVG 内容
+    let svgText;
+    try {
+      svgText = decodeURIComponent(svgDataUrl.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
+    } catch (_) {
+      return { success: false, msg: 'SVG解码失败' };
+    }
+    // 转换为 PNG
+    const pngBuf = await __svgToPng(svgText, size || 128);
+    if (!pngBuf) return { success: false, msg: '转换失败' };
+    // 保存到 assets 目录
+    const iconPath = path.join(ASSETS_DIR, appId + '.png');
+    try {
+      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+      fs.writeFileSync(iconPath, Buffer.from(pngBuf));
+      fnosLog('info', 'icon', 'SVG图标已转换并保存', { appId, iconPath });
+    } catch (e) {
+      fnosLog('error', 'icon', '保存转换后图标失败', { err: e.message });
+      return { success: false, msg: '保存失败: ' + e.message };
+    }
+    return { success: true, msg: '转换成功', data: { iconPath } };
+  } catch (e) {
+    fnosLog('error', 'icon', 'convert-svg-icon error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+});
 
 // ===================== v2.0.0 多账号管理 =====================
 // 账号数据结构：{ id, label, origin, href, partition, lastConnectedAt, isActive }
@@ -5684,11 +5826,18 @@ function launchSubAppFromArgs() {
                   if (rel.indexOf('icon') === -1) continue;
                   var h = l.href || l.getAttribute('href') || '';
                   var t = (l.getAttribute('type')||'').toLowerCase();
-                  if (t === 'image/svg+xml' || t === 'image/svg') continue;
-                  if (/\\.svg$/i.test(h) || /^data:image\\/svg/i.test(h)) continue;
-                  if (h && !seen[h]) { seen[h] = true; cands.push(h); }
+                  var isSvg = t === 'image/svg+xml' || t === 'image/svg' || /\.svg($|[?#])/i.test(h);
+                  if (h && !seen[h]) { seen[h] = true; cands.push({ href: h, isSvg: isSvg }); }
                 }
-                if (!cands.length) try { cands.push(location.origin + '/favicon.ico'); } catch(_){}
+                if (!cands.length) try { cands.push({ href: location.origin + '/favicon.ico', isSvg: false }); } catch(_){}
+                if (!cands.some(function(c){ return !c.isSvg; })) {
+                  for (var j = 0; j < all.length; j++) {
+                    var l2 = all[j], rel2 = (l2.getAttribute('rel')||'').toLowerCase();
+                    if (rel2.indexOf('icon') === -1) continue;
+                    var h2 = l2.href || l2.getAttribute('href') || '';
+                    if (h2 && !seen[h2]) { seen[h2] = true; cands.push({ href: h2, isSvg: true }); }
+                  }
+                }
                 return cands;
               } catch(e) { return []; }
             })()`, true).then((cands) => {
@@ -5697,15 +5846,46 @@ function launchSubAppFromArgs() {
                 const ses = subWin.webContents.session;
                 const tryNext = (idx) => {
                   if (idx >= cands.length || subWin.isDestroyed()) return;
-                  const ref = cands[idx];
+                  const c = cands[idx];
+                  const ref = typeof c === 'string' ? c : c.href;
+                  const isSvg = typeof c === 'object' && c.isSvg;
                   if (/^data:image\//i.test(ref)) {
-                    try { const img = nativeImage.createFromDataURL(ref); if (!img.isEmpty()) { subWin.setIcon(img); return; } } catch(_){}
-                    tryNext(idx+1); return;
+                    if (/^data:image\/svg/i.test(ref) || isSvg) {
+                      try {
+                        const svgText = decodeURIComponent(ref.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
+                        __svgToPng(svgText, 128).then(pngBuf => {
+                          if (pngBuf) {
+                            const iconPath = path.join(ASSETS_DIR, (appId || 'app').replace(/[^a-zA-Z0-9_-]/g, '_') + '.png');
+                            try { fs.writeFileSync(iconPath, Buffer.from(pngBuf)); } catch(_) {}
+                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                            if (!img.isEmpty()) { subWin.setIcon(img); return; }
+                          }
+                          tryNext(idx+1);
+                        });
+                      } catch(_) { tryNext(idx+1); }
+                    } else {
+                      try { const img = nativeImage.createFromDataURL(ref); if (!img.isEmpty()) { subWin.setIcon(img); return; } } catch(_){}
+                      tryNext(idx+1);
+                    }
+                    return;
                   }
                   if (!/^https?:/i.test(ref)) { tryNext(idx+1); return; }
                   ses.fetch(ref, { credentials: 'include' }).then(r => {
                     if (!r.ok) throw new Error('bad status');
-                    if ((r.headers.get('content-type')||'').includes('svg')) { tryNext(idx+1); return null; }
+                    const ct = (r.headers.get('content-type')||'').toLowerCase();
+                    if (ct.includes('svg') || isSvg) {
+                      return r.text().then(svgText => {
+                        return __svgToPng(svgText, 128).then(pngBuf => {
+                          if (pngBuf) {
+                            const iconPath = path.join(ASSETS_DIR, (appId || 'app').replace(/[^a-zA-Z0-9_-]/g, '_') + '.png');
+                            try { fs.writeFileSync(iconPath, Buffer.from(pngBuf)); } catch(_) {}
+                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                            if (!img.isEmpty()) { subWin.setIcon(img); return; }
+                          }
+                          tryNext(idx+1);
+                        });
+                      });
+                    }
                     return r.arrayBuffer();
                   }).then(buf => {
                     if (!buf) return;
@@ -5934,11 +6114,19 @@ function createLiveWindow(autoplayChannel) {
                   if (rel.indexOf('icon') === -1) continue;
                   var href = lnk.href || lnk.getAttribute('href') || '';
                   var type = (lnk.getAttribute('type') || '').toLowerCase();
-                  if (type === 'image/svg+xml' || type === 'image/svg') continue;
-                  if (/\\.svg$/i.test(href) || /^data:image\\/svg/i.test(href)) continue;
-                  if (href && !seen[href]) { seen[href] = true; candidates.push(href); }
+                  var isSvg = type === 'image/svg+xml' || type === 'image/svg' || /\.svg($|[?#])/i.test(href);
+                  if (href && !seen[href]) { seen[href] = true; candidates.push({ href: href, isSvg: isSvg }); }
                 }
-                if (!candidates.length) { try { candidates.push(location.origin + '/favicon.ico'); } catch(_) {} }
+                if (!candidates.length) { try { candidates.push({ href: location.origin + '/favicon.ico', isSvg: false }); } catch(_) {} }
+                if (!candidates.some(function(c){ return !c.isSvg; })) {
+                  for (var j = 0; j < allLinks.length; j++) {
+                    var lnk2 = allLinks[j];
+                    var rel2 = (lnk2.getAttribute('rel') || '').toLowerCase();
+                    if (rel2.indexOf('icon') === -1) continue;
+                    var href2 = lnk2.href || lnk2.getAttribute('href') || '';
+                    if (href2 && !seen[href2]) { seen[href2] = true; candidates.push({ href: href2, isSvg: true }); }
+                  }
+                }
                 return candidates;
               } catch (e) { return []; }
             })()`, true).then((candidates) => {
@@ -5947,19 +6135,45 @@ function createLiveWindow(autoplayChannel) {
                 const ses = liveWindow.webContents ? liveWindow.webContents.session : null;
                 const tryNext = (idx) => {
                   if (idx >= candidates.length || !liveWindow || liveWindow.isDestroyed()) return;
-                  const iconRef = candidates[idx];
+                  const c = candidates[idx];
+                  const iconRef = typeof c === 'string' ? c : c.href;
+                  const isSvg = typeof c === 'object' && c.isSvg;
                   if (/^data:image\//i.test(iconRef)) {
-                    try {
-                      const img = nativeImage.createFromDataURL(iconRef);
-                      if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
-                    } catch (_) {}
-                    tryNext(idx + 1); return;
+                    if (/^data:image\/svg/i.test(iconRef) || isSvg) {
+                      try {
+                        const svgText = decodeURIComponent(iconRef.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
+                        __svgToPng(svgText, 128).then(pngBuf => {
+                          if (pngBuf) {
+                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                            if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
+                          }
+                          tryNext(idx + 1);
+                        });
+                      } catch(_) { tryNext(idx + 1); }
+                    } else {
+                      try {
+                        const img = nativeImage.createFromDataURL(iconRef);
+                        if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
+                      } catch (_) {}
+                      tryNext(idx + 1);
+                    }
+                    return;
                   }
                   if (!/^https?:/i.test(iconRef) || !ses) { tryNext(idx + 1); return; }
                   ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
                     if (!res.ok) throw new Error('bad status');
                     const ct = (res.headers.get('content-type') || '').toLowerCase();
-                    if (ct.includes('svg')) { tryNext(idx + 1); return null; }
+                    if (ct.includes('svg') || isSvg) {
+                      return res.text().then(svgText => {
+                        return __svgToPng(svgText, 128).then(pngBuf => {
+                          if (pngBuf) {
+                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                            if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
+                          }
+                          tryNext(idx + 1);
+                        });
+                      });
+                    }
                     return res.arrayBuffer();
                   }).then((buf) => {
                     if (!buf) return;

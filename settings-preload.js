@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   readLogFile: (params) => ipcRenderer.invoke('log:read', params),
   getLogStatus: () => ipcRenderer.invoke('log:get-status'),
   // v1.47.0：ZDY 增强服务（在线弹幕/字幕/片头片尾）及设置模块已整体下线移除。
+  // v2.0.7：应用管理
+  getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
+  createDesktopShortcut: (payload) => ipcRenderer.invoke('create-desktop-shortcut', payload),
+  uninstallNasApp: (payload) => ipcRenderer.invoke('uninstall-nas-app', payload),
+  convertSvgIcon: (payload) => ipcRenderer.invoke('app:convert-svg-icon', payload),
   restartApp: () => ipcRenderer.invoke('app:restart'),
   close: () => ipcRenderer.send('settings:close'),
 });

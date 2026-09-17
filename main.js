@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.78.0';
+const APP_VERSION = '1.79.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -2909,15 +2909,35 @@ function buildShortcutPs1(exe, apps, iconDir) {
       .replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 50);
     if (!safeName) continue;
     const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
-    const ico = path.join(iconDir, hash + '.ico');
+    // v1.79.0：图标文件名带 -256 标记——旧快捷方式 IconLocation 指向旧名，触发重建（新图标生效）
+    const ico = path.join(iconDir, hash + '-256.ico');
     if (app.iconPng && fs.existsSync(app.iconPng)) {
+      // v1.79.0：多尺寸 ICO（16/32/48/256 PNG 压缩）——Windows 按显示尺寸精确取图，桌面图标清晰
       L.push(`$img = [System.Drawing.Image]::FromFile('${esc(app.iconPng)}')`);
-      // v1.78.0：256x256 高清图标（旧版 64x64 在桌面放大显示模糊）
-      L.push('$bmp = New-Object System.Drawing.Bitmap($img, 256, 256)');
-      L.push('$h = $bmp.GetHicon()');
-      L.push('$ic = [System.Drawing.Icon]::FromHandle($h)');
-      L.push(`$fs = [System.IO.File]::Create('${esc(ico)}')`);
-      L.push('$ic.Save($fs); $fs.Close(); $ic.Dispose(); $bmp.Dispose(); $img.Dispose()');
+      L.push('$sizes = @(16, 32, 48, 256)');
+      L.push('$pngs = @()');
+      L.push('foreach ($sz in $sizes) {');
+      L.push('  $bmp = New-Object System.Drawing.Bitmap($img, $sz, $sz)');
+      L.push('  $ms = New-Object System.IO.MemoryStream');
+      L.push('  $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)');
+      L.push('  $pngs += ,$ms.ToArray()');
+      L.push('  $bmp.Dispose(); $ms.Dispose()');
+      L.push('}');
+      L.push('$ms = New-Object System.IO.MemoryStream');
+      L.push('$bw = New-Object System.IO.BinaryWriter($ms)');
+      L.push('$bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]$pngs.Length)');
+      L.push('$offset = 6 + 16 * $pngs.Length');
+      L.push('for ($i = 0; $i -lt $pngs.Length; $i++) {');
+      L.push('  $w = if ($sizes[$i] -ge 256) { 0 } else { $sizes[$i] }');
+      L.push('  $bw.Write([byte]$w); $bw.Write([byte]$w); $bw.Write([byte]0); $bw.Write([byte]0)');
+      L.push('  $bw.Write([uint16]1); $bw.Write([uint16]32)');
+      L.push('  $bw.Write([uint32]$pngs[$i].Length); $bw.Write([uint32]$offset)');
+      L.push('  $offset += $pngs[$i].Length');
+      L.push('}');
+      L.push('for ($i = 0; $i -lt $pngs.Length; $i++) { $bw.Write($pngs[$i]) }');
+      L.push('$bw.Flush()');
+      L.push(`[System.IO.File]::WriteAllBytes('${esc(ico)}', $ms.ToArray())`);
+      L.push('$bw.Dispose(); $ms.Dispose(); $img.Dispose()');
     }
     const iconLoc = (app.iconPng && fs.existsSync(app.iconPng)) ? ico : exe;
     const args = '--open-app "' + String(app.url).replace(/"/g, '\\"') + '"';
@@ -2927,7 +2947,9 @@ function buildShortcutPs1(exe, apps, iconDir) {
     L.push('if (Test-Path $lnkPath) {');
     L.push('  $old = $ws.CreateShortcut($lnkPath)');
     L.push(`  $needle = '${esc(args)}'`);
-    L.push('  if ($old.Arguments -and $old.Arguments.Contains($needle)) { continue }');
+    // v1.79.0：增加 IconLocation 检查——图标文件名不符（旧 64x64/单尺寸图标）也重建，强制刷新清晰图标
+    L.push(`  $oldIcon = [string]$old.IconLocation`);
+    L.push(`  if ($old.Arguments -and $old.Arguments.Contains($needle) -and $oldIcon.Contains('${esc(path.basename(ico))}')) { continue }`);
     L.push('}');
     L.push(`$sc = $ws.CreateShortcut($lnkPath)`);
     L.push(`$sc.TargetPath = '${esc(exe)}'`);
@@ -2958,7 +2980,9 @@ async function createDesktopShortcuts(win, appsFilter) {
   const userData = app.getPath('userData');
   const iconDir = path.join(userData, 'app-icons');
   try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
-  const exe = process.execPath;
+  // v1.79.0：便携版每次运行解压到临时目录，process.execPath 变化导致快捷方式失效。
+  // 用 PORTABLE_EXECUTABLE_FILE（用户存放的原始 exe 稳定路径）；安装版无此变量则回退 execPath。
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
   const downloaded = [];
   for (const app of apps) {
     const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
@@ -3016,6 +3040,39 @@ function buildShortcutMenuItems() {
   return items;
 }
 
+// v1.79.0：便携版每次运行解压到临时目录，旧快捷方式 TargetPath 失效（弹窗"FNOS.exe 已更改或移动"）。
+// 主程序启动后自动修复自己创建的快捷方式（Description 以 FNOS 应用 开头）：TargetPath 更新为当前 exe。
+function fixDesktopShortcuts() {
+  try {
+    if (process.platform !== 'win32') return;
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    const esc = (s) => String(s).replace(/'/g, "''");
+    const L = [];
+    L.push("$ErrorActionPreference = 'SilentlyContinue'");
+    L.push("$desktop = [Environment]::GetFolderPath('Desktop')");
+    L.push("$ws = New-Object -ComObject WScript.Shell");
+    L.push(`$target = '${esc(exe)}'`);
+    L.push('Get-ChildItem -Path $desktop -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {');
+    L.push('  try {');
+    L.push('    $sc = $ws.CreateShortcut($_.FullName)');
+    L.push("    if ([string]$sc.Description -notlike 'FNOS 应用*') { return }");
+    L.push('    if ($sc.TargetPath -ne $target) {');
+    L.push('      $sc.TargetPath = $target');
+    L.push('      $sc.Save()');
+    L.push('    }');
+    L.push('  } catch {}');
+    L.push('}');
+    const ps1 = L.join('\r\n');
+    const psFile = path.join(app.getPath('userData'), 'fnos-fix-shortcuts.ps1');
+    fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8');
+    cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 60000, windowsHide: true }, (err) => {
+      try { fs.unlinkSync(psFile); } catch (_) {}
+      if (err) { dlog && dlog('warn', 'shortcut.fix-fail', { err: String(err && err.message || err).slice(0, 160) }); return; }
+      dlog && dlog('info', 'shortcut.fix-ok', { exe: String(exe).slice(0, 120) });
+    });
+  } catch (_) {}
+}
+
 function autoCreateDesktopShortcuts(newApps, source) {
   try {
     if (process.platform !== 'win32') return;
@@ -3028,7 +3085,7 @@ function autoCreateDesktopShortcuts(newApps, source) {
     const userData = app.getPath('userData');
     const iconDir = path.join(userData, 'app-icons');
     try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
-    const exe = process.execPath;
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
     (async () => {
       const downloaded = [];
       for (const app of apps) {
@@ -4173,7 +4230,7 @@ const __HOME_SCAN_JS = String.raw`(function(){
       var nm2 = clean(im.alt || '');
       var href2 = '';
       var cur = im;
-      for (var d = 0; d < 4 && cur; d++) {
+      for (var d = 0; d < 8 && cur; d++) {
         var pe = cur.parentElement;
         if (!pe) break;
         if (!href2 && pe.tagName === 'A') href2 = pe.href || '';
@@ -4205,6 +4262,9 @@ function scanHomeApps(force) {
         if (!force && sig === __lastHomeAppsSig) return;
         __lastHomeAppsSig = sig;
         processScannedApps(apps);
+        if (Array.isArray(apps) && apps.length) {
+          setTimeout(() => { try { scanAppCenterApps(); } catch (_) {} }, 2000);
+        }
       } catch (_) {}
     }).catch((e) => {
       try { dlog && dlog('warn', 'apps.scan.err', { err: String(e && e.message || e).slice(0, 120) }); } catch (_) {}
@@ -4216,6 +4276,58 @@ function startHomeScan() {
     if (__homeScanTimer) { clearInterval(__homeScanTimer); __homeScanTimer = null; }
     scanHomeApps(true);
     __homeScanTimer = setInterval(() => { try { scanHomeApps(false); } catch (_) {} }, 10000);
+  } catch (_) {}
+}
+
+// v1.79.0：主页只显示部分应用（系统应用），Docker 等第三方应用在「应用中心」页。
+// 登录后用一个隐藏窗口加载应用中心页，扫描全部应用卡片，补全应用列表（去重合并）。
+let __appCenterScanAt = 0;
+let __appCenterScanWin = null;
+function scanAppCenterApps() {
+  try {
+    if (__appCenterScanWin && !__appCenterScanWin.isDestroyed()) return;
+    const s = loadSettings();
+    const apps = Array.isArray(s.apps) ? s.apps : [];
+    const center = apps.find((a) => /app-center/i.test(String(a.url)) || /应用中心/.test(String(a.name)));
+    if (!center || !/^https?:/i.test(String(center.url))) return; // 还没扫到应用中心，下次主页扫描再试
+    const now = Date.now();
+    if (now - __appCenterScanAt < 60000) return; // 每分钟最多一次
+    __appCenterScanAt = now;
+    const win = new BrowserWindow({
+      show: false, width: 1500, height: 1000,
+      backgroundColor: '#0b0d12',
+      webPreferences: {
+        contextIsolation: true, nodeIntegration: false,
+        sandbox: true,
+        partition: SHARED_PARTITION,
+        backgroundThrottling: false,
+      },
+    });
+    __appCenterScanWin = win;
+    let done = false;
+    const finish = () => {
+      try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {}
+      __appCenterScanWin = null;
+    };
+    const scanOnce = () => {
+      try {
+        if (done) return;
+        done = true;
+        win.webContents.executeJavaScript(__HOME_SCAN_JS, true).then((list) => {
+          try {
+            if (Array.isArray(list) && list.length) {
+              dlog && dlog('info', 'appcenter.scan', { count: list.length, apps: list.map((a) => a.name + '|' + a.url).slice(0, 15) });
+              processScannedApps(list);
+            }
+          } catch (_) {}
+          finish();
+        }).catch(() => { finish(); });
+      } catch (_) { finish(); }
+    };
+    win.webContents.on('dom-ready', () => { setTimeout(scanOnce, 3500); });
+    win.webContents.on('did-fail-load', () => { finish(); });
+    win.loadURL(center.url, { userAgent: getNasUA() }).catch(() => { finish(); });
+    setTimeout(() => { if (!done) { done = true; finish(); } }, 20000); // 20s 兜底
   } catch (_) {}
 }
 
@@ -6551,6 +6663,9 @@ app.whenReady().then(() => {
     createMainWindow(initialPartition, initialTarget);
     ensureTray();
   }
+
+  // v1.79.0：启动后自动修复桌面快捷方式 TargetPath（便携版解压路径变化导致失效）
+  setTimeout(() => { try { fixDesktopShortcuts(); } catch (_) {} }, 8000);
 
   // 注册全局快捷键
   registerGlobalShortcuts();

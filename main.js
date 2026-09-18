@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.79.0';
+const APP_VERSION = '2.1.3';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4902,17 +4902,29 @@ function processScannedApps(apps) {
             const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
             const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
             const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
-            if (!fs.existsSync(iconFile)) {
-              // Download icon synchronously using child_process (processScannedApps is sync)
-              try {
-                const cp = require('child_process');
-                // Sanitize paths for shell: remove single quotes
-                const safeIconFile = iconFile.replace(/'/g, "'\\''");
-                const safeIconUrl = iconData.replace(/'/g, "'\\''");
-                cp.execSync("curl -sL -o '" + safeIconFile + "' '" + safeIconUrl + "'", { timeout: 10000, stdio: 'pipe' });
-              } catch (_) {}
+            if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) {
+              iconPath = iconFile;
+            } else if (!fs.existsSync(iconFile)) {
+              // v2.1.3: async icon download via session.fetch() (replaces curl, works on all platforms)
+              const iconUrl = iconData;
+              (async () => {
+                try {
+                  const origin = new URL(a.url).origin;
+                  const fetchUrl = /^https?:/i.test(iconUrl) ? iconUrl : origin + iconUrl;
+                  const ses = session.fromPartition(currentPartition);
+                  const resp = await ses.fetch(fetchUrl, { credentials: 'include' });
+                  if (resp.ok) {
+                    const ab = await resp.arrayBuffer();
+                    const buf = Buffer.from(ab);
+                    if (buf.length > 100) {
+                      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+                      fs.writeFileSync(iconFile, buf);
+                      fnosLog('info', 'icon.download', { app: a.name, ok: true, size: buf.length });
+                    }
+                  }
+                } catch (e) { fnosLog('warn', 'icon.download', { app: a.name, err: e.message }); }
+              })();
             }
-            if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) iconPath = iconFile;
           } catch (_) {}
         }
         existingByUrl.set(a.url, {
@@ -5044,34 +5056,31 @@ function startHomeScan() {
 
 // v1.79.0：主页只显示部分应用（系统应用），Docker 等第三方应用在「应用中心」页。
 // 登录后用一个隐藏窗口加载应用中心页，扫描全部应用卡片，补全应用列表（去重合并）。
+// v2.1.3: 修复 /appstore 404 + center 变量作用域 bug + 多策略应用发现（WebSocket拦截 + DOM扫描 + React状态提取）
 let __appCenterScanAt = 0;
 let __appCenterScanWin = null;
+const __WS_PATCH_JS = String.raw`try{if(!window.__fnosWsPatch){window.__fnosWsPatch=true;window.__fnosWsApps=[];var _OWS=window.WebSocket;window.WebSocket=function(){var s=new _OWS(arguments[0],arguments[1]);s.addEventListener('message',function(e){try{var d=JSON.parse(e.data);var items=d&&d.data&&(d.data.list||d.data.apps||d.data.items||d.data.entries)||d&&d.result&&(d.result.list||d.result.apps);if(Array.isArray(items)&&items.length>0){window.__fnosWsApps=window.__fnosWsApps.concat(items);}}catch(x){}});return s;};window.WebSocket.prototype=_OWS.prototype;window.WebSocket.CONNECTING=_OWS.CONNECTING;window.WebSocket.OPEN=_OWS.OPEN;window.WebSocket.CLOSING=_OWS.CLOSING;window.WebSocket.CLOSED=_OWS.CLOSED;}}catch(e){}`;
+const __APP_CENTER_SCAN_JS = String.raw`(function(){try{var res=[],seen={},origin=location.origin;var trim=function(s){return String(s||'').replace(/\s+/g,' ').trim();};var iconFromUrl=function(u){if(!u)return'';var m=/\/(?:icons|icon)\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);return m?m[1]:'';};var push=function(name,url,icon,appName){if(!name||name.length>40)return;if(!url&&appName)url=origin+'/appview?anchor='+encodeURIComponent('https://'+appName);if(!url||seen[url])return;seen[url]=1;res.push({name:name,url:url,icon:icon||'',appName:appName||''});};var links=document.querySelectorAll('a[href]');for(var i=0;i<links.length;i++){var a=links[i];var img=a.querySelector('img');var ic=img?(img.currentSrc||img.src||''):'';var nm=trim(a.innerText||a.title||(img&&img.alt)||'');if(!nm&&img)nm=trim(img.alt||'');var an=iconFromUrl(ic);if(a.href&&a.href.indexOf('appview')>-1){try{var u=new URL(a.href);var anc=u.searchParams.get('anchor');if(anc){an=decodeURIComponent(anc.replace(/^https?:\/\//i,''));}}catch(e2){}}push(nm,a.href,ic,an);}var imgs=document.querySelectorAll('img');for(var q=0;q<imgs.length;q++){var im=imgs[q];var ic2=im.currentSrc||im.src||'';var nm2='';var cur=im;for(var d=0;d<10&&cur;d++){var pe=cur.parentElement;if(!pe)break;var t=trim(pe.innerText||'');if(t&&t.length<=40&&!/\s/.test(t)){nm2=t;break;}cur=pe;}if(!nm2)nm2=trim(im.alt||'');if(!nm2||nm2.length>40)continue;var an2=iconFromUrl(ic2);if(!an2){for(var d2=0;d2<8&&im;d2++){var p2=im.parentElement;if(!p2)break;if(p2.tagName==='A'&&p2.href){try{var u2=new URL(p2.href);var anc2=u2.searchParams.get('anchor');if(anc2)an2=decodeURIComponent(anc2.replace(/^https?:\/\//i,''));}catch(e3){}}im=p2;}}push(nm2,'',ic2,an2);}if(Array.isArray(window.__fnosWsApps)){for(var w=0;w<window.__fnosWsApps.length;w++){var wa=window.__fnosWsApps[w];var wn=trim(wa.name||wa.appName||wa.label||wa.title||'');var wu='';if(wa.appName)wu=origin+'/appview?anchor='+encodeURIComponent('https://'+wa.appName);else if(wa.url)wu=wa.url;var wi='';if(wa.icon)wi=wa.icon.indexOf('http')===0?wa.icon:origin+wa.icon;var wan=trim(wa.appName||wa.name||'');if(wn)push(wn,wu,wi,wan);}}try{var fiberKey=Object.keys(document).find(function(k){return k.startsWith('__reactFiber$')||k.startsWith('__reactInternalInstance$');});if(fiberKey){var root=document.getElementById('root')||document.getElementById('app');if(root&&root[fiberKey]){var f=root[fiberKey];for(var depth=0;depth<100&&f;depth++){if(f.memoizedState&&f.memoizedState.memoizedState&&Array.isArray(f.memoizedState.memoizedState)){var arr=f.memoizedState.memoizedState;for(var ai=0;ai<arr.length;ai++){var app=arr[ai];if(app&&app.name){push(trim(app.name),'',app.icon||'',trim(app.appName||''));}}}f=f.return;}}}}catch(reactErr){}return res;}catch(e){return null;}})()`;
 function scanAppCenterApps() {
   try {
     if (__appCenterScanWin && !__appCenterScanWin.isDestroyed()) return;
     const s = loadSettings();
-    const apps = Array.isArray(s.apps) ? s.apps : [];
-    // v2.0.9: 直接构造应用中心 URL（不再依赖主页扫描到应用中心卡片）
-    const s2 = loadSettings();
-    let centerUrl = '';
-    if (s2.origin && /^https?:/i.test(s2.origin)) {
-      centerUrl = s2.origin + '/appstore';
+    const origin = s.origin || '';
+    if (!origin || !/^https?:/i.test(origin)) {
+      fnosLog('warn', 'appcenter.scan', { err: 'no origin' });
+      return;
     }
-    if (!centerUrl) {
-      const center = apps.find((a) => /app-center|appstore|app\/store/i.test(String(a.url)) || /应用中心/.test(String(a.name)));
-      if (center && /^https?:/i.test(String(center.url))) centerUrl = center.url;
-    }
-    if (!centerUrl) return;
     const now = Date.now();
-    if (now - __appCenterScanAt < 60000) return; // 每分钟最多一次
+    if (now - __appCenterScanAt < 60000) return;
     __appCenterScanAt = now;
+    fnosLog('info', 'appcenter.scan', { msg: 'starting', origin });
     const win = new BrowserWindow({
       show: false, width: 1500, height: 1000,
       backgroundColor: '#0b0d12',
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,
         sandbox: true,
-        partition: currentPartition, // v2.0.9: use same partition as main window for session sharing
+        partition: currentPartition,
         backgroundThrottling: false,
       },
     });
@@ -5085,22 +5094,36 @@ function scanAppCenterApps() {
       try {
         if (done) return;
         done = true;
-        win.webContents.executeJavaScript(__HOME_SCAN_JS, true).then((list) => {
+        // v2.1.3: 先注入 WebSocket 拦截器（捕获 app.list 等 API 响应），再执行 DOM 扫描
+        win.webContents.executeJavaScript(__WS_PATCH_JS, true).then(() => {
+          return win.webContents.executeJavaScript(__APP_CENTER_SCAN_JS, true);
+        }).then((list) => {
           try {
             if (Array.isArray(list) && list.length) {
-              dlog && dlog('info', 'appcenter.scan', { count: list.length, apps: list.map((a) => a.name + '|' + a.url).slice(0, 15) });
+              fnosLog('info', 'appcenter.scan', { count: list.length, apps: list.map((a) => a.name + '|' + a.url).slice(0, 15) });
               processScannedApps(list);
+            } else {
+              fnosLog('info', 'appcenter.scan', { msg: 'no apps found via DOM+WS' });
             }
           } catch (_) {}
           finish();
-        }).catch(() => { finish(); });
+        }).catch((e) => {
+          try { fnosLog('warn', 'appcenter.scan', { err: String(e && e.message || e).slice(0, 120) }); } catch (_) {}
+          finish();
+        });
       } catch (_) { finish(); }
     };
-    win.webContents.on('dom-ready', () => { setTimeout(scanOnce, 3500); });
-    win.webContents.on('did-fail-load', () => { finish(); });
-    win.loadURL(center.url, { userAgent: getNasUA() }).catch(() => { finish(); });
-    setTimeout(() => { if (!done) { done = true; finish(); } }, 20000); // 20s 兜底
-  } catch (_) {}
+    win.webContents.on('dom-ready', () => { setTimeout(scanOnce, 3000); });
+    win.webContents.on('did-fail-load', (_e, code, desc) => {
+      fnosLog('warn', 'appcenter.scan', { didFailLoad: true, code, desc });
+      finish();
+    });
+    // v2.1.3: 加载主页（而非无效的 /appstore），SPA 会在此建立 WebSocket 并加载应用数据
+    win.loadURL(origin + '/', { userAgent: getNasUA() }).catch(() => { finish(); });
+    setTimeout(() => { if (!done) { done = true; fnosLog('warn', 'appcenter.scan', { timeout: true }); finish(); } }, 15000);
+  } catch (e) {
+    fnosLog('error', 'appcenter.scan', { err: e.message });
+  }
 }
 
 // ---------------------- 锁屏 / 设置 IPC ----------------------
@@ -5882,7 +5905,7 @@ function launchSubAppFromArgs() {
     };
     const subWin = new BrowserWindow(winOpts);
     const subAppId = `com.fnos.client.app.${appId}`;
-    subWin.setAppUserModelId(subAppId);
+    try { subWin.setAppUserModelId(subAppId); } catch (_) {}
     try { subWin.setMenuBarVisibility(false); } catch (_) {}
 
     // v2.0.8: load the specific app URL if available, otherwise fall back to NAS origin

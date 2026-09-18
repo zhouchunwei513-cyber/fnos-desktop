@@ -4886,20 +4886,38 @@ function processScannedApps(apps) {
     const merged = Array.from(byUrl.values());
     saveSettings({ apps: merged.slice(0, 50) });
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
-    // v2.0.8: sync to apps-manifest.json (merge with existing, store full app URL)
+    // v2.0.9: sync to apps-manifest.json with icon caching
     try {
       const existing = readManifest();
       const existingByUrl = new Map(existing.apps.map(a => [a.url, a]));
       for (const a of merged) {
         let origin = '';
         try { origin = new URL(a.url).origin; } catch (_) {}
+        let iconPath = existingByUrl.get(a.url)?.iconPath || '';
+        let iconData = a.icon || '';
+        // Download and cache icon if URL provided and not already cached
+        if (iconData && /^https?:/i.test(iconData) && !iconPath) {
+          try {
+            const ext = iconData.split('?')[0].split('.').pop().toLowerCase();
+            const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
+            const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g,'').slice(0,32);
+            const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
+            if (!fs.existsSync(iconFile)) {
+              const resp = require('electron').session.defaultSession.fetch(iconData);
+              // Use a simpler sync approach
+              const { execSync } = require('child_process');
+              execSync('curl -sL -o "' + iconFile.replace(/\/g,'\\') + '" "' + iconData + '"', { timeout: 10000 });
+            }
+            if (fs.existsSync(iconFile)) iconPath = iconFile;
+          } catch (_) {}
+        }
         existingByUrl.set(a.url, {
           appId: a.url,
           appName: a.name || a.appName || '',
           nasAddress: origin,
           url: a.url,
-          iconData: a.icon || '',
-          iconPath: existingByUrl.get(a.url)?.iconPath || ''
+          iconData: iconData,
+          iconPath: iconPath
         });
       }
       writeManifest({ apps: Array.from(existingByUrl.values()) });
@@ -5029,8 +5047,17 @@ function scanAppCenterApps() {
     if (__appCenterScanWin && !__appCenterScanWin.isDestroyed()) return;
     const s = loadSettings();
     const apps = Array.isArray(s.apps) ? s.apps : [];
-    const center = apps.find((a) => /app-center/i.test(String(a.url)) || /应用中心/.test(String(a.name)));
-    if (!center || !/^https?:/i.test(String(center.url))) return; // 还没扫到应用中心，下次主页扫描再试
+    // v2.0.9: 直接构造应用中心 URL（不再依赖主页扫描到应用中心卡片）
+    const s2 = loadSettings();
+    let centerUrl = '';
+    if (s2.origin && /^https?:/i.test(s2.origin)) {
+      centerUrl = s2.origin + '/appstore';
+    }
+    if (!centerUrl) {
+      const center = apps.find((a) => /app-center|appstore|app\/store/i.test(String(a.url)) || /应用中心/.test(String(a.name)));
+      if (center && /^https?:/i.test(String(center.url))) centerUrl = center.url;
+    }
+    if (!centerUrl) return;
     const now = Date.now();
     if (now - __appCenterScanAt < 60000) return; // 每分钟最多一次
     __appCenterScanAt = now;
@@ -5040,7 +5067,7 @@ function scanAppCenterApps() {
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,
         sandbox: true,
-        partition: SHARED_PARTITION,
+        partition: currentPartition, // v2.0.9: use same partition as main window for session sharing
         backgroundThrottling: false,
       },
     });
@@ -5054,7 +5081,52 @@ function scanAppCenterApps() {
       try {
         if (done) return;
         done = true;
-        win.webContents.executeJavaScript(__HOME_SCAN_JS, true).then((list) => {
+        // v2.0.9: use specialized app center scanner
+        const __APP_CENTER_SCAN_JS = String.raw`(function(){
+          try {
+            var origin = location.origin;
+            var res = [];
+            var seen = {};
+            var clean = function(s){ return String(s||'').replace(/\s+/g,' ').trim(); };
+            var toAbs = function(u){ if(!u)return''; try{return new URL(u,origin).href}catch(e){return''} };
+            var cards = document.querySelectorAll('[class*=app-card],[class*=AppCard],[class*=appItem],[class*=AppItem],[class*=installed] [class*=card],[class*=InstalledApp]');
+            if(!cards.length) cards = document.querySelectorAll('a[href*="appview"],a[href*="appstore"],a[href*="/app/"]');
+            for(var i=0;i<cards.length;i++){
+              var c=cards[i];
+              var img=c.querySelector('img');
+              var icon=img?(img.currentSrc||img.src||''):'';
+              var nm=clean(c.innerText||c.title||(img&&img.alt)||'');
+              var href=c.href||'';
+              if(!nm&&img) nm=clean(img.alt||'');
+              // Extract name from card text (first line or img alt)
+              var texts=c.querySelectorAll('[class*=name],[class*=title],span,p');
+              if(!nm&&texts.length) nm=clean(texts[0].innerText||'');
+              if(!nm||nm.length>50) continue;
+              var abs=toAbs(href);
+              if(!abs&&icon){
+                var m=/\/icons\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|\$)/i.exec(icon);
+                if(m){try{abs=origin+'/appview?anchor='+encodeURIComponent('https://'+decodeURIComponent(m[1]))}catch(e){}}
+              }
+              if(!abs) continue;
+              if(seen[abs]) continue;
+              seen[abs]=1;
+              res.push({name:nm.slice(0,40),url:abs,icon:icon||'',appName:''});
+            }
+            return res.length?res:null;
+          }catch(e){return null}
+        })()`;
+        win.webContents.executeJavaScript(__APP_CENTER_SCAN_JS, true).then((list) => {
+          if (Array.isArray(list) && list.length) {
+            try {
+              dlog && dlog('info', 'appcenter.scan.v2', { count: list.length });
+              processScannedApps(list);
+            } catch (_) {}
+            done = true;
+            finish();
+            return;
+          }
+          // Fallback to original scanner
+          win.webContents.executeJavaScript(__HOME_SCAN_JS, true).then((list) => {
           try {
             if (Array.isArray(list) && list.length) {
               dlog && dlog('info', 'appcenter.scan', { count: list.length, apps: list.map((a) => a.name + '|' + a.url).slice(0, 15) });

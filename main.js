@@ -4886,17 +4886,23 @@ function processScannedApps(apps) {
     const merged = Array.from(byUrl.values());
     saveSettings({ apps: merged.slice(0, 50) });
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
-    // v2.0.7: sync to apps-manifest.json for settings page app management
+    // v2.0.8: sync to apps-manifest.json (merge with existing, store full app URL)
     try {
-      const manifestApps = merged.map(a => ({
-        appId: Buffer.from(a.url).toString('base64').slice(0, 16),
-        appName: a.name || a.appName || '',
-        nasAddress: new URL(a.url).origin,
-        url: a.url,
-        iconData: a.icon || '',
-        iconPath: ''
-      }));
-      writeManifest({ apps: manifestApps });
+      const existing = readManifest();
+      const existingByUrl = new Map(existing.apps.map(a => [a.url, a]));
+      for (const a of merged) {
+        let origin = '';
+        try { origin = new URL(a.url).origin; } catch (_) {}
+        existingByUrl.set(a.url, {
+          appId: a.url,
+          appName: a.name || a.appName || '',
+          nasAddress: origin,
+          url: a.url,
+          iconData: a.icon || '',
+          iconPath: existingByUrl.get(a.url)?.iconPath || ''
+        });
+      }
+      writeManifest({ apps: Array.from(existingByUrl.values()) });
     } catch (_) {}
     // v1.75.0：日志带上具体应用名，便于排障
     dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length, apps: merged.map((a) => a.name + '|' + a.url).slice(0, 12) });
@@ -5372,28 +5378,29 @@ ipcMain.handle('shell:close', () => {
 ipcMain.handle('get-installed-apps', async () => {
   try {
     fnosLog('info', 'ipc', 'get-installed-apps called');
-    // v2.0.7: merge manifest + settings.json to ensure settings page shows scanned apps
+    // v2.0.8: use URL as appId, merge manifest + settings.json
     const manifest = readManifest();
-    const byId = new Map();
-    // 1) manifest first (manual installs + processScannedApps sync writes)
-    for (const a of manifest.apps) byId.set(a.appId, a);
-    // 2) supplement from settings.json (for pre-upgrade data where manifest is empty)
+    const byUrl = new Map();
+    for (const a of manifest.apps) {
+      const key = a.url || a.appId;
+      byUrl.set(key, { ...a, appId: a.appId || key });
+    }
     try {
       const s = loadSettings();
       const scanned = Array.isArray(s.apps) ? s.apps : [];
       for (const a of scanned) {
-        const appId = Buffer.from(a.url || '').toString('base64').slice(0, 16);
-        if (!byId.has(appId)) {
+        const key = a.url;
+        if (!byUrl.has(key)) {
           let nasAddr = '';
           try { nasAddr = new URL(a.url).origin; } catch (_) {}
-          byId.set(appId, {
-            appId, appName: a.name || a.appName || '', nasAddress: nasAddr,
+          byUrl.set(key, {
+            appId: a.url, appName: a.name || a.appName || '', nasAddress: nasAddr,
             url: a.url, iconData: a.icon || '', iconPath: ''
           });
         }
       }
     } catch (_) {}
-    const merged = Array.from(byId.values());
+    const merged = Array.from(byUrl.values());
     fnosLog('info', 'ipc', 'get-installed-apps result', { count: merged.length });
     return { success: true, msg: '', data: merged };
   } catch (e) {
@@ -5533,7 +5540,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
     
     const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    const args = `--app=${appId} --nas=${encodeURIComponent(nasAddress || '')}`;
+    const args = `--app=${encodeURIComponent(appId)} --nas=${encodeURIComponent(nasAddress || '')}`;
     const desktop = path.join(os.homedir(), 'Desktop');
     const lnkPath = path.join(desktop, `${appName}.lnk`);
     
@@ -5788,6 +5795,9 @@ function launchSubAppFromArgs() {
   fnosLog('info', 'launch', '检测到命令行启动参数，跳过主界面', launchArgs);
   
   const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
+  // v2.0.8: appId is the full app URL; decode it for navigation
+  let appUrl = '';
+  try { appUrl = decodeURIComponent(launchArgs.appId); } catch (_) { appUrl = launchArgs.appId; }
   const url = nasAddr || '';
   if (!url) {
     fnosLog('warn', 'launch', '缺少 nas 地址参数');
@@ -5799,7 +5809,8 @@ function launchSubAppFromArgs() {
   let iconPath = '';
   try {
     const manifest = readManifest();
-    const entry = manifest.apps.find(a => a.appId === launchArgs.appId);
+    // v2.0.8: appId is the full app URL, look up by URL
+    const entry = manifest.apps.find(a => a.appId === appUrl || a.url === appUrl || a.appId === launchArgs.appId);
     if (entry) {
       appName = entry.appName || entry.name || appName;
       iconPath = entry.iconPath || '';
@@ -5843,7 +5854,20 @@ function launchSubAppFromArgs() {
     subWin.setAppUserModelId(subAppId);
     try { subWin.setMenuBarVisibility(false); } catch (_) {}
 
-    fnosLog('info', 'launch', '子应用窗口已创建', { appId, subAppId, url, partition });
+    // v2.0.8: load the specific app URL if available, otherwise fall back to NAS origin
+    const targetUrl = appUrl || url;
+    fnosLog('info', 'launch', '子应用窗口已创建', { appId: appUrl, subAppId, url: targetUrl, partition });
+
+    // v2.0.6: sub-app window also enables favicon extraction (consistent with createAppWindow)
+    // Navigate to the specific app page after window is ready
+    subWin.once('ready-to-show', () => {
+      try {
+        subWin.show();
+        subWin.webContents.loadURL(targetUrl);
+      } catch (e) {
+        fnosLog('error', 'launch', 'loadURL failed', { err: e.message, url: targetUrl });
+      }
+    });
 
     // v2.0.6：子应用窗口也启用 favicon 提取（与 createAppWindow 一致）
     subWin.webContents.on('did-finish-load', () => {
@@ -5937,12 +5961,6 @@ function launchSubAppFromArgs() {
       } catch(_) {}
     });
 
-    subWin.once('ready-to-show', () => {
-      try { if (!subWin.isDestroyed()) subWin.show(); } catch (_) {}
-    });
-    subWin.loadURL(url, { userAgent: getNasUA() }).catch((e) => {
-      fnosLog('error', 'launch', '子应用加载失败', { err: e.message });
-    });
   };
   
   if (app.isReady()) doLaunch();

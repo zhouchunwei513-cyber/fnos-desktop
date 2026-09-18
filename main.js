@@ -15,6 +15,7 @@ const {
   globalShortcut, net, powerMonitor, webContents, clipboard,
 } = require('electron');
 const path = require('path');
+const url = require('url');
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
@@ -4341,6 +4342,15 @@ function createMainWindow(partition, loadTarget) {
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed() && !isLocked) mainWindow.show();
   });
+  // v2.1.6：兜底——若 ready-to-show 10 秒未触发（页面加载卡住），强制显示窗口
+  setTimeout(() => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed() && !isLocked && !mainWindow.isVisible()) {
+        dlog && dlog('warn', 'main.ready-to-show.timeout', { ms: 10000 });
+        mainWindow.show();
+      }
+    } catch (_) {}
+  }, 10000);
 
   // v1.29.2：主窗口主框架加载失败（隧道/内网抖动、-137 解析失败、连接重置等）自动重试，
   // 避免"登录后黑屏/错误页"。-3(中止，导航被替换)与本地连接页不重试；最多 4 次、退避。
@@ -4349,7 +4359,19 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDesc, failUrl, isMainFrame) => {
       try {
         if (!isMainFrame || errorCode === -3 || errorCode === 0) return;
-        if (failUrl && /^file:/.test(failUrl)) return;
+        // v2.1.6：file:// 页面（login.html）加载失败也重试一次（便携版解压后文件可能暂时被锁定）
+        if (failUrl && /^file:/.test(failUrl)) {
+          if (_mainFailTries >= 1) return;
+          _mainFailTries++;
+          dlog && dlog('warn', 'main.fail-load.file-retry', { errorCode, errorDesc, try: _mainFailTries, url: String(failUrl).slice(0, 90) });
+          setTimeout(() => {
+            try {
+              if (!mainWindow || mainWindow.isDestroyed()) return;
+              mainWindow.loadFile(LOGIN_PAGE).catch(() => {});
+            } catch (_) {}
+          }, 2000);
+          return;
+        }
         // v2.0.0：记录到网络健康监控
         const isJitter = NetworkHealth.recordFailure('mainwindow', `${errorCode} ${errorDesc}`);
         if (_mainFailTries >= 4) return;
@@ -4428,8 +4450,30 @@ function showConnectPage() {
   lastConnectHref = '';
   safeSetTitle(`${APP_NAME} · 连接服务器`);
   if (mainWindow && !mainWindow.isDestroyed()) {
+    // v2.1.6：ERR_FAILED(-2) 重试——便携版首次解压时文件可能暂时被锁定，
+    // 优先用 loadFile，失败后回退到 loadURL(file://) 再试一次
+    let triedUrl = false;
     mainWindow.loadFile(LOGIN_PAGE).catch((e) => {
-      glassErrorBox('加载失败', `无法打开连接页：${e.message}`);
+      try {
+        dlog && dlog('warn', 'login.loadFile.fail', { err: String(e && e.message || e), code: e && e.code });
+      } catch (_) {}
+      if (triedUrl) {
+        // 两种方式都失败，显示错误对话框
+        glassErrorBox('加载失败', `无法打开连接页：${e.message}`);
+        return;
+      }
+      triedUrl = true;
+      // 回退：用 loadURL + file:// 协议加载（绕过 loadFile 的 asar 路径解析）
+      try {
+        const fileUrl = url.pathToFileURL(LOGIN_PAGE).href;
+        dlog && dlog('info', 'login.loadFile.retryWithURL', { url: fileUrl.slice(0, 80) });
+        mainWindow.loadURL(fileUrl).catch((e2) => {
+          try { dlog && dlog('warn', 'login.loadURL.fail', { err: String(e2 && e2.message || e2) }); } catch (_) {}
+          glassErrorBox('加载失败', `无法打开连接页：${e2.message}`);
+        });
+      } catch (e3) {
+        glassErrorBox('加载失败', `无法打开连接页：${e3.message}`);
+      }
     });
   }
 }

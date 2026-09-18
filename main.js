@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.3';
+const APP_VERSION = '2.1.4';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4862,7 +4862,7 @@ ipcMain.handle('auth:remove-history', async (_e, payload) => {
 // v1.72.0：主页扫描到的应用列表上报（创建桌面快捷方式的数据源）。
 // v1.76.0：抽成独立函数 processScannedApps——主进程直接扫描主页时也复用，
 // IPC（shell 页面上报）仅作兼容保留。
-function processScannedApps(apps) {
+async function processScannedApps(apps) {
   try {
     if (!Array.isArray(apps) || !apps.length) return;
     const s = loadSettings();
@@ -4886,49 +4886,36 @@ function processScannedApps(apps) {
     const merged = Array.from(byUrl.values());
     saveSettings({ apps: merged.slice(0, 50) });
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
-    // v2.0.9: sync to apps-manifest.json with icon caching
+    // v2.1.4: sync to apps-manifest.json with synchronous icon caching
+    // Icons are downloaded BEFORE writing manifest so shortcuts always get correct iconPath
     try {
       const existing = readManifest();
       const existingByUrl = new Map(existing.apps.map(a => [a.url, a]));
+      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+
+      // Collect all icon download tasks
+      const iconTasks = [];
       for (const a of merged) {
         let origin = '';
         try { origin = new URL(a.url).origin; } catch (_) {}
         let iconPath = existingByUrl.get(a.url)?.iconPath || '';
         let iconData = a.icon || '';
-        // Download and cache icon if URL provided and not already cached
+        // Check if icon needs downloading
         if (iconData && /^https?:/i.test(iconData) && !iconPath) {
-          try {
-            const ext = iconData.split('?')[0].split('.').pop().toLowerCase();
-            const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
-            const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
-            const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
-            if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) {
-              iconPath = iconFile;
-            } else if (!fs.existsSync(iconFile)) {
-              // v2.1.3: async icon download via session.fetch() (replaces curl, works on all platforms)
-              const iconUrl = iconData;
-              (async () => {
-                try {
-                  const origin = new URL(a.url).origin;
-                  const fetchUrl = /^https?:/i.test(iconUrl) ? iconUrl : origin + iconUrl;
-                  const ses = session.fromPartition(currentPartition);
-                  const resp = await ses.fetch(fetchUrl, { credentials: 'include' });
-                  if (resp.ok) {
-                    const ab = await resp.arrayBuffer();
-                    const buf = Buffer.from(ab);
-                    if (buf.length > 100) {
-                      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
-                      fs.writeFileSync(iconFile, buf);
-                      fnosLog('info', 'icon.download', { app: a.name, ok: true, size: buf.length });
-                    }
-                  }
-                } catch (e) { fnosLog('warn', 'icon.download', { app: a.name, err: e.message }); }
-              })();
-            }
-          } catch (_) {}
+          const ext = iconData.split('?')[0].split('.').pop().toLowerCase();
+          const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
+          const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
+          const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
+          if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) {
+            iconPath = iconFile;
+          } else if (!fs.existsSync(iconFile)) {
+            // v2.1.4: await icon download before writing manifest
+            const fetchUrl = /^https?:/i.test(iconData) ? iconData : origin + iconData;
+            iconTasks.push({ iconFile, fetchUrl, appName: a.name, url: a.url, origin });
+          }
         }
         existingByUrl.set(a.url, {
-          appId: a.url,
+          appId: a.appId || a.url,
           appName: a.name || a.appName || '',
           nasAddress: origin,
           url: a.url,
@@ -4936,6 +4923,28 @@ function processScannedApps(apps) {
           iconPath: iconPath
         });
       }
+
+      // Download all icons concurrently and wait for completion
+      if (iconTasks.length > 0) {
+        await Promise.all(iconTasks.map(async (task) => {
+          try {
+            const ses = session.fromPartition(currentPartition);
+            const resp = await ses.fetch(task.fetchUrl, { credentials: 'include' });
+            if (resp.ok) {
+              const ab = await resp.arrayBuffer();
+              const buf = Buffer.from(ab);
+              if (buf.length > 100) {
+                fs.writeFileSync(task.iconFile, buf);
+                // Update manifest entry with the downloaded icon path
+                const entry = existingByUrl.get(task.url);
+                if (entry) entry.iconPath = task.iconFile;
+                fnosLog('info', 'icon.download', { app: task.appName, ok: true, size: buf.length });
+              }
+            }
+          } catch (e) { fnosLog('warn', 'icon.download', { app: task.appName, err: e.message }); }
+        }));
+      }
+
       writeManifest({ apps: Array.from(existingByUrl.values()) });
     } catch (_) {}
     // v1.75.0：日志带上具体应用名，便于排障
@@ -5057,10 +5066,210 @@ function startHomeScan() {
 // v1.79.0：主页只显示部分应用（系统应用），Docker 等第三方应用在「应用中心」页。
 // 登录后用一个隐藏窗口加载应用中心页，扫描全部应用卡片，补全应用列表（去重合并）。
 // v2.1.3: 修复 /appstore 404 + center 变量作用域 bug + 多策略应用发现（WebSocket拦截 + DOM扫描 + React状态提取）
+// ── v2.1.4: WebSocket API 直连扫描 ──────────────────────────────────
+// 通过隐藏窗口内直接创建 WebSocket 连接 FNOS API，获取完整应用列表
+// 不再依赖 DOM 扫描 + WebSocket 拦截（旧方案无法捕获已建立的连接）
+const __WS_SCANNER_JS = String.raw`
+(function() {
+  try {
+    if (window.__fnosWsScanner) return;
+    window.__fnosWsScanner = true;
+    var origin = location.origin;
+    var wsProto = origin.indexOf('https') === 0 ? 'wss:' : 'ws:';
+    var wsUrl = wsProto + '//' + location.host + '/websocket?type=main';
+
+    function b64url(b64) { return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+    function ab2b64(buf) {
+      var bytes = new Uint8Array(buf), bin = '';
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+    function str2ab(s) { return new TextEncoder().encode(s).buffer; }
+
+    async function signRequest(reqId, req, data, secretB64) {
+      var ts = Date.now();
+      var body = { reqid: reqId, req: req, data: data || {} };
+      var bodyJson = JSON.stringify(body);
+      var signStr = reqId + req + ts;
+      var keyBytes = Uint8Array.from(atob(secretB64), function(c){ return c.charCodeAt(0); });
+      var key = await crypto.subtle.importKey('raw', keyBytes.buffer, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      var sigBuf = await crypto.subtle.sign('HMAC', key, str2ab(signStr));
+      var sigB64 = b64url(ab2b64(sigBuf));
+      return sigB64 + bodyJson;
+    }
+
+    function createWS() {
+      return new Promise(function(resolve, reject) {
+        var ws = new WebSocket(wsUrl);
+        var timer = setTimeout(function() { reject(new Error('WS connect timeout')); }, 10000);
+        ws.onopen = function() { clearTimeout(timer); resolve(ws); };
+        ws.onerror = function() { clearTimeout(timer); reject(new Error('WS connect error')); };
+      });
+    }
+
+    function sendAndWait(ws, payload, reqid) {
+      return new Promise(function(resolve, reject) {
+        var timer = setTimeout(function() { reject(new Error('Request timeout')); }, 15000);
+        var handler = function(event) {
+          try {
+            var raw = typeof event.data === 'string' ? event.data : '';
+            var idx = raw.indexOf('{');
+            if (idx < 0) return;
+            var resp = JSON.parse(raw.substring(idx));
+            if (resp.reqid === reqid) { clearTimeout(timer); ws.removeEventListener('message', handler); resolve(resp); }
+          } catch(e) {}
+        };
+        ws.addEventListener('message', handler);
+        ws.send(payload);
+      });
+    }
+
+    async function main() {
+      window.__fnosWsScanStatus = 'connecting';
+      var ws;
+      try { ws = await createWS(); } catch(e) {
+        window.__fnosWsScanError = e.message;
+        window.__fnosWsScanStatus = 'error';
+        return;
+      }
+      window.__fnosWsScanStatus = 'connected';
+
+      var token = '', secret = '';
+      try {
+        var stored = localStorage.getItem('token');
+        if (stored) {
+          var t = typeof stored === 'string' ? JSON.parse(stored) : stored;
+          token = t.token || t.access_token || t.accessToken || '';
+          secret = t.secret || t.signSecret || '';
+        }
+      } catch(e) {}
+
+      if (!token || !secret) {
+        var s = {};
+        try { s = JSON.parse(localStorage.getItem('settings') || '{}'); } catch(e) {}
+        if (s.username && s.password) {
+          var loginReqId = crypto.randomUUID();
+          var loginPayload = JSON.stringify({ reqid: loginReqId, req: 'user.login', data: { username: s.username, password: s.password, encrypted: false } });
+          var loginResp;
+          try { loginResp = await sendAndWait(ws, loginPayload, loginReqId); } catch(e) {
+            window.__fnosWsScanError = 'Login timeout: ' + e.message;
+            window.__fnosWsScanStatus = 'error';
+            try { ws.close(); } catch(e2) {}
+            return;
+          }
+          if (loginResp && loginResp.data && loginResp.data.token) {
+            token = loginResp.data.token;
+            secret = loginResp.data.secret || '';
+          } else {
+            window.__fnosWsScanError = 'Login failed';
+            window.__fnosWsScanStatus = 'error';
+            try { ws.close(); } catch(e2) {}
+            return;
+          }
+        } else {
+          window.__fnosWsScanError = 'Not logged in';
+          window.__fnosWsScanStatus = 'error';
+          try { ws.close(); } catch(e2) {}
+          return;
+        }
+      }
+
+      // Fetch entry list
+      var reqId1 = crypto.randomUUID();
+      var payload1 = await signRequest(reqId1, 'appcgi.sac.entry.v1.getEntryList', {}, secret);
+      var resp1;
+      try { resp1 = await sendAndWait(ws, payload1, reqId1); } catch(e) {
+        window.__fnosWsScanError = 'getEntryList timeout';
+        window.__fnosWsScanStatus = 'error';
+        try { ws.close(); } catch(e2) {}
+        return;
+      }
+
+      var allApps = [];
+      if (resp1 && resp1.errno === 0 && resp1.data && resp1.data.list) {
+        var entries = Array.isArray(resp1.data.list) ? resp1.data.list : [];
+        for (var i = 0; i < entries.length; i++) {
+          var e = entries[i];
+          var appName = e.appName || e.name || '';
+          if (!appName) continue;
+          var isSystem = (e.type === 'builtIn' || e.appType === 'builtIn');
+          var iconPath = e.icon || '';
+          var iconUrl = '';
+          if (iconPath) {
+            if (iconPath.indexOf('http') === 0) iconUrl = iconPath;
+            else if (iconPath.indexOf('/') === 0) iconUrl = origin + iconPath;
+            else iconUrl = origin + '/' + iconPath;
+          }
+          if (!iconUrl) {
+            iconUrl = isSystem
+              ? origin + '/static/app/icons/' + appName + '/icon.png'
+              : origin + '/app-center-static/serviceicon/' + appName + '/ui/images/icon_0.png';
+          }
+          var appUrl = '';
+          if (e.fullUrl) { appUrl = e.fullUrl; }
+          else if (e.uri && e.uri.host) {
+            appUrl = (e.uri.protocol || 'http') + '://' + e.uri.host + (e.uri.port ? ':' + e.uri.port : '') + (e.uri.path || '/');
+          }
+          if (!appUrl) {
+            appUrl = isSystem ? (origin + '/appview?anchor=https%3A%2F%2F' + appName) : appName;
+          }
+          allApps.push({
+            name: e.title || appName,
+            appId: isSystem ? ('https://' + appName) : appName,
+            url: appUrl,
+            icon: iconUrl,
+            type: isSystem ? 'builtIn' : 'appCenter'
+          });
+        }
+      }
+
+      // Also fetch appStoreList for additional installed apps
+      try {
+        var reqId2 = crypto.randomUUID();
+        var payload2 = await signRequest(reqId2, 'appcgi.sac.entry.v1.appStoreList', {}, secret);
+        var resp2 = await sendAndWait(ws, payload2, reqId2);
+        if (resp2 && resp2.errno === 0 && resp2.data && Array.isArray(resp2.data)) {
+          var existIds = {};
+          allApps.forEach(function(a) { existIds[a.appId] = true; });
+          resp2.data.forEach(function(item) {
+            var an = item.appName || '';
+            if (!an || existIds[an]) return;
+            var iconP = item.icon || '';
+            var iconU = '';
+            if (iconP) {
+              if (iconP.indexOf('http') === 0) iconU = iconP;
+              else if (iconP.indexOf('/') === 0) iconU = origin + iconP;
+              else iconU = origin + '/' + iconP;
+            }
+            if (!iconU) iconU = origin + '/app-center-static/serviceicon/' + an + '/ui/images/icon_0.png';
+            var au = '';
+            if (item.fullUrl) au = item.fullUrl;
+            else if (item.uri && item.uri.host) au = (item.uri.protocol || 'http') + '://' + item.uri.host + (item.uri.port ? ':' + item.uri.port : '') + (item.uri.path || '/');
+            if (!au) au = an;
+            allApps.push({ name: item.title || an, appId: an, url: au, icon: iconU, type: 'appCenter' });
+            existIds[an] = true;
+          });
+        }
+      } catch(e2) {}
+
+      window.__fnosWsScanApps = allApps;
+      window.__fnosWsScanStatus = 'done';
+      try { ws.close(); } catch(e) {}
+    }
+    main().catch(function(e) {
+      window.__fnosWsScanError = e.message;
+      window.__fnosWsScanStatus = 'error';
+    });
+  } catch(e) {
+    window.__fnosWsScanError = e.message;
+    window.__fnosWsScanStatus = 'error';
+  }
+})()
+`;
+
 let __appCenterScanAt = 0;
 let __appCenterScanWin = null;
-const __WS_PATCH_JS = String.raw`try{if(!window.__fnosWsPatch){window.__fnosWsPatch=true;window.__fnosWsApps=[];var _OWS=window.WebSocket;window.WebSocket=function(){var s=new _OWS(arguments[0],arguments[1]);s.addEventListener('message',function(e){try{var d=JSON.parse(e.data);var items=d&&d.data&&(d.data.list||d.data.apps||d.data.items||d.data.entries)||d&&d.result&&(d.result.list||d.result.apps);if(Array.isArray(items)&&items.length>0){window.__fnosWsApps=window.__fnosWsApps.concat(items);}}catch(x){}});return s;};window.WebSocket.prototype=_OWS.prototype;window.WebSocket.CONNECTING=_OWS.CONNECTING;window.WebSocket.OPEN=_OWS.OPEN;window.WebSocket.CLOSING=_OWS.CLOSING;window.WebSocket.CLOSED=_OWS.CLOSED;}}catch(e){}`;
-const __APP_CENTER_SCAN_JS = String.raw`(function(){try{var res=[],seen={},origin=location.origin;var trim=function(s){return String(s||'').replace(/\s+/g,' ').trim();};var iconFromUrl=function(u){if(!u)return'';var m=/\/(?:icons|icon)\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);return m?m[1]:'';};var push=function(name,url,icon,appName){if(!name||name.length>40)return;if(!url&&appName)url=origin+'/appview?anchor='+encodeURIComponent('https://'+appName);if(!url||seen[url])return;seen[url]=1;res.push({name:name,url:url,icon:icon||'',appName:appName||''});};var links=document.querySelectorAll('a[href]');for(var i=0;i<links.length;i++){var a=links[i];var img=a.querySelector('img');var ic=img?(img.currentSrc||img.src||''):'';var nm=trim(a.innerText||a.title||(img&&img.alt)||'');if(!nm&&img)nm=trim(img.alt||'');var an=iconFromUrl(ic);if(a.href&&a.href.indexOf('appview')>-1){try{var u=new URL(a.href);var anc=u.searchParams.get('anchor');if(anc){an=decodeURIComponent(anc.replace(/^https?:\/\//i,''));}}catch(e2){}}push(nm,a.href,ic,an);}var imgs=document.querySelectorAll('img');for(var q=0;q<imgs.length;q++){var im=imgs[q];var ic2=im.currentSrc||im.src||'';var nm2='';var cur=im;for(var d=0;d<10&&cur;d++){var pe=cur.parentElement;if(!pe)break;var t=trim(pe.innerText||'');if(t&&t.length<=40&&!/\s/.test(t)){nm2=t;break;}cur=pe;}if(!nm2)nm2=trim(im.alt||'');if(!nm2||nm2.length>40)continue;var an2=iconFromUrl(ic2);if(!an2){for(var d2=0;d2<8&&im;d2++){var p2=im.parentElement;if(!p2)break;if(p2.tagName==='A'&&p2.href){try{var u2=new URL(p2.href);var anc2=u2.searchParams.get('anchor');if(anc2)an2=decodeURIComponent(anc2.replace(/^https?:\/\//i,''));}catch(e3){}}im=p2;}}push(nm2,'',ic2,an2);}if(Array.isArray(window.__fnosWsApps)){for(var w=0;w<window.__fnosWsApps.length;w++){var wa=window.__fnosWsApps[w];var wn=trim(wa.name||wa.appName||wa.label||wa.title||'');var wu='';if(wa.appName)wu=origin+'/appview?anchor='+encodeURIComponent('https://'+wa.appName);else if(wa.url)wu=wa.url;var wi='';if(wa.icon)wi=wa.icon.indexOf('http')===0?wa.icon:origin+wa.icon;var wan=trim(wa.appName||wa.name||'');if(wn)push(wn,wu,wi,wan);}}try{var fiberKey=Object.keys(document).find(function(k){return k.startsWith('__reactFiber$')||k.startsWith('__reactInternalInstance$');});if(fiberKey){var root=document.getElementById('root')||document.getElementById('app');if(root&&root[fiberKey]){var f=root[fiberKey];for(var depth=0;depth<100&&f;depth++){if(f.memoizedState&&f.memoizedState.memoizedState&&Array.isArray(f.memoizedState.memoizedState)){var arr=f.memoizedState.memoizedState;for(var ai=0;ai<arr.length;ai++){var app=arr[ai];if(app&&app.name){push(trim(app.name),'',app.icon||'',trim(app.appName||''));}}}f=f.return;}}}}catch(reactErr){}return res;}catch(e){return null;}})()`;
+
 function scanAppCenterApps() {
   try {
     if (__appCenterScanWin && !__appCenterScanWin.isDestroyed()) return;
@@ -5073,7 +5282,8 @@ function scanAppCenterApps() {
     const now = Date.now();
     if (now - __appCenterScanAt < 60000) return;
     __appCenterScanAt = now;
-    fnosLog('info', 'appcenter.scan', { msg: 'starting', origin });
+    fnosLog('info', 'appcenter.scan', { msg: 'starting WebSocket scanner', origin });
+
     const win = new BrowserWindow({
       show: false, width: 1500, height: 1000,
       backgroundColor: '#0b0d12',
@@ -5087,42 +5297,68 @@ function scanAppCenterApps() {
     __appCenterScanWin = win;
     let done = false;
     const finish = () => {
-      try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {}
+      if (done) return;
+      done = true;
+      try { if (!win.isDestroyed()) win.close(); } catch (_) {}
       __appCenterScanWin = null;
     };
-    const scanOnce = () => {
-      try {
+
+    win.webContents.once('dom-ready', () => {
+      setTimeout(() => {
         if (done) return;
-        done = true;
-        // v2.1.3: 先注入 WebSocket 拦截器（捕获 app.list 等 API 响应），再执行 DOM 扫描
-        win.webContents.executeJavaScript(__WS_PATCH_JS, true).then(() => {
-          return win.webContents.executeJavaScript(__APP_CENTER_SCAN_JS, true);
-        }).then((list) => {
+        try {
+          win.webContents.executeJavaScript(__WS_SCANNER_JS, true);
+          fnosLog('info', 'appcenter.scan', { msg: 'WS scanner injected' });
+        } catch (e) {
+          fnosLog('error', 'appcenter.scan', { err: 'inject: ' + e.message });
+          finish();
+        }
+      }, 2500);
+    });
+
+    win.once('closed', () => { __appCenterScanWin = null; });
+
+    // Poll for scan results
+    const pollInterval = setInterval(() => {
+      if (done) { clearInterval(pollInterval); return; }
+      try {
+        win.webContents.executeJavaScript(
+          'JSON.stringify({s:window.__fnosWsScanStatus,a:window.__fnosWsScanApps||[],e:window.__fnosWsScanError||""})',
+          true
+        ).then((result) => {
           try {
-            if (Array.isArray(list) && list.length) {
-              fnosLog('info', 'appcenter.scan', { count: list.length, apps: list.map((a) => a.name + '|' + a.url).slice(0, 15) });
-              processScannedApps(list);
-            } else {
-              fnosLog('info', 'appcenter.scan', { msg: 'no apps found via DOM+WS' });
+            const r = JSON.parse(result);
+            if (r.s === 'done' || r.s === 'error') {
+              clearInterval(pollInterval);
+              if (done) return;
+              done = true;
+              if (r.e) {
+                fnosLog('warn', 'appcenter.scan', { error: r.e });
+              }
+              if (Array.isArray(r.a) && r.a.length) {
+                fnosLog('info', 'appcenter.scan', {
+                  count: r.a.length,
+                  apps: r.a.map(a => a.name + '|' + (a.type || '') + '|' + (a.url || '').slice(0, 60)).slice(0, 20)
+                });
+                processScannedApps(r.a);
+              } else if (!r.e) {
+                fnosLog('info', 'appcenter.scan', { msg: 'no apps returned' });
+              }
+              finish();
             }
           } catch (_) {}
-          finish();
-        }).catch((e) => {
-          try { fnosLog('warn', 'appcenter.scan', { err: String(e && e.message || e).slice(0, 120) }); } catch (_) {}
-          finish();
-        });
-      } catch (_) { finish(); }
-    };
-    win.webContents.on('dom-ready', () => { setTimeout(scanOnce, 3000); });
-    win.webContents.on('did-fail-load', (_e, code, desc) => {
-      fnosLog('warn', 'appcenter.scan', { didFailLoad: true, code, desc });
-      finish();
-    });
-    // v2.1.3: 加载主页（而非无效的 /appstore），SPA 会在此建立 WebSocket 并加载应用数据
+        }).catch(() => {});
+      } catch (_) { clearInterval(pollInterval); }
+    }, 1500);
+
     win.loadURL(origin + '/', { userAgent: getNasUA() }).catch(() => { finish(); });
-    setTimeout(() => { if (!done) { done = true; fnosLog('warn', 'appcenter.scan', { timeout: true }); finish(); } }, 15000);
+
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      if (!done) { done = true; fnosLog('warn', 'appcenter.scan', { timeout: true }); finish(); }
+    }, 30000);
   } catch (e) {
-    fnosLog('error', 'appcenter.scan', { err: e.message });
+    fnosLog('error', 'appcenter.scan', { err: e.message, stack: e.stack });
   }
 }
 
@@ -5594,7 +5830,24 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
     
     const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    const args = `--app=${encodeURIComponent(appId)} --nas=${encodeURIComponent(nasAddress || '')}`;
+    // v2.1.4: 从 manifest 获取正确的启动 URL（系统应用用 appview 路由，应用中心用直连 URL）
+    let launchUrl = appId;
+    try {
+      const manifest = readManifest();
+      const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
+      if (entry && entry.url) {
+        if (/^https?:\/\//i.test(entry.url)) {
+          launchUrl = entry.url;
+        } else if (entry.appId && entry.appId.startsWith('https://')) {
+          launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(entry.appId);
+        } else {
+          launchUrl = entry.url;
+        }
+      } else if (appId && appId.startsWith('https://')) {
+        launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(appId);
+      }
+    } catch (_) {}
+    const args = `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
     const desktop = path.join(os.homedir(), 'Desktop');
     const lnkPath = path.join(desktop, `${appName}.lnk`);
     
@@ -5853,6 +6106,16 @@ function launchSubAppFromArgs() {
   let appUrl = '';
   try { appUrl = decodeURIComponent(launchArgs.appId); } catch (_) { appUrl = launchArgs.appId; }
   const url = nasAddr || '';
+  // v2.1.4: 从 manifest 解析正确的启动 URL
+  try {
+    const manifest = readManifest();
+    const entry = manifest.apps.find(a => a.appId === appUrl || a.url === appUrl || a.appId === launchArgs.appId);
+    if (entry && entry.url && /^https?:/i.test(entry.url)) {
+      appUrl = entry.url;
+    } else if (appUrl && appUrl.startsWith('https://') && !appUrl.includes('/')) {
+      appUrl = url.replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(appUrl);
+    }
+  } catch (_) {}
   if (!url) {
     fnosLog('warn', 'launch', '缺少 nas 地址参数');
     return false;

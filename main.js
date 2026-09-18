@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.5';
+const APP_VERSION = '2.1.6';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4422,6 +4422,8 @@ function showConnectPage() {
     createMainWindow('persist:connect', null);
     return;
   }
+  // v2.1.6：回到连接页时停止扫描，避免在 login.html 上无意义扫描
+  try { stopHomeScan(); } catch (_) {}
   currentOrigin = '';
   lastConnectHref = '';
   safeSetTitle(`${APP_NAME} · 连接服务器`);
@@ -5044,6 +5046,9 @@ function scanHomeApps(force) {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const wc = mainWindow.webContents;
     if (!wc || wc.isDestroyed()) return;
+    // v2.1.6：只在 http/https 页面扫描（NAS 主页），跳过 file:// 等本地页面（login.html 等）
+    const curUrl = wc.getURL() || '';
+    if (!/^https?:/i.test(curUrl)) return;
     wc.executeJavaScript(__HOME_SCAN_JS, true).then((apps) => {
       try {
         const found = Array.isArray(apps) ? apps.length : -1;
@@ -5066,9 +5071,17 @@ function scanHomeApps(force) {
 function startHomeScan() {
   try {
     if (__homeScanTimer) { clearInterval(__homeScanTimer); __homeScanTimer = null; }
+    // v2.1.6：如果当前不在 NAS 页面（非 http/https），不启动扫描定时器
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+      const u = mainWindow.webContents.getURL() || '';
+      if (!/^https?:/i.test(u)) return;
+    }
     scanHomeApps(true);
     __homeScanTimer = setInterval(() => { try { scanHomeApps(false); } catch (_) {} }, 10000);
   } catch (_) {}
+}
+function stopHomeScan() {
+  if (__homeScanTimer) { clearInterval(__homeScanTimer); __homeScanTimer = null; }
 }
 
 // v1.79.0：主页只显示部分应用（系统应用），Docker 等第三方应用在「应用中心」页。
@@ -8140,6 +8153,8 @@ app.on('before-quit', () => {
     if (g_networkWatcher) clearInterval(g_networkWatcher);
     if (menuRebuildTimer) clearTimeout(menuRebuildTimer);
     if (g_persistTimer) clearInterval(g_persistTimer);
+    // v2.1.6：清理主页扫描定时器，避免退出时访问已销毁窗口
+    if (__homeScanTimer) clearInterval(__homeScanTimer);
   } catch (_) {}
   try {
     BrowserWindow.getAllWindows().forEach((w) => {

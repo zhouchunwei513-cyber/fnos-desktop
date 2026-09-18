@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.6';
+const APP_VERSION = '2.1.7';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -5608,6 +5608,305 @@ ipcMain.handle('account:get-active', async () => {
   }
 });
 
+// ---------------------- 锁屏 / 设置 IPC ----------------------
+ipcMain.handle('lock:get-info', async (e) => {
+  // 从 URL query 读取初始 mode
+  let mode = 'unlock';
+  try {
+    const url = e.sender.getURL();
+    const u = new URL(url);
+    const m = u.searchParams.get('mode');
+    if (m === 'setup' || m === 'change' || m === 'unlock') mode = m;
+  } catch (_) {}
+  return {
+    mode,
+    hasPassword: hasAppPassword(),
+    version: APP_VERSION,
+    // v1.25.0：MPV 外部播放器设置
+    mpv: getMpvSettings(),
+  };
+});
+
+// v1.25.0：保存 MPV 外部播放器设置（通道名保留 settings:set-vlc 以兼容旧设置页）
+ipcMain.handle('settings:set-vlc', async (_e, patch) => {
+  try {
+    const cur = getMpvSettings();
+    const next = {
+      enabled: patch && typeof patch.enabled === 'boolean' ? patch.enabled : cur.enabled,
+      hwDecode: ['auto', 'd3d11va', 'dxva2', 'no'].includes(patch && patch.hwDecode) ? patch.hwDecode : cur.hwDecode,
+      cacheLevel: ['standard', 'smooth', 'unlimited'].includes(patch && patch.cacheLevel) ? patch.cacheLevel : cur.cacheLevel,
+    };
+    saveSettings({ mpv: next });
+    try { global.__mpvSettings = next; } catch (_) {}
+    return { ok: true, mpv: next, vlc: next };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// v1.26.0：探测 MPV 运行状态（二进制是否就位）供设置页展示
+ipcMain.handle('settings:vlc-runtime', async () => {
+  try {
+    const settings = getMpvSettings();
+    let info = { available: false, reason: '', version: '', source: '', hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel, gpu: {}, settings, mpv: true };
+    if (MpvPlayerMod && process.platform === 'win32') {
+      const exe = MpvPlayerMod.getMpvExe();
+      info.available = !!exe;
+      info.source = exe || '';
+      info.reason = exe ? '' : '未找到内置 mpv.exe';
+    } else if (process.platform !== 'win32') {
+      info.reason = 'MPV 外部播放器仅在 Windows 平台启用';
+    }
+    return info;
+  } catch (e) {
+    return { available: false, reason: e.message, settings: getMpvSettings() };
+  }
+});
+
+ipcMain.handle('lock:verify', async (_e, password) => {
+  try {
+    if (verifyAppPassword(String(password || ''))) {
+      // 验证通过
+      setImmediate(() => unlockApp());
+      return { ok: true };
+    }
+    return { ok: false, error: '启动密码不正确' };
+  } catch (err) {
+    return { ok: false, error: err?.message || '验证失败' };
+  }
+});
+
+ipcMain.handle('lock:set-password', async (_e, payload) => {
+  try {
+    const oldP = String(payload?.oldPassword || '');
+    const newP = String(payload?.newPassword || '');
+    if (newP.length > 0 && newP.length < 4) {
+      return { ok: false, error: '新密码至少 4 位' };
+    }
+    setAppPassword(oldP, newP);
+    // 首次设置密码成功，视为解锁
+    setImmediate(() => {
+      if (!hasAppPassword()) {
+        // 清除了密码 — 保持解锁
+      }
+      // 刷新菜单（显示/隐藏"锁定"项）
+      scheduleMenuRebuild();
+    });
+    return { ok: true };
+  } catch (err) {
+    if (err?.code === 'BAD_OLD_PASSWORD') return { ok: false, error: err.message };
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+ipcMain.handle('settings:get', async () => {
+  const s = loadSettings();
+  return {
+    hasPassword: hasAppPassword(),
+    shortcuts: { ...DEFAULT_SHORTCUTS, ...(s.shortcuts || {}) },
+    urlRewrites: Array.isArray(s.urlRewrites) ? s.urlRewrites : [],
+    autoHideMenuBar: !!s.autoHideMenuBar,
+    // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示（默认）
+    titleBarAutoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
+    // v1.58：标题栏材质/不透明度/磨砂程度/颜色（标题栏颜色独立于界面主题色）
+    titleBarMaterial: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
+    titleBarOpacity: clampInt(s.titleBarOpacity, 0, 100, 0),
+    titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 12),
+    titleBarColor: String(s.titleBarColor || '#3B82F6'),
+    themeColor: String(s.themeColor || '#4F6EF7'),
+    // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
+    autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
+    // v1.17.7：FPK 会话面板默认地址（首个 NAS 的 34500 服务）
+    fpkBaseUrl: resolveIptvBase() || '',
+    // v1.17.7：直播源配置（非代理；代理已移除）
+    iptv: {
+      iptvBaseUrl: (s.iptv && s.iptv.iptvBaseUrl) || '',
+      iptvLine: (s.iptv && s.iptv.iptvLine) || 'inner',
+      iptvEpgUrl: (s.iptv && s.iptv.iptvEpgUrl) || '',
+      iptvCacheSeconds: clampInt(s.iptv && s.iptv.iptvCacheSeconds, 0, 120, 30),
+    },
+    version: APP_VERSION,
+  };
+});
+
+// v1.16.1：保存无操作自动锁定时长
+ipcMain.handle('settings:set-auto-lock', async (_e, payload) => {
+  try {
+    const minutes = clampInt(payload && payload.minutes, 0, 240, 0);
+    saveSettings({ autoLockMinutes: minutes });
+    startIdleAutoLock();
+    return { ok: true, autoLockMinutes: minutes };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+ipcMain.handle('settings:set-password', async (_e, payload) => {
+  try {
+    const oldP = String(payload?.oldPassword || '');
+    const newP = String(payload?.newPassword || '');
+    if (newP.length > 0 && newP.length < 4) {
+      return { ok: false, error: '新密码至少 4 位' };
+    }
+    setAppPassword(oldP, newP);
+    scheduleMenuRebuild();
+    return { ok: true };
+  } catch (err) {
+    if (err?.code === 'BAD_OLD_PASSWORD') return { ok: false, error: err.message };
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+ipcMain.handle('settings:set-shortcuts', async (_e, payload) => {
+  try {
+    const lockAcc = String(payload?.lockApp || '').trim();
+    const hideAcc = String(payload?.hideAll || '').trim();
+    if (lockAcc && !isValidAccelerator(lockAcc)) {
+      return { ok: false, error: '锁定快捷键格式无效' };
+    }
+    if (hideAcc && !isValidAccelerator(hideAcc)) {
+      return { ok: false, error: '隐藏快捷键格式无效' };
+    }
+    if (lockAcc && hideAcc && lockAcc === hideAcc) {
+      return { ok: false, error: '两个快捷键不能相同' };
+    }
+    saveSettings({ shortcuts: { lockApp: lockAcc, hideAll: hideAcc } });
+    registerGlobalShortcuts();
+    scheduleMenuRebuild();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
+  try {
+    const clean = (Array.isArray(list) ? list : [])
+      .filter((r) => r && typeof r.match === 'string' && typeof r.replace === 'string')
+      .map((r) => ({ match: r.match.trim(), replace: r.replace.trim() }))
+      .filter((r) => r.match && r.replace);
+    for (const r of clean) {
+      try { new URL(r.replace); } catch { return { ok: false, error: `右侧地址无效：${r.replace}` }; }
+    }
+    saveSettings({ urlRewrites: clean });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
+  try {
+    const autoHide = !!opts?.autoHideMenuBar;
+    // v1.54/v1.58：标题栏自动隐藏（默认 false=常驻）+ 材质/不透明度/磨砂/颜色
+    const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide === true);
+    const tbMaterial = opts?.titleBarMaterial === 'frosted' ? 'frosted' : (cachedSettings.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent');
+    const tbOpacity = opts && opts.titleBarOpacity != null && Number.isFinite(Number(opts.titleBarOpacity))
+      ? clampInt(opts.titleBarOpacity, 0, 100, 0)
+      : clampInt(cachedSettings.titleBarOpacity, 0, 100, 0);
+    const tbBlur = opts && opts.titleBarBlur != null && Number.isFinite(Number(opts.titleBarBlur))
+      ? clampInt(opts.titleBarBlur, 0, 40, 12)
+      : clampInt(cachedSettings.titleBarBlur, 0, 40, 12);
+    const tbColor = opts?.titleBarColor ? String(opts.titleBarColor) : String(cachedSettings.titleBarColor || '#3B82F6');
+    const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
+    saveSettings({
+      autoHideMenuBar: autoHide,
+      titleBarAutoHide: tbAutoHide,
+      titleBarMaterial: tbMaterial,
+      titleBarOpacity: tbOpacity,
+      titleBarBlur: tbBlur,
+      titleBarColor: tbColor,
+      themeColor: accent,
+    });
+    cachedSettings.autoHideMenuBar = autoHide;
+    cachedSettings.titleBarAutoHide = tbAutoHide;
+    cachedSettings.titleBarMaterial = tbMaterial;
+    cachedSettings.titleBarOpacity = tbOpacity;
+    cachedSettings.titleBarBlur = tbBlur;
+    cachedSettings.titleBarColor = tbColor;
+    cachedSettings.themeColor = accent;
+    // v1.58：广播【完整标题栏样式对象】（autoHide+material+opacity+blur+color）
+    // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
+    const tbPayload = { autoHide: tbAutoHide, material: tbMaterial, opacity: tbOpacity, blur: tbBlur, color: tbColor };
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        w.setAutoHideMenuBar(autoHide);
+        w.setMenuBarVisibility(!autoHide);
+        try { w.webContents.send('settings:titlebar-changed', tbPayload); } catch (_) {}
+      } catch (_) {}
+    }
+    // 同步到所有渲染进程（含 webview guest：飞牛桌面/FNDESK 内的应用窗）
+    try {
+      for (const wc of require('electron').webContents.getAllWebContents()) {
+        try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
+      }
+    } catch (_) {}
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('shell:theme', { themeColor: accent });
+      }
+    } catch (_) {}
+    scheduleMenuRebuild();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+// v1.52.0：preload 注入自定义标题栏时同步读取标题栏自动隐藏设置
+ipcMain.on('settings:get-titlebar', (e) => {
+  try {
+    const s = loadSettings();
+    // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；返回完整材质/颜色样式
+    e.returnValue = {
+      autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
+      material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
+      opacity: clampInt(s.titleBarOpacity, 0, 100, 0),
+      blur: clampInt(s.titleBarBlur, 0, 40, 12),
+      color: String(s.titleBarColor || '#3B82F6'),
+    };
+  } catch (_) {
+    e.returnValue = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
+  }
+});
+
+ipcMain.on('settings:close', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win && !win.isDestroyed()) win.close();
+});
+
+// v1.14：重启应用（用于玻璃标题栏等需要重建窗口才能生效的设置）
+ipcMain.handle('app:restart', async () => {
+  try {
+    app.isQuitting = true;
+    // 先落盘会话，避免重启丢失登录态
+    try { persistAllSessions(); } catch (_) {}
+    app.relaunch();
+    app.exit(0);
+  } catch (e) {
+    return { ok: false, error: e?.message || '重启失败' };
+  }
+  return { ok: true };
+});
+
+// ---------------- v1.14 玻璃外壳 IPC ----------------
+ipcMain.handle('shell:minimize', () => {
+  try { mainWindow && mainWindow.minimize(); } catch (_) {}
+});
+ipcMain.handle('shell:toggle-maximize', () => {
+  try {
+    if (!mainWindow) return;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize();
+  } catch (_) {}
+});
+ipcMain.handle('shell:close', () => {
+  try {
+    if (!mainWindow) return;
+    if (!app.isQuitting && !isSwitchingPartition) { handleMainClose(mainWindow); return; }
+    mainWindow.close();
+  } catch (_) {}
+});
+
 // v2.1.5: IPC handler for getting installed apps from manifest
 ipcMain.handle('get-installed-apps', async () => {
   try {
@@ -5776,6 +6075,144 @@ ipcMain.handle('uninstall-nas-app', async (_e, payload) => {
   }
 });
 
+
+// (2) install-nas-app
+ipcMain.handle('install-nas-app', async (_e, payload) => {
+  try {
+    fnosLog('info', 'ipc', 'install-nas-app called', payload);
+    const { appId, appName, iconData, iconExt, nasAddress } = payload || {};
+    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+
+    const data = readManifest();
+    // 检查是否已存在
+    const existIdx = data.apps.findIndex(a => a.appId === appId);
+
+    // 保存图标
+    let iconPath = '';
+    if (iconData) {
+      const ext = iconExt || 'png';
+      iconPath = path.join(ASSETS_DIR, `${appId}.${ext}`);
+      const buf = Buffer.from(iconData, 'base64');
+      fs.writeFileSync(iconPath, buf);
+      fnosLog('info', 'ipc', '图标保存成功', { iconPath });
+    }
+
+    const appEntry = {
+      appId,
+      appName,
+      iconPath,
+      nasAddress: nasAddress || '',
+      installedAt: new Date().toISOString(),
+    };
+
+    if (existIdx >= 0) {
+      data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+    } else {
+      data.apps.push(appEntry);
+    }
+
+    const res = writeManifest(data);
+    // v2.0.7：如果图标是 SVG 格式或为空，尝试从 NAS 获取 favicon 并转换为 PNG
+    if ((!iconPath || iconPath.endsWith('.svg')) && nasAddress) {
+      try {
+        const favUrl = nasAddress.replace(/\/$/, '') + '/favicon.ico';
+        const ses = session.defaultSession;
+        const resp = await ses.fetch(favUrl, { credentials: 'include' });
+        if (resp.ok) {
+          const ct = (resp.headers.get('content-type') || '').toLowerCase();
+          const buf = Buffer.from(await resp.arrayBuffer());
+          if (ct.includes('svg') || buf.slice(0, 5).toString().includes('svg') || buf.slice(0, 4).toString() === '<svg' || buf.slice(0, 100).toString().includes('<svg')) {
+            // SVG favicon，通过隐藏窗口转换为 PNG
+            const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(buf.toString('utf-8'));
+            const convertResult = await (async () => {
+              const pngBuf = await __svgToPng(buf.toString('utf-8'), 128);
+              if (!pngBuf) return null;
+              const savePath = path.join(ASSETS_DIR, appId + '.png');
+              fs.writeFileSync(savePath, Buffer.from(pngBuf));
+              return { iconPath: savePath };
+            })();
+            if (convertResult && convertResult.iconPath) {
+              appEntry.iconPath = convertResult.iconPath;
+              if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+              writeManifest(data);
+              fnosLog('info', 'ipc', 'install时SVG图标已转换', { appId, iconPath: convertResult.iconPath });
+            }
+          } else if (!ct.includes('svg') && !buf.slice(0, 100).toString().includes('<svg')) {
+            // 非 SVG，直接保存为 PNG/ICO
+            const ext = ct.includes('png') ? 'png' : (ct.includes('x-icon') || ct.includes('vnd.microsoft.icon') ? 'ico' : 'png');
+            const savePath = path.join(ASSETS_DIR, appId + '.' + ext);
+            fs.writeFileSync(savePath, buf);
+            appEntry.iconPath = savePath;
+            if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+            writeManifest(data);
+            fnosLog('info', 'ipc', 'install时favicon已缓存', { appId, iconPath: savePath });
+          }
+        }
+      } catch (e) {
+        fnosLog('warn', 'ipc', 'install时获取favicon失败', { appId, err: e.message });
+      }
+    }
+    return { success: res.success, msg: res.msg || '安装成功', data: appEntry };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'install-nas-app error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+// v2.0.7：SVG 转 PNG——创建隐藏窗口渲染 SVG 并截图为 PNG buffer
+async function __svgToPng(svgText, size) {
+  size = size || 128;
+  let hiddenWin;
+  try {
+    hiddenWin = new BrowserWindow({
+      show: false, width: size + 20, height: size + 20,
+      webPreferences: { offscreen: true, sandbox: true },
+    });
+    const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+    const html = '<!DOCTYPE html><html><body style="margin:0;background:transparent;display:flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;">' +
+      '<img src="' + dataUrl + '" width="' + size + '" height="' + size + '" style="max-width:100%;max-height:100%;" />' +
+      '</body></html>';
+    await hiddenWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await new Promise(r => setTimeout(r, 600));
+    const img = await hiddenWin.webContents.capturePage();
+    try { hiddenWin.close(); } catch (_) {}
+    return img.toPNG();
+  } catch (e) {
+    try { if (hiddenWin && !hiddenWin.isDestroyed()) hiddenWin.close(); } catch (_) {}
+    fnosLog('error', 'icon', 'SVG转PNG失败', { err: e.message });
+    return null;
+  }
+}
+ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
+  try {
+    const { svgDataUrl, appId, size } = payload || {};
+    if (!svgDataUrl || !appId) return { success: false, msg: '缺少参数' };
+    // 解码 SVG 内容
+    let svgText;
+    try {
+      svgText = decodeURIComponent(svgDataUrl.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
+    } catch (_) {
+      return { success: false, msg: 'SVG解码失败' };
+    }
+    // 转换为 PNG
+    const pngBuf = await __svgToPng(svgText, size || 128);
+    if (!pngBuf) return { success: false, msg: '转换失败' };
+    // 保存到 assets 目录
+    const iconPath = path.join(ASSETS_DIR, appId + '.png');
+    try {
+      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+      fs.writeFileSync(iconPath, Buffer.from(pngBuf));
+      fnosLog('info', 'icon', 'SVG图标已转换并保存', { appId, iconPath });
+    } catch (e) {
+      fnosLog('error', 'icon', '保存转换后图标失败', { err: e.message });
+      return { success: false, msg: '保存失败: ' + e.message };
+    }
+    return { success: true, msg: '转换成功', data: { iconPath } };
+  } catch (e) {
+    fnosLog('error', 'icon', 'convert-svg-icon error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+});
 
 // 2.2 命令行启动：携带 --app 参数时直接创建子应用窗口，跳过主界面
 // v2.0.6：修复 partition 使用共享分区（与主窗口一致），从 manifest 读取应用名和图标

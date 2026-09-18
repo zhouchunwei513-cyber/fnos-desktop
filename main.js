@@ -98,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.4';
+const APP_VERSION = '2.1.5';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4466,6 +4466,10 @@ function parseOpenAppArg() {
     const argv = process.argv || [];
     for (let i = 0; i < argv.length; i++) {
       const a = String(argv[i] || '');
+      // v2.1.5: Support --app= parameter (used by create-desktop-shortcut)
+      if (a === '--app' && argv[i + 1]) { pendingOpenAppUrl = decodeURIComponent(String(argv[i + 1])); return; }
+      if (a.startsWith('--app=')) { pendingOpenAppUrl = decodeURIComponent(a.slice('--app='.length)); return; }
+      // Legacy --open-app support
       if (a === '--open-app' && argv[i + 1]) { pendingOpenAppUrl = String(argv[i + 1]); return; }
       if (a.startsWith('--open-app=')) { pendingOpenAppUrl = a.slice('--open-app='.length); return; }
     }
@@ -4877,7 +4881,11 @@ async function processScannedApps(apps) {
         url: String(a.url),
         icon: String(a.icon || ''),
         // v1.74.0：保存 appName（飞牛应用内部名，用于构造 appview anchor 打开地址）
-        appName: String(a.appName || ''),
+        appName: String(a.appName || a.appId || ''),
+        // v2.1.5：保存 appId（用于快捷方式启动和 manifest 匹配）
+        appId: String(a.appId || a.url),
+        // v2.1.5：保存应用类型
+        type: String(a.type || 'unknown'),
         addedAt: Date.now(),
       });
       // v1.73.0：识别「新增」应用（之前没扫到过）→ 触发桌面快捷方式自动创建
@@ -5078,6 +5086,17 @@ const __WS_SCANNER_JS = String.raw`
     var wsProto = origin.indexOf('https') === 0 ? 'wss:' : 'ws:';
     var wsUrl = wsProto + '//' + location.host + '/websocket?type=main';
 
+    // v2.1.5: UUID fallback for non-secure contexts (HTTP)
+    function genUUID() {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        try { return crypto.randomUUID(); } catch(e) {}
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+
     function b64url(b64) { return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
     function ab2b64(buf) {
       var bytes = new Uint8Array(buf), bin = '';
@@ -5130,6 +5149,7 @@ const __WS_SCANNER_JS = String.raw`
       try { ws = await createWS(); } catch(e) {
         window.__fnosWsScanError = e.message;
         window.__fnosWsScanStatus = 'error';
+        try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: e.message }, '*'); } catch(e2) {}
         return;
       }
       window.__fnosWsScanStatus = 'connected';
@@ -5145,87 +5165,78 @@ const __WS_SCANNER_JS = String.raw`
       } catch(e) {}
 
       if (!token || !secret) {
-        var s = {};
-        try { s = JSON.parse(localStorage.getItem('settings') || '{}'); } catch(e) {}
-        if (s.username && s.password) {
-          var loginReqId = crypto.randomUUID();
-          var loginPayload = JSON.stringify({ reqid: loginReqId, req: 'user.login', data: { username: s.username, password: s.password, encrypted: false } });
-          var loginResp;
-          try { loginResp = await sendAndWait(ws, loginPayload, loginReqId); } catch(e) {
-            window.__fnosWsScanError = 'Login timeout: ' + e.message;
-            window.__fnosWsScanStatus = 'error';
-            try { ws.close(); } catch(e2) {}
-            return;
+        try {
+          var keys = Object.keys(localStorage);
+          for (var ki = 0; ki < keys.length; ki++) {
+            var val = localStorage.getItem(keys[ki]);
+            try {
+              var parsed = JSON.parse(val);
+              if (parsed && (parsed.token || parsed.access_token)) {
+                token = parsed.token || parsed.access_token || '';
+                secret = parsed.secret || parsed.signSecret || '';
+                break;
+              }
+            } catch(e2) {}
           }
-          if (loginResp && loginResp.data && loginResp.data.token) {
-            token = loginResp.data.token;
-            secret = loginResp.data.secret || '';
-          } else {
-            window.__fnosWsScanError = 'Login failed';
-            window.__fnosWsScanStatus = 'error';
-            try { ws.close(); } catch(e2) {}
-            return;
-          }
-        } else {
-          window.__fnosWsScanError = 'Not logged in';
-          window.__fnosWsScanStatus = 'error';
-          try { ws.close(); } catch(e2) {}
-          return;
-        }
+        } catch(e) {}
       }
 
-      // Fetch entry list
-      var reqId1 = crypto.randomUUID();
-      var payload1 = await signRequest(reqId1, 'appcgi.sac.entry.v1.getEntryList', {}, secret);
-      var resp1;
-      try { resp1 = await sendAndWait(ws, payload1, reqId1); } catch(e) {
-        window.__fnosWsScanError = 'getEntryList timeout';
+      if (!token || !secret) {
+        window.__fnosWsScanError = 'Not logged in - no token/secret found';
         window.__fnosWsScanStatus = 'error';
+        try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: 'not_logged_in' }, '*'); } catch(e2) {}
         try { ws.close(); } catch(e2) {}
         return;
       }
 
       var allApps = [];
-      if (resp1 && resp1.errno === 0 && resp1.data && resp1.data.list) {
-        var entries = Array.isArray(resp1.data.list) ? resp1.data.list : [];
-        for (var i = 0; i < entries.length; i++) {
-          var e = entries[i];
-          var appName = e.appName || e.name || '';
-          if (!appName) continue;
-          var isSystem = (e.type === 'builtIn' || e.appType === 'builtIn');
-          var iconPath = e.icon || '';
-          var iconUrl = '';
-          if (iconPath) {
-            if (iconPath.indexOf('http') === 0) iconUrl = iconPath;
-            else if (iconPath.indexOf('/') === 0) iconUrl = origin + iconPath;
-            else iconUrl = origin + '/' + iconPath;
+
+      // Fetch entry list
+      try {
+        var reqId1 = genUUID();
+        var payload1 = await signRequest(reqId1, 'appcgi.sac.entry.v1.getEntryList', {}, secret);
+        var resp1 = await sendAndWait(ws, payload1, reqId1);
+        if (resp1 && resp1.errno === 0 && resp1.data && resp1.data.list) {
+          var entries = Array.isArray(resp1.data.list) ? resp1.data.list : [];
+          for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            var appName = e.appName || e.name || '';
+            if (!appName) continue;
+            var isSystem = (e.type === 'builtIn' || e.appType === 'builtIn' || e.category === 'system');
+            var iconPath = e.icon || '';
+            var iconUrl = '';
+            if (iconPath) {
+              if (iconPath.indexOf('http') === 0) iconUrl = iconPath;
+              else if (iconPath.indexOf('/') === 0) iconUrl = origin + iconPath;
+              else iconUrl = origin + '/' + iconPath;
+            }
+            if (!iconUrl) {
+              iconUrl = isSystem
+                ? origin + '/static/app/icons/' + appName + '/icon.png'
+                : origin + '/app-center-static/serviceicon/' + appName + '/ui/images/icon_0.png';
+            }
+            var appUrl = '';
+            if (e.fullUrl) { appUrl = e.fullUrl; }
+            else if (e.uri && e.uri.host) {
+              appUrl = (e.uri.protocol || 'http') + '://' + e.uri.host + (e.uri.port ? ':' + e.uri.port : '') + (e.uri.path || '/');
+            }
+            if (!appUrl) {
+              appUrl = isSystem ? (origin + '/appview?anchor=https%3A%2F%2F' + appName) : appName;
+            }
+            allApps.push({
+              name: e.title || appName,
+              appId: isSystem ? ('https://' + appName) : appName,
+              url: appUrl,
+              icon: iconUrl,
+              type: isSystem ? 'builtIn' : 'appCenter'
+            });
           }
-          if (!iconUrl) {
-            iconUrl = isSystem
-              ? origin + '/static/app/icons/' + appName + '/icon.png'
-              : origin + '/app-center-static/serviceicon/' + appName + '/ui/images/icon_0.png';
-          }
-          var appUrl = '';
-          if (e.fullUrl) { appUrl = e.fullUrl; }
-          else if (e.uri && e.uri.host) {
-            appUrl = (e.uri.protocol || 'http') + '://' + e.uri.host + (e.uri.port ? ':' + e.uri.port : '') + (e.uri.path || '/');
-          }
-          if (!appUrl) {
-            appUrl = isSystem ? (origin + '/appview?anchor=https%3A%2F%2F' + appName) : appName;
-          }
-          allApps.push({
-            name: e.title || appName,
-            appId: isSystem ? ('https://' + appName) : appName,
-            url: appUrl,
-            icon: iconUrl,
-            type: isSystem ? 'builtIn' : 'appCenter'
-          });
         }
-      }
+      } catch(e) {}
 
       // Also fetch appStoreList for additional installed apps
       try {
-        var reqId2 = crypto.randomUUID();
+        var reqId2 = genUUID();
         var payload2 = await signRequest(reqId2, 'appcgi.sac.entry.v1.appStoreList', {}, secret);
         var resp2 = await sendAndWait(ws, payload2, reqId2);
         if (resp2 && resp2.errno === 0 && resp2.data && Array.isArray(resp2.data)) {
@@ -5250,29 +5261,62 @@ const __WS_SCANNER_JS = String.raw`
             existIds[an] = true;
           });
         }
-      } catch(e2) {}
+      } catch(e) {}
 
       window.__fnosWsScanApps = allApps;
       window.__fnosWsScanStatus = 'done';
+      // v2.1.5: Post result to main process via postMessage
+      try { window.postMessage({ type: 'fnos-ws-scan-result', data: allApps }, '*'); } catch(e) {}
       try { ws.close(); } catch(e) {}
     }
     main().catch(function(e) {
-      window.__fnosWsScanError = e.message;
+      window.__fnosWsScanError = e.message || String(e);
       window.__fnosWsScanStatus = 'error';
+      try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: e.message }, '*'); } catch(e2) {}
     });
   } catch(e) {
-    window.__fnosWsScanError = e.message;
+    window.__fnosWsScanError = e.message || String(e);
     window.__fnosWsScanStatus = 'error';
+    try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: e.message }, '*'); } catch(e2) {}
   }
 })()
 `;
 
+
+// v2.1.5: PNG to ICO converter for Windows shortcuts
+function pngToIco(pngBuffer) {
+  // ICO header: 6 bytes (reserved=0, type=1(icon), count=1)
+  // ICO dir entry: 16 bytes
+  // Total overhead: 22 bytes
+  const headerSize = 6 + 16;
+  const ico = Buffer.alloc(headerSize + pngBuffer.length);
+  let offset = 0;
+  // Header
+  ico.writeUInt16LE(0, offset); offset += 2;  // reserved
+  ico.writeUInt16LE(1, offset); offset += 2;  // type = 1 (icon)
+  ico.writeUInt16LE(1, offset); offset += 2;  // count = 1
+  // Directory entry
+  const w = pngBuffer.readUInt32BE(16); // PNG IHDR width
+  const h = pngBuffer.readUInt32BE(20); // PNG IHDR height
+  ico.writeUInt8(w >= 256 ? 0 : w, offset); offset += 1;  // width (0 = 256)
+  ico.writeUInt8(h >= 256 ? 0 : h, offset); offset += 1;  // height
+  ico.writeUInt8(0, offset); offset += 1;  // color palette
+  ico.writeUInt8(0, offset); offset += 1;  // reserved
+  ico.writeUInt16LE(1, offset); offset += 2;  // color planes
+  ico.writeUInt16LE(32, offset); offset += 2; // bits per pixel
+  ico.writeUInt32LE(pngBuffer.length, offset); offset += 4;  // image data size
+  ico.writeUInt32LE(headerSize, offset); offset += 4;        // image data offset
+  // Image data (raw PNG)
+  pngBuffer.copy(ico, offset);
+  return ico;
+}
+
 let __appCenterScanAt = 0;
 let __appCenterScanWin = null;
+let __appCenterScanResult = null; // v2.1.5: store scan results from postMessage
 
 function scanAppCenterApps() {
   try {
-    if (__appCenterScanWin && !__appCenterScanWin.isDestroyed()) return;
     const s = loadSettings();
     const origin = s.origin || '';
     if (!origin || !/^https?:/i.test(origin)) {
@@ -5282,56 +5326,41 @@ function scanAppCenterApps() {
     const now = Date.now();
     if (now - __appCenterScanAt < 60000) return;
     __appCenterScanAt = now;
-    fnosLog('info', 'appcenter.scan', { msg: 'starting WebSocket scanner', origin });
+    fnosLog('info', 'appcenter.scan', { msg: 'starting WebSocket scanner in main window', origin });
 
-    const win = new BrowserWindow({
-      show: false, width: 1500, height: 1000,
-      backgroundColor: '#0b0d12',
-      webPreferences: {
-        contextIsolation: true, nodeIntegration: false,
-        sandbox: true,
-        partition: currentPartition,
-        backgroundThrottling: false,
-      },
-    });
-    __appCenterScanWin = win;
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      try { if (!win.isDestroyed()) win.close(); } catch (_) {}
-      __appCenterScanWin = null;
-    };
+    // v2.1.5: Use mainWindow instead of hidden window to ensure same auth context
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      fnosLog('warn', 'appcenter.scan', { err: 'no mainWindow available' });
+      return;
+    }
 
-    win.webContents.once('dom-ready', () => {
-      setTimeout(() => {
-        if (done) return;
-        try {
-          win.webContents.executeJavaScript(__WS_SCANNER_JS, true);
-          fnosLog('info', 'appcenter.scan', { msg: 'WS scanner injected' });
-        } catch (e) {
-          fnosLog('error', 'appcenter.scan', { err: 'inject: ' + e.message });
-          finish();
-        }
-      }, 2500);
-    });
+    try {
+      mainWindow.webContents.executeJavaScript(__WS_SCANNER_JS, true);
+      fnosLog('info', 'appcenter.scan', { msg: 'WS scanner injected into main window' });
+    } catch (e) {
+      fnosLog('error', 'appcenter.scan', { err: 'inject: ' + e.message });
+      return;
+    }
 
-    win.once('closed', () => { __appCenterScanWin = null; });
-
-    // Poll for scan results
+    // Poll for scan results via executeJavaScript
+    let pollCount = 0;
+    const maxPolls = 30; // 30 * 1.5s = 45s timeout
     const pollInterval = setInterval(() => {
-      if (done) { clearInterval(pollInterval); return; }
+      pollCount++;
+      if (pollCount >= maxPolls) {
+        clearInterval(pollInterval);
+        fnosLog('warn', 'appcenter.scan', { err: 'scan timeout after 45s' });
+        return;
+      }
       try {
-        win.webContents.executeJavaScript(
-          'JSON.stringify({s:window.__fnosWsScanStatus,a:window.__fnosWsScanApps||[],e:window.__fnosWsScanError||""})',
+        mainWindow.webContents.executeJavaScript(
+          'JSON.stringify({s:window.__fnosWsScanStatus||"",a:window.__fnosWsScanApps||[],e:window.__fnosWsScanError||""})',
           true
         ).then((result) => {
           try {
             const r = JSON.parse(result);
             if (r.s === 'done' || r.s === 'error') {
               clearInterval(pollInterval);
-              if (done) return;
-              done = true;
               if (r.e) {
                 fnosLog('warn', 'appcenter.scan', { error: r.e });
               }
@@ -5341,601 +5370,28 @@ function scanAppCenterApps() {
                   apps: r.a.map(a => a.name + '|' + (a.type || '') + '|' + (a.url || '').slice(0, 60)).slice(0, 20)
                 });
                 processScannedApps(r.a);
-              } else if (!r.e) {
-                fnosLog('info', 'appcenter.scan', { msg: 'no apps returned' });
+              } else if (r.s === 'done') {
+                fnosLog('warn', 'appcenter.scan', { err: 'scan completed but no apps found' });
               }
-              finish();
+            } else if (r.s === 'connecting' || r.s === 'connected') {
+              fnosLog('info', 'appcenter.scan', { status: r.s, poll: pollCount });
             }
-          } catch (_) {}
-        }).catch(() => {});
-      } catch (_) { clearInterval(pollInterval); }
+          } catch (e) {
+            fnosLog('error', 'appcenter.scan', { err: 'parse result: ' + e.message });
+          }
+        }).catch((e) => {
+          fnosLog('error', 'appcenter.scan', { err: 'poll: ' + e.message });
+        });
+      } catch (e) {
+        clearInterval(pollInterval);
+        fnosLog('error', 'appcenter.scan', { err: 'poll outer: ' + e.message });
+      }
     }, 1500);
-
-    win.loadURL(origin + '/', { userAgent: getNasUA() }).catch(() => { finish(); });
-
-    setTimeout(() => {
-      clearInterval(pollInterval);
-      if (!done) { done = true; fnosLog('warn', 'appcenter.scan', { timeout: true }); finish(); }
-    }, 30000);
   } catch (e) {
     fnosLog('error', 'appcenter.scan', { err: e.message, stack: e.stack });
   }
 }
 
-// ---------------------- 锁屏 / 设置 IPC ----------------------
-ipcMain.handle('lock:get-info', async (e) => {
-  // 从 URL query 读取初始 mode
-  let mode = 'unlock';
-  try {
-    const url = e.sender.getURL();
-    const u = new URL(url);
-    const m = u.searchParams.get('mode');
-    if (m === 'setup' || m === 'change' || m === 'unlock') mode = m;
-  } catch (_) {}
-  return {
-    mode,
-    hasPassword: hasAppPassword(),
-    version: APP_VERSION,
-    // v1.25.0：MPV 外部播放器设置
-    mpv: getMpvSettings(),
-  };
-});
-
-// v1.25.0：保存 MPV 外部播放器设置（通道名保留 settings:set-vlc 以兼容旧设置页）
-ipcMain.handle('settings:set-vlc', async (_e, patch) => {
-  try {
-    const cur = getMpvSettings();
-    const next = {
-      enabled: patch && typeof patch.enabled === 'boolean' ? patch.enabled : cur.enabled,
-      hwDecode: ['auto', 'd3d11va', 'dxva2', 'no'].includes(patch && patch.hwDecode) ? patch.hwDecode : cur.hwDecode,
-      cacheLevel: ['standard', 'smooth', 'unlimited'].includes(patch && patch.cacheLevel) ? patch.cacheLevel : cur.cacheLevel,
-    };
-    saveSettings({ mpv: next });
-    try { global.__mpvSettings = next; } catch (_) {}
-    return { ok: true, mpv: next, vlc: next };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-});
-
-// v1.26.0：探测 MPV 运行状态（二进制是否就位）供设置页展示
-ipcMain.handle('settings:vlc-runtime', async () => {
-  try {
-    const settings = getMpvSettings();
-    let info = { available: false, reason: '', version: '', source: '', hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel, gpu: {}, settings, mpv: true };
-    if (MpvPlayerMod && process.platform === 'win32') {
-      const exe = MpvPlayerMod.getMpvExe();
-      info.available = !!exe;
-      info.source = exe || '';
-      info.reason = exe ? '' : '未找到内置 mpv.exe';
-    } else if (process.platform !== 'win32') {
-      info.reason = 'MPV 外部播放器仅在 Windows 平台启用';
-    }
-    return info;
-  } catch (e) {
-    return { available: false, reason: e.message, settings: getMpvSettings() };
-  }
-});
-
-ipcMain.handle('lock:verify', async (_e, password) => {
-  try {
-    if (verifyAppPassword(String(password || ''))) {
-      // 验证通过
-      setImmediate(() => unlockApp());
-      return { ok: true };
-    }
-    return { ok: false, error: '启动密码不正确' };
-  } catch (err) {
-    return { ok: false, error: err?.message || '验证失败' };
-  }
-});
-
-ipcMain.handle('lock:set-password', async (_e, payload) => {
-  try {
-    const oldP = String(payload?.oldPassword || '');
-    const newP = String(payload?.newPassword || '');
-    if (newP.length > 0 && newP.length < 4) {
-      return { ok: false, error: '新密码至少 4 位' };
-    }
-    setAppPassword(oldP, newP);
-    // 首次设置密码成功，视为解锁
-    setImmediate(() => {
-      if (!hasAppPassword()) {
-        // 清除了密码 — 保持解锁
-      }
-      // 刷新菜单（显示/隐藏"锁定"项）
-      scheduleMenuRebuild();
-    });
-    return { ok: true };
-  } catch (err) {
-    if (err?.code === 'BAD_OLD_PASSWORD') return { ok: false, error: err.message };
-    return { ok: false, error: err?.message || '保存失败' };
-  }
-});
-
-ipcMain.handle('settings:get', async () => {
-  const s = loadSettings();
-  return {
-    hasPassword: hasAppPassword(),
-    shortcuts: { ...DEFAULT_SHORTCUTS, ...(s.shortcuts || {}) },
-    urlRewrites: Array.isArray(s.urlRewrites) ? s.urlRewrites : [],
-    autoHideMenuBar: !!s.autoHideMenuBar,
-    // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示（默认）
-    titleBarAutoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
-    // v1.58：标题栏材质/不透明度/磨砂程度/颜色（标题栏颜色独立于界面主题色）
-    titleBarMaterial: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
-    titleBarOpacity: clampInt(s.titleBarOpacity, 0, 100, 0),
-    titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 12),
-    titleBarColor: String(s.titleBarColor || '#3B82F6'),
-    themeColor: String(s.themeColor || '#4F6EF7'),
-    // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
-    autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
-    // v1.17.7：FPK 会话面板默认地址（首个 NAS 的 34500 服务）
-    fpkBaseUrl: resolveIptvBase() || '',
-    // v1.17.7：直播源配置（非代理；代理已移除）
-    iptv: {
-      iptvBaseUrl: (s.iptv && s.iptv.iptvBaseUrl) || '',
-      iptvLine: (s.iptv && s.iptv.iptvLine) || 'inner',
-      iptvEpgUrl: (s.iptv && s.iptv.iptvEpgUrl) || '',
-      iptvCacheSeconds: clampInt(s.iptv && s.iptv.iptvCacheSeconds, 0, 120, 30),
-    },
-    version: APP_VERSION,
-  };
-});
-
-// v1.16.1：保存无操作自动锁定时长
-ipcMain.handle('settings:set-auto-lock', async (_e, payload) => {
-  try {
-    const minutes = clampInt(payload && payload.minutes, 0, 240, 0);
-    saveSettings({ autoLockMinutes: minutes });
-    startIdleAutoLock();
-    return { ok: true, autoLockMinutes: minutes };
-  } catch (err) {
-    return { ok: false, error: err?.message || '保存失败' };
-  }
-});
-
-ipcMain.handle('settings:set-password', async (_e, payload) => {
-  try {
-    const oldP = String(payload?.oldPassword || '');
-    const newP = String(payload?.newPassword || '');
-    if (newP.length > 0 && newP.length < 4) {
-      return { ok: false, error: '新密码至少 4 位' };
-    }
-    setAppPassword(oldP, newP);
-    scheduleMenuRebuild();
-    return { ok: true };
-  } catch (err) {
-    if (err?.code === 'BAD_OLD_PASSWORD') return { ok: false, error: err.message };
-    return { ok: false, error: err?.message || '保存失败' };
-  }
-});
-
-ipcMain.handle('settings:set-shortcuts', async (_e, payload) => {
-  try {
-    const lockAcc = String(payload?.lockApp || '').trim();
-    const hideAcc = String(payload?.hideAll || '').trim();
-    if (lockAcc && !isValidAccelerator(lockAcc)) {
-      return { ok: false, error: '锁定快捷键格式无效' };
-    }
-    if (hideAcc && !isValidAccelerator(hideAcc)) {
-      return { ok: false, error: '隐藏快捷键格式无效' };
-    }
-    if (lockAcc && hideAcc && lockAcc === hideAcc) {
-      return { ok: false, error: '两个快捷键不能相同' };
-    }
-    saveSettings({ shortcuts: { lockApp: lockAcc, hideAll: hideAcc } });
-    registerGlobalShortcuts();
-    scheduleMenuRebuild();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err?.message || '保存失败' };
-  }
-});
-
-ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
-  try {
-    const clean = (Array.isArray(list) ? list : [])
-      .filter((r) => r && typeof r.match === 'string' && typeof r.replace === 'string')
-      .map((r) => ({ match: r.match.trim(), replace: r.replace.trim() }))
-      .filter((r) => r.match && r.replace);
-    for (const r of clean) {
-      try { new URL(r.replace); } catch { return { ok: false, error: `右侧地址无效：${r.replace}` }; }
-    }
-    saveSettings({ urlRewrites: clean });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err?.message || '保存失败' };
-  }
-});
-
-ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
-  try {
-    const autoHide = !!opts?.autoHideMenuBar;
-    // v1.54/v1.58：标题栏自动隐藏（默认 false=常驻）+ 材质/不透明度/磨砂/颜色
-    const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide === true);
-    const tbMaterial = opts?.titleBarMaterial === 'frosted' ? 'frosted' : (cachedSettings.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent');
-    const tbOpacity = opts && opts.titleBarOpacity != null && Number.isFinite(Number(opts.titleBarOpacity))
-      ? clampInt(opts.titleBarOpacity, 0, 100, 0)
-      : clampInt(cachedSettings.titleBarOpacity, 0, 100, 0);
-    const tbBlur = opts && opts.titleBarBlur != null && Number.isFinite(Number(opts.titleBarBlur))
-      ? clampInt(opts.titleBarBlur, 0, 40, 12)
-      : clampInt(cachedSettings.titleBarBlur, 0, 40, 12);
-    const tbColor = opts?.titleBarColor ? String(opts.titleBarColor) : String(cachedSettings.titleBarColor || '#3B82F6');
-    const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
-    saveSettings({
-      autoHideMenuBar: autoHide,
-      titleBarAutoHide: tbAutoHide,
-      titleBarMaterial: tbMaterial,
-      titleBarOpacity: tbOpacity,
-      titleBarBlur: tbBlur,
-      titleBarColor: tbColor,
-      themeColor: accent,
-    });
-    cachedSettings.autoHideMenuBar = autoHide;
-    cachedSettings.titleBarAutoHide = tbAutoHide;
-    cachedSettings.titleBarMaterial = tbMaterial;
-    cachedSettings.titleBarOpacity = tbOpacity;
-    cachedSettings.titleBarBlur = tbBlur;
-    cachedSettings.titleBarColor = tbColor;
-    cachedSettings.themeColor = accent;
-    // v1.58：广播【完整标题栏样式对象】（autoHide+material+opacity+blur+color）
-    // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
-    const tbPayload = { autoHide: tbAutoHide, material: tbMaterial, opacity: tbOpacity, blur: tbBlur, color: tbColor };
-    for (const w of BrowserWindow.getAllWindows()) {
-      try {
-        w.setAutoHideMenuBar(autoHide);
-        w.setMenuBarVisibility(!autoHide);
-        try { w.webContents.send('settings:titlebar-changed', tbPayload); } catch (_) {}
-      } catch (_) {}
-    }
-    // 同步到所有渲染进程（含 webview guest：飞牛桌面/FNDESK 内的应用窗）
-    try {
-      for (const wc of require('electron').webContents.getAllWebContents()) {
-        try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
-      }
-    } catch (_) {}
-    try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('shell:theme', { themeColor: accent });
-      }
-    } catch (_) {}
-    scheduleMenuRebuild();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err?.message || '保存失败' };
-  }
-});
-
-// v1.52.0：preload 注入自定义标题栏时同步读取标题栏自动隐藏设置
-ipcMain.on('settings:get-titlebar', (e) => {
-  try {
-    const s = loadSettings();
-    // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；返回完整材质/颜色样式
-    e.returnValue = {
-      autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
-      material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
-      opacity: clampInt(s.titleBarOpacity, 0, 100, 0),
-      blur: clampInt(s.titleBarBlur, 0, 40, 12),
-      color: String(s.titleBarColor || '#3B82F6'),
-    };
-  } catch (_) {
-    e.returnValue = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
-  }
-});
-
-ipcMain.on('settings:close', (e) => {
-  const win = BrowserWindow.fromWebContents(e.sender);
-  if (win && !win.isDestroyed()) win.close();
-});
-
-// v1.14：重启应用（用于玻璃标题栏等需要重建窗口才能生效的设置）
-ipcMain.handle('app:restart', async () => {
-  try {
-    app.isQuitting = true;
-    // 先落盘会话，避免重启丢失登录态
-    try { persistAllSessions(); } catch (_) {}
-    app.relaunch();
-    app.exit(0);
-  } catch (e) {
-    return { ok: false, error: e?.message || '重启失败' };
-  }
-  return { ok: true };
-});
-
-// ---------------- v1.14 玻璃外壳 IPC ----------------
-ipcMain.handle('shell:minimize', () => {
-  try { mainWindow && mainWindow.minimize(); } catch (_) {}
-});
-ipcMain.handle('shell:toggle-maximize', () => {
-  try {
-    if (!mainWindow) return;
-    if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize();
-  } catch (_) {}
-});
-ipcMain.handle('shell:close', () => {
-  try {
-    if (!mainWindow) return;
-    if (!app.isQuitting && !isSwitchingPartition) { handleMainClose(mainWindow); return; }
-    mainWindow.close();
-  } catch (_) {}
-});
-
-// ===================== v2.0.0 子应用 IPC =====================
-// 2.3 四个 IPC 接口
-
-// (1) get-installed-apps
-ipcMain.handle('get-installed-apps', async () => {
-  try {
-    fnosLog('info', 'ipc', 'get-installed-apps called');
-    // v2.0.8: use URL as appId, merge manifest + settings.json
-    const manifest = readManifest();
-    const byUrl = new Map();
-    for (const a of manifest.apps) {
-      const key = a.url || a.appId;
-      byUrl.set(key, { ...a, appId: a.appId || key });
-    }
-    try {
-      const s = loadSettings();
-      const scanned = Array.isArray(s.apps) ? s.apps : [];
-      for (const a of scanned) {
-        const key = a.url;
-        if (!byUrl.has(key)) {
-          let nasAddr = '';
-          try { nasAddr = new URL(a.url).origin; } catch (_) {}
-          byUrl.set(key, {
-            appId: a.url, appName: a.name || a.appName || '', nasAddress: nasAddr,
-            url: a.url, iconData: a.icon || '', iconPath: ''
-          });
-        }
-      }
-    } catch (_) {}
-    const merged = Array.from(byUrl.values());
-    fnosLog('info', 'ipc', 'get-installed-apps result', { count: merged.length });
-    return { success: true, msg: '', data: merged };
-  } catch (e) {
-    fnosLog('error', 'ipc', 'get-installed-apps error', { err: e.message, stack: e.stack });
-    return { success: false, msg: e.message, data: [] };
-  }
-});
-
-// (2) install-nas-app
-ipcMain.handle('install-nas-app', async (_e, payload) => {
-  try {
-    fnosLog('info', 'ipc', 'install-nas-app called', payload);
-    const { appId, appName, iconData, iconExt, nasAddress } = payload || {};
-    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
-    
-    const data = readManifest();
-    // 检查是否已存在
-    const existIdx = data.apps.findIndex(a => a.appId === appId);
-    
-    // 保存图标
-    let iconPath = '';
-    if (iconData) {
-      const ext = iconExt || 'png';
-      iconPath = path.join(ASSETS_DIR, `${appId}.${ext}`);
-      const buf = Buffer.from(iconData, 'base64');
-      fs.writeFileSync(iconPath, buf);
-      fnosLog('info', 'ipc', '图标保存成功', { iconPath });
-    }
-    
-    const appEntry = {
-      appId,
-      appName,
-      iconPath,
-      nasAddress: nasAddress || '',
-      installedAt: new Date().toISOString(),
-    };
-    
-    if (existIdx >= 0) {
-      data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
-    } else {
-      data.apps.push(appEntry);
-    }
-    
-    const res = writeManifest(data);
-    // v2.0.7：如果图标是 SVG 格式或为空，尝试从 NAS 获取 favicon 并转换为 PNG
-    if ((!iconPath || iconPath.endsWith('.svg')) && nasAddress) {
-      try {
-        const favUrl = nasAddress.replace(/\/$/, '') + '/favicon.ico';
-        const ses = session.defaultSession;
-        const resp = await ses.fetch(favUrl, { credentials: 'include' });
-        if (resp.ok) {
-          const ct = (resp.headers.get('content-type') || '').toLowerCase();
-          const buf = Buffer.from(await resp.arrayBuffer());
-          if (ct.includes('svg') || buf.slice(0, 5).toString().includes('svg') || buf.slice(0, 4).toString() === '<svg' || buf.slice(0, 100).toString().includes('<svg')) {
-            // SVG favicon，通过隐藏窗口转换为 PNG
-            const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(buf.toString('utf-8'));
-            const convertResult = await (async () => {
-              const pngBuf = await __svgToPng(buf.toString('utf-8'), 128);
-              if (!pngBuf) return null;
-              const savePath = path.join(ASSETS_DIR, appId + '.png');
-              fs.writeFileSync(savePath, Buffer.from(pngBuf));
-              return { iconPath: savePath };
-            })();
-            if (convertResult && convertResult.iconPath) {
-              appEntry.iconPath = convertResult.iconPath;
-              if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
-              writeManifest(data);
-              fnosLog('info', 'ipc', 'install时SVG图标已转换', { appId, iconPath: convertResult.iconPath });
-            }
-          } else if (!ct.includes('svg') && !buf.slice(0, 100).toString().includes('<svg')) {
-            // 非 SVG，直接保存为 PNG/ICO
-            const ext = ct.includes('png') ? 'png' : (ct.includes('x-icon') || ct.includes('vnd.microsoft.icon') ? 'ico' : 'png');
-            const savePath = path.join(ASSETS_DIR, appId + '.' + ext);
-            fs.writeFileSync(savePath, buf);
-            appEntry.iconPath = savePath;
-            if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
-            writeManifest(data);
-            fnosLog('info', 'ipc', 'install时favicon已缓存', { appId, iconPath: savePath });
-          }
-        }
-      } catch (e) {
-        fnosLog('warn', 'ipc', 'install时获取favicon失败', { appId, err: e.message });
-      }
-    }
-    return { success: res.success, msg: res.msg || '安装成功', data: appEntry };
-  } catch (e) {
-    fnosLog('error', 'ipc', 'install-nas-app error', { err: e.message, stack: e.stack });
-    return { success: false, msg: e.message, data: null };
-  }
-});
-
-// (3) uninstall-nas-app
-ipcMain.handle('uninstall-nas-app', async (_e, payload) => {
-  try {
-    fnosLog('info', 'ipc', 'uninstall-nas-app called', payload);
-    const { appId } = payload || {};
-    if (!appId) return { success: false, msg: '缺少 appId', data: null };
-    
-    const data = readManifest();
-    const appEntry = data.apps.find(a => a.appId === appId);
-    data.apps = data.apps.filter(a => a.appId !== appId);
-    const res = writeManifest(data);
-    
-    // 删除图标
-    if (appEntry && appEntry.iconPath) {
-      try { fs.unlinkSync(appEntry.iconPath); } catch (_) {}
-    }
-    
-    // 删除桌面快捷方式
-    try {
-      const desktop = path.join(os.homedir(), 'Desktop');
-      if (fs.existsSync(desktop)) {
-        const files = fs.readdirSync(desktop);
-        for (const f of files) {
-          if (f.toLowerCase().endsWith('.lnk') && f.toLowerCase().includes(appId.toLowerCase())) {
-            fs.unlinkSync(path.join(desktop, f));
-            fnosLog('info', 'ipc', '删除桌面快捷方式', { file: f });
-          }
-        }
-      }
-    } catch (e) {
-      fnosLog('warn', 'ipc', '删除快捷方式失败', { err: e.message });
-    }
-    
-    return { success: res.success, msg: res.msg || '卸载成功', data: null };
-  } catch (e) {
-    fnosLog('error', 'ipc', 'uninstall-nas-app error', { err: e.message, stack: e.stack });
-    return { success: false, msg: e.message, data: null };
-  }
-});
-
-// (4) create-desktop-shortcut
-ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
-  try {
-    fnosLog('info', 'ipc', 'create-desktop-shortcut called', payload);
-    const { appId, appName, iconPath, nasAddress } = payload || {};
-    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
-    
-    const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    // v2.1.4: 从 manifest 获取正确的启动 URL（系统应用用 appview 路由，应用中心用直连 URL）
-    let launchUrl = appId;
-    try {
-      const manifest = readManifest();
-      const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
-      if (entry && entry.url) {
-        if (/^https?:\/\//i.test(entry.url)) {
-          launchUrl = entry.url;
-        } else if (entry.appId && entry.appId.startsWith('https://')) {
-          launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(entry.appId);
-        } else {
-          launchUrl = entry.url;
-        }
-      } else if (appId && appId.startsWith('https://')) {
-        launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(appId);
-      }
-    } catch (_) {}
-    const args = `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
-    const desktop = path.join(os.homedir(), 'Desktop');
-    const lnkPath = path.join(desktop, `${appName}.lnk`);
-    
-    // PowerShell 创建 .lnk
-    const ps = `
-$ws = New-Object -ComObject WScript.Shell
-$sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')
-$sc.TargetPath = '${exePath.replace(/'/g, "''")}'
-$sc.Arguments = '${args}'
-$sc.WorkingDirectory = '${path.dirname(exePath).replace(/'/g, "''")}'
-$sc.Description = 'FNOS 应用: ${appName}'
-${iconPath ? `$sc.IconLocation = '${iconPath.replace(/'/g, "''")}'` : ''}
-$sc.Save()
-`;
-    const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
-    
-    if (result.status === 0) {
-      fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath });
-      return { success: true, msg: '快捷方式已创建', data: { path: lnkPath } };
-    } else {
-      fnosLog('error', 'ipc', '快捷方式创建失败', { stderr: result.stderr });
-      return { success: false, msg: result.stderr || '创建失败', data: null };
-    }
-  } catch (e) {
-    fnosLog('error', 'ipc', 'create-desktop-shortcut error', { err: e.message, stack: e.stack });
-    return { success: false, msg: e.message, data: null };
-  }
-});
-
-
-// v2.0.7：SVG 转 PNG——创建隐藏窗口渲染 SVG 并截图为 PNG buffer
-async function __svgToPng(svgText, size) {
-  size = size || 128;
-  let hiddenWin;
-  try {
-    hiddenWin = new BrowserWindow({
-      show: false, width: size + 20, height: size + 20,
-      webPreferences: { offscreen: true, sandbox: true },
-    });
-    const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
-    const html = '<!DOCTYPE html><html><body style="margin:0;background:transparent;display:flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;">' +
-      '<img src="' + dataUrl + '" width="' + size + '" height="' + size + '" style="max-width:100%;max-height:100%;" />' +
-      '</body></html>';
-    await hiddenWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-    await new Promise(r => setTimeout(r, 600));
-    const img = await hiddenWin.webContents.capturePage();
-    try { hiddenWin.close(); } catch (_) {}
-    return img.toPNG();
-  } catch (e) {
-    try { if (hiddenWin && !hiddenWin.isDestroyed()) hiddenWin.close(); } catch (_) {}
-    fnosLog('error', 'icon', 'SVG转PNG失败', { err: e.message });
-    return null;
-  }
-}
-ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
-  try {
-    const { svgDataUrl, appId, size } = payload || {};
-    if (!svgDataUrl || !appId) return { success: false, msg: '缺少参数' };
-    // 解码 SVG 内容
-    let svgText;
-    try {
-      svgText = decodeURIComponent(svgDataUrl.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
-    } catch (_) {
-      return { success: false, msg: 'SVG解码失败' };
-    }
-    // 转换为 PNG
-    const pngBuf = await __svgToPng(svgText, size || 128);
-    if (!pngBuf) return { success: false, msg: '转换失败' };
-    // 保存到 assets 目录
-    const iconPath = path.join(ASSETS_DIR, appId + '.png');
-    try {
-      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
-      fs.writeFileSync(iconPath, Buffer.from(pngBuf));
-      fnosLog('info', 'icon', 'SVG图标已转换并保存', { appId, iconPath });
-    } catch (e) {
-      fnosLog('error', 'icon', '保存转换后图标失败', { err: e.message });
-      return { success: false, msg: '保存失败: ' + e.message };
-    }
-    return { success: true, msg: '转换成功', data: { iconPath } };
-  } catch (e) {
-    fnosLog('error', 'icon', 'convert-svg-icon error', { err: e.message, stack: e.stack });
-    return { success: false, msg: e.message };
-  }
-});
-
-// ===================== v2.0.0 多账号管理 =====================
-// 账号数据结构：{ id, label, origin, href, partition, lastConnectedAt, isActive }
-// 存储在 settings.accounts 数组中
 
 function getAccounts() {
   const s = loadSettings();
@@ -6095,6 +5551,175 @@ ipcMain.handle('account:get-active', async () => {
   }
 });
 
+// v2.1.5: IPC handler for getting installed apps from manifest
+ipcMain.handle('get-installed-apps', async () => {
+  try {
+    const manifest = readManifest();
+    const apps = (manifest && Array.isArray(manifest.apps)) ? manifest.apps : [];
+    fnosLog('info', 'ipc', 'get-installed-apps', { count: apps.length });
+    return { success: true, msg: '', data: apps };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'get-installed-apps error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+// v2.1.5: IPC handler for creating desktop shortcuts with proper icon handling
+ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
+  try {
+    const { appId, appName, iconPath, nasAddress } = payload || {};
+    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+
+    const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    // Resolve the launch URL for this app
+    let launchUrl = appId;
+    try {
+      const manifest = readManifest();
+      const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
+      if (entry && entry.url) {
+        if (/^https?:\/\//i.test(entry.url)) {
+          launchUrl = entry.url;
+        } else if (entry.appId && entry.appId.startsWith('https://')) {
+          launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(entry.appId);
+        } else {
+          launchUrl = entry.url;
+        }
+      } else if (appId && appId.startsWith('https://')) {
+        launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(appId);
+      }
+    } catch (_) {}
+
+    // v2.1.5: Ensure icon is in ICO format for Windows shortcuts
+    let icoPath = '';
+    let resolvedIconPath = iconPath || '';
+
+    // If iconPath is empty, try to find it from manifest
+    if (!resolvedIconPath) {
+      try {
+        const manifest = readManifest();
+        const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
+        if (entry && entry.iconPath) resolvedIconPath = entry.iconPath;
+      } catch (_) {}
+    }
+
+    // Convert PNG/JPG to ICO if needed
+    if (resolvedIconPath && fs.existsSync(resolvedIconPath)) {
+      try {
+        const ext = path.extname(resolvedIconPath).toLowerCase();
+        if (ext === '.ico') {
+          icoPath = resolvedIconPath;
+        } else {
+          // Read the image file and convert to ICO
+          const imgBuf = fs.readFileSync(resolvedIconPath);
+          // Verify it's a valid PNG (starts with PNG signature)
+          if (imgBuf.length > 8 && imgBuf[0] === 0x89 && imgBuf[1] === 0x50) {
+            const icoBuf = pngToIco(imgBuf);
+            icoPath = resolvedIconPath.replace(/\.[^.]+$/, '.ico');
+            fs.writeFileSync(icoPath, icoBuf);
+            fnosLog('info', 'icon.convert', { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
+          } else {
+            // Not a PNG, use as-is (Windows might still display it)
+            icoPath = resolvedIconPath;
+          }
+        }
+      } catch (e) {
+        fnosLog('warn', 'icon.convert', { err: e.message, iconPath: resolvedIconPath });
+        icoPath = resolvedIconPath;
+      }
+    }
+
+    const args = `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
+    const desktop = path.join(os.homedir(), 'Desktop');
+    const lnkPath = path.join(desktop, `${appName}.lnk`);
+
+    // PowerShell script to create shortcut
+    const iconPs = icoPath ? `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'` : '';
+    const ps = `
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')
+$sc.TargetPath = '${exePath.replace(/'/g, "''")}'
+$sc.Arguments = '${args}'
+$sc.WorkingDirectory = '${path.dirname(exePath).replace(/'/g, "''")}'
+$sc.Description = 'FNOS 应用: ${appName}'
+${iconPs}
+$sc.Save()
+`;
+
+    const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+
+    if (result.status === 0) {
+      fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath, icoPath, launchUrl });
+      return { success: true, msg: '快捷方式已创建', data: { path: lnkPath } };
+    } else {
+      fnosLog('error', 'ipc', '快捷方式创建失败', { stderr: result.stderr });
+      return { success: false, msg: result.stderr || '创建失败', data: null };
+    }
+  } catch (e) {
+    fnosLog('error', 'ipc', 'create-desktop-shortcut error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+// v2.1.5: IPC handler for uninstalling a NAS app (remove from manifest + delete shortcut + delete icon)
+ipcMain.handle('uninstall-nas-app', async (_e, payload) => {
+  try {
+    const { appId } = payload || {};
+    if (!appId) return { success: false, msg: '缺少 appId' };
+
+    const manifest = readManifest();
+    const appIndex = manifest.apps.findIndex(a => a.appId === appId || a.url === appId);
+    if (appIndex === -1) {
+      return { success: false, msg: '未找到该应用' };
+    }
+
+    const appInfo = manifest.apps[appIndex];
+    const appName = appInfo.appName || appInfo.name || appId;
+
+    // Remove from manifest
+    manifest.apps.splice(appIndex, 1);
+    writeManifest(manifest);
+
+    // Also remove from settings.apps
+    try {
+      const s = loadSettings();
+      if (Array.isArray(s.apps)) {
+        s.apps = s.apps.filter(a => a.appId !== appId && a.url !== appId);
+        saveSettings(s);
+        try { cachedSettings.apps = s.apps; } catch (_) {}
+      }
+    } catch (_) {}
+
+    // Delete desktop shortcut
+    try {
+      const desktop = path.join(os.homedir(), 'Desktop');
+      const lnkPath = path.join(desktop, appName + '.lnk');
+      if (fs.existsSync(lnkPath)) {
+        fs.unlinkSync(lnkPath);
+        fnosLog('info', 'uninstall', '已删除桌面快捷方式', { lnkPath });
+      }
+    } catch (_) {}
+
+    // Delete icon file
+    try {
+      if (appInfo.iconPath && fs.existsSync(appInfo.iconPath)) {
+        fs.unlinkSync(appInfo.iconPath);
+        // Also try to delete .ico version
+        const icoPath = appInfo.iconPath.replace(/\.[^.]+$/, '.ico');
+        if (icoPath !== appInfo.iconPath && fs.existsSync(icoPath)) {
+          fs.unlinkSync(icoPath);
+        }
+      }
+    } catch (_) {}
+
+    fnosLog('info', 'uninstall', '应用已卸载', { appId, appName });
+    return { success: true, msg: '已卸载' };
+  } catch (e) {
+    fnosLog('error', 'uninstall', '卸载失败', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+
 // 2.2 命令行启动：携带 --app 参数时直接创建子应用窗口，跳过主界面
 // v2.0.6：修复 partition 使用共享分区（与主窗口一致），从 manifest 读取应用名和图标
 function launchSubAppFromArgs() {
@@ -6106,16 +5731,25 @@ function launchSubAppFromArgs() {
   let appUrl = '';
   try { appUrl = decodeURIComponent(launchArgs.appId); } catch (_) { appUrl = launchArgs.appId; }
   const url = nasAddr || '';
-  // v2.1.4: 从 manifest 解析正确的启动 URL
+  // v2.1.5: 从 manifest 解析正确的启动 URL（支持 appId、url、appName 多种匹配）
   try {
     const manifest = readManifest();
-    const entry = manifest.apps.find(a => a.appId === appUrl || a.url === appUrl || a.appId === launchArgs.appId);
+    const decodedAppId = launchArgs.appId ? decodeURIComponent(launchArgs.appId) : '';
+    const entry = manifest.apps.find(a => 
+      a.appId === appUrl || a.url === appUrl || a.appId === decodedAppId || 
+      a.appId === launchArgs.appId || a.name === appUrl || a.url === decodedAppId
+    );
     if (entry && entry.url && /^https?:/i.test(entry.url)) {
       appUrl = entry.url;
     } else if (appUrl && appUrl.startsWith('https://') && !appUrl.includes('/')) {
+      // System app without full URL - construct appview URL
       appUrl = url.replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(appUrl);
+    } else if (entry && entry.nasAddress) {
+      // App center app - use nasAddress + appName
+      appUrl = entry.nasAddress.replace(/\/$/, '') + '/' + (entry.appId || entry.appName || '');
     }
-  } catch (_) {}
+    fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl });
+  } catch (e) { fnosLog('warn', 'launch', 'manifest lookup failed', { err: e.message }); }
   if (!url) {
     fnosLog('warn', 'launch', '缺少 nas 地址参数');
     return false;
@@ -8281,14 +7915,26 @@ ipcMain.handle('iptv:clear-cache', async () => ({ ok: true, status: { listening:
 
 // ---------------------- 生命周期 ----------------------
 app.on('second-instance', (_e, commandLine) => {
-  // v1.76.0：第二次双击桌面快捷方式时，把 --open-app 应用转交给主实例打开
+  // v1.76.0：第二次双击桌面快捷方式时，把 --open-app / --app 应用转交给主实例打开
+  // v2.1.5：同时支持 --app= 和 --open-app= 参数，以及 --nas= 参数
   try {
     const argv = commandLine || [];
     let u = '';
+    let nasAddr = '';
     for (let i = 0; i < argv.length; i++) {
       const a = String(argv[i] || '');
+      // v2.1.5: Support --app= parameter (used by create-desktop-shortcut)
+      if (a === '--app' && argv[i + 1]) { u = decodeURIComponent(String(argv[i + 1])); break; }
+      if (a.startsWith('--app=')) { u = decodeURIComponent(a.slice('--app='.length)); break; }
+      // Legacy --open-app support
       if (a === '--open-app' && argv[i + 1]) { u = String(argv[i + 1]); break; }
       if (a.startsWith('--open-app=')) { u = a.slice('--open-app='.length); break; }
+    }
+    // Also extract --nas= parameter
+    for (let i = 0; i < argv.length; i++) {
+      const a = String(argv[i] || '');
+      if (a.startsWith('--nas=')) { nasAddr = decodeURIComponent(a.slice('--nas='.length)); break; }
+      if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
     }
     if (u && mainWindow && !mainWindow.isDestroyed()) {
       setTimeout(() => {
@@ -8299,7 +7945,7 @@ app.on('second-instance', (_e, commandLine) => {
           if (loggedIn) {
             createAppWindow(u, {});
           } else {
-            // v1.78.0：主程序已运行但未登录 → 等待登录后自动打开（不再直接开登录页）
+            // v1.78.0：主程序已运行但未登录 → 等待登录后自动打开
             queuePendingApp(u);
             tryOpenPendingApp();
             const pt = setInterval(() => {

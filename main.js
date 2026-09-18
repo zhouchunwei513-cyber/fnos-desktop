@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.7';
+const APP_VERSION = '2.1.8';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -591,8 +591,9 @@ let isLocked = false;
 let isCompletelyHidden = false; // 一键隐藏：连托盘也隐藏
 
 // ---------------------- 单实例锁 ----------------------
-// v2.0.0：支持多实例并行，不再限制单实例
-// if (!app.requestSingleInstanceLock()) app.quit();
+// v2.1.8：恢复单实例锁。双击桌面快捷方式（--app）时第二次启动会触发 second-instance，
+// 应用地址转交给已运行实例打开，避免每次点快捷方式都新起一个主程序（出现一大一小两个窗口）。
+if (!app.requestSingleInstanceLock()) app.quit();
 
 
 // ===================== v2.0.0 子应用系统 =====================
@@ -5006,6 +5007,71 @@ async function processScannedApps(apps) {
     // v1.78.0：不再自动创建桌面快捷方式（用户按需手动创建，避免桌面被自动铺满）
   } catch (_) {}
 }
+
+// v2.1.8：REST 拉取「应用中心已安装应用」完整列表（含第三方应用）。
+// 旧方案只扫主页 DOM（系统应用）+ WS appStoreList（商店列表，非已安装），
+// 拿不到用户在应用中心实际安装的第三方应用。这里直接请求飞牛 app-center 接口
+// GET /app-center/v1/app/installed，复用主窗口登录 cookie，拿到正确图标与启动地址。
+function buildAppCenterUrl(origin, svc) {
+  try {
+    if (!svc) return '';
+    // 后端返回的完整外部访问地址优先（如 http://公网IP:10303/，第三方应用反代端口）
+    if (svc.fullUrl && /^https?:/i.test(svc.fullUrl)) return svc.fullUrl;
+    const urls = svc.urls || {};
+    const o = new URL(origin);
+    const protocol = (urls.protocol || o.protocol).replace(/:+$/, '');
+    const host = urls.host || o.hostname;
+    const port = urls.port || o.port;
+    const path = urls.path || '/';
+    return protocol + '://' + host + ':' + port + path;
+  } catch (_) { return ''; }
+}
+
+async function scanAppCenterViaRest() {
+  try {
+    const s = loadSettings();
+    const origin = s.origin || '';
+    if (!origin || !/^https?:/i.test(origin)) return;
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isDestroyed()) return;
+    const ses = mainWindow.webContents.session;
+    const url = origin.replace(/\/+$/, '') + '/app-center/v1/app/installed?language=zh-CN';
+    const resp = await ses.fetch(url, { credentials: 'include' });
+    if (!resp.ok) {
+      fnosLog('warn', 'appcenter.rest', 'app-center fetch failed', { status: resp.status, url });
+      return;
+    }
+    const json = await resp.json().catch(() => ({}));
+    const list = (json && json.data && json.data.list) || [];
+    fnosLog('info', 'appcenter.rest', 'installed apps fetched', {
+      total: (json && json.data && json.data.total) || 0,
+      listLen: list.length,
+    });
+    const apps = [];
+    for (const a of list) {
+      const appName = a.appName || '';
+      const name = a.name || appName;
+      if (!appName || !name) continue;
+      const appUrl = buildAppCenterUrl(origin, a.appServiceInfo);
+      if (!appUrl) continue; // 无独立启动地址的应用（依赖/运行时如 python312、nodejs）跳过
+      const icon = a.icon
+        ? (/^https?:/i.test(a.icon) ? a.icon : origin.replace(/\/+$/, '') + (a.icon[0] === '/' ? '' : '/') + a.icon)
+        : '';
+      apps.push({
+        name: String(name).slice(0, 40),
+        appId: appName,
+        url: appUrl,
+        icon: icon,
+        appName: appName,
+        type: 'appCenter',
+      });
+    }
+    if (apps.length) processScannedApps(apps);
+    else fnosLog('warn', 'appcenter.rest', 'empty app list', {});
+  } catch (e) {
+    fnosLog('warn', 'appcenter.rest', 'scan failed', { err: e.message });
+  }
+}
+
 ipcMain.on('shell:report-apps', (_e, apps) => {
   try { processScannedApps(apps); } catch (_) {}
 });
@@ -5398,6 +5464,9 @@ function scanAppCenterApps() {
       fnosLog('error', 'appcenter.scan', { err: 'inject: ' + e.message });
       return;
     }
+
+    // v2.1.8：同时用 REST 拉取应用中心已安装应用（第三方应用，WS getEntryList 拿不到）
+    scanAppCenterViaRest();
 
     // Poll for scan results via executeJavaScript
     let pollCount = 0;
@@ -6265,8 +6334,9 @@ function launchSubAppFromArgs() {
   // 延迟到 app ready 后创建
   const doLaunch = () => {
     const appId = launchArgs.appId;
-    // v2.0.6：使用与主窗口相同的 partition，共享登录态
-    const partition = partitionForServer({ origin: url });
+    // v2.1.8：与主窗口强制使用同一共享 partition（SHARED_PARTITION），
+    // 避免快捷方式启动时走 persist:nas-* 独立分区导致登录态不共享、要求二次登录。
+    const partition = SHARED_PARTITION;
     currentPartition = partition;
     applyUA(partition);
 
@@ -8588,8 +8658,11 @@ app.whenReady().then(() => {
 
   startMenuAutoHide();
 
-  // 启动密码
-  if (hasAppPassword()) {
+  // v2.1.8：从桌面快捷方式（--app）启动时只开子应用窗口，不创建主窗口，
+  // 避免一大一小两个窗口、且都要登录。
+  if (subAppLaunched) {
+    ensureTray();
+  } else if (hasAppPassword()) {
     isLocked = true;
     // 后台预加载主窗口（不显示）
     createMainWindow(initialPartition, initialTarget);

@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.8';
+const APP_VERSION = '2.1.9';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4953,18 +4953,22 @@ async function processScannedApps(apps) {
       for (const a of merged) {
         let origin = '';
         try { origin = new URL(a.url).origin; } catch (_) {}
-        let iconPath = existingByUrl.get(a.url)?.iconPath || '';
+        const prev = existingByUrl.get(a.url) || {};
+        let iconPath = prev.iconPath || '';
         let iconData = a.icon || '';
-        // Check if icon needs downloading
-        if (iconData && /^https?:/i.test(iconData) && !iconPath) {
+        // v2.1.9：旧版用错误的 serviceicon 占位符路径（icon-{0}.png）作为图标 URL，
+        // 导致 manifest 里 iconPath/iconData 陈旧错误。这里在图标 URL 变化时强制重新下载，
+        // 修复「快捷方式图标不是对应应用图标」。
+        const iconChanged = !!(prev.iconData && iconData && String(prev.iconData) !== String(iconData));
+        if (iconData && /^https?:/i.test(iconData) && (!iconPath || iconChanged)) {
           const ext = iconData.split('?')[0].split('.').pop().toLowerCase();
           const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
           const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
           const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
-          if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) {
+          if (!iconChanged && fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) {
             iconPath = iconFile;
-          } else if (!fs.existsSync(iconFile)) {
-            // v2.1.4: await icon download before writing manifest
+          } else {
+            // v2.1.4: await icon download before writing manifest（iconChanged 时覆盖旧文件）
             const fetchUrl = /^https?:/i.test(iconData) ? iconData : origin + iconData;
             iconTasks.push({ iconFile, fetchUrl, appName: a.name, url: a.url, origin });
           }
@@ -6334,8 +6338,10 @@ function launchSubAppFromArgs() {
   // 延迟到 app ready 后创建
   const doLaunch = () => {
     const appId = launchArgs.appId;
-    // v2.1.8：与主窗口强制使用同一共享 partition（SHARED_PARTITION），
-    // 避免快捷方式启动时走 persist:nas-* 独立分区导致登录态不共享、要求二次登录。
+    // v2.1.8：与主窗口强制使用同一共享 partition（SHARED_PARTITION）。
+    // 启动自动重连走 createMainWindow(SHARED_PARTITION)，登录 cookie 持久化在
+    // persist:fnos-shared；快捷方式冷启动的子应用也必须用同一分区才能共享登录态、
+    // 免二次登录。partitionForServer 会得到 persist:nas-*（与主窗口不一致），勿改回。
     const partition = SHARED_PARTITION;
     currentPartition = partition;
     applyUA(partition);
@@ -6373,16 +6379,26 @@ function launchSubAppFromArgs() {
     const targetUrl = appUrl || url;
     fnosLog('info', 'launch', '子应用窗口已创建', { appId: appUrl, subAppId, url: targetUrl, partition });
 
-    // v2.0.6: sub-app window also enables favicon extraction (consistent with createAppWindow)
-    // Navigate to the specific app page after window is ready
-    subWin.once('ready-to-show', () => {
-      try {
-        subWin.show();
-        subWin.webContents.loadURL(targetUrl);
-      } catch (e) {
-        fnosLog('error', 'launch', 'loadURL failed', { err: e.message, url: targetUrl });
+    // v2.1.9：修复「点快捷方式没反应」——旧逻辑把 loadURL 放进 ready-to-show 回调，
+    // 但窗口 show:false 且从未 loadURL 时 ready-to-show 永不触发，形成死锁：窗口永不显示、
+    // loadURL 永不执行。这里改为：先立即加载目标页，再在 ready-to-show 后 show，并加 6s 兜底。
+    try {
+      if (/^https?:/i.test(targetUrl)) {
+        subWin.loadURL(targetUrl, { userAgent: getNasUA() }).catch(() => {});
+      } else if (targetUrl) {
+        subWin.loadURL(targetUrl).catch(() => {});
       }
+    } catch (e) {
+      fnosLog('error', 'launch', 'loadURL failed', { err: e.message, url: targetUrl });
+    }
+    // v2.0.6: sub-app window also enables favicon extraction (consistent with createAppWindow)
+    subWin.once('ready-to-show', () => {
+      try { subWin.show(); subWin.focus(); } catch (_) {}
     });
+    // 兜底：极端情况下 ready-to-show 未触发（隧道握手卡住等），6s 后也展示窗口
+    setTimeout(() => {
+      try { if (!subWin.isDestroyed() && !subWin.isVisible()) subWin.show(); } catch (_) {}
+    }, 6000);
 
     // v2.0.6：子应用窗口也启用 favicon 提取（与 createAppWindow 一致）
     subWin.webContents.on('did-finish-load', () => {

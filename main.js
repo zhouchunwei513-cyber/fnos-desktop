@@ -5085,52 +5085,7 @@ function scanAppCenterApps() {
       try {
         if (done) return;
         done = true;
-        // v2.0.9: use specialized app center scanner
-        const __APP_CENTER_SCAN_JS = String.raw`(function(){
-          try {
-            var origin = location.origin;
-            var res = [];
-            var seen = {};
-            var clean = function(s){ return String(s||'').replace(/\s+/g,' ').trim(); };
-            var toAbs = function(u){ if(!u)return''; try{return new URL(u,origin).href}catch(e){return''} };
-            var cards = document.querySelectorAll('[class*=app-card],[class*=AppCard],[class*=appItem],[class*=AppItem],[class*=installed] [class*=card],[class*=InstalledApp]');
-            if(!cards.length) cards = document.querySelectorAll('a[href*="appview"],a[href*="appstore"],a[href*="/app/"]');
-            for(var i=0;i<cards.length;i++){
-              var c=cards[i];
-              var img=c.querySelector('img');
-              var icon=img?(img.currentSrc||img.src||''):'';
-              var nm=clean(c.innerText||c.title||(img&&img.alt)||'');
-              var href=c.href||'';
-              if(!nm&&img) nm=clean(img.alt||'');
-              // Extract name from card text (first line or img alt)
-              var texts=c.querySelectorAll('[class*=name],[class*=title],span,p');
-              if(!nm&&texts.length) nm=clean(texts[0].innerText||'');
-              if(!nm||nm.length>50) continue;
-              var abs=toAbs(href);
-              if(!abs&&icon){
-                var m=/\/icons\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|\$)/i.exec(icon);
-                if(m){try{abs=origin+'/appview?anchor='+encodeURIComponent('https://'+decodeURIComponent(m[1]))}catch(e){}}
-              }
-              if(!abs) continue;
-              if(seen[abs]) continue;
-              seen[abs]=1;
-              res.push({name:nm.slice(0,40),url:abs,icon:icon||'',appName:''});
-            }
-            return res.length?res:null;
-          }catch(e){return null}
-        })()`;
-        win.webContents.executeJavaScript(__APP_CENTER_SCAN_JS, true).then((list) => {
-          if (Array.isArray(list) && list.length) {
-            try {
-              dlog && dlog('info', 'appcenter.scan.v2', { count: list.length });
-              processScannedApps(list);
-            } catch (_) {}
-            done = true;
-            finish();
-            return;
-          }
-          // Fallback to original scanner
-          win.webContents.executeJavaScript(__HOME_SCAN_JS, true).then((list) => {
+        win.webContents.executeJavaScript(__HOME_SCAN_JS, true).then((list) => {
           try {
             if (Array.isArray(list) && list.length) {
               dlog && dlog('info', 'appcenter.scan', { count: list.length, apps: list.map((a) => a.name + '|' + a.url).slice(0, 15) });

@@ -4900,15 +4900,19 @@ function processScannedApps(apps) {
           try {
             const ext = iconData.split('?')[0].split('.').pop().toLowerCase();
             const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
-            const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g,'').slice(0,32);
+            const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
             const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
             if (!fs.existsSync(iconFile)) {
-              const resp = require('electron').session.defaultSession.fetch(iconData);
-              // Use a simpler sync approach
-              const { execSync } = require('child_process');
-              execSync('curl -sL -o "' + iconFile.replace(/\/g,'\\') + '" "' + iconData + '"', { timeout: 10000 });
+              // Download icon synchronously using child_process (processScannedApps is sync)
+              try {
+                const cp = require('child_process');
+                // Sanitize paths for shell: remove single quotes
+                const safeIconFile = iconFile.replace(/'/g, "'\\''");
+                const safeIconUrl = iconData.replace(/'/g, "'\\''");
+                cp.execSync("curl -sL -o '" + safeIconFile + "' '" + safeIconUrl + "'", { timeout: 10000, stdio: 'pipe' });
+              } catch (_) {}
             }
-            if (fs.existsSync(iconFile)) iconPath = iconFile;
+            if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) iconPath = iconFile;
           } catch (_) {}
         }
         existingByUrl.set(a.url, {

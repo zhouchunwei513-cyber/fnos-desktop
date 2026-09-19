@@ -1,0 +1,76 @@
+// 设置页 preload — 通过 contextBridge 暴露 fnosSettings API
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('fnosSettings', {
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setPassword: (payload) =>
+    ipcRenderer.invoke('settings:set-password', {
+      oldPassword: String(payload?.oldPassword || ''),
+      newPassword: String(payload?.newPassword || ''),
+    }),
+  setShortcuts: (payload) =>
+    ipcRenderer.invoke('settings:set-shortcuts', {
+      lockApp: String(payload?.lockApp || ''),
+      hideAll: String(payload?.hideAll || ''),
+    }),
+  setAutoLock: (minutes) =>
+    ipcRenderer.invoke('settings:set-auto-lock', { minutes: Number(minutes) || 0 }),
+  setUrlRewrites: (list) =>
+    ipcRenderer.invoke(
+      'settings:set-url-rewrites',
+      Array.isArray(list)
+        ? list
+            .filter((r) => r && typeof r.match === 'string' && typeof r.replace === 'string')
+            .map((r) => ({ match: r.match.trim(), replace: r.replace.trim() }))
+            .filter((r) => r.match && r.replace)
+        : []
+    ),
+  setUIOptions: (opts) =>
+    ipcRenderer.invoke('settings:set-ui-options', {
+      autoHideMenuBar: !!opts?.autoHideMenuBar,
+      themeColor: opts?.themeColor ? String(opts.themeColor) : undefined,
+      // v1.58：标题栏自动隐藏 + 材质(透明/磨砂) + 不透明度 + 磨砂程度 + 标题栏颜色
+      titleBarAutoHide: typeof opts?.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : undefined,
+      titleBarMaterial: opts?.titleBarMaterial ? String(opts.titleBarMaterial) : undefined,
+      titleBarOpacity: opts?.titleBarOpacity != null ? Number(opts.titleBarOpacity) : undefined,
+      titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
+      titleBarColor: opts?.titleBarColor ? String(opts.titleBarColor) : undefined,
+    }),
+  setAccentColor: (color) =>
+    ipcRenderer.invoke('settings:set-accent-color', String(color || '#5865F2')),
+  // 直播源基地址/线路配置（非代理；仅保留源配置）
+  iptvSetConfig: (patch) => ipcRenderer.invoke('iptv:set-config', patch || {}),
+  // v1.25.0：兼容性播放器（MPV）设置（通道名沿用 set-vlc/vlc-runtime）
+  setVlc: (patch) => ipcRenderer.invoke('settings:set-vlc', patch || {}),
+  vlcRuntime: () => ipcRenderer.invoke('settings:vlc-runtime'),
+  // v2.0.0：开机自启动
+  getAutoStart: () => ipcRenderer.invoke('settings:get-autostart'),
+  setAutoStart: (enabled) => ipcRenderer.invoke('settings:set-autostart', { enabled: !!enabled }),
+  // v2.0.0：多账号管理
+  listAccounts: () => ipcRenderer.invoke('account:list'),
+  switchAccount: (origin) => ipcRenderer.invoke('account:switch', { origin }),
+  removeAccount: (accountId) => ipcRenderer.invoke('account:remove', { accountId }),
+  getActiveAccount: () => ipcRenderer.invoke('account:get-active'),
+  backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
+  // v2.0.0：日志系统
+  listLogFiles: () => ipcRenderer.invoke('log:list-files'),
+  readLogFile: (params) => ipcRenderer.invoke('log:read', params),
+  getLogStatus: () => ipcRenderer.invoke('log:get-status'),
+  // v1.47.0：ZDY 增强服务（在线弹幕/字幕/片头片尾）及设置模块已整体下线移除。
+  // v2.0.7：应用管理
+  getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
+  createDesktopShortcut: (payload) => ipcRenderer.invoke('create-desktop-shortcut', payload),
+  uninstallNasApp: (payload) => ipcRenderer.invoke('uninstall-nas-app', payload),
+  convertSvgIcon: (payload) => ipcRenderer.invoke('app:convert-svg-icon', payload),
+  // v2.1.11：快捷方式打开应用后主程序后台化方式（tray 隐藏到托盘 / minimize 最小化到任务栏）
+  setShortcutHideMode: (mode) =>
+    ipcRenderer.invoke('settings:set-shortcut-hide-mode', String(mode === 'minimize' ? 'minimize' : 'tray')),
+  // v2.1.17：FPK 图标管理器 API 配置
+  setFpkApi: (patch) => ipcRenderer.invoke('settings:set-fpk-api', patch || {}),
+  testFpkApi: () => ipcRenderer.invoke('settings:test-fpk-api'),
+  restartApp: () => ipcRenderer.invoke('app:restart'),
+  close: () => ipcRenderer.send('settings:close'),
+});
+
+// v1.54：设置窗注入与主窗口同款无边框标题栏
+try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }

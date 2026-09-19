@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FNOS 子应用管理 - Vue3 示例</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+      color: #fff;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    h1 { text-align: center; margin-bottom: 24px; font-size: 28px; }
+    h2 { font-size: 18px; margin-bottom: 12px; color: #a5b4fc; }
+
+    .panel {
+      background: rgba(255,255,255,0.06);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .app-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 16px;
+    }
+    .app-card {
+      background: rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+      border: 1px solid rgba(255,255,255,0.1);
+      transition: transform 0.2s;
+    }
+    .app-card:hover { transform: translateY(-2px); }
+    .app-card img { width: 64px; height: 64px; border-radius: 12px; margin-bottom: 8px; }
+    .app-card .name { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .app-card .nas { font-size: 12px; color: #94a3b8; margin-bottom: 10px; }
+
+    .form-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
+    .form-row label { min-width: 80px; font-size: 13px; color: #cbd5e1; }
+    input[type="text"], input[type="file"] {
+      flex: 1; padding: 8px 12px; border-radius: 8px;
+      background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+      color: #fff; font-size: 13px; min-width: 200px;
+    }
+    button {
+      padding: 8px 20px; border: none; border-radius: 8px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff; font-size: 13px; cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
+    button.success { background: linear-gradient(135deg, #22c55e, #16a34a); }
+
+    .toast {
+      position: fixed; top: 20px; right: 20px; padding: 12px 20px;
+      border-radius: 10px; font-size: 13px; z-index: 9999;
+      animation: fadeIn 0.3s;
+    }
+    .toast.ok { background: rgba(34,197,94,0.9); }
+    .toast.err { background: rgba(239,68,68,0.9); }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; } }
+
+    .empty { text-align: center; color: #64748b; padding: 32px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>🐄 FNOS 子应用管理系统</h1>
+
+    <!-- 已安装应用列表 -->
+    <div class="panel">
+      <h2>📦 已安装子应用 ({{ apps.length }})</h2>
+      <div v-if="apps.length === 0" class="empty">暂无已安装子应用</div>
+      <div class="app-grid" v-else>
+        <div class="app-card" v-for="app in apps" :key="app.appId">
+          <img :src="'file://' + app.iconPath" v-if="app.iconPath" @error="$event.target.style.display='none'" />
+          <div class="name">{{ app.appName }}</div>
+          <div class="nas">{{ app.nasAddress || '未关联NAS' }}</div>
+          <div style="display:flex;gap:6px;justify-content:center">
+            <button class="success" @click="createShortcut(app)" :disabled="loading">创建快捷方式</button>
+            <button class="danger" @click="uninstall(app)" :disabled="loading">卸载</button>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:12px;text-align:right">
+        <button @click="loadApps" :disabled="loading">{{ loading ? '加载中...' : '刷新列表' }}</button>
+      </div>
+    </div>
+
+    <!-- 安装新应用 -->
+    <div class="panel">
+      <h2>➕ 安装新子应用</h2>
+      <div class="form-row">
+        <label>应用ID：</label>
+        <input type="text" v-model="newApp.appId" placeholder="如：jellyfin" />
+      </div>
+      <div class="form-row">
+        <label>应用名称：</label>
+        <input type="text" v-model="newApp.appName" placeholder="如：Jellyfin 影视" />
+      </div>
+      <div class="form-row">
+        <label>NAS地址：</label>
+        <input type="text" v-model="newApp.nasAddress" placeholder="如：http://192.168.1.100:5000" />
+      </div>
+      <div class="form-row">
+        <label>图标文件：</label>
+        <input type="file" accept="image/*" @change="onIconSelect" />
+      </div>
+      <div style="text-align:right;margin-top:8px">
+        <button @click="installApp" :disabled="loading || !newApp.appId || !newApp.appName">
+          {{ loading ? '安装中...' : '安装应用' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div v-if="toast.show" :class="['toast', toast.ok ? 'ok' : 'err']">{{ toast.msg }}</div>
+  </div>
+
+  <script>
+    const { createApp, ref, onMounted, reactive } = Vue;
+
+    createApp({
+      setup() {
+        const apps = ref([]);
+        const loading = ref(false);
+        const iconData = ref(null);
+        const iconExt = ref('png');
+        const toast = reactive({ show: false, msg: '', ok: true });
+        const newApp = reactive({ appId: '', appName: '', nasAddress: '', iconFile: null });
+
+        function showToast(msg, ok) {
+          toast.show = true; toast.msg = msg; toast.ok = ok;
+          setTimeout(() => { toast.show = false; }, 3000);
+        }
+
+        async function loadApps() {
+          loading.value = true;
+          try {
+            if (!window.fnApi) { showToast('fnApi 不可用，请在 FNOS 客户端中打开', false); return; }
+            const res = await window.fnApi.getInstalledApps();
+            if (res.success) { apps.value = res.data || []; }
+            else { showToast('加载失败: ' + res.msg, false); }
+          } catch (e) { showToast('加载异常: ' + e.message, false); }
+          loading.value = false;
+        }
+
+        function onIconSelect(e) {
+          const file = e.target.files[0];
+          if (!file) return;
+          iconExt.value = file.name.split('.').pop() || 'png';
+          const reader = new FileReader();
+          reader.onload = () => { iconData.value = reader.result.split(',')[1]; };
+          reader.readAsDataURL(file);
+        }
+
+        async function installApp() {
+          if (!newApp.appId || !newApp.appName) { showToast('请填写应用ID和名称', false); return; }
+          loading.value = true;
+          try {
+            const res = await window.fnApi.installNasApp({
+              appId: newApp.appId,
+              appName: newApp.appName,
+              nasAddress: newApp.nasAddress,
+              iconData: iconData.value,
+              iconExt: iconExt.value,
+            });
+            if (res.success) {
+              showToast('安装成功: ' + newApp.appName, true);
+              newApp.appId = ''; newApp.appName = ''; newApp.nasAddress = ''; iconData.value = null;
+              await loadApps();
+            } else { showToast('安装失败: ' + res.msg, false); }
+          } catch (e) { showToast('安装异常: ' + e.message, false); }
+          loading.value = false;
+        }
+
+        async function uninstall(app) {
+          if (!confirm('确定卸载 ' + app.appName + '？')) return;
+          loading.value = true;
+          try {
+            const res = await window.fnApi.uninstallNasApp({ appId: app.appId });
+            if (res.success) { showToast('已卸载: ' + app.appName, true); await loadApps(); }
+            else { showToast('卸载失败: ' + res.msg, false); }
+          } catch (e) { showToast('卸载异常: ' + e.message, false); }
+          loading.value = false;
+        }
+
+        async function createShortcut(app) {
+          loading.value = true;
+          try {
+            const res = await window.fnApi.createDesktopShortcut({
+              appId: app.appId,
+              appName: app.appName,
+              iconPath: app.iconPath,
+              nasAddress: app.nasAddress,
+            });
+            if (res.success) { showToast('快捷方式已创建', true); }
+            else { showToast('创建失败: ' + res.msg, false); }
+          } catch (e) { showToast('创建异常: ' + e.message, false); }
+          loading.value = false;
+        }
+
+        onMounted(() => { loadApps(); });
+
+        return { apps, loading, newApp, toast, loadApps, onIconSelect, installApp, uninstall, createShortcut };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

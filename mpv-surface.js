@@ -1,0 +1,404 @@
+'use strict';
+
+// mpv-surface.js —— 应用内"视觉嵌入"播放层
+// 采用 fntv 同款：mpv 自己的原生窗口（无边框、置顶、自带 OSC、可拖动），
+// 但用屏幕坐标几何定位覆盖到宿主窗口的视频区域，随父窗移动/缩放跟随。
+// 相比 Electron 透明覆盖窗 + --wid 的方案，原生窗口没有渲染层级/输入冲突，OSC、键盘、拖动全部可用。
+//
+// dipRect: 视频区相对【宿主内容区】的 DIP 坐标 {x,y,width,height}
+// viewOffset: <webview> 在宿主页面内的偏移（标题栏等），DIP，{x,y}
+
+const mpvMod = require('./mpv-player');
+
+class MpvSurface {
+  // parentWin: 宿主 BrowserWindow；dipRect: 视频区（相对内容区 DIP）
+  // opts.standalone: true 表示【独立播放器窗口】（菜单"用 mpv 打开"）。与嵌入覆盖窗不同：
+  //   - 窗口无边框但【不置顶、不绑定父窗几何、可自由移动/缩放/双击全屏】，任务栏可见；
+  //   - 仍走 IPC，故画中画/字幕/弹幕/倍速等中文菜单功能全部可用；
+  //   - 画中画时缩到屏幕右下角并置顶，退出时还原到画中画前的窗口几何（而不是贴合视频区）。
+  constructor(parentWin, dipRect, opts = {}) {
+    this.parent = parentWin;
+    this.parentId = (parentWin && parentWin.id) || 0;
+    this._dead = false;
+    this._standalone = !!opts.standalone;
+    this.viewOffset = { x: opts.viewOffsetX || 0, y: opts.viewOffsetY || 0 };
+    this.dipRect = dipRect || { x: 0, y: 0, width: 800, height: 450 };
+    this.player = new mpvMod.MpvPlayer({ standalone: this._standalone });
+    this._started = false;
+    this._startSettings = opts.settings || {};
+    this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
+    this._pollTimer = null;
+    this._lastBoundsKey = '';
+    // 画中画状态：小窗时脱离视频区几何跟随，固定右下角小尺寸、保持置顶、可自由拖动。
+    this._pip = false;
+    this._pipSavedGeo = null;
+    // 独立窗口画中画：保存进入小窗前 mpv 自身的窗口几何（屏幕 DIP），退出时精确还原
+    this._pipSavedWin = null;
+    // 注：log/end-file/exit 监听由 main.js（embedMpvPlay）统一绑定，这里不重复绑定。
+
+    // 独立窗口：不跟随父窗、不绑定父窗生命周期（由 main.js 在 mpv 退出时回收）。
+    // v1.49.0：移除 v1.48 的"拖回自动吸附"——它会把独立 mpv 窗口强制 resize 成整个主窗口
+    // 尺寸覆盖上去，挡住飞牛界面操作。独立窗口应始终保持独立、可自由拖动/缩放。
+    if (this._standalone) {
+      this._start();
+      return;
+    }
+
+    // 父窗移动/缩放/最小化时跟随
+    if (parentWin && !parentWin.isDestroyed()) {
+      // v1.63：嵌入 mpv 虽常驻 ontop，但宿主窗口拖动/激活时偶尔会被系统提到 mpv 之上
+      // （mpv 跑到飞牛窗口后面被盖住）。移动结束/恢复/首帧后强制重新置顶 mpv 一次。
+      this._raiseMpv = () => { try { if (this.player && this.player.isRunning() && !this._pip && !this._docked) this.player.setOntop(true); } catch (_) {} };
+      this._moveHandler = () => { this._applyGeometry(); this._raiseMpv(); };
+      this._resizeHandler = () => { this._applyGeometry(); this._raiseMpv(); };
+      this._minHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
+      this._restoreHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} this._raiseMpv(); };
+      // v1.48.0：父窗被一键隐藏/锁定（hide）/重新呼出（show）时，嵌入 mpv 原生窗口也要跟随，
+      // 否则主窗隐藏后播放器仍停留在屏幕上。
+      this._hideHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
+      this._showHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} this._raiseMpv(); };
+      this._closedHandler = () => this.destroy();
+      parentWin.on('move', this._moveHandler);
+      parentWin.on('resize', this._resizeHandler);
+      parentWin.on('minimize', this._minHandler);
+      parentWin.on('restore', this._restoreHandler);
+      parentWin.on('hide', this._hideHandler);
+      parentWin.on('show', this._showHandler);
+      parentWin.on('focus', this._raiseMpv);
+      parentWin.on('closed', this._closedHandler);
+
+      // 轮询兜底：拖动/缩放窗口时 'move'/'resize' 事件在部分平台不连续触发，
+      // 定时比对内容区位置，变化即重新定位，保证 mpv 窗口始终贴合视频区。
+      this._lastBoundsKey = '';
+      this._pollTick = 0;
+      this._pollTimer = setInterval(() => {
+        try {
+          const w = this.parent;
+          if (!w || w.isDestroyed()) { this.destroy(); return; }
+          if (w.isMinimized() || !w.isVisible()) return;
+          const cb = w.getContentBounds();
+          const key = `${cb.x},${cb.y},${cb.width},${cb.height}`;
+          this._lastBoundsKey = key;
+          // v1.61：嵌入窗【每 500ms 强制对齐】纠偏。mpv 在首帧离屏隐藏→恢复、IPC geometry
+          // 时序等情况下自身位置会漂移（恢复时可能套用离屏 -32000 旧几何），宿主不动时旧逻辑
+          // 不会重定位，导致 mpv 上沿盖住悬浮标题栏（无法拖动/改样式）。这里无条件 _applyGeometry，
+          // player.setGeometry 内部按几何串去抖，位置正确时不产生额外 IPC。
+          this._applyGeometry();
+        } catch (_) {}
+      }, 200);
+      if (this._pollTimer.unref) this._pollTimer.unref();
+    }
+
+    this._start();
+  }
+
+  _emit(ev, ...a) { try { this.player.emit(ev, ...a); } catch (_) {} }
+  // 视频区屏幕几何（DIP）。
+  // 坐标链路：内容区屏幕坐标(getContentBounds) + webview 在内容区内偏移(viewOffset)
+  //           + 视频 <video> 在 webview 视口内坐标(dipRect)。
+  // 注意：mpv 是 DPI-aware 的独立窗口，--geometry/window-move/resize 都按【屏幕 DIP 逻辑坐标】
+  //       解释（与 Electron getContentBounds 一致）。不要再乘 scaleFactor，否则在 125%/150%
+  //       缩放的显示器上会出现放大错位（顶部黑条/越界）。
+  _computeScreenGeometry() {
+    const r = this.dipRect;
+    const off = this.viewOffset;
+    const win = this.parent;
+    if (!win || win.isDestroyed()) return null;
+    const cb = win.getContentBounds();      // 内容区屏幕 DIP 坐标
+    let x = cb.x + (off.x || 0) + (r.x || 0);
+    let y = cb.y + (off.y || 0) + (r.y || 0);
+    let width = Math.max(160, r.width);
+    let height = Math.max(90, r.height);
+    // v1.60：内嵌 mpv 是无边框置顶窗，会盖住宿主悬浮标题栏区域。强制把 mpv 顶边压到
+    // 标题栏(34px)下方，标题栏永远在 mpv 之上（可拖动/点按钮），标题栏下方即为 mpv 黑底，
+    // 自动隐藏标题栏后顶部纯黑与 mpv 黑边一致。standalone（菜单"用mpv打开"）不绑定父窗，不约束。
+    if (!this._standalone && !this._pip) {
+      const minY = cb.y + (off.y || 0) + 34;
+      if (y < minY) {
+        const dy = minY - y;
+        y = minY;
+        height = Math.max(90, height - dy);
+      }
+    }
+    return {
+      x: Math.round(x),
+      y: Math.round(y),
+      width: Math.round(width),
+      height: Math.round(height)
+    };
+  }
+
+  _start() {
+    const geo = this._computeScreenGeometry();
+    try {
+      this.player.start({
+        // 关键：必须把 standalone 透传给 MpvPlayer.start()，否则 spawn 会误走嵌入覆盖窗分支
+        //（--ontop=yes/--title=FNOS-MPV/--geometry），导致"用 mpv 打开"的独立窗变成带标题栏的置顶窗、
+        // 画中画/自由移动等独立窗逻辑全部失效。
+        standalone: this._standalone,
+        geometry: geo || undefined,
+        isLive: !!this._startSettings.isLive,
+        title: this._startSettings.title || '',
+        hwDecode: this._startSettings.hwDecode || 'auto',
+        cacheLevel: this._startSettings.cacheLevel || 'smooth',
+        headers: this._startSettings.headers || null,
+        // 点播断流（签名链接时效失效）时，由主进程注入回调重新签名取新鲜地址
+        onNeedFreshUrl: this._onNeedFreshUrl || null
+      });
+      // 用户点 mpv 窗口自带关闭按钮：仅标记本嵌入层死亡。
+      // 注意：绝不能再把 'user-closed' 通过 this.player.emit 回抛出去——该事件的监听者
+      // 正是 player 自身，回抛会再次触发本处理器形成无限递归（事件风暴，主线程卡死/日志刷爆）。
+      // main.js 直接在 player 上监听 'user-closed'/'exit' 做回收与通知网页，这里不中转。
+      this.player.on('user-closed', () => { this._dead = true; });
+      // 首帧就绪、mpv 窗口从离屏隐藏移回时，立即按当前视频区几何对齐（含 34px 标题栏下压），
+      // 不必等 500ms 轮询，避免首帧短暂盖住悬浮标题栏。
+      this.player.on('first-frame', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); } catch (_) {} });
+      this._started = true;
+    } catch (e) {
+      this._emit('log', 'surface start failed: ' + (e && e.message));
+    }
+  }
+
+  _applyGeometry() {
+    if (this._dead) return;
+    // 画中画小窗期间脱离视频区跟随（窗口已固定为右下角小尺寸并可被用户自由拖动），
+    // 不再随宿主窗移动/滚动重定位。
+    if (this._pip) return;
+    const geo = this._computeScreenGeometry();
+    if (geo && this._started) {
+      try {
+        const before = this.player._lastGeoStr;
+        this.player.setGeometry(geo);
+        const after = `${Math.max(160, geo.width)}x${Math.max(90, geo.height)}+${geo.x}+${geo.y}`;
+        if (before !== after) {
+          // v1.68.0：宿主拖动/网页滚动时 setRect 上报极频繁（几百 ms 内几十次），
+          // 逐条打 embed.align 会把 fnos-diag.log 刷爆。做日志节流：几何有实质变化时
+          // 每 400ms 最多记一条，定位仍走 setGeometry 去抖后的真实 IPC。
+          const now = Date.now();
+          if (!this._lastAlignLogTs || now - this._lastAlignLogTs >= 400) {
+            this._lastAlignLogTs = now;
+            const cb = this.parent && !this.parent.isDestroyed() ? this.parent.getContentBounds() : null;
+            this._emit('log', 'embed.align ' + JSON.stringify(geo) + (cb ? ' contentTop=' + cb.y : ''));
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  // v1.48.0：宿主窗口重新显示（一键呼出/解锁）后调用：恢复可见并重新贴合视频区。
+  onHostShown() {
+    try {
+      if (this._dead || this._standalone) return;
+      try { this.player.showWindow(); } catch (_) {}
+      this._applyGeometry();
+    } catch (_) {}
+  }
+
+  // ---------------- 独立窗口拖回吸附（v1.48.0） ----------------
+  _startDockPolling() {
+    if (this._dockTimer || this._dead) return;
+    let lastMpvKey = '';
+    this._dockTimer = setInterval(async () => {
+      try {
+        if (this._dead || this._pip) return;
+        const p = this.player;
+        if (!p.connected) return;
+        // 读 mpv 原生窗口当前几何（屏幕 DIP）
+        let gx, gy, gw, gh;
+        try {
+          const [x, y, w, h] = await Promise.all([
+            p.getProperty('x'), p.getProperty('y'), p.getProperty('width'), p.getProperty('height')
+          ]);
+          gx = parseInt(x, 10); gy = parseInt(y, 10); gw = parseInt(w, 10); gh = parseInt(h, 10);
+        } catch (_) { return; }
+        if (!isFinite(gx) || !isFinite(gw) || gw <= 0) return;
+        const mpvKey = `${gx},${gy},${gw},${gh}`;
+        const target = this._resolveDockTarget ? this._resolveDockTarget() : null;
+        if (!target) { // 无可吸附宿主：若已吸附则脱离
+          if (this._docked) { this._docked = false; try { p.command(['set_property', 'ontop', 'no']); } catch (_) {} }
+          lastMpvKey = mpvKey; return;
+        }
+        // mpv 窗口与宿主内容区的重叠面积占比
+        const ox = Math.max(0, Math.min(gx + gw, target.x + target.width) - Math.max(gx, target.x));
+        const oy = Math.max(0, Math.min(gy + gh, target.y + target.height) - Math.max(gy, target.y));
+        const overlap = ox * oy;
+        const mpvArea = gw * gh;
+        const ratio = mpvArea > 0 ? overlap / mpvArea : 0;
+        // 吸附阈值：窗口超过 55% 面积进入宿主区域 → 吸附贴合
+        const shouldDock = ratio >= 0.55;
+        if (shouldDock && !this._docked) {
+          this._docked = true;
+          try {
+            // 贴合到宿主内容区（留边），置顶并跟随
+            this._dockTarget = target;
+            await p.command(['set_property', 'ontop', 'yes']);
+            p.setGeometry({ x: target.x, y: target.y, width: target.width, height: target.height });
+            this._emit('log', 'dock.attach ' + JSON.stringify(target));
+          } catch (_) {}
+        } else if (!shouldDock && this._docked) {
+          // 拖出宿主区域 → 脱离，恢复自由窗口
+          this._docked = false;
+          try { p.command(['set_property', 'ontop', 'no']); } catch (_) {}
+          this._dockTarget = null;
+          this._emit('log', 'dock.detach');
+        } else if (this._docked) {
+          // 已吸附：宿主移动/缩放时持续贴合（独立窗口没有父窗 move 事件，靠轮询对齐）
+          const tk = `${target.x},${target.y},${target.width},${target.height}`;
+          if (tk !== this._lastDockTargetKey) {
+            this._lastDockTargetKey = tk;
+            this._dockTarget = target;
+            try { p.setGeometry({ x: target.x, y: target.y, width: target.width, height: target.height }); } catch (_) {}
+          }
+        }
+        lastMpvKey = mpvKey;
+      } catch (_) {}
+    }, 600);
+    if (this._dockTimer.unref) this._dockTimer.unref();
+  }
+
+  // 画中画：true=进入小窗（记录当前几何，缩到宿主内容区右下角 420px 宽、保持置顶、可拖动）；
+  //        false=还原（重新贴合视频区并跟随）。返回进入后的 PiP 状态。
+  // 画中画：进入小窗（记录全屏几何，缩到右下角小窗，置顶可拖动）；退出即还原全屏贴合。
+  // mode: 'enter' | 'exit' | 'toggle'；sizePx 为小窗宽度（可调节大小）。
+  // 计算画中画小窗几何（屏幕 DIP）。独立窗口用屏幕工作区，嵌入覆盖窗用宿主内容区。
+  _computePiPBase() {
+    if (this._standalone) {
+      try {
+        const { screen } = require('electron');
+        const wa = screen.getPrimaryDisplay().workArea; // {x,y,width,height}
+        return { x: wa.x, y: wa.y, width: wa.width, height: wa.height };
+      } catch (_) { return { x: 0, y: 0, width: 1920, height: 1080 }; }
+    }
+    return this._computeScreenGeometry();
+  }
+
+  async setPiP(mode, sizePx) {
+    if (this._dead) return { ok: false, error: '播放器已关闭', pip: false };
+    try {
+      const want = mode === 'enter' ? true : mode === 'exit' ? false : !this._pip;
+      const p = this.player;
+      try { this._emit("log", "pip request mode=" + mode + " want=" + (want ? "enter" : "exit") + " standalone=" + (this._standalone ? 1 : 0) + " pip=" + (this._pip ? 1 : 0)); } catch (_) {}
+      if (want) {
+        if (!this._pip) {
+          this._pipSize = sizePx || this._pipSize || 420;
+          if (this._standalone) {
+            // 独立窗口：先退出全屏，再保存 mpv 自身窗口几何（x/y/width/height）
+            try { await p.command(['set_property', 'fullscreen', 'no']); } catch (_) {}
+            try {
+              const [x, y, w, h] = await Promise.all([
+                p.getProperty('x'), p.getProperty('y'), p.getProperty('width'), p.getProperty('height')
+              ]);
+              if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h) && w > 0) {
+                this._pipSavedWin = { x, y, width: w, height: h };
+              }
+            } catch (_) {}
+          } else {
+            this._pipSavedGeo = this._computeScreenGeometry();
+          }
+        } else if (sizePx) {
+          this._pipSize = sizePx; // 已在画中画时调节大小
+        }
+        this._pip = true;
+        // 进入小窗前必须退出全屏，否则全屏会覆盖几何导致"仍是全画面"
+        try { await p.command(['set_property', 'fullscreen', 'no']); } catch (_) {}
+        try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
+        // 两种形态都保持无边框（运行时切 border 会让 Windows/d3d11 重建窗口、重置几何）
+        try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
+        // 暂停宿主几何跟随，避免小窗被周期 setRect 拉回视频区
+        this._lastBoundsKey = '__pip__';
+        const full = this._standalone ? this._computePiPBase() : (this._pipSavedGeo || this._computeScreenGeometry());
+        if (full && full.width > 0) {
+          const w = Math.min(this._pipSize, Math.round(full.width * 0.9));
+          const h = Math.round(w * 9 / 16);
+          const x = Math.round(full.x + full.width - w - 24);
+          const y = Math.round(full.y + full.height - h - 24);
+          p._lastGeoStr = ''; // 清掉去抖缓存，强制下发小窗几何
+          try { await p.setGeometry({ x, y, width: w, height: h }); } catch (_) {}
+        }
+        try { this._emit("log", "pip enter size=" + this._pipSize); } catch (_) {}
+      } else {
+        // 退出画中画
+        this._pip = false;
+        try { await p.command(['set_property', 'fullscreen', 'no']); } catch (_) {}
+        try { await p.command(['set_property', 'border', 'no']); } catch (_) {}
+        if (this._standalone) {
+          // 独立窗口：恢复置顶策略（不常驻置顶），并还原到进入画中画前的窗口几何
+          try { await p.command(['set_property', 'ontop', 'no']); } catch (_) {}
+          p._lastGeoStr = '';
+          if (this._pipSavedWin) { try { await p.setGeometry(this._pipSavedWin); } catch (_) {} }
+          this._pipSavedWin = null;
+        } else {
+          // 嵌入覆盖窗：保持置顶，重新贴合视频区并恢复跟随
+          try { await p.command(['set_property', 'ontop', 'yes']); } catch (_) {}
+          this._lastBoundsKey = '';
+          p._lastGeoStr = '';
+          this._applyGeometry();
+        }
+        try { this._emit("log", "pip exit"); } catch (_) {}
+      }
+      return { ok: true, pip: this._pip };
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e), pip: !!this._pip };
+    }
+  }
+
+  // 兼容旧入口
+  async togglePiP() { return this.setPiP('toggle'); }
+
+  isPip() { return !!this._pip; }
+
+  // 更新视频区 DIP 坐标（guest 持续上报 / 网页滚动 / 缩放）
+  setRect(dipRect, viewOffset) {
+    if (dipRect) this.dipRect = dipRect;
+    if (viewOffset) this.viewOffset = { x: viewOffset.x || 0, y: viewOffset.y || 0 };
+    this._applyGeometry();
+  }
+
+  setVisible(v) {
+    if (this._dead) return;
+    try { v ? this.player.showWindow() : this.player.hideWindow(); } catch (_) {}
+  }
+
+  // 置顶开关（设置页/对话框打开时降层，关闭后恢复）
+  setOntop(on) {
+    if (this._dead) return;
+    try { this.player.setOntop(on); } catch (_) {}
+  }
+
+  isAlive() { return !this._dead && this.player && this.player.isRunning(); }
+
+  play(url, headers, opts) { return this.player.loadfile(url, headers, opts); }
+
+  control(action, value) {
+    const p = this.player;
+    if (!p.isRunning()) return;
+    switch (action) {
+      case 'pauseToggle': return p.command(['cycle', 'pause']).catch(() => {});
+      case 'seek': return p.seek(value);
+      case 'volume': return p.setVolume(value);
+      case 'stop': return p.command(['stop']).catch(() => {});
+    }
+  }
+
+  destroy() {
+    if (this._dead) return;
+    this._dead = true;
+    try { if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; } } catch (_) {}
+    try { if (this._dockTimer) { clearInterval(this._dockTimer); this._dockTimer = null; } } catch (_) {}
+    try {
+      if (this.parent && !this.parent.isDestroyed()) {
+        this.parent.removeListener('move', this._moveHandler);
+        this.parent.removeListener('resize', this._resizeHandler);
+        this.parent.removeListener('minimize', this._minHandler);
+        this.parent.removeListener('restore', this._restoreHandler);
+        this.parent.removeListener('hide', this._hideHandler);
+        this.parent.removeListener('show', this._showHandler);
+        try { this.parent.removeListener('focus', this._raiseMpv); } catch (_) {}
+        this.parent.removeListener('closed', this._closedHandler);
+      }
+    } catch (_) {}
+    try { this.player.stop(); } catch (_) {}
+  }
+}
+
+module.exports = { MpvSurface };

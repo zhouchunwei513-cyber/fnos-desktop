@@ -4156,7 +4156,19 @@ function createAppWindow(url, opts = {}) {
       // 整个过程约 15 秒。如果在可见窗口中执行，用户会看到多次重定向页面，体验很差。
       // 优化方案：在隐藏窗口中先完成 OAuth（cookies 存入共享 partition），
       // 然后在可见窗口中加载 URL（此时已有认证 cookies，直接显示最终页面，约 1-2 秒）。
-      const __shouldPreAuth = !__isAppview && typeof url === 'string';
+      // v2.1.17：外部应用（非 fnOS 主站 URL）跳过 PreAuth——
+      // 外部应用不走 fnOS OAuth 流程，PreAuth 必然超时浪费 8 秒。
+      // 判断方式：URL origin 与 NAS 主站 origin 不同即为外部应用。
+      let __isExternalApp = false;
+      try {
+        const __urlOrigin = new URL(url).origin;
+        const __nasOrigin = currentOrigin || (function() { try { return loadSettings().origin || ''; } catch(_) { return ''; } })();
+        if (__nasOrigin && __urlOrigin !== __nasOrigin) {
+          __isExternalApp = true;
+          try { dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'external-app', urlOrigin: __urlOrigin, nasOrigin: __nasOrigin }); } catch (_) {}
+        }
+      } catch (_) {}
+      const __shouldPreAuth = !__isAppview && !__isExternalApp && typeof url === 'string';
       if (__shouldPreAuth) {
         try {
           const __preAuthT0 = Date.now();
@@ -5745,28 +5757,54 @@ function pngToIco(pngBuffer) {
 // ---- v2.1.17: FPK 图标管理器 API ----
 function getFpkBaseUrl() {
   const s = loadSettings();
-  if (!s.fpkApi?.enabled || !s.fpkApi?.host) return null;
-  return `http://${s.fpkApi.host}:${s.fpkApi.port || 18080}`;
+  if (!s.fpkApi?.enabled || !s.fpkApi?.host) {
+    console.log('[FPK] config check: not enabled or no host', JSON.stringify({ enabled: s.fpkApi?.enabled, host: s.fpkApi?.host }));
+    return null;
+  }
+  const base = `http://${s.fpkApi.host}:${s.fpkApi.port || 18080}`;
+  console.log('[FPK] config check: OK', JSON.stringify({ baseUrl: base }));
+  return base;
 }
 async function fetchFpkIcon(appname, size = 256) {
   const base = getFpkBaseUrl();
-  if (!base) return null;
+  if (!base) {
+    console.log('[FPK] icon fetch skipped: FPK API not enabled');
+    return null;
+  }
+  const url = `${base}/api/icons/${encodeURIComponent(appname)}/${size}`;
+  console.log('[FPK] icon fetch start', JSON.stringify({ appname, size, url }));
   try {
-    const res = await fetch(`${base}/api/icons/${encodeURIComponent(appname)}/${size}`);
+    const res = await fetch(url);
+    console.log('[FPK] icon fetch response', JSON.stringify({ appname, status: res.status, ok: res.ok }));
     if (!res.ok) return null;
-    return Buffer.from(await res.arrayBuffer());
-  } catch { return null; }
+    const buf = Buffer.from(await res.arrayBuffer());
+    console.log('[FPK] icon fetch success', JSON.stringify({ appname, bytes: buf.length }));
+    return buf;
+  } catch (err) {
+    console.log('[FPK] icon fetch error', JSON.stringify({ appname, error: err.message }));
+    return null;
+  }
 }
 async function fetchFpkAppList(nasHost) {
   const base = getFpkBaseUrl();
-  if (!base) return null;
+  if (!base) {
+    console.log('[FPK] appList fetch skipped: FPK API not enabled');
+    return null;
+  }
   try {
     const url = nasHost ? `${base}/api/client/apps?nas_host=${encodeURIComponent(nasHost)}` : `${base}/api/client/apps`;
+    console.log('[FPK] appList fetch start', JSON.stringify({ nasHost, url }));
     const res = await fetch(url);
+    console.log('[FPK] appList fetch response', JSON.stringify({ status: res.status, ok: res.ok }));
     if (!res.ok) return null;
     const data = await res.json();
+    const count = (data?.list || []).length;
+    console.log('[FPK] appList fetch success', JSON.stringify({ appCount: count }));
     return data?.list || [];
-  } catch { return null; }
+  } catch (err) {
+    console.log('[FPK] appList fetch error', JSON.stringify({ error: err.message }));
+    return null;
+  }
 }
 
 let __appCenterScanAt = 0;
@@ -6480,6 +6518,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
 
     // v2.1.17: 如果没有本地图标，尝试从 FPK API 获取
     if (!icoPath) {
+      console.log('[FPK] shortcut icon: checking for FPK icon', JSON.stringify({ appId, appName }));
       const fpkBuf = await fetchFpkIcon(appId, 256);
       if (fpkBuf) {
         try {
@@ -6489,9 +6528,13 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
           fs.writeFileSync(fpkIconPath, icoBuf);
           icoPath = fpkIconPath;
           fnosLog('info', 'icon.fpk', { appId, icoPath, size: icoBuf.length });
+          console.log('[FPK] shortcut icon: FPK icon saved', JSON.stringify({ appId, icoPath, size: icoBuf.length }));
         } catch (e) {
           fnosLog('warn', 'icon.fpk', { err: e.message, appId });
+          console.log('[FPK] shortcut icon: FPK icon convert failed', JSON.stringify({ appId, error: e.message }));
         }
+      } else {
+        console.log('[FPK] shortcut icon: no FPK icon found', JSON.stringify({ appId }));
       }
     }
 

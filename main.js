@@ -5144,7 +5144,8 @@ async function processScannedApps(apps) {
     const s = loadSettings();
     const cur = Array.isArray(s.apps) ? s.apps : [];
     const curUrls = new Set(cur.map((a) => a.url).filter(Boolean));
-    const byUrl = new Map(cur.map((a) => [a.url, a]));
+    // v2.1.13：旧缓存 key 归一化，避免错误 appview anchor 的旧条目残留成重复应用
+    const byUrl = new Map(cur.map((a) => { if (a && a.url) a.url = normalizeAppLaunchUrl(a.url); return [a && a.url, a]; }));
     const fresh = [];
     for (const a of apps) {
       if (!a || !a.url || !a.name) continue;

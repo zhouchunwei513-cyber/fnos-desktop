@@ -699,7 +699,7 @@
     refreshAccounts();
   }
 
-  // v2.0.7：应用管理
+  // v2.1.10：应用快捷方式创建
   const appListEl = document.getElementById('app-list');
   const appListLoading = document.getElementById('app-list-loading');
   const appListEmpty = document.getElementById('app-list-empty');
@@ -707,7 +707,7 @@
   async function loadAppList() {
     try {
       if (!window.fnosSettings || !window.fnosSettings.getInstalledApps) {
-        if (appListLoading) appListLoading.textContent = '应用管理功能不可用';
+        if (appListLoading) appListLoading.textContent = '应用快捷方式创建功能不可用';
         return;
       }
       const res = await window.fnosSettings.getInstalledApps();
@@ -731,7 +731,6 @@
           '</div>' +
           '<div class="app-card-actions">' +
             '<button class="app-card-btn shortcut-btn" data-app-id="' + app.appId + '" title="创建桌面快捷方式">🔗 快捷方式</button>' +
-            '<button class="app-card-btn danger uninstall-btn" data-app-id="' + app.appId + '" title="卸载此应用">✕</button>' +
           '</div>';
         appListEl.appendChild(card);
       });
@@ -763,31 +762,6 @@
             if (appActionStatus) appActionStatus.textContent = '创建失败: ' + e.message;
           }
           setTimeout(() => { btn.disabled = false; btn.textContent = '🔗 快捷方式'; btn.classList.remove('success'); }, 3000);
-        });
-      });
-      appListEl.querySelectorAll('.uninstall-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const appId = btn.dataset.appId;
-          const appData = res.data.find(a => a.appId === appId);
-          if (!appData) return;
-          if (!confirm('确定卸载「' + (appData.appName || appId) + '」？将同时删除桌面快捷方式。')) return;
-          btn.disabled = true;
-          btn.textContent = '...';
-          try {
-            const result = await window.fnosSettings.uninstallNasApp({ appId });
-            if (result.success) {
-              if (appActionStatus) appActionStatus.textContent = '已卸载: ' + (appData.appName || appId);
-              loadAppList();
-            } else {
-              btn.disabled = false;
-              btn.textContent = '✕';
-              if (appActionStatus) appActionStatus.textContent = '卸载失败: ' + (result.msg || '未知错误');
-            }
-          } catch (e) {
-            btn.disabled = false;
-            btn.textContent = '✕';
-            if (appActionStatus) appActionStatus.textContent = '卸载失败: ' + e.message;
-          }
         });
       });
     } catch (e) {

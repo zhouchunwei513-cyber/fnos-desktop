@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.9';
+const APP_VERSION = '2.1.10';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4140,6 +4140,16 @@ function handleMainClose(win) {
   }).catch(() => {});
 }
 
+// v2.1.10：隐藏主窗口到托盘（不销毁窗口、不销毁托盘）。
+// 区别于 handleMainClose（弹窗让用户选）与 hideCompletely（连托盘一起销毁）。
+// 快捷方式打开应用后调用：主程序面板退到托盘，点击托盘图标可恢复。
+function hideMainToTray() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.hide(); } catch (_) {}
+  }
+  ensureTray();
+}
+
 // ---------------------- 系统托盘 ----------------------
 function ensureTray() {
   if (tray) return tray;
@@ -4532,6 +4542,7 @@ function takePendingOpenApp() {
 // 未登录时应用窗口打开是登录页（无意义），用户登录完成后自动打开对应应用。
 let __pendingAppUrl = '';
 let __pendingAppStart = 0;
+let __pendingFromShortcut = false; // v2.1.10：快捷方式触发的应用，打开后隐藏主窗口到托盘
 function queuePendingApp(u) {
   __pendingAppUrl = String(u || '');
   __pendingAppStart = Date.now();
@@ -4567,7 +4578,14 @@ function tryOpenPendingApp() {
     const elapsed = Date.now() - __pendingAppStart;
     if (!ready && elapsed < 25000) return; // 未登录且未超时 → 等登录
     __pendingAppUrl = '';
-    if (u) { try { createAppWindow(u, {}); } catch (_) {} }
+    if (u) {
+      try { createAppWindow(u, {}); } catch (_) {}
+      // v2.1.10：快捷方式触发的应用打开后，隐藏主窗口到托盘（保留托盘可恢复主面板）
+      if (__pendingFromShortcut) {
+        __pendingFromShortcut = false;
+        setTimeout(() => { try { hideMainToTray(); } catch (_) {} }, 300);
+      }
+    }
   } catch (_) {}
 }
 
@@ -5104,7 +5122,7 @@ const __HOME_SCAN_JS = String.raw`(function(){
     };
     var appNameFromUrl = function(u){
       if (!u) return '';
-      var m = /\/icons\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);
+      var m = /\/(?:icons|icon)\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);
       if (m) { try { return decodeURIComponent(m[1]); } catch(e){ return m[1]; } }
       return '';
     };
@@ -5125,7 +5143,7 @@ const __HOME_SCAN_JS = String.raw`(function(){
     for (var i = 0; i < links.length; i++) {
       var a = links[i];
       var img = a.querySelector('img');
-      var icon = img ? (img.currentSrc || img.src || '') : '';
+      var icon = img ? toAbs(img.getAttribute('data-src') || img.currentSrc || img.src || '') : '';
       var nm = clean(a.innerText || a.title || (img && img.alt) || '');
       if (!nm && img) nm = clean(img.alt || '');
       pushApp(nm, a.href, icon, appNameFromUrl(icon));
@@ -5134,7 +5152,7 @@ const __HOME_SCAN_JS = String.raw`(function(){
     var done = {};
     for (var q = 0; q < imgs.length; q++) {
       var im = imgs[q];
-      var icon2 = im.currentSrc || im.src || '';
+      var icon2 = toAbs(im.getAttribute('data-src') || im.currentSrc || im.src || '');
       var nm2 = clean(im.alt || '');
       var href2 = '';
       var cur = im;
@@ -6287,14 +6305,13 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
   }
 });
 
-// 2.2 命令行启动：携带 --app 参数时直接创建子应用窗口，跳过主界面
-// v2.0.6：修复 partition 使用共享分区（与主窗口一致），从 manifest 读取应用名和图标
+// 2.2 命令行启动：携带 --app 参数时，标记待打开应用 + 正常启动主程序（隐藏到托盘），
+// 登录后由 tryOpenPendingApp 复用主程序内 createAppWindow 打开（依赖主程序登录态）。
 function launchSubAppFromArgs() {
   if (!launchArgs.appId) return false;
-  fnosLog('info', 'launch', '检测到命令行启动参数，跳过主界面', launchArgs);
-  
+  fnosLog('info', 'launch', '检测到快捷方式启动参数，转主程序内打开', launchArgs);
+
   const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
-  // v2.0.8: appId is the full app URL; decode it for navigation
   let appUrl = '';
   try { appUrl = decodeURIComponent(launchArgs.appId); } catch (_) { appUrl = launchArgs.appId; }
   const url = nasAddr || '';
@@ -6302,8 +6319,8 @@ function launchSubAppFromArgs() {
   try {
     const manifest = readManifest();
     const decodedAppId = launchArgs.appId ? decodeURIComponent(launchArgs.appId) : '';
-    const entry = manifest.apps.find(a => 
-      a.appId === appUrl || a.url === appUrl || a.appId === decodedAppId || 
+    const entry = manifest.apps.find(a =>
+      a.appId === appUrl || a.url === appUrl || a.appId === decodedAppId ||
       a.appId === launchArgs.appId || a.name === appUrl || a.url === decodedAppId
     );
     if (entry && entry.url && /^https?:/i.test(entry.url)) {
@@ -6318,184 +6335,19 @@ function launchSubAppFromArgs() {
     fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl });
   } catch (e) { fnosLog('warn', 'launch', 'manifest lookup failed', { err: e.message }); }
   if (!url) {
-    fnosLog('warn', 'launch', '缺少 nas 地址参数');
+    fnosLog('warn', 'launch', '缺少 nas 地址参数，转普通主程序启动');
     return false;
   }
-  
-  // 从 manifest 读取应用信息
-  let appName = launchArgs.appId;
-  let iconPath = '';
-  try {
-    const manifest = readManifest();
-    // v2.0.8: appId is the full app URL, look up by URL
-    const entry = manifest.apps.find(a => a.appId === appUrl || a.url === appUrl || a.appId === launchArgs.appId);
-    if (entry) {
-      appName = entry.appName || entry.name || appName;
-      iconPath = entry.iconPath || '';
-    }
-  } catch (_) {}
-  
-  // 延迟到 app ready 后创建
-  const doLaunch = () => {
-    const appId = launchArgs.appId;
-    // v2.1.8：与主窗口强制使用同一共享 partition（SHARED_PARTITION）。
-    // 启动自动重连走 createMainWindow(SHARED_PARTITION)，登录 cookie 持久化在
-    // persist:fnos-shared；快捷方式冷启动的子应用也必须用同一分区才能共享登录态、
-    // 免二次登录。partitionForServer 会得到 persist:nas-*（与主窗口不一致），勿改回。
-    const partition = SHARED_PARTITION;
-    currentPartition = partition;
-    applyUA(partition);
 
-    const winOpts = {
-      width: 1280,
-      height: 800,
-      minWidth: 900,
-      minHeight: 600,
-      title: `FNOS - ${appName}`,
-      backgroundColor: '#0b0d12',
-      frame: false,
-      autoHideMenuBar: true,
-      show: false,
-      icon: iconPath && fs.existsSync(iconPath) ? iconPath : ICON_PATH,
-      webPreferences: {
-        partition,
-        preload: path.join(__dirname, 'subapp-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: false,
-        webSecurity: true,
-        allowRunningInsecureContent: true,
-        spellcheck: false,
-        backgroundThrottling: false,
-        enableBlinkFeatures: 'CSSBackdropFilter',
-      },
-    };
-    const subWin = new BrowserWindow(winOpts);
-    const subAppId = `com.fnos.client.app.${appId}`;
-    try { subWin.setAppUserModelId(subAppId); } catch (_) {}
-    try { subWin.setMenuBarVisibility(false); } catch (_) {}
-
-    // v2.0.8: load the specific app URL if available, otherwise fall back to NAS origin
-    const targetUrl = appUrl || url;
-    fnosLog('info', 'launch', '子应用窗口已创建', { appId: appUrl, subAppId, url: targetUrl, partition });
-
-    // v2.1.9：修复「点快捷方式没反应」——旧逻辑把 loadURL 放进 ready-to-show 回调，
-    // 但窗口 show:false 且从未 loadURL 时 ready-to-show 永不触发，形成死锁：窗口永不显示、
-    // loadURL 永不执行。这里改为：先立即加载目标页，再在 ready-to-show 后 show，并加 6s 兜底。
-    try {
-      if (/^https?:/i.test(targetUrl)) {
-        subWin.loadURL(targetUrl, { userAgent: getNasUA() }).catch(() => {});
-      } else if (targetUrl) {
-        subWin.loadURL(targetUrl).catch(() => {});
-      }
-    } catch (e) {
-      fnosLog('error', 'launch', 'loadURL failed', { err: e.message, url: targetUrl });
-    }
-    // v2.0.6: sub-app window also enables favicon extraction (consistent with createAppWindow)
-    subWin.once('ready-to-show', () => {
-      try { subWin.show(); subWin.focus(); } catch (_) {}
-    });
-    // 兜底：极端情况下 ready-to-show 未触发（隧道握手卡住等），6s 后也展示窗口
-    setTimeout(() => {
-      try { if (!subWin.isDestroyed() && !subWin.isVisible()) subWin.show(); } catch (_) {}
-    }, 6000);
-
-    // v2.0.6：子应用窗口也启用 favicon 提取（与 createAppWindow 一致）
-    subWin.webContents.on('did-finish-load', () => {
-      try {
-        const __applyIcon = () => {
-          try {
-            if (subWin.isDestroyed() || !subWin.webContents) return;
-            subWin.webContents.executeJavaScript(`(function(){
-              try {
-                var cands = [], seen = {};
-                var all = document.querySelectorAll('link[rel]');
-                for (var i = 0; i < all.length; i++) {
-                  var l = all[i], rel = (l.getAttribute('rel')||'').toLowerCase();
-                  if (rel.indexOf('icon') === -1) continue;
-                  var h = l.href || l.getAttribute('href') || '';
-                  var t = (l.getAttribute('type')||'').toLowerCase();
-                  var isSvg = t === 'image/svg+xml' || t === 'image/svg' || /\.svg($|[?#])/i.test(h);
-                  if (h && !seen[h]) { seen[h] = true; cands.push({ href: h, isSvg: isSvg }); }
-                }
-                if (!cands.length) try { cands.push({ href: location.origin + '/favicon.ico', isSvg: false }); } catch(_){}
-                if (!cands.some(function(c){ return !c.isSvg; })) {
-                  for (var j = 0; j < all.length; j++) {
-                    var l2 = all[j], rel2 = (l2.getAttribute('rel')||'').toLowerCase();
-                    if (rel2.indexOf('icon') === -1) continue;
-                    var h2 = l2.href || l2.getAttribute('href') || '';
-                    if (h2 && !seen[h2]) { seen[h2] = true; cands.push({ href: h2, isSvg: true }); }
-                  }
-                }
-                return cands;
-              } catch(e) { return []; }
-            })()`, true).then((cands) => {
-              try {
-                if (!cands.length || subWin.isDestroyed()) return;
-                const ses = subWin.webContents.session;
-                const tryNext = (idx) => {
-                  if (idx >= cands.length || subWin.isDestroyed()) return;
-                  const c = cands[idx];
-                  const ref = typeof c === 'string' ? c : c.href;
-                  const isSvg = typeof c === 'object' && c.isSvg;
-                  if (/^data:image\//i.test(ref)) {
-                    if (/^data:image\/svg/i.test(ref) || isSvg) {
-                      try {
-                        const svgText = decodeURIComponent(ref.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
-                        __svgToPng(svgText, 128).then(pngBuf => {
-                          if (pngBuf) {
-                            const iconPath = path.join(ASSETS_DIR, (appId || 'app').replace(/[^a-zA-Z0-9_-]/g, '_') + '.png');
-                            try { fs.writeFileSync(iconPath, Buffer.from(pngBuf)); } catch(_) {}
-                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
-                            if (!img.isEmpty()) { subWin.setIcon(img); return; }
-                          }
-                          tryNext(idx+1);
-                        });
-                      } catch(_) { tryNext(idx+1); }
-                    } else {
-                      try { const img = nativeImage.createFromDataURL(ref); if (!img.isEmpty()) { subWin.setIcon(img); return; } } catch(_){}
-                      tryNext(idx+1);
-                    }
-                    return;
-                  }
-                  if (!/^https?:/i.test(ref)) { tryNext(idx+1); return; }
-                  ses.fetch(ref, { credentials: 'include' }).then(r => {
-                    if (!r.ok) throw new Error('bad status');
-                    const ct = (r.headers.get('content-type')||'').toLowerCase();
-                    if (ct.includes('svg') || isSvg) {
-                      return r.text().then(svgText => {
-                        return __svgToPng(svgText, 128).then(pngBuf => {
-                          if (pngBuf) {
-                            const iconPath = path.join(ASSETS_DIR, (appId || 'app').replace(/[^a-zA-Z0-9_-]/g, '_') + '.png');
-                            try { fs.writeFileSync(iconPath, Buffer.from(pngBuf)); } catch(_) {}
-                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
-                            if (!img.isEmpty()) { subWin.setIcon(img); return; }
-                          }
-                          tryNext(idx+1);
-                        });
-                      });
-                    }
-                    return r.arrayBuffer();
-                  }).then(buf => {
-                    if (!buf) return;
-                    const img = nativeImage.createFromBuffer(Buffer.from(buf));
-                    if (!img.isEmpty()) subWin.setIcon(img); else tryNext(idx+1);
-                  }).catch(() => tryNext(idx+1));
-                };
-                tryNext(0);
-              } catch(_) {}
-            }).catch(() => {});
-          } catch(_) {}
-        };
-        __applyIcon();
-        setTimeout(() => { try { __applyIcon(); } catch(_) {} }, 2000);
-      } catch(_) {}
-    });
-
-  };
-  
-  if (app.isReady()) doLaunch();
-  else app.once('ready', doLaunch);
+  // v2.1.10：不再创建独立子窗口（旧 doLaunch 冷启动模式已废弃）。
+  // 快捷方式冷启动改为：标记待打开应用 + 正常启动主程序（隐藏到托盘），
+  // 登录后由 consumePendingOpenApp / tryOpenPendingApp 复用主程序内
+  // createAppWindow 的统一应用打开链路（同一 partition、登录态共享、免二次登录），
+  // 打开应用后主程序隐藏到托盘（见 tryOpenPendingApp 的 __pendingFromShortcut 分支）。
+  if (appUrl) {
+    queuePendingApp(appUrl);
+  }
+  __pendingFromShortcut = true;
   return true;
 }
 
@@ -8517,6 +8369,7 @@ app.on('second-instance', (_e, commandLine) => {
       if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
     }
     if (u && mainWindow && !mainWindow.isDestroyed()) {
+      // v2.1.10：快捷方式触发 → 打开应用后主程序隐藏到托盘，不显示主窗口
       setTimeout(() => {
         try {
           const cur = mainWindow.webContents.getURL() || '';
@@ -8524,16 +8377,19 @@ app.on('second-instance', (_e, commandLine) => {
           const loggedIn = /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
           if (loggedIn) {
             createAppWindow(u, {});
+            setTimeout(() => { try { hideMainToTray(); } catch (_) {} }, 300);
           } else {
-            // v1.78.0：主程序已运行但未登录 → 等待登录后自动打开
+            // v1.78.0：主程序已运行但未登录 → 等待登录后自动打开（打开后隐藏主窗口）
+            __pendingFromShortcut = true;
             queuePendingApp(u);
             tryOpenPendingApp();
             const pt = setInterval(() => {
               try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
             }, 1500);
           }
-        } catch (_) { try { createAppWindow(u, {}); } catch (_) {} }
+        } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToTray(); } catch (_) {} }, 300); } catch (_) {} }
       }, 300);
+      return;
     }
   } catch (_) {}
   if (isCompletelyHidden) {
@@ -8674,11 +8530,11 @@ app.whenReady().then(() => {
 
   startMenuAutoHide();
 
-  // v2.1.8：从桌面快捷方式（--app）启动时只开子应用窗口，不创建主窗口，
-  // 避免一大一小两个窗口、且都要登录。
-  if (subAppLaunched) {
-    ensureTray();
-  } else if (hasAppPassword()) {
+  // v2.1.10：桌面快捷方式（--app）冷启动不再只开子窗口，改为统一走主程序启动：
+  // 正常创建主窗口（未登录显示登录页、已登录自动重连），锁定状态走解锁流程。
+  // 待打开应用已在 launchSubAppFromArgs 里 queuePendingApp，登录后由 did-navigate/
+  // tryOpenPendingApp 自动打开并隐藏主窗口到托盘。
+  if (hasAppPassword()) {
     isLocked = true;
     // 后台预加载主窗口（不显示）
     createMainWindow(initialPartition, initialTarget);
@@ -8687,6 +8543,11 @@ app.whenReady().then(() => {
   } else {
     createMainWindow(initialPartition, initialTarget);
     ensureTray();
+  }
+  // 快捷方式冷启动兜底：主窗口加载后若 pending 应用尚未被消费（无导航事件时），
+  // 主动触发一次；登录后打开应用并隐藏主窗口。
+  if (subAppLaunched) {
+    setTimeout(() => { try { tryOpenPendingApp(); } catch (_) {} }, 1500);
   }
 
   // v1.79.0：启动后自动修复桌面快捷方式 TargetPath（便携版解压路径变化导致失效）

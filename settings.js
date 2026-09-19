@@ -53,6 +53,11 @@
     return api;
   }
 
+  // v2.0.0：开机自启动 DOM
+  const autostartToggle = $('autostart-toggle');
+  const autostartText = $('autostart-text');
+  const autostartHint = $('autostart-hint');
+
   const pwdForm = $('pwd-form');
   const oldPwd = $('old-pwd');
   const newPwd = $('new-pwd');
@@ -73,6 +78,9 @@
   // v1.16.1：无操作自动锁定
   const autoLockSel = bindGlassSelect(document.querySelector('[data-select="auto-lock"]'));
   const autoLockHint = $('auto-lock-hint');
+
+  // v2.1.11：快捷方式打开应用后主程序后台化方式
+  const shortcutHideSel = bindGlassSelect(document.querySelector('[data-select="shortcut-hide-mode"]'));
 
   const DEFAULTS = { lockApp: 'Ctrl+Alt+L', hideAll: 'Ctrl+Alt+H' };
 
@@ -527,6 +535,57 @@
     });
   }
 
+  // v2.1.11：快捷方式打开应用后主程序后台化方式（tray 隐藏到托盘 / minimize 最小化到任务栏）
+  if (shortcutHideSel) {
+    shortcutHideSel.addEventListener('change', async () => {
+      try {
+        const mode = shortcutHideSel.value === 'minimize' ? 'minimize' : 'tray';
+        const res = await fnosSettings.setShortcutHideMode(mode);
+        const statusEl = document.getElementById('app-action-status');
+        if (res && res.ok) {
+          if (statusEl) statusEl.textContent = '已保存：打开应用后主程序' + (mode === 'minimize' ? '最小化到任务栏' : '隐藏到托盘');
+        } else {
+          shortcutHideSel.value = mode === 'minimize' ? 'tray' : 'minimize'; // 回滚
+          if (statusEl) statusEl.textContent = '保存失败: ' + ((res && res.error) || '未知错误');
+        }
+      } catch (err) {
+        const statusEl = document.getElementById('app-action-status');
+        if (statusEl) statusEl.textContent = '保存失败: ' + (err?.message || '未知错误');
+      }
+    });
+  }
+
+  // v2.0.0：开机自启动开关
+  if (autostartToggle) {
+    autostartToggle.addEventListener('change', async () => {
+      const enabled = autostartToggle.checked;
+      autostartText.textContent = enabled ? '开启中...' : '关闭中...';
+      if (autostartHint) autostartHint.textContent = '';
+      try {
+        const res = await fnosSettings.setAutoStart(enabled);
+        if (res && res.success) {
+          autostartText.textContent = enabled ? '已开启' : '已关闭';
+          if (autostartHint) autostartHint.textContent = res.msg || (enabled ? '已开启开机自启' : '已关闭开机自启');
+          if (autostartHint) autostartHint.style.color = '#4ade80';
+        } else {
+          autostartToggle.checked = !enabled; // 回滚
+          autostartText.textContent = enabled ? '开启' : '关闭';
+          if (autostartHint) {
+            autostartHint.textContent = res?.msg || '操作失败';
+            autostartHint.style.color = '#f87171';
+          }
+        }
+      } catch (err) {
+        autostartToggle.checked = !enabled;
+        autostartText.textContent = enabled ? '开启' : '关闭';
+        if (autostartHint) {
+          autostartHint.textContent = err?.message || '操作失败';
+          autostartHint.style.color = '#f87171';
+        }
+      }
+    });
+  }
+
   // F5/Esc/右键阻断
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) e.preventDefault();
@@ -549,10 +608,193 @@
         autoLockSel.value = String(mins);
         updateAutoLockHint(!!info?.hasPassword, mins);
       }
+      // v2.1.11：加载快捷方式后台化方式
+      if (shortcutHideSel) {
+        shortcutHideSel.value = info?.shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
+      }
       loadLiveConfig();
       loadVlcConfig();
+      // v2.0.0：加载开机自启动状态
+      if (autostartToggle && fnosSettings.getAutoStart) {
+        try {
+          const res = await fnosSettings.getAutoStart();
+          if (res && res.success) {
+            autostartToggle.checked = !!res.data;
+            autostartText.textContent = res.data ? '已开启' : '已关闭';
+          } else {
+            autostartText.textContent = '获取失败';
+            if (autostartHint) {
+              autostartHint.textContent = res?.msg || '无法获取自启状态';
+              autostartHint.style.color = '#f0b429';
+            }
+          }
+        } catch (err) {
+          autostartText.textContent = '获取失败';
+          if (autostartHint) {
+            autostartHint.textContent = err?.message || '加载失败';
+            autostartHint.style.color = '#f0b429';
+          }
+        }
+      }
+      // v2.0.0：加载账号管理
+      loadAccountManager();
     } catch (err) {
       showError(hkError, err?.message || '加载设置失败');
     }
   })();
+
+  // ============ v2.0.0 多账号管理 ============
+  async function loadAccountManager() {
+    const listEl = document.getElementById('account-list');
+    const loadingEl = document.getElementById('account-loading');
+    const addBtn = document.getElementById('account-add-btn');
+    if (!listEl) return;
+
+    async function refreshAccounts() {
+      try {
+        let accounts = [];
+        try {
+          const res = await fnosSettings.listAccounts();
+          if (res && res.success) accounts = res.data || [];
+        } catch (_) {
+          try {
+            const res = await fnosSettings._ipcInvoke && fnosSettings._ipcInvoke('account:list');
+            if (res && res.success) accounts = res.data || [];
+          } catch (_) {}
+        }
+
+        listEl.innerHTML = '';
+        if (!accounts.length) {
+          listEl.innerHTML = '<div class="account-empty">暂无已登录账号，请先连接 NAS 服务器</div>';
+          return;
+        }
+
+        accounts.forEach(acct => {
+          const item = document.createElement('div');
+          item.className = 'account-item' + (acct.isActive ? ' active' : '');
+          item.innerHTML = `
+            <span class="acct-status" style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${acct.isActive ? '#4ade80' : 'rgba(255,255,255,0.2)'}"></span>
+            <div class="acct-info">
+              <div class="acct-name">${acct.label || acct.origin || '未知账号'}${acct.isActive ? ' <span style="font-size:11px;color:#4ade80">(当前)</span>' : ''}</div>
+              <div class="acct-addr">${acct.origin || ''}</div>
+            </div>
+            <div class="acct-actions">
+              ${!acct.isActive ? '<button class="acct-btn primary" data-action="switch">切换</button>' : ''}
+              <button class="acct-btn danger" data-action="remove">移除</button>
+            </div>
+          `;
+
+          const switchBtn = item.querySelector('[data-action="switch"]');
+          if (switchBtn) {
+            switchBtn.addEventListener('click', async () => {
+              try {
+                const res = await fnosSettings.switchAccount(acct.origin);
+                if (res && res.success) {
+                  refreshAccounts();
+                } else {
+                  alert('切换失败: ' + (res?.msg || '未知错误'));
+                }
+              } catch (e) { alert('切换失败: ' + e.message); }
+            });
+          }
+
+          item.querySelector('[data-action="remove"]').addEventListener('click', async () => {
+            if (!confirm('确定移除账号 "' + (acct.label || acct.origin) + '"？\n这将清除该账号的登录状态。')) return;
+            try {
+              const res = await fnosSettings.removeAccount(acct.id);
+              if (res && res.success) {
+                refreshAccounts();
+              } else {
+                alert('移除失败: ' + (res?.msg || '未知错误'));
+              }
+            } catch (e) { alert('移除失败: ' + e.message); }
+          });
+
+          listEl.appendChild(item);
+        });
+      } catch (_) {
+        listEl.innerHTML = '<div class="account-empty">加载失败</div>';
+      }
+    }
+
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        try { fnosSettings.backToConnect(); } catch (_) {}
+      });
+    }
+
+    refreshAccounts();
+  }
+
+  // v2.1.10：应用快捷方式创建
+  const appListEl = document.getElementById('app-list');
+  const appListLoading = document.getElementById('app-list-loading');
+  const appListEmpty = document.getElementById('app-list-empty');
+  const appActionStatus = document.getElementById('app-action-status');
+  async function loadAppList() {
+    try {
+      if (!window.fnosSettings || !window.fnosSettings.getInstalledApps) {
+        if (appListLoading) appListLoading.textContent = '应用快捷方式创建功能不可用';
+        return;
+      }
+      const res = await window.fnosSettings.getInstalledApps();
+      if (appListLoading) appListLoading.style.display = 'none';
+      if (!res.success || !res.data || !res.data.length) {
+        if (appListEmpty) appListEmpty.style.display = 'block';
+        return;
+      }
+      if (appListEmpty) appListEmpty.style.display = 'none';
+      appListEl.innerHTML = '';
+      appListEl.style.display = 'grid';
+      res.data.forEach((app) => {
+        const card = document.createElement('div');
+        card.className = 'app-card';
+        // v2.1.13：图标缺失/加载失败时回退到客户端默认图标，不再显示空白占位
+        const iconSrc = app.iconPath ? ('file://' + app.iconPath) : 'icon.png';
+        card.innerHTML =
+          '<img class="app-card-icon" src="' + iconSrc + '" onerror="this.onerror=null;this.src=\'icon.png\'" />' +
+          '<div class="app-card-info">' +
+            '<div class="app-card-name">' + (app.appName || app.appId || '未命名') + '</div>' +
+            '<div class="app-card-addr">' + (app.nasAddress || '') + '</div>' +
+          '</div>' +
+          '<div class="app-card-actions">' +
+            '<button class="app-card-btn shortcut-btn" data-app-id="' + app.appId + '" title="创建桌面快捷方式">🔗 快捷方式</button>' +
+          '</div>';
+        appListEl.appendChild(card);
+      });
+      // 绑定事件
+      appListEl.querySelectorAll('.shortcut-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const appId = btn.dataset.appId;
+          const appData = res.data.find(a => a.appId === appId);
+          if (!appData) return;
+          btn.disabled = true;
+          btn.textContent = '创建中...';
+          try {
+            const result = await window.fnosSettings.createDesktopShortcut({
+              appId: appData.appId,
+              appName: appData.appName || appData.appId,
+              iconPath: appData.iconPath || '',
+              nasAddress: appData.nasAddress || '',
+            });
+            if (result.success) {
+              btn.textContent = '✓ 已创建';
+              btn.classList.add('success');
+              if (appActionStatus) appActionStatus.textContent = '已创建快捷方式: ' + (appData.appName || appData.appId);
+            } else {
+              btn.textContent = '创建失败';
+              if (appActionStatus) appActionStatus.textContent = '创建失败: ' + (result.msg || '未知错误');
+            }
+          } catch (e) {
+            btn.textContent = '创建失败';
+            if (appActionStatus) appActionStatus.textContent = '创建失败: ' + e.message;
+          }
+          setTimeout(() => { btn.disabled = false; btn.textContent = '🔗 快捷方式'; btn.classList.remove('success'); }, 3000);
+        });
+      });
+    } catch (e) {
+      if (appListLoading) appListLoading.textContent = '加载失败: ' + e.message;
+    }
+  }
+  loadAppList();
 })();

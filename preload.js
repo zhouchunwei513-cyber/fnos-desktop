@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('fnos', {
   backToConnect: () => ipcRenderer.invoke('auth:back-to-connect'),
   removeHistory: (href) => ipcRenderer.invoke('auth:remove-history', { href }),
   platform: process.platform,
-  version: '1.38.0',
+  version: '2.0.5',
 
   mpvPlay: (url, meta) => ipcRenderer.invoke('mpv:play', { url, title: (meta && meta.title) || '', isLive: !!(meta && meta.isLive) }),
   mpvEmbed: (payload) => ipcRenderer.invoke('mpv:embed', payload || {}),
@@ -1191,4 +1191,171 @@ contextBridge.exposeInMainWorld('fnos', {
 // 仅在飞牛远程网页（http/https）注入；本地 login/settings 页面不注入（它们自带或无需）。
 // 采用透明背景 + 半透明按钮，避免遮挡飞牛自身顶部导航的观感；拖拽区可移动窗口。
 // ============================================================================
+// v2.0.0：暴露 fnApi 给子应用 Vue 页面使用（子应用管理 IPC 桥接）
+try {
+  contextBridge.exposeInMainWorld('fnApi', {
+    getInstalledApps: () => { console.log('[fnApi] getInstalledApps'); return ipcRenderer.invoke('get-installed-apps'); },
+    installNasApp: (payload) => { console.log('[fnApi] installNasApp', payload); return ipcRenderer.invoke('install-nas-app', payload); },
+    uninstallNasApp: (payload) => { console.log('[fnApi] uninstallNasApp', payload); return ipcRenderer.invoke('uninstall-nas-app', payload); },
+    createDesktopShortcut: (payload) => { console.log('[fnApi] createDesktopShortcut', payload); return ipcRenderer.invoke('create-desktop-shortcut', payload); },
+    // v2.0.0：多账号管理 API
+    listAccounts: () => { console.log('[fnApi] listAccounts'); return ipcRenderer.invoke('account:list'); },
+    switchAccount: (origin) => { console.log('[fnApi] switchAccount', origin); return ipcRenderer.invoke('account:switch', { origin }); },
+    removeAccount: (accountId) => { console.log('[fnApi] removeAccount', accountId); return ipcRenderer.invoke('account:remove', { accountId }); },
+    getActiveAccount: () => { console.log('[fnApi] getActiveAccount'); return ipcRenderer.invoke('account:get-active'); },
+    // v2.0.0：下载管理 API
+    startDownload: (params) => { console.log('[fnApi] startDownload', params); return ipcRenderer.invoke('download:start', params); },
+    pauseDownload: (taskId) => { console.log('[fnApi] pauseDownload', taskId); return ipcRenderer.invoke('download:pause', { taskId }); },
+    resumeDownload: (taskId) => { console.log('[fnApi] resumeDownload', taskId); return ipcRenderer.invoke('download:resume', { taskId }); },
+    cancelDownload: (taskId) => { console.log('[fnApi] cancelDownload', taskId); return ipcRenderer.invoke('download:cancel', { taskId }); },
+    getDownloadList: () => { console.log('[fnApi] getDownloadList'); return ipcRenderer.invoke('download:list'); },
+    getDefaultDownloadPath: () => { console.log('[fnApi] getDefaultDownloadPath'); return ipcRenderer.invoke('download:get-default-path'); },
+    onDownloadProgress: (callback) => { ipcRenderer.on('download:progress', (_e, data) => callback(data)); },
+    // v2.0.0：网络状态 API
+    getNetworkStatus: () => { console.log('[fnApi] getNetworkStatus'); return ipcRenderer.invoke('network:get-status'); },
+    // v2.0.0：日志系统 API
+    listLogFiles: () => { console.log('[fnApi] listLogFiles'); return ipcRenderer.invoke('log:list-files'); },
+    readLogFile: (params) => { console.log('[fnApi] readLogFile', params); return ipcRenderer.invoke('log:read', params); },
+    getLogStatus: () => { console.log('[fnApi] getLogStatus'); return ipcRenderer.invoke('log:get-status'); },
+  });
+} catch (_) {}
+
 try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2.1.13：登录信息持久化 + 自动登录（需求 3）
+// 思路：不依赖飞牛私有 API，直接在表单层工作——
+//  1) 捕获：用户点击"登录"按钮 / 提交表单时暂存账号密码，仅当页面随后离开登录页
+//     （视为登录成功）才上报主进程加密保存；
+//  2) 自动登录：检测到登录页（含程序内第三方应用自己的登录页）时，向主进程取回
+//     该 origin 已保存的凭据，自动填充并点击登录按钮。
+// 主程序窗口和所有应用窗口都加载本 preload，因此两处登录态都能被记住。
+// ─────────────────────────────────────────────────────────────────────────────
+(function () {
+  try {
+    if (!/^https?:$/i.test(location.protocol)) return; // 仅 NAS/应用 http 页面，跳过 file:// 等
+    if (window.__fnosLoginPersist) return;
+    window.__fnosLoginPersist = true;
+
+    let stashed = null;      // { u, p } 待确认的凭据
+    let autoTried = 0;       // 自动填充尝试次数上限
+    let autoFilledOnce = false;
+
+    const onLoginPath = () => /\/login([\/?#]|$)/i.test(location.pathname || '');
+    const findPw = () => {
+      const pws = Array.from(document.querySelectorAll('input[type=password]'));
+      // 只考虑可见密码框
+      return pws.find(el => el.offsetParent !== null || el.getClientRects().length > 0) || pws[0] || null;
+    };
+    const findUserInput = (pw) => {
+      const sels = [
+        'input[autocomplete=username]',
+        'input[name*=user i]', 'input[name*=account i]', 'input[name*=login i]',
+        'input[id*=user i]', 'input[id*=account i]',
+        'input[placeholder*=用户]', 'input[placeholder*=账号]', 'input[placeholder*=邮箱]', 'input[placeholder*=user i]',
+        'input[type=email]', 'input[type=text]', 'input:not([type])',
+      ];
+      for (const sel of sels) {
+        const els = Array.from(document.querySelectorAll(sel));
+        const el = els.find(e => e !== pw && !e.disabled && (e.offsetParent !== null || e.getClientRects().length > 0));
+        if (el) return el;
+      }
+      // 兜底：密码框之前的第一个可见文本输入框
+      const all = Array.from(document.querySelectorAll('input'));
+      const idx = all.indexOf(pw);
+      for (let i = idx - 1; i >= 0; i--) {
+        const t = String(all[i].type || '').toLowerCase();
+        if (t === 'text' || t === 'email' || t === '') return all[i];
+      }
+      return null;
+    };
+    const findLoginButton = () => {
+      const btns = Array.from(document.querySelectorAll('button,[role=button],input[type=submit],a'));
+      const hit = btns.find(b => {
+        const txt = String(b.innerText || b.value || '').trim();
+        return /^(登\s*录|登录|登入|sign\s*in|log\s*in)$/i.test(txt);
+      });
+      if (hit) return hit;
+      return document.querySelector('button[type=submit]') || null;
+    };
+    const setVal = (el, v) => {
+      try {
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (desc && desc.set) desc.set.call(el, v); else el.value = v;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (_) {}
+    };
+    const stashFromForm = () => {
+      try {
+        const pw = findPw();
+        if (!pw || !pw.value) return;
+        const user = findUserInput(pw);
+        stashed = { u: user ? String(user.value || '') : '', p: String(pw.value) };
+      } catch (_) {}
+    };
+
+    // 捕获手动登录动作（点击登录按钮 / 表单提交 / 密码框回车）
+    document.addEventListener('click', (e) => {
+      try {
+        const btn = findLoginButton();
+        if (btn && e.target && (e.target === btn || btn.contains(e.target))) stashFromForm();
+      } catch (_) {}
+    }, true);
+    document.addEventListener('submit', () => { stashFromForm(); }, true);
+    document.addEventListener('keydown', (e) => {
+      try {
+        if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') {
+          const pw = findPw();
+          if (pw) stashFromForm();
+        }
+      } catch (_) {}
+    }, true);
+
+    // 状态轮询：登录成功则保存凭据；处于登录页则尝试自动填充登录
+    let wasLoginLike = onLoginPath() || !!findPw();
+    setInterval(() => {
+      try {
+        const loginPath = onLoginPath();
+        const pw = findPw();
+        const loginLike = loginPath || !!pw;
+
+        // 登录成功判定：曾暂存凭据，且页面从"登录态"变为"非登录态"
+        if (stashed && stashed.p && wasLoginLike && !loginLike) {
+          try {
+            ipcRenderer.send('auth:save-credential', {
+              origin: location.origin,
+              username: stashed.u || '',
+              password: stashed.p,
+            });
+          } catch (_) {}
+          stashed = null;
+          autoFilledOnce = false;
+          autoTried = 0;
+        }
+        wasLoginLike = loginLike;
+
+        // 自动填充：有可见密码框 + 能找到"登录"按钮才认为是登录页，避免误填设置类页面
+        if (loginLike && pw && !autoFilledOnce && autoTried < 5) {
+          const btn = findLoginButton();
+          if (!btn) return;
+          autoTried++;
+          ipcRenderer.invoke('auth:get-saved-credential', { origin: location.origin }).then((cred) => {
+            try {
+              if (!cred || !cred.password) { autoTried = 99; return; }
+              const pw2 = findPw();
+              if (!pw2) return;
+              const user = findUserInput(pw2);
+              if (user && cred.username && !user.value) setVal(user, cred.username);
+              if (!pw2.value) setVal(pw2, cred.password);
+              autoFilledOnce = true;
+              const btn2 = findLoginButton();
+              if (btn2) setTimeout(() => { try { btn2.click(); } catch (_) {} }, 500);
+            } catch (_) {}
+          }).catch(() => {});
+        }
+      } catch (_) {}
+    }, 1200);
+  } catch (_) {}
+})();

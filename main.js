@@ -1,5 +1,5 @@
 /**
- * FNOS 桌面客户端 - 主进程 (v1.7.0)
+ * FNOS 桌面客户端 - 主进程 (v2.0.0)
  *
  * 核心设计：
  *  - 每个服务器使用独立的 persist partition，保持各自登录态。
@@ -15,6 +15,7 @@ const {
   globalShortcut, net, powerMonitor, webContents, clipboard,
 } = require('electron');
 const path = require('path');
+const url = require('url');
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
@@ -98,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '1.79.0';
+const APP_VERSION = '2.1.12';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -590,7 +591,240 @@ let isLocked = false;
 let isCompletelyHidden = false; // 一键隐藏：连托盘也隐藏
 
 // ---------------------- 单实例锁 ----------------------
+// v2.1.8：恢复单实例锁。双击桌面快捷方式（--app）时第二次启动会触发 second-instance，
+// 应用地址转交给已运行实例打开，避免每次点快捷方式都新起一个主程序（出现一大一小两个窗口）。
 if (!app.requestSingleInstanceLock()) app.quit();
+
+
+// ===================== v2.0.0 子应用系统 =====================
+// 2.1 apps-manifest.json 管理
+const MANIFEST_PATH = path.join(app.getPath('userData'), 'apps-manifest.json');
+const ASSETS_DIR = path.join(app.getPath('userData'), 'assets');
+
+// ===================== v2.0.0 全局日志系统 =====================
+const LOG_DIR = path.join(app.getPath('userData'), 'logs');
+const LOG_RETENTION_DAYS = 30;
+const SENSITIVE_KEYS = ['password', 'passwd', 'pwd', 'secret', 'token', 'sessionId', 'session_id', 'auth'];
+
+function sanitizeForLog(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  try {
+    const clone = Array.isArray(obj) ? [...obj] : { ...obj };
+    for (const key of Object.keys(clone)) {
+      if (SENSITIVE_KEYS.some(sk => key.toLowerCase().includes(sk.toLowerCase()))) {
+        clone[key] = '***REDACTED***';
+      } else if (typeof clone[key] === 'object' && clone[key] !== null) {
+        clone[key] = sanitizeForLog(clone[key]);
+      }
+    }
+    return clone;
+  } catch (_) {
+    return obj;
+  }
+}
+
+function fnosLog(level, module, msg, extra) {
+  try {
+    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+    const now = new Date();
+    const ts = now.toISOString();
+    const dateStr = ts.slice(0, 10);
+    const logFile = path.join(LOG_DIR, `fnos-${dateStr}.log`);
+    
+    // 格式化日志行
+    const levelTag = level.toUpperCase().padEnd(5);
+    const sanitizedExtra = extra ? sanitizeForLog(extra) : null;
+    let extraStr = '';
+    if (sanitizedExtra) {
+      try {
+        if (sanitizedExtra instanceof Error || (sanitizedExtra && sanitizedExtra.stack)) {
+          extraStr = `\n  Error: ${sanitizedExtra.message || sanitizedExtra}\n  ${(sanitizedExtra.stack || '').split('\n').join('\n  ')}`;
+        } else {
+          extraStr = ' ' + JSON.stringify(sanitizedExtra);
+        }
+      } catch (_) {
+        extraStr = ' [serialize error]';
+      }
+    }
+    
+    const line = `[${ts}] [${levelTag}] [${module}] [${__RUN_MODE}] ${msg}${extraStr}\n`;
+    fs.appendFileSync(logFile, line);
+    
+    // 控制台输出
+    const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+    consoleFn(`[FNOS] [${levelTag}] [${module}] [${__RUN_MODE}] ${msg}`, extra || '');
+  } catch (_) {}
+}
+
+// 日志清理：删除超过保留天数的旧日志文件
+function cleanupOldLogs() {
+  try {
+    if (!fs.existsSync(LOG_DIR)) return;
+    const files = fs.readdirSync(LOG_DIR);
+    const cutoff = Date.now() - LOG_RETENTION_DAYS * 86400000;
+    for (const f of files) {
+      if (!f.startsWith('fnos-') || !f.endsWith('.log')) continue;
+      const fp = path.join(LOG_DIR, f);
+      try {
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs < cutoff) {
+          fs.unlinkSync(fp);
+          fnosLog('info', 'log', '清理过期日志', { file: f });
+        }
+      } catch (_) {}
+    }
+  } catch (e) {
+    fnosLog('error', 'log', '清理日志失败', { err: e.message });
+  }
+}
+
+// 启动时清理旧日志
+try { cleanupOldLogs(); } catch (_) {}
+
+// 日志查看 IPC
+ipcMain.handle('log:list-files', async () => {
+  try {
+    if (!fs.existsSync(LOG_DIR)) return { success: true, data: [] };
+    const files = fs.readdirSync(LOG_DIR)
+      .filter(f => f.startsWith('fnos-') && f.endsWith('.log'))
+      .sort()
+      .reverse()
+      .map(f => {
+        const fp = path.join(LOG_DIR, f);
+        try {
+          const stat = fs.statSync(fp);
+          return { name: f, size: stat.size, mtime: stat.mtime.toISOString() };
+        } catch (_) {
+          return { name: f, size: 0, mtime: '' };
+        }
+      });
+    return { success: true, data: files };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'log:list-files error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+ipcMain.handle('log:read', async (_e, { fileName, lines }) => {
+  try {
+    if (!fileName || !/^[\w-]+\.log$/.test(fileName)) {
+      return { success: false, msg: '无效文件名' };
+    }
+    const fp = path.join(LOG_DIR, fileName);
+    if (!fs.existsSync(fp)) return { success: false, msg: '文件不存在' };
+    const content = fs.readFileSync(fp, 'utf-8');
+    const allLines = content.split('\n');
+    const maxLines = Math.min(lines || 200, 2000);
+    const result = allLines.slice(-maxLines).join('\n');
+    return { success: true, data: result, totalLines: allLines.length };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'log:read error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('log:get-status', async () => {
+  try {
+    if (!fs.existsSync(LOG_DIR)) return { success: true, data: { dir: LOG_DIR, fileCount: 0, totalSize: 0 } };
+    const files = fs.readdirSync(LOG_DIR).filter(f => f.endsWith('.log'));
+    let totalSize = 0;
+    for (const f of files) {
+      try { totalSize += fs.statSync(path.join(LOG_DIR, f)).size; } catch (_) {}
+    }
+    return { success: true, data: { dir: LOG_DIR, fileCount: files.length, totalSize, retentionDays: LOG_RETENTION_DAYS } };
+  } catch (e) {
+    return { success: false, msg: e.message };
+  }
+});
+
+function readManifest() {
+  try {
+    if (!fs.existsSync(MANIFEST_PATH)) return { apps: [] };
+    const raw = fs.readFileSync(MANIFEST_PATH, 'utf-8');
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.apps)) {
+      fnosLog('warn', 'manifest', 'manifest格式异常，重置为空');
+      return { apps: [] };
+    }
+    return data;
+  } catch (e) {
+    fnosLog('error', 'manifest', '读取manifest失败', { err: e.message, stack: e.stack });
+    return { apps: [] };
+  }
+}
+
+function writeManifest(data) {
+  try {
+    fs.writeFileSync(MANIFEST_PATH, JSON.stringify(data, null, 2), 'utf-8');
+    fnosLog('info', 'manifest', 'manifest写入成功');
+    return { success: true, msg: '' };
+  } catch (e) {
+    fnosLog('error', 'manifest', '写入manifest失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 确保 assets 目录存在
+try { if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true }); } catch (_) {}
+
+// v2.1.13：构造飞牛系统应用 appview 打开地址。
+// 飞牛前端 appview 页的 anchor 解析逻辑是 `new URL('https://' + anchor)`——
+// anchor 只能是纯 appName（如 trim.log-center），绝不能带 scheme。
+// 旧版拼成 anchor=https://trim.xxx → hostname 被解析成 'https'，
+// 前端报"应用https不存在或未安装"。
+function buildAppviewUrl(nasAddress, appNameOrId) {
+  const base = String(nasAddress || '').replace(/\/+$/, '');
+  const name = String(appNameOrId || '').replace(/^https?:\/\//i, '');
+  return base + '/appview?anchor=' + encodeURIComponent(name);
+}
+
+// v2.1.13：归一化应用启动 URL——把旧版错误的 appview?anchor=https://xxx
+// 修正为纯 appName。兼容已创建的旧快捷方式与旧 manifest/settings 缓存数据。
+function normalizeAppLaunchUrl(u) {
+  try {
+    if (!u || !/^https?:/i.test(u)) return u;
+    const url = new URL(u);
+    if (url.pathname.replace(/\/+$/, '').endsWith('/appview')) {
+      const anchor = url.searchParams.get('anchor') || '';
+      if (/^https?:\/\//i.test(anchor)) {
+        url.searchParams.set('anchor', anchor.replace(/^https?:\/\//i, ''));
+        return url.href;
+      }
+    }
+  } catch (_) {}
+  return u;
+}
+
+// v2.1.13：从应用条目推断系统应用 appName（trim.xxx），用于公开图标地址兜底
+function sysAppNameFromEntry(a) {
+  try {
+    if (!a) return '';
+    if (a.appId && String(a.appId).startsWith('https://')) return String(a.appId).replace(/^https?:\/\//i, '');
+    const u = a.url ? new URL(a.url) : null;
+    if (u && u.pathname.replace(/\/+$/, '').endsWith('/appview')) {
+      const anchor = u.searchParams.get('anchor') || '';
+      return anchor.replace(/^https?:\/\//i, '');
+    }
+  } catch (_) {}
+  return '';
+}
+
+// 2.2 命令行参数解析
+function parseAppArgs() {
+  const args = process.argv.slice(1);
+  const result = { appId: null, nas: null };
+  for (const arg of args) {
+    const m1 = arg.match(/^--app=(.+)$/);
+    if (m1) result.appId = m1[1];
+    const m2 = arg.match(/^--nas=(.+)$/);
+    if (m2) result.nas = m2[1];
+  }
+  fnosLog('info', 'args', '命令行参数解析', result);
+  return result;
+}
+const launchArgs = parseAppArgs();
+// v2.0.7：运行模式标记——日志中区分主程序/独立子应用
+const __RUN_MODE = launchArgs.appId ? 'subapp:' + launchArgs.appId : 'main';
 
 // ---------------------- 设置持久化 ----------------------
 function defaultSettings() {
@@ -599,10 +833,13 @@ function defaultSettings() {
     origin: '',
     lastConnectHref: '',
     history: [],
-    // v1.72.0：主页扫描到的应用列表 [{name,url,icon}]，供创建桌面快捷方式
+    // 主页扫描到的应用列表 [{name,url,icon}]，用于应用清单管理
     apps: [],
     currentPartition: 'persist:connect',
     closeAction: '', // 'tray' | 'exit'
+    // v2.1.11：通过桌面快捷方式打开应用后，主程序后台化方式（用户可选项）
+    // 'tray'（默认，隐藏到托盘）| 'minimize'（最小化到任务栏）
+    shortcutHideMode: 'tray',
     // 启动密码（scrypt 哈希 + 随机 salt），明文永不落盘
     appPasswordHash: '',
     appPasswordSalt: '',
@@ -623,6 +860,10 @@ function defaultSettings() {
     // v1.17.7：本地代理模块已彻底移除。保留 iptv 段仅用于收藏/线路等用户数据，
     // 历史 proxy 相关字段（enabled/prefetch/maxCacheSegments/maxCacheMB/matchHosts/defaultPlayer）
     // 在 loadSettings 时会自动清理，不再生效。
+    // v2.0.0：多账号管理
+    accounts: [],
+    // 当前激活的账号 origin（用于切换后恢复）
+    activeAccountOrigin: '',
     iptv: {
       iptvBaseUrl: '',       // 自定义直播列表基地址（如 http://nas:34500），留空用 currentOrigin
       iptvLine: 'inner',     // 订阅线路：inner / ipv6 / frp
@@ -661,6 +902,614 @@ function hexToRgba(hex, alpha) {
   if (!m) return [30, 27, 46, alpha == null ? 190 : alpha];
   const n = parseInt(m[1], 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255, alpha == null ? 190 : alpha];
+}
+
+// ===================== v2.0.0 外网网络稳定性优化 =====================
+// 网络健康监控系统：区分「瞬时抖动」和「真正断开」，抑制抖动期间的"已断开"弹窗，
+// 内部自动重试；只有重试多次仍然失败才视为真实断连并通知用户。
+
+const NetworkHealth = {
+  // 状态
+  isOnline: true,
+  isStable: true,         // 当前是否"稳定"（非抖动状态）
+  consecutiveFailures: 0,  // 连续失败次数
+  lastSuccessTime: Date.now(),
+  lastFailureTime: 0,
+  jitterWindowMs: 8000,   // 抖动判定窗口：8秒内的失败视为抖动
+  maxJitterFailures: 3,   // 窗口内允许的最大失败次数（超过则视为真断连）
+  retryTimers: [],        // 活跃的重试定时器
+  suppressedPopups: 0,    // 已抑制的弹窗计数（诊断用）
+  listeners: [],          // 状态变化监听器
+
+  // 记录一次网络探测/请求成功
+  recordSuccess(context) {
+    this.consecutiveFailures = 0;
+    this.lastSuccessTime = Date.now();
+    this.isOnline = true;
+    this.isStable = true;
+    fnosLog('info', 'network', `连接正常 [${context || 'general'}]`);
+    this._notify('online');
+  },
+
+  // 记录一次网络探测/请求失败
+  recordFailure(context, error) {
+    this.consecutiveFailures++;
+    this.lastFailureTime = Date.now();
+    const timeSinceLastSuccess = Date.now() - this.lastSuccessTime;
+    
+    // 判断是否为瞬时抖动：上次成功在抖动窗口内，且失败次数未超阈值
+    const isJitter = this.consecutiveFailures <= this.maxJitterFailures && timeSinceLastSuccess < 60000;
+    
+    if (isJitter) {
+      this.isStable = false;
+      fnosLog('warn', 'network', `网络抖动 [${context || 'general'}] 连续失败 ${this.consecutiveFailures}/${this.maxJitterFailures}`, { error });
+      this._notify('jitter');
+    } else {
+      this.isOnline = false;
+      this.isStable = false;
+      fnosLog('error', 'network', `网络断开 [${context || 'general'}] 连续失败 ${this.consecutiveFailures}`, { error });
+      this._notify('offline');
+    }
+    return isJitter; // 返回 true 表示是抖动，调用方可抑制弹窗
+  },
+
+  // 判断当前是否应抑制"已断开"弹窗（抖动期间抑制）
+  shouldSuppressPopup() {
+    if (!this.isOnline) {
+      // 真断连时也不频繁弹窗——同一断连周期只弹一次
+      if (this.suppressedPopups > 0) return true;
+    }
+    return !this.isOnline || !this.isStable;
+  },
+
+  // 标记已弹窗（用于去重）
+  markPopupShown() {
+    this.suppressedPopups = 0;
+  },
+
+  // 注册状态变化监听
+  onStatusChange(listener) {
+    this.listeners.push(listener);
+  },
+
+  _notify(status) {
+    for (const fn of this.listeners) {
+      try { fn(status, { online: this.isOnline, stable: this.isStable, failures: this.consecutiveFailures }); } catch (_) {}
+    }
+  },
+
+  // 创建带重试的网络请求包装器（指数退避）
+  createRetryableRequest(fn, opts = {}) {
+    const maxRetries = opts.maxRetries || 3;
+    const baseDelay = opts.baseDelay || 1000;
+    const maxDelay = opts.maxDelay || 15000;
+    const context = opts.context || 'request';
+    let attempt = 0;
+
+    const doRetry = () => {
+      if (attempt >= maxRetries) {
+        fnosLog('error', 'network', `${context} 重试耗尽 (${maxRetries}次)`);
+        NetworkHealth.recordFailure(context, 'max retries exceeded');
+        return Promise.reject(new Error('Network request failed after retries'));
+      }
+      attempt++;
+      const delay = Math.min(maxDelay, baseDelay * Math.pow(2, attempt - 1) + Math.random() * 500);
+      fnosLog('info', 'network', `${context} 第${attempt}次重试，${Math.round(delay)}ms后执行`);
+      return new Promise(resolve => {
+        const timer = setTimeout(resolve, delay);
+        NetworkHealth.retryTimers.push(timer);
+      }).then(() => fn()).then(result => {
+        NetworkHealth.recordSuccess(context);
+        return result;
+      }).catch(err => {
+        const isJitter = NetworkHealth.recordFailure(context, err?.message);
+        if (!isJitter || attempt >= maxRetries) throw err;
+        return doRetry();
+      });
+    };
+
+    return fn().then(result => {
+      NetworkHealth.recordSuccess(context);
+      return result;
+    }).catch(err => {
+      const isJitter = NetworkHealth.recordFailure(context, err?.message);
+      if (!isJitter) throw err;
+      return doRetry();
+    });
+  },
+
+  // 获取状态摘要（诊断用）
+  getStatus() {
+    return {
+      isOnline: this.isOnline,
+      isStable: this.isStable,
+      consecutiveFailures: this.consecutiveFailures,
+      lastSuccessTime: new Date(this.lastSuccessTime).toISOString(),
+      lastFailureTime: this.lastFailureTime ? new Date(this.lastFailureTime).toISOString() : null,
+      suppressedPopups: this.suppressedPopups,
+    };
+  }
+};
+
+// 增强型网络健康探测：定时向 NAS 发轻量请求，检测真实连通性
+let networkProbeTimer = null;
+function startNetworkProbe() {
+  if (networkProbeTimer) clearInterval(networkProbeTimer);
+  networkProbeTimer = setInterval(() => {
+    try {
+      const origin = currentOrigin;
+      if (!origin || !/^https?:\/\//i.test(origin)) return;
+      const u = new URL(origin);
+      const lib = u.protocol === 'https:' ? require('https') : require('http');
+      const ses = (currentPartition && currentPartition.startsWith('persist:'))
+        ? session.fromPartition(currentPartition)
+        : session.defaultSession;
+      if (!ses || !ses.cookies) return;
+      ses.cookies.get({ url: origin }).then((ck) => {
+        const cookieHeader = (ck || []).map((c) => `${c.name}=${c.value}`).join('; ');
+        const req = lib.request(origin + '/v/', {
+          method: 'GET', timeout: 8000,
+          headers: { 'User-Agent': getNasUA(), 'Cookie': cookieHeader, 'Accept': '*/*', 'Connection': 'keep-alive' },
+        }, (res) => {
+          res.on('data', () => {});
+          res.on('end', () => {
+            if (res.statusCode >= 200 && res.statusCode < 500) {
+              NetworkHealth.recordSuccess('probe');
+            } else {
+              NetworkHealth.recordFailure('probe', `HTTP ${res.statusCode}`);
+            }
+          });
+        });
+        req.on('error', (e) => { NetworkHealth.recordFailure('probe', e.message); });
+        req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (_) {} });
+        req.end();
+      }).catch(() => {});
+    } catch (_) {}
+  }, 30000); // 每30秒探测一次
+  if (networkProbeTimer.unref) networkProbeTimer.unref();
+}
+
+// IPC: 获取网络健康状态（供前端使用）
+ipcMain.handle('network:get-status', async () => {
+  return NetworkHealth.getStatus();
+});
+
+// ===================== v2.0.0 文件下载断点续传 =====================
+const DOWNLOADS_FILE = path.join(app.getPath('userData'), 'downloads.json');
+
+// 下载任务状态
+const DOWNLOAD_STATUS = {
+  PENDING: 'pending',
+  DOWNLOADING: 'downloading',
+  PAUSED: 'paused',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+};
+
+// 下载任务管理器
+const DownloadManager = {
+  tasks: new Map(), // taskId -> task info
+  activeDownloads: new Map(), // taskId -> { abortController, writer }
+  
+  // 加载持久化的下载任务
+  loadTasks() {
+    try {
+      if (!fs.existsSync(DOWNLOADS_FILE)) return new Map();
+      const raw = fs.readFileSync(DOWNLOADS_FILE, 'utf-8');
+      const data = JSON.parse(raw);
+      if (!Array.isArray(data)) return new Map();
+      const map = new Map();
+      for (const task of data) {
+        if (task && task.id) {
+          // 恢复未完成的下载任务状态为 paused
+          if (task.status === DOWNLOAD_STATUS.DOWNLOADING) {
+            task.status = DOWNLOAD_STATUS.PAUSED;
+          }
+          map.set(task.id, task);
+        }
+      }
+      fnosLog('info', 'download', `加载 ${map.size} 个下载任务`);
+      return map;
+    } catch (e) {
+      fnosLog('error', 'download', '加载下载任务失败', { err: e.message, stack: e.stack });
+      return new Map();
+    }
+  },
+  
+  // 保存下载任务到文件
+  saveTasks() {
+    try {
+      const tasks = Array.from(this.tasks.values());
+      fs.writeFileSync(DOWNLOADS_FILE, JSON.stringify(tasks, null, 2), 'utf-8');
+    } catch (e) {
+      fnosLog('error', 'download', '保存下载任务失败', { err: e.message, stack: e.stack });
+    }
+  },
+  
+  // 创建下载任务
+  createTask(url, savePath, fileName) {
+    const taskId = 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const task = {
+      id: taskId,
+      url,
+      savePath,
+      fileName,
+      totalBytes: 0,
+      downloadedBytes: 0,
+      status: DOWNLOAD_STATUS.PENDING,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      error: null,
+    };
+    this.tasks.set(taskId, task);
+    this.saveTasks();
+    fnosLog('info', 'download', '创建下载任务', { taskId, url, savePath });
+    return task;
+  },
+  
+  // 开始/恢复下载
+  async startDownload(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    
+    // 如果已有活跃的下载，先停止
+    if (this.activeDownloads.has(taskId)) {
+      this.pauseDownload(taskId);
+    }
+    
+    task.status = DOWNLOAD_STATUS.DOWNLOADING;
+    task.error = null;
+    task.updatedAt = new Date().toISOString();
+    this.saveTasks();
+    
+    try {
+      await this._doDownload(task);
+    } catch (e) {
+      task.status = DOWNLOAD_STATUS.FAILED;
+      task.error = e.message;
+      task.updatedAt = new Date().toISOString();
+      this.saveTasks();
+      fnosLog('error', 'download', '下载失败', { taskId, error: e.message });
+      this._broadcastProgress(task);
+    }
+    
+    return { success: task.status !== DOWNLOAD_STATUS.FAILED, msg: task.error || '' };
+  },
+  
+  // 实际下载逻辑（支持断点续传）
+  async _doDownload(task) {
+    const { url, savePath, downloadedBytes } = task;
+    const u = new URL(url);
+    const lib = u.protocol === 'https:' ? require('https') : require('http');
+    
+    // 获取当前 partition 的 cookies
+    const ses = (currentPartition && currentPartition.startsWith('persist:'))
+      ? session.fromPartition(currentPartition)
+      : session.defaultSession;
+    const cookies = ses ? await ses.cookies.get({ url: url }) : [];
+    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    
+    const headers = {
+      'User-Agent': getNasUA(),
+      'Cookie': cookieHeader,
+      'Accept': '*/*',
+      'Connection': 'keep-alive',
+    };
+    
+    // 断点续传：如果已有部分下载，添加 Range 头
+    if (downloadedBytes > 0) {
+      headers['Range'] = `bytes=${downloadedBytes}-`;
+      fnosLog('info', 'download', '断点续传', { taskId: task.id, fromByte: downloadedBytes });
+    }
+    
+    return new Promise((resolve, reject) => {
+      const req = lib.request(url, { method: 'GET', headers, timeout: 30000 }, (res) => {
+        // 处理重定向
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          task.url = new URL(res.headers.location, url).href;
+          this._doDownload(task).then(resolve).catch(reject);
+          return;
+        }
+        
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        
+        // 获取文件总大小
+        const contentLength = parseInt(res.headers['content-length'] || '0', 10);
+        if (res.statusCode === 200) {
+          // 全新下载
+          task.totalBytes = contentLength;
+          task.downloadedBytes = 0;
+        } else if (res.statusCode === 206) {
+          // 断点续传，总大小 = 已下载 + 本次内容长度
+          task.totalBytes = downloadedBytes + contentLength;
+        }
+        
+        // 确保保存目录存在
+        const dir = path.dirname(savePath);
+        if (!fs.existsSync(dir)) {
+          try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+        }
+        
+        // 打开文件（断点续传时追加模式）
+        const flags = downloadedBytes > 0 ? 'a' : 'w';
+        const writer = fs.createWriteStream(savePath, { flags });
+        
+        const abortController = { aborted: false };
+        this.activeDownloads.set(task.id, { abortController, writer });
+        
+        let lastProgressTime = 0;
+        const PROGRESS_INTERVAL = 500; // 每500ms更新一次进度
+        
+        res.on('data', (chunk) => {
+          if (abortController.aborted) {
+            res.destroy();
+            return;
+          }
+          
+          writer.write(chunk);
+          task.downloadedBytes += chunk.length;
+          
+          // 节流进度广播
+          const now = Date.now();
+          if (now - lastProgressTime > PROGRESS_INTERVAL) {
+            lastProgressTime = now;
+            task.updatedAt = new Date().toISOString();
+            this.saveTasks();
+            this._broadcastProgress(task);
+          }
+        });
+        
+        res.on('end', () => {
+          writer.end();
+          this.activeDownloads.delete(task.id);
+          
+          if (abortController.aborted) {
+            task.status = DOWNLOAD_STATUS.PAUSED;
+            fnosLog('info', 'download', '下载暂停', { taskId: task.id });
+          } else {
+            task.status = DOWNLOAD_STATUS.COMPLETED;
+            fnosLog('info', 'download', '下载完成', { taskId: task.id, totalBytes: task.totalBytes });
+          }
+          
+          task.updatedAt = new Date().toISOString();
+          this.saveTasks();
+          this._broadcastProgress(task);
+          resolve();
+        });
+        
+        res.on('error', (err) => {
+          writer.end();
+          this.activeDownloads.delete(task.id);
+          reject(err);
+        });
+      });
+      
+      req.on('timeout', () => {
+        try { req.destroy(); } catch (_) {}
+        reject(new Error('Request timeout'));
+      });
+      
+      req.on('error', (err) => {
+        this.activeDownloads.delete(task.id);
+        reject(err);
+      });
+      
+      req.end();
+      
+      // 保存 abort 控制器
+      const existing = this.activeDownloads.get(task.id);
+      if (existing) {
+        existing.abort = () => {
+          existing.abortController.aborted = true;
+          try { req.destroy(); } catch (_) {}
+        };
+      }
+    });
+  },
+  
+  // 暂停下载
+  pauseDownload(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    
+    const active = this.activeDownloads.get(taskId);
+    if (active) {
+      if (active.abort) active.abort();
+      if (active.writer) {
+        try { active.writer.end(); } catch (_) {}
+      }
+      this.activeDownloads.delete(taskId);
+    }
+    
+    task.status = DOWNLOAD_STATUS.PAUSED;
+    task.updatedAt = new Date().toISOString();
+    this.saveTasks();
+    this._broadcastProgress(task);
+    fnosLog('info', 'download', '暂停下载', { taskId, downloadedBytes: task.downloadedBytes });
+    
+    return { success: true, msg: '已暂停' };
+  },
+  
+  // 取消下载
+  cancelDownload(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    
+    // 先暂停
+    this.pauseDownload(taskId);
+    
+    // 删除文件
+    try {
+      if (fs.existsSync(task.savePath)) {
+        fs.unlinkSync(task.savePath);
+      }
+    } catch (e) {
+      fnosLog('warn', 'download', '删除文件失败', { path: task.savePath, err: e.message });
+    }
+    
+    // 移除任务
+    this.tasks.delete(taskId);
+    this.saveTasks();
+    fnosLog('info', 'download', '取消下载', { taskId });
+    
+    return { success: true, msg: '已取消' };
+  },
+  
+  // 广播下载进度到所有窗口
+  _broadcastProgress(task) {
+    const progress = {
+      id: task.id,
+      fileName: task.fileName,
+      status: task.status,
+      totalBytes: task.totalBytes,
+      downloadedBytes: task.downloadedBytes,
+      progress: task.totalBytes > 0 ? Math.round((task.downloadedBytes / task.totalBytes) * 100) : 0,
+      error: task.error,
+    };
+    
+    // 广播到所有窗口
+    const allWins = BrowserWindow.getAllWindows();
+    for (const win of allWins) {
+      try {
+        if (!win.isDestroyed()) {
+          win.webContents.send('download:progress', progress);
+        }
+      } catch (_) {}
+    }
+  },
+  
+  // 获取所有下载任务
+  getAllTasks() {
+    return Array.from(this.tasks.values()).sort((a, b) => 
+      new Date(b.updatedAt) - new Date(a.updatedAt)
+    );
+  },
+};
+
+// 初始化下载管理器
+DownloadManager.tasks = DownloadManager.loadTasks();
+
+// 下载相关 IPC 接口
+ipcMain.handle('download:start', async (_e, { url, savePath, fileName }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:start', { url, savePath, fileName });
+    const task = DownloadManager.createTask(url, savePath, fileName);
+    // 异步开始下载，不阻塞 IPC 返回
+    setImmediate(() => DownloadManager.startDownload(task.id));
+    return { success: true, msg: '开始下载', data: task };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:start error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+ipcMain.handle('download:pause', async (_e, { taskId }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:pause', { taskId });
+    return DownloadManager.pauseDownload(taskId);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:pause error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('download:resume', async (_e, { taskId }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:resume', { taskId });
+    const task = DownloadManager.tasks.get(taskId);
+    if (!task) return { success: false, msg: '任务不存在' };
+    setImmediate(() => DownloadManager.startDownload(taskId));
+    return { success: true, msg: '继续下载' };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:resume error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('download:cancel', async (_e, { taskId }) => {
+  try {
+    fnosLog('info', 'ipc', 'download:cancel', { taskId });
+    return DownloadManager.cancelDownload(taskId);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:cancel error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('download:list', async () => {
+  try {
+    const tasks = DownloadManager.getAllTasks();
+    return { success: true, msg: '', data: tasks };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'download:list error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+ipcMain.handle('download:get-default-path', async () => {
+  // 默认下载到 exe 同级 downloads 目录
+  const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
+  const downloadDir = path.join(exeDir, 'downloads');
+  try {
+    if (!fs.existsSync(downloadDir)) {
+      fs.mkdirSync(downloadDir, { recursive: true });
+    }
+  } catch (_) {}
+  return downloadDir;
+});
+
+// ---------------------- v2.1.13：NAS 登录凭据持久化（safeStorage 加密） ----------------------
+// 需求 3：主程序/程序内应用登录成功后保存登录信息，再次打开免输入。
+// 密码用 Electron safeStorage（Windows 上即 DPAPI，绑定当前用户）加密后落盘，明文永不写入。
+const CRED_FILE = path.join(app.getPath('userData'), 'credentials.json');
+let __credCache = null;
+function readCredentials() {
+  if (__credCache) return __credCache;
+  let data = {};
+  try {
+    if (fs.existsSync(CRED_FILE)) data = JSON.parse(fs.readFileSync(CRED_FILE, 'utf-8') || '{}') || {};
+  } catch (_) { data = {}; }
+  __credCache = data;
+  return data;
+}
+function writeCredentials(data) {
+  try {
+    __credCache = data;
+    const tmp = CRED_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    try { fs.renameSync(tmp, CRED_FILE); } catch (_) { fs.writeFileSync(CRED_FILE, JSON.stringify(data, null, 2)); }
+    return true;
+  } catch (e) { fnosLog('warn', 'cred', '写入凭据失败', { err: e.message }); return false; }
+}
+function saveCredential(origin, username, password) {
+  try {
+    if (!origin || !password) return false;
+    let encPwd = '';
+    try {
+      if (safeStorage && safeStorage.isEncryptionAvailable && safeStorage.isEncryptionAvailable()) {
+        encPwd = 'enc:' + safeStorage.encryptString(String(password)).toString('base64');
+      }
+    } catch (_) {}
+    if (!encPwd) return false; // 无法加密时宁可不存，绝不落明文
+    const data = readCredentials();
+    data[String(origin)] = { username: String(username || ''), password: encPwd, savedAt: Date.now() };
+    return writeCredentials(data);
+  } catch (_) { return false; }
+}
+function getCredential(origin) {
+  try {
+    const data = readCredentials();
+    const rec = data && data[String(origin)];
+    if (!rec || !rec.password) return null;
+    if (String(rec.password).startsWith('enc:')) {
+      const plain = safeStorage.decryptString(Buffer.from(String(rec.password).slice(4), 'base64'));
+      return { username: rec.username || '', password: plain };
+    }
+  } catch (_) {}
+  return null;
 }
 
 // ---------------------- 启动密码哈希（scrypt + 随机 salt） ----------------------
@@ -772,6 +1621,8 @@ function loadSettings() {
   // v1.18.0：历史代理与外部播放器字段不再生效；disableGpu 兜底。
   if (typeof cachedSettings.disableGpu !== 'boolean') cachedSettings.disableGpu = false;
   delete cachedSettings.externalPlayerPath;
+  // v2.1.11：快捷方式后台化方式只允许 tray / minimize
+  cachedSettings.shortcutHideMode = cachedSettings.shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
   return cachedSettings;
 }
 
@@ -994,9 +1845,13 @@ function normalizeServer(input) {
 // 共用同一份 cookie、localStorage，实现一次登录全模块互通、重启自动恢复登录态。
 const SHARED_PARTITION = 'persist:fnos-shared';
 
-function partitionForServer(/* parsed */) {
-  // 历史上按 host 分了独立 partition，导致登录态在主程序与 webview 之间不互通。
-  // v1.16.3 起强制统一：所有服务器都走共享 partition。
+function partitionForServer(parsed) {
+  // v2.0.0：多账号支持——每个 NAS 服务器地址使用独立 partition，
+  // 确保多个 NAS 账号的登录态互不干扰、可同时保持在线。
+  if (parsed && parsed.origin) {
+    const hash = parsed.origin.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').slice(0, 24);
+    return 'persist:nas-' + hash;
+  }
   return SHARED_PARTITION;
 }
 
@@ -2391,10 +3246,21 @@ function authHeartbeatOnce() {
         res.on('data', () => {});
         res.on('end', () => {
           try { authHeartbeatBusy = false; } catch (_) {}
+          // v2.0.0：记录心跳成功到网络健康监控
+          try {
+            if (res.statusCode >= 200 && res.statusCode < 500) {
+              NetworkHealth.recordSuccess('heartbeat');
+            } else {
+              NetworkHealth.recordFailure('heartbeat', `HTTP ${res.statusCode}`);
+            }
+          } catch (_) {}
         });
       });
       req.on('timeout', () => { try { req.destroy(); } catch (_) {} });
-      req.on('error', () => {}); // keep-alive 在网卡切换时报 EPIPE 属正常，忽略
+      req.on('error', (err) => {
+        // v2.0.0：记录心跳失败到网络健康监控
+        try { NetworkHealth.recordFailure('heartbeat', err?.message || 'error'); } catch (_) {}
+      });
       req.on('close', () => { try { authHeartbeatBusy = false; } catch (_) {} });
       req.end();
     }).catch(() => { try { authHeartbeatBusy = false; } catch (_) {} });
@@ -2568,6 +3434,7 @@ function createSettingsWindow() {
       sandbox: false,
       spellcheck: false,
       backgroundThrottling: false,
+      partition: currentPartition, // v2.1.12：与主窗口一致（登录 cookie 所在分区），设置页 http 图标请求不 401
     },
   });
   settingsWindow.__isSettings = true; // 供 refreshMpvLayer 识别为应浮于 mpv 之上的子弹窗
@@ -2856,11 +3723,13 @@ function registerWindow(win, opts = {}) {
 // v1.71.0：应用窗口统一 UI 注入（侧边栏毛玻璃 + 深色滚动条），与主窗口 shell.js 注入保持一致，
 // 避免部分 Docker 应用（如 XTE-IPTV）仍显示白色原生滚动条/原生侧边栏。
 const APP_UI_INJECT_CSS = [
+  // v2.0.0：全局 iOS27 液态玻璃效果注入
   'html,body{overscroll-behavior:none;}',
   '::-webkit-scrollbar{width:10px;height:10px;}',
   '::-webkit-scrollbar-track{background:transparent;}',
   '::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:6px;}',
   '::-webkit-scrollbar-thumb:hover{background:rgba(140,150,170,.65);}',
+  // 侧边栏液态玻璃效果
   'aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar,',
   '.el-aside, .aside-container, .menu-container, .drawer, .side-panel,',
   '[class*="sidebar"], [class*="side-bar"], [class*="side-nav"], [class*="left-nav"],',
@@ -2868,255 +3737,63 @@ const APP_UI_INJECT_CSS = [
   '  background: rgba(18, 22, 32, 0.42) !important;',
   '  backdrop-filter: blur(18px) saturate(1.35) !important;',
   '  -webkit-backdrop-filter: blur(18px) saturate(1.35) !important;',
-  '  border-right: 1px solid rgba(255,255,255,0.06) !important;',
+  '  border-right: 1px solid rgba(255,255,255,0.08) !important;',
   '  box-shadow: none !important;',
+  '}',
+  // v2.0.0：弹窗/对话框液态玻璃
+  '[role="dialog"], .modal, .dialog, .el-dialog, .ant-modal, .popup, .overlay-panel {',
+  '  background: rgba(20, 22, 35, 0.72) !important;',
+  '  backdrop-filter: blur(28px) saturate(1.8) !important;',
+  '  -webkit-backdrop-filter: blur(28px) saturate(1.8) !important;',
+  '  border: 1px solid rgba(255,255,255,0.1) !important;',
+  '  border-radius: 18px !important;',
+  '  box-shadow: 0 24px 64px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.15) !important;',
+  '}',
+  // v2.0.0：卡片/面板液态玻璃
+  '.card, .panel, .el-card, .ant-card, [class*="card"], [class*="panel"] {',
+  '  background: rgba(255,255,255,0.05) !important;',
+  '  backdrop-filter: blur(16px) saturate(1.4) !important;',
+  '  -webkit-backdrop-filter: blur(16px) saturate(1.4) !important;',
+  '  border: 1px solid rgba(255,255,255,0.08) !important;',
+  '  border-radius: 14px !important;',
+  '  box-shadow: 0 8px 32px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.08) !important;',
+  '}',
+  // v2.0.0：按钮液态玻璃（排除自定义标题栏按钮，避免裁剪SVG图标）
+  'button:not(#fnos-tb-min):not(#fnos-tb-max):not(#fnos-tb-close):not(#fnos-tb-menu), .btn, .el-button, .ant-btn, [role="button"] {',
+  '  border-radius: 20px !important;',
+  '  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;',
+  '}',
+  'button:not(#fnos-tb-min):not(#fnos-tb-max):not(#fnos-tb-close):not(#fnos-tb-menu):hover, .btn:hover, .el-button:hover, .ant-btn:hover, [role="button"]:hover {',
+  '  transform: translateY(-1px) !important;',
+  '  box-shadow: 0 6px 20px rgba(0,0,0,0.25) !important;',
+  '}',
+  // v2.0.3：标题栏按钮SVG图标保护
+  '#fnos-tb-min svg, #fnos-tb-max svg, #fnos-tb-close svg, #fnos-tb-menu svg {',
+  '  display: block !important; pointer-events: none !important;',
+  '}',
+  '#fnos-tb-close svg path { stroke: #fff !important; }',
+  // v2.0.0：输入框液态玻璃
+  'input, textarea, .el-input__inner, .ant-input {',
+  '  background: rgba(255,255,255,0.06) !important;',
+  '  border: 1px solid rgba(255,255,255,0.1) !important;',
+  '  border-radius: 10px !important;',
+  '  transition: all 0.2s ease !important;',
+  '}',
+  'input:focus, textarea:focus, .el-input__inner:focus, .ant-input:focus {',
+  '  background: rgba(255,255,255,0.1) !important;',
+  '  border-color: rgba(99,102,241,0.5) !important;',
+  '  box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important;',
   '}',
 ].join('\n');
 
-// v1.72.0：为已扫描应用在 Windows 桌面创建快捷方式（.lnk 指向客户端 + --open-app 参数，
-// 图标优先用应用 favicon 转 ico，失败则用客户端图标）。
-async function downloadAppIcon(url, dest) {
-  try {
-    let buf = null;
-    // v1.73.0：支持 data: URL 图标（内联 SVG/PNG），无需网络请求
-    if (/^data:image\//i.test(String(url))) {
-      try {
-        const img = nativeImage.createFromDataURL(url);
-        if (img.isEmpty()) return false;
-        buf = img.toPNG();
-      } catch (_) { return false; }
-    } else {
-      const ses = session.fromPartition(SHARED_PARTITION);
-      const res = await ses.fetch(url, { credentials: 'include' });
-      if (!res.ok) return false;
-      buf = Buffer.from(await res.arrayBuffer());
-    }
-    if (!buf || buf.length < 64) return false;
-    fs.writeFileSync(dest, buf);
-    return true;
-  } catch (_) { return false; }
-}
-
-function buildShortcutPs1(exe, apps, iconDir) {
-  const esc = (s) => String(s).replace(/'/g, "''");
-  const L = [];
-  L.push("$ErrorActionPreference = 'Stop'");
-  L.push("Add-Type -AssemblyName System.Drawing");
-  L.push("$desktop = [Environment]::GetFolderPath('Desktop')");
-  L.push("$ws = New-Object -ComObject WScript.Shell");
-  for (const app of apps) {
-    const safeName = String(app.name || '')
-      .replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 50);
-    if (!safeName) continue;
-    const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
-    // v1.79.0：图标文件名带 -256 标记——旧快捷方式 IconLocation 指向旧名，触发重建（新图标生效）
-    const ico = path.join(iconDir, hash + '-256.ico');
-    if (app.iconPng && fs.existsSync(app.iconPng)) {
-      // v1.79.0：多尺寸 ICO（16/32/48/256 PNG 压缩）——Windows 按显示尺寸精确取图，桌面图标清晰
-      L.push(`$img = [System.Drawing.Image]::FromFile('${esc(app.iconPng)}')`);
-      L.push('$sizes = @(16, 32, 48, 256)');
-      L.push('$pngs = @()');
-      L.push('foreach ($sz in $sizes) {');
-      L.push('  $bmp = New-Object System.Drawing.Bitmap($img, $sz, $sz)');
-      L.push('  $ms = New-Object System.IO.MemoryStream');
-      L.push('  $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)');
-      L.push('  $pngs += ,$ms.ToArray()');
-      L.push('  $bmp.Dispose(); $ms.Dispose()');
-      L.push('}');
-      L.push('$ms = New-Object System.IO.MemoryStream');
-      L.push('$bw = New-Object System.IO.BinaryWriter($ms)');
-      L.push('$bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]$pngs.Length)');
-      L.push('$offset = 6 + 16 * $pngs.Length');
-      L.push('for ($i = 0; $i -lt $pngs.Length; $i++) {');
-      L.push('  $w = if ($sizes[$i] -ge 256) { 0 } else { $sizes[$i] }');
-      L.push('  $bw.Write([byte]$w); $bw.Write([byte]$w); $bw.Write([byte]0); $bw.Write([byte]0)');
-      L.push('  $bw.Write([uint16]1); $bw.Write([uint16]32)');
-      L.push('  $bw.Write([uint32]$pngs[$i].Length); $bw.Write([uint32]$offset)');
-      L.push('  $offset += $pngs[$i].Length');
-      L.push('}');
-      L.push('for ($i = 0; $i -lt $pngs.Length; $i++) { $bw.Write($pngs[$i]) }');
-      L.push('$bw.Flush()');
-      L.push(`[System.IO.File]::WriteAllBytes('${esc(ico)}', $ms.ToArray())`);
-      L.push('$bw.Dispose(); $ms.Dispose(); $img.Dispose()');
-    }
-    const iconLoc = (app.iconPng && fs.existsSync(app.iconPng)) ? ico : exe;
-    const args = '--open-app "' + String(app.url).replace(/"/g, '\\"') + '"';
-    // v1.78.0：旧快捷方式自动修复——同名快捷方式若 Arguments 未指向当前 URL 则覆盖重建
-    //（解决旧版自动创建时保存的外网/过期 URL 导致双击打不开）；指向相同则跳过。
-    L.push(`$lnkPath = Join-Path $desktop '${esc(safeName)}.lnk'`);
-    L.push('if (Test-Path $lnkPath) {');
-    L.push('  $old = $ws.CreateShortcut($lnkPath)');
-    L.push(`  $needle = '${esc(args)}'`);
-    // v1.79.0：增加 IconLocation 检查——图标文件名不符（旧 64x64/单尺寸图标）也重建，强制刷新清晰图标
-    L.push(`  $oldIcon = [string]$old.IconLocation`);
-    L.push(`  if ($old.Arguments -and $old.Arguments.Contains($needle) -and $oldIcon.Contains('${esc(path.basename(ico))}')) { continue }`);
-    L.push('}');
-    L.push(`$sc = $ws.CreateShortcut($lnkPath)`);
-    L.push(`$sc.TargetPath = '${esc(exe)}'`);
-    L.push(`$sc.Arguments = '${args}'`);
-    L.push(`$sc.IconLocation = '${esc(iconLoc)}'`);
-    L.push(`$sc.Description = 'FNOS 应用 · ${esc(safeName)}'`);
-    L.push('$sc.Save()');
-  }
-  return L.join('\r\n');
-}
-
-async function createDesktopShortcuts(win, appsFilter) {
-  const notify = (title, msg) => {
-    try { glassMessageBox(win || mainWindow, { type: 'info', title, buttons: ['好的'], defaultId: 0, message: msg }); } catch (_) {}
-  };
-  if (process.platform !== 'win32') {
-    notify('创建桌面快捷方式', '该功能仅在 Windows 上可用。');
-    return;
-  }
-  const s = loadSettings();
-  // v1.78.0：appsFilter 支持按需创建（undefined=全部；function=只创建匹配项）
-  let apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
-  if (typeof appsFilter === 'function') apps = apps.filter(appsFilter);
-  if (!apps.length) {
-    notify('创建桌面快捷方式', '尚未扫描到应用。请先打开一次飞牛主页，让客户端自动扫描主页中的应用，然后再试。');
-    return;
-  }
-  const userData = app.getPath('userData');
-  const iconDir = path.join(userData, 'app-icons');
-  try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
-  // v1.79.0：便携版每次运行解压到临时目录，process.execPath 变化导致快捷方式失效。
-  // 用 PORTABLE_EXECUTABLE_FILE（用户存放的原始 exe 稳定路径）；安装版无此变量则回退 execPath。
-  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-  const downloaded = [];
-  for (const app of apps) {
-    const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
-    const dest = path.join(iconDir, hash + '.png');
-    let iconPng = '';
-    // v1.73.0：downloadAppIcon 已支持 data: URL 图标，这里不再只认 http(s)
-    if (app.icon && (await downloadAppIcon(app.icon, dest))) iconPng = dest;
-    downloaded.push({ name: app.name, url: app.url, iconPng });
-  }
-  const ps1 = buildShortcutPs1(exe, downloaded, iconDir);
-  const psFile = path.join(userData, 'fnos-create-shortcuts.ps1');
-  try { fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8'); } catch (e) {
-    notify('创建桌面快捷方式', '写入脚本失败：' + String(e && e.message || e).slice(0, 120));
-    return;
-  }
-  try {
-    cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 90000, windowsHide: true }, (err) => {
-      try { fs.unlinkSync(psFile); } catch (_) {}
-      if (err) { notify('创建桌面快捷方式', '创建失败：' + String(err && err.message || err).slice(0, 200)); return; }
-      const withIcon = downloaded.filter((d) => d.iconPng).length;
-      notify('创建桌面快捷方式', '已在桌面创建 ' + downloaded.length + ' 个应用快捷方式（其中 ' + withIcon + ' 个带应用图标）。');
-    });
-  } catch (e) {
-    try { fs.unlinkSync(psFile); } catch (_) {}
-    notify('创建桌面快捷方式', '执行失败：' + String(e && e.message || e).slice(0, 120));
-  }
-}
-
-// v1.73.0：静默自动创建桌面快捷方式——应用列表扫描到「新增」应用时自动触发，
-// 无需用户手动点菜单；桌面已存在同名快捷方式的自动跳过（buildShortcutPs1 内
-// Test-Path 幂等），因此应用增减时自动同步，不会重复创建或频繁打扰。
-let __autoShortcutLastTs = 0;
-// v1.78.0：菜单「创建桌面快捷方式」子菜单——每个应用一项（按需创建），
-// 外加「全部创建/更新」。不再自动创建全部应用的快捷方式。
-function buildShortcutMenuItems() {
-  const items = [];
-  try {
-    const s = loadSettings();
-    const apps = (Array.isArray(s.apps) ? s.apps : []).filter((a) => a && a.name && a.url);
-    if (!apps.length) {
-      items.push({ label: '尚未扫描到应用（请先打开飞牛主页）', enabled: false });
-      return items;
-    }
-    for (const a of apps) {
-      items.push({
-        label: a.name,
-        click: () => { createDesktopShortcuts(mainWindow, (x) => x.url === a.url); },
-      });
-    }
-    items.push({ type: 'separator' });
-    items.push({ label: '全部创建 / 更新', click: () => { createDesktopShortcuts(mainWindow); } });
-  } catch (_) {
-    items.push({ label: '尚未扫描到应用', enabled: false });
-  }
-  return items;
-}
-
-// v1.79.0：便携版每次运行解压到临时目录，旧快捷方式 TargetPath 失效（弹窗"FNOS.exe 已更改或移动"）。
-// 主程序启动后自动修复自己创建的快捷方式（Description 以 FNOS 应用 开头）：TargetPath 更新为当前 exe。
-function fixDesktopShortcuts() {
-  try {
-    if (process.platform !== 'win32') return;
-    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    const esc = (s) => String(s).replace(/'/g, "''");
-    const L = [];
-    L.push("$ErrorActionPreference = 'SilentlyContinue'");
-    L.push("$desktop = [Environment]::GetFolderPath('Desktop')");
-    L.push("$ws = New-Object -ComObject WScript.Shell");
-    L.push(`$target = '${esc(exe)}'`);
-    L.push('Get-ChildItem -Path $desktop -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {');
-    L.push('  try {');
-    L.push('    $sc = $ws.CreateShortcut($_.FullName)');
-    L.push("    if ([string]$sc.Description -notlike 'FNOS 应用*') { return }");
-    L.push('    if ($sc.TargetPath -ne $target) {');
-    L.push('      $sc.TargetPath = $target');
-    L.push('      $sc.Save()');
-    L.push('    }');
-    L.push('  } catch {}');
-    L.push('}');
-    const ps1 = L.join('\r\n');
-    const psFile = path.join(app.getPath('userData'), 'fnos-fix-shortcuts.ps1');
-    fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8');
-    cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 60000, windowsHide: true }, (err) => {
-      try { fs.unlinkSync(psFile); } catch (_) {}
-      if (err) { dlog && dlog('warn', 'shortcut.fix-fail', { err: String(err && err.message || err).slice(0, 160) }); return; }
-      dlog && dlog('info', 'shortcut.fix-ok', { exe: String(exe).slice(0, 120) });
-    });
-  } catch (_) {}
-}
-
-function autoCreateDesktopShortcuts(newApps, source) {
-  try {
-    if (process.platform !== 'win32') return;
-    const apps = (Array.isArray(newApps) ? newApps : []).filter((a) => a && a.name && a.url);
-    if (!apps.length) return;
-    // 节流：1.5s 内只执行一次（主页 SPA 多轮扫描会连续上报）
-    const now = Date.now();
-    if (now - __autoShortcutLastTs < 1500) return;
-    __autoShortcutLastTs = now;
-    const userData = app.getPath('userData');
-    const iconDir = path.join(userData, 'app-icons');
-    try { fs.mkdirSync(iconDir, { recursive: true }); } catch (_) {}
-    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    (async () => {
-      const downloaded = [];
-      for (const app of apps) {
-        const hash = require('crypto').createHash('sha1').update(app.url).digest('hex').slice(0, 12);
-        const dest = path.join(iconDir, hash + '.png');
-        let iconPng = '';
-        if (app.icon && (await downloadAppIcon(app.icon, dest))) iconPng = dest;
-        downloaded.push({ name: app.name, url: app.url, iconPng });
-      }
-      const ps1 = buildShortcutPs1(exe, downloaded, iconDir);
-      const psFile = path.join(userData, 'fnos-auto-shortcuts.ps1');
-      try { fs.writeFileSync(psFile, '\ufeff' + ps1, 'utf8'); } catch (_) { return; }
-      cp.exec('powershell -NoProfile -ExecutionPolicy Bypass -File "' + psFile + '"', { timeout: 60000, windowsHide: true }, (err) => {
-        try { fs.unlinkSync(psFile); } catch (_) {}
-        if (err) {
-          dlog && dlog('warn', 'shortcut.auto-fail', { n: downloaded.length, source: source || '', err: String(err && err.message || err).slice(0, 160) });
-          return;
-        }
-        dlog && dlog('info', 'shortcut.auto-ok', { n: downloaded.length, source: source || '' });
-      });
-    })();
-  } catch (_) {}
-}
 
 function createAppWindow(url, opts = {}) {
-  // v1.16.3：NAS 相关窗口一律走共享 partition，与主窗口/飞牛 webview/直播窗口
-  // 共享登录态；只有显式传入非 NAS 的外部 partition 才允许保留。
+  // v2.1.13：统一入口归一化——任何链路（主程序内点击、快捷方式、second-instance）
+  // 拿到的旧版 appview?anchor=https://xxx 地址都在这里修正。
+  url = normalizeAppLaunchUrl(url);
+  // v2.0.5：修复——子应用窗口必须与主窗口使用同一 partition，否则 cookie/session 不共享，
+  // 导致子应用打开后被重定向到登录页。不再将 persist:nas-* 替换为 SHARED_PARTITION。
   let partition = opts.partition || currentPartition;
-  if (!partition || partition === 'persist:connect' || /^persist:nas-/.test(partition)) {
-    partition = SHARED_PARTITION;
-  }
   applyUA(partition);
 
   // v1.70.0：应用窗口打开前主动应用 URL 重写（外网端口/域名映射）。
@@ -3162,7 +3839,26 @@ function createAppWindow(url, opts = {}) {
     //   titleBarOverlay——overlay 在 Windows 会重新绘制系统原生窗口按钮(右上角 - □ ✕)，
     //   自定义标题栏盖不住，表现为"标题栏不统一/仍是系统按钮"。
     frame: false,
-    icon: ICON_PATH,
+    // v2.0.6：优先使用 manifest 中存储的应用图标，避免初始显示主图标
+    icon: (() => {
+      try {
+        const manifest = readManifest();
+        if (manifest && Array.isArray(manifest.apps)) {
+          const urlObj = typeof url === 'string' ? new URL(url) : null;
+          const matched = manifest.apps.find(a => {
+            if (!a.nasAddress || !urlObj) return false;
+            try {
+              const aUrl = new URL(a.nasAddress);
+              return aUrl.origin === urlObj.origin;
+            } catch { return false; }
+          });
+          if (matched && matched.iconPath && fs.existsSync(matched.iconPath)) {
+            return matched.iconPath;
+          }
+        }
+      } catch (_) {}
+      return ICON_PATH;
+    })(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, webviewTag: true,
@@ -3186,6 +3882,17 @@ function createAppWindow(url, opts = {}) {
   // v1.48.0：无边框窗口，无系统菜单栏；菜单功能改由自定义标题栏「☰ 菜单」按钮弹出。
   try { win.setMenuBarVisibility(false); } catch (_) {}
 
+  // v2.0.0：为每个子应用窗口设置独立 AppUserModelId，避免 Windows 任务栏图标合并/空白
+  try {
+    const appId = opts.appId || (() => {
+      try {
+        const u = new URL(url);
+        return (u.hostname + u.pathname).replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 32);
+      } catch { return 'unknown'; }
+    })();
+    win.setAppUserModelId(`com.fnos.client.app.${appId}`);
+  } catch (_) {}
+
   const isHome = !!opts.isHome;
   registerWindow(win, {
     url, title: opts.title || APP_NAME, isMain: isHome, isHome, partition,
@@ -3205,10 +3912,16 @@ function createAppWindow(url, opts = {}) {
     });
     win.webContents.on('dom-ready', () => {
       try { dlog && dlog('info', 'appwin.dom-ready', { app: __appLabel, winId: win.id, ms: Date.now() - (win.__appNavStart || __t0) }); } catch (_) {}
-      // v1.71.0：应用窗口统一侧边栏毛玻璃 + 深色滚动条（与主窗口 shell.js 注入一致）
-      try {
+      // v2.0.0：修复子应用窗口输入框无法输入——延迟强制 webContents 聚焦，避免窗口焦点被抢占
+      try { setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.focus(); }, 150); } catch (_) {}
+      // v2.0.5：CSS 注入范围限定——只对客户端自身页面（file:// 协议的 login.html/lock.html/settings.html）
+    // 注入 APP_UI_INJECT_CSS，不对 NAS 应用页面（http/https）注入，避免破坏 NAS 应用的原始 UI。
+    try {
         if (win.webContents && !win.webContents.isDestroyed()) {
-          win.webContents.insertCSS(APP_UI_INJECT_CSS).catch(() => {});
+          const pageUrl = win.webContents.getURL();
+          if (pageUrl && pageUrl.startsWith('file://')) {
+            win.webContents.insertCSS(APP_UI_INJECT_CSS).catch(() => {});
+          }
         }
       } catch (_) {}
     });
@@ -3217,60 +3930,142 @@ function createAppWindow(url, opts = {}) {
         win.__appResPending = false;
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
-      // v1.73.0：应用窗口任务栏图标 = 应用 favicon（增强提取）
-      //   1) 选择器链：icon → apple-touch-icon → shortcut icon → /favicon.ico
-      //   2) 支持 data: URL（内联 SVG/PNG 图标，现代 SPA 常见）——
-      //      v1.72.0 只认 http(s)，导致部分应用（图标为 data URL 或只在
-      //      apple-touch-icon 里）任务栏图标没改过来
-      //   3) 两阶段提取：加载完成立即 + 1.5s 延迟再试（SPA 动态注入 favicon）
+      // v2.0.7：注入 CSS 隐藏 NAS 页面的「连接已断开」弹窗（外网抖动时避免打扰用户）
+      try {
+        win.webContents.insertCSS(`
+.f-error, .connection-error, .network-error, .offline-notice, .disconnect-notice,
+[class*="offline"], [class*="disconnect"], [class*="connection-lost"], [class*="network-error"],
+.toast-error, .el-message--error, .ant-message-error { display: none !important; visibility: hidden !important; }
+`).catch(() => {});
+      } catch (_) {}
+
+      // v2.0.6：增强版任务栏图标提取
+      //   1) 收集页面所有 favicon 候选（icon/apple-touch-icon/shortcut icon），排除 SVG
+      //   2) data URL 区分 SVG/PNG：SVG 跳过，PNG 直接使用
+      //   3) HTTP 图标先检查 Content-Type，SVG 跳过尝试下一个候选
+      //   4) 三阶段重试：立即 + 1.5s + 4s（覆盖 SPA 动态注入 favicon 的场景）
+      //   5) 移除 __appIconSet 守卫，允许 favicon 覆盖扫描结果（页面 favicon 更准确）
+      const __allIconCandidates = () => {
+        return win.webContents.executeJavaScript(`(function(){
+          try {
+            var candidates = [];
+            var seen = {};
+            var addCandidate = function(href, isSvg) {
+              if (!href || seen[href]) return;
+              seen[href] = true;
+              candidates.push({ href: href, isSvg: !!isSvg });
+            };
+            var allLinks = document.querySelectorAll('link[rel]');
+            for (var i = 0; i < allLinks.length; i++) {
+              var lnk = allLinks[i];
+              var rel = (lnk.getAttribute('rel') || '').toLowerCase();
+              if (rel.indexOf('icon') === -1) continue;
+              var href = lnk.href || lnk.getAttribute('href') || '';
+              var type = (lnk.getAttribute('type') || '').toLowerCase();
+              var isSvg = type === 'image/svg+xml' || type === 'image/svg' || /\.svg($|[?#])/i.test(href);
+              if (href) addCandidate(href, isSvg);
+            }
+            if (!candidates.length) {
+              try { addCandidate(location.origin + '/favicon.ico', false); } catch(_) {}
+            }
+            // v2.0.7：同时收集 SVG 候选作为备用
+            if (!candidates.some(function(c){ return !c.isSvg; })) {
+              for (var j = 0; j < allLinks.length; j++) {
+                var lnk2 = allLinks[j];
+                var rel2 = (lnk2.getAttribute('rel') || '').toLowerCase();
+                if (rel2.indexOf('icon') === -1) continue;
+                var href2 = lnk2.href || lnk2.getAttribute('href') || '';
+                if (href2 && !seen[href2]) { seen[href2] = true; candidates.push({ href: href2, isSvg: true }); }
+              }
+            }
+            return candidates;
+          } catch (e) { return []; }
+        })()`, true);
+      };
+
+      const __trySetIconFromBuffer = (buf, url) => {
+        try {
+          if (win.isDestroyed()) return false;
+          const img = nativeImage.createFromBuffer(Buffer.from(buf));
+          if (!img.isEmpty()) {
+            win.setIcon(img);
+            dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120) });
+            return true;
+          }
+        } catch (_) {}
+        return false;
+      };
+
       const __applyAppIcon = () => {
         try {
           if (win.isDestroyed() || !win.webContents) return;
-          // v1.74.0：已用扫描到的应用图标设置过窗口图标，不再用页面 favicon 覆盖
-          if (win.__appIconSet) return;
-          win.webContents.executeJavaScript(`(function(){
+          __allIconCandidates().then((candidates) => {
             try {
-              var pick = function(sel){ var n = document.querySelector(sel); return n && n.href ? n.href : ''; };
-              var href = pick('link[rel~="icon"]') || pick('link[rel~="apple-touch-icon"]') || pick('link[rel~="shortcut icon"]');
-              if (!href) href = location.origin + '/favicon.ico';
-              return href;
-            } catch (e) { return ''; }
-          })()`, true).then((iconRef) => {
-            try {
-              if (!iconRef || win.isDestroyed()) return;
-              // data URL：直接解码为图片（无需网络请求）
-              if (/^data:image\//i.test(iconRef)) {
-                try {
-                  const img = nativeImage.createFromDataURL(iconRef);
-                  if (!img.isEmpty()) {
-                    win.setIcon(img);
-                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, data: 1 });
-                  }
-                } catch (_) {}
-                return;
-              }
-              if (!/^https?:/i.test(iconRef)) return;
+              if (!Array.isArray(candidates) || !candidates.length || win.isDestroyed()) return;
               const ses = win.webContents ? win.webContents.session : null;
-              if (!ses) return;
-              ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
-                if (!res.ok) throw new Error('bad status ' + res.status);
-                return res.arrayBuffer();
-              }).then((buf) => {
-                try {
-                  if (win.isDestroyed()) return;
-                  const img = nativeImage.createFromBuffer(Buffer.from(buf));
-                  if (!img.isEmpty()) {
-                    win.setIcon(img);
-                    dlog && dlog('info', 'appwin.favicon', { app: __appLabel, winId: win.id, url: String(iconRef).slice(0, 120) });
+              const tryNext = (idx) => {
+                if (idx >= candidates.length || win.isDestroyed()) return;
+                const c = candidates[idx];
+                const iconRef = typeof c === 'string' ? c : c.href;
+                const isSvg = typeof c === 'object' && c.isSvg;
+                if (/^data:image\//i.test(iconRef)) {
+                  if (/^data:image\/svg/i.test(iconRef) || isSvg) {
+                    // SVG data URL，通过隐藏窗口转 PNG
+                    ipcRenderer.invoke('app:convert-svg-icon', { svgDataUrl: iconRef, appId: __appLabel.replace(/[^a-zA-Z0-9_-]/g, '_'), size: 128 }).then((result) => {
+                      if (result && result.success && result.data && result.data.iconPath && fs.existsSync(result.data.iconPath)) {
+                        try {
+                          const img = nativeImage.createFromPath(result.data.iconPath);
+                          if (!img.isEmpty()) { win.setIcon(img); dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, svg: 1 }); return; }
+                        } catch (_) {}
+                      }
+                      tryNext(idx + 1);
+                    }).catch(() => tryNext(idx + 1));
+                  } else {
+                    try {
+                      const img = nativeImage.createFromDataURL(iconRef);
+                      if (!img.isEmpty()) {
+                        win.setIcon(img);
+                        dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, data: 1 });
+                        return;
+                      }
+                    } catch (_) {}
+                    tryNext(idx + 1);
                   }
-                } catch (_) {}
-              }).catch(() => {});
+                  return;
+                }
+                if (!/^https?:/i.test(iconRef) || !ses) { tryNext(idx + 1); return; }
+                ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
+                  if (!res.ok) throw new Error('bad status ' + res.status);
+                  const ct = (res.headers.get('content-type') || '').toLowerCase();
+                  if (ct.includes('svg') || isSvg) {
+                    return res.text().then((svgText) => {
+                      return __svgToPng(svgText, 128).then((pngBuf) => {
+                        if (pngBuf) {
+                          const iconPath = path.join(ASSETS_DIR, (__appLabel || 'app').replace(/[^a-zA-Z0-9_-]/g, '_') + '.png');
+                          try { fs.writeFileSync(iconPath, Buffer.from(pngBuf)); } catch (_) {}
+                          const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                          if (!img.isEmpty()) { win.setIcon(img); dlog && dlog('info', 'appwin.favicon.set', { app: __appLabel, winId: win.id, svg: 1 }); return; }
+                        }
+                        tryNext(idx + 1);
+                      });
+                    });
+                  }
+                  return res.arrayBuffer();
+                }).then((buf) => {
+                  if (!buf) return;
+                  if (!__trySetIconFromBuffer(buf, iconRef)) {
+                    tryNext(idx + 1);
+                  }
+                }).catch(() => { tryNext(idx + 1); });
+              };
+              tryNext(0);
             } catch (_) {}
           }).catch(() => {});
         } catch (_) {}
       };
       __applyAppIcon();
       setTimeout(() => { try { __applyAppIcon(); } catch (_) {} }, 1500);
+      setTimeout(() => { try { __applyAppIcon(); } catch (_) {} }, 4000);
     });
     win.webContents.on('unresponsive', () => {
       try { dlog && dlog('warn', 'appwin.unresponsive', { app: __appLabel, winId: win.id, ms: Date.now() - __t0 }); } catch (_) {}
@@ -3386,6 +4181,7 @@ function createAppWindow(url, opts = {}) {
   //    兜底展示从 300ms 放宽到 6s（NAS 首次响应/隧道握手较慢时也不至于先弹一个黑窗）。
   // 2) did-fail-load 自动重试：仅对主框架网络错误（-3 中止/-137 命名解析等）重试，避免偶发
   //    隧道/内网抖动导致应用区停在错误页/黑屏；子资源失败不重试，且 404/鉴权跳转不触发。
+  //    v2.0.0：集成 NetworkHealth 抖动判定，瞬时失败仅日志不弹窗，重试使用指数退避。
   let _loadFailTries = 0;
   try {
     win.webContents.on('did-fail-load', (_e, errorCode, errorDesc, failUrl, isMainFrame) => {
@@ -3394,6 +4190,8 @@ function createAppWindow(url, opts = {}) {
         // -3 = ABORTED（我们自己 setWindowOpenHandler 取消/导航中被替换），不当错误
         if (errorCode === -3 || errorCode === 0) return;
         if (failUrl && /^file:/.test(failUrl)) return; // 本地页面失败交给各自逻辑
+        // v2.0.0：记录到网络健康监控
+        const isJitter = NetworkHealth.recordFailure(`appwin:${__appLabel}`, `${errorCode} ${errorDesc}`);
         if (_loadFailTries >= 4) {
           // v1.70.0：重试耗尽，记录最终失败（含错误码），便于排查外网地址/端口映射问题
           dlog && dlog('error', 'appwin.fail-load.final', {
@@ -3403,7 +4201,9 @@ function createAppWindow(url, opts = {}) {
           return;
         }
         _loadFailTries++;
-        dlog && dlog('warn', 'appwin.fail-load.retry', { errorCode, errorDesc, try: _loadFailTries, url: String(failUrl).slice(0, 90) });
+        // v2.0.0：指数退避 + 抖动（1s/2s/4s/8s + 随机500ms）
+        const retryDelay = Math.min(8000, 1000 * Math.pow(2, _loadFailTries - 1) + Math.random() * 500);
+        dlog && dlog('warn', 'appwin.fail-load.retry', { errorCode, errorDesc, try: _loadFailTries, delay: Math.round(retryDelay), isJitter, url: String(failUrl).slice(0, 90) });
         setTimeout(() => {
           try {
             if (win.isDestroyed()) return;
@@ -3411,12 +4211,12 @@ function createAppWindow(url, opts = {}) {
             const target = (cur && /^https?:/.test(cur)) ? cur : url;
             if (/^https?:/i.test(target)) win.loadURL(target, { userAgent: getNasUA() }).catch(() => {});
           } catch (_) {}
-        }, Math.min(4000, 600 * _loadFailTries + 600));
+        }, retryDelay);
       } catch (_) {}
     });
   } catch (_) {}
 
-  win.once('ready-to-show', () => { try { win.show(); } catch (_) {} });
+  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch (_) {} });
   // 兜底：极端情况下 ready-to-show 未触发（如隧道握手卡住），6s 后也展示窗口，避免"看不见窗口"
   setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 6000);
 
@@ -3442,6 +4242,73 @@ function handleMainClose(win) {
   }).catch(() => {});
 }
 
+// v2.1.10：隐藏主窗口到托盘（不销毁窗口、不销毁托盘）。
+// 区别于 handleMainClose（弹窗让用户选）与 hideCompletely（连托盘一起销毁）。
+// 快捷方式打开应用后调用：按用户设置（shortcutHideMode）把主程序面板退到后台——
+//   'tray'（默认）：隐藏到系统托盘，点击托盘图标可恢复；
+//   'minimize'：最小化到任务栏，点击任务栏图标可恢复。
+function hideMainToBackground() {
+  const mode = loadSettings().shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
+  if (mode === 'minimize') {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        // 窗口可见才最小化；已隐藏（如冷启动后台加载）则保持隐藏即可
+        if (mainWindow.isVisible() && !mainWindow.isMinimized()) mainWindow.minimize();
+      } catch (_) { try { mainWindow.hide(); } catch (_) {} }
+    }
+    ensureTray();
+    return;
+  }
+  // 默认：隐藏到托盘（不销毁窗口、不销毁托盘）
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.hide(); } catch (_) {}
+  }
+  ensureTray();
+}
+// v2.1.10 旧名保留：仅隐藏到托盘（供其他内部调用）
+function hideMainToTray() { hideMainToBackground(); }
+
+// v2.1.13：恢复主窗口并强制重绘——修复隐藏到托盘后恢复时主页面黑屏。
+// 部分显卡/驱动组合下，窗口 hide() 后再 show()，Chromium 的渲染表面不会复位，
+// 页面整片全黑。webContents.invalidate() 强制合成器重绘当前帧，可立即恢复画面。
+function restoreMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  try {
+    if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
+    if (!mainWindow.isVisible()) { try { mainWindow.show(); } catch (_) {} }
+    try { mainWindow.focus(); } catch (_) {}
+    try { mainWindow.webContents.invalidate(); } catch (_) {}
+    return true;
+  } catch (_) { return false; }
+}
+
+// v2.1.13：需求 2.2——快捷方式打开应用但尚未登录时，明确提示"请先打开飞牛并登录"，
+// 并让用户现场选择登录后主程序的后台化方式（托盘/任务栏）。登录成功后自动打开应用。
+let __shortcutLoginPromptShown = false;
+function promptShortcutLoginChoice() {
+  if (__shortcutLoginPromptShown) return;
+  __shortcutLoginPromptShown = true;
+  try {
+    const win = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+    const opts = {
+      type: 'info',
+      title: '请先登录飞牛',
+      message: '请先登录飞牛 NAS',
+      detail: '登录成功后将自动打开该应用，随后主程序退到后台。\n\n请选择主程序的后台化方式（之后也可在"设置 → 应用快捷方式"中修改）：',
+      buttons: ['隐藏到托盘（推荐）', '最小化到任务栏'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    };
+    const apply = (idx) => {
+      const mode = idx === 1 ? 'minimize' : 'tray';
+      try { saveSettings({ shortcutHideMode: mode }); cachedSettings.shortcutHideMode = mode; } catch (_) {}
+    };
+    const p = win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts);
+    Promise.resolve(p).then((r) => apply(r && r.response)).catch(() => {});
+  } catch (_) {}
+}
+
 // ---------------------- 系统托盘 ----------------------
 function ensureTray() {
   if (tray) return tray;
@@ -3465,6 +4332,8 @@ function ensureTray() {
       return;
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
+      // v2.1.11：minimize 模式下主窗口最小化到任务栏，点托盘也要能恢复
+      if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
       if (mainWindow.isVisible()) mainWindow.focus();
       else mainWindow.show();
     } else {
@@ -3572,7 +4441,20 @@ function rebuildTrayMenu() {
   }
 
   items.push({ type: 'separator' });
-  items.push({ label: '切换服务器…', click: () => showConnectPage() });
+  // v2.0.0：托盘菜单中的账号切换
+  const trayAccounts = getAccounts();
+  if (trayAccounts.length > 0) {
+    const acctSubmenu = [
+      ...trayAccounts.map(a => ({
+        label: (a.isActive ? '● ' : '  ') + (a.label || a.origin),
+        click: () => { if (!a.isActive) switchAccount(a.origin); },
+      })),
+      { type: 'separator' },
+      { label: '登录其它账号…', click: () => showConnectPage() },
+    ];
+    items.push({ label: '切换账号', submenu: acctSubmenu });
+  }
+  // v2.0.1：已移除"切换服务器"，多账号切换已足够
   if (hasAppPassword()) {
     items.push({ label: '锁定 FNOS', click: () => lockApp() });
   }
@@ -3632,6 +4514,15 @@ function createMainWindow(partition, loadTarget) {
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed() && !isLocked) mainWindow.show();
   });
+  // v2.1.6：兜底——若 ready-to-show 10 秒未触发（页面加载卡住），强制显示窗口
+  setTimeout(() => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed() && !isLocked && !mainWindow.isVisible()) {
+        dlog && dlog('warn', 'main.ready-to-show.timeout', { ms: 10000 });
+        mainWindow.show();
+      }
+    } catch (_) {}
+  }, 10000);
 
   // v1.29.2：主窗口主框架加载失败（隧道/内网抖动、-137 解析失败、连接重置等）自动重试，
   // 避免"登录后黑屏/错误页"。-3(中止，导航被替换)与本地连接页不重试；最多 4 次、退避。
@@ -3640,17 +4531,33 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDesc, failUrl, isMainFrame) => {
       try {
         if (!isMainFrame || errorCode === -3 || errorCode === 0) return;
-        if (failUrl && /^file:/.test(failUrl)) return;
+        // v2.1.6：file:// 页面（login.html）加载失败也重试一次（便携版解压后文件可能暂时被锁定）
+        if (failUrl && /^file:/.test(failUrl)) {
+          if (_mainFailTries >= 1) return;
+          _mainFailTries++;
+          dlog && dlog('warn', 'main.fail-load.file-retry', { errorCode, errorDesc, try: _mainFailTries, url: String(failUrl).slice(0, 90) });
+          setTimeout(() => {
+            try {
+              if (!mainWindow || mainWindow.isDestroyed()) return;
+              mainWindow.loadFile(LOGIN_PAGE).catch(() => {});
+            } catch (_) {}
+          }, 2000);
+          return;
+        }
+        // v2.0.0：记录到网络健康监控
+        const isJitter = NetworkHealth.recordFailure('mainwindow', `${errorCode} ${errorDesc}`);
         if (_mainFailTries >= 4) return;
         _mainFailTries++;
-        dlog && dlog('warn', 'main.fail-load.retry', { errorCode, errorDesc, try: _mainFailTries, url: String(failUrl).slice(0, 90) });
+        // v2.0.0：指数退避 + 抖动
+        const retryDelay = Math.min(8000, 1000 * Math.pow(2, _mainFailTries - 1) + Math.random() * 500);
+        dlog && dlog('warn', 'main.fail-load.retry', { errorCode, errorDesc, try: _mainFailTries, delay: Math.round(retryDelay), isJitter, url: String(failUrl).slice(0, 90) });
         setTimeout(() => {
           try {
             if (!mainWindow || mainWindow.isDestroyed()) return;
             const target = lastConnectHref || mainWindow.webContents.getURL();
             if (target && /^https?:/i.test(target)) mainWindow.loadURL(target, { userAgent: getNasUA() }).catch(() => {});
           } catch (_) {}
-        }, Math.min(4000, 600 * _mainFailTries + 600));
+        }, retryDelay);
       } catch (_) {}
     });
   } catch (_) {}
@@ -3670,14 +4577,28 @@ function createMainWindow(partition, loadTarget) {
 
   // v1.76.0：主页加载/导航时启动应用扫描 + 处理待打开应用（快捷方式 --open-app）。
   // 主页未登录(/login)时扫描自动跳过；用户登录跳回主页后立即扫描并打开 pending 应用。
+  // v2.1.11：新增 did-finish-load 触发——只有页面完全加载（cookie/session 就绪）后才
+  // 打开 pending 应用，避免冷启动时应用窗口过早请求拿到 401 跳登录页。
   try {
+    // v2.1.13：跟踪主页 dom-ready 就绪状态（供 tryOpenPendingApp 快速判定登录就绪）
+    mainWindow.webContents.on('did-start-loading', () => { try { __homeDomReady = false; } catch (_) {} });
     mainWindow.webContents.on('dom-ready', () => {
+      try {
+        const cur = mainWindow.webContents.getURL() || '';
+        const p = String(cur).toLowerCase();
+        __homeDomReady = /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
+        // v2.1.13：登录完成（回到非登录页）后重置快捷方式登录提示标记，下次可再提示
+        if (__homeDomReady) __shortcutLoginPromptShown = false;
+      } catch (_) {}
       try { consumePendingOpenApp(); startHomeScan(); } catch (_) {}
     });
     mainWindow.webContents.on('did-navigate', () => {
       try { consumePendingOpenApp(); startHomeScan(); tryOpenPendingApp(); } catch (_) {}
     });
     mainWindow.webContents.on('did-navigate-in-page', () => {
+      try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
+    });
+    mainWindow.webContents.on('did-finish-load', () => {
       try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
     });
   } catch (_) {}
@@ -3709,12 +4630,36 @@ function showConnectPage() {
     createMainWindow('persist:connect', null);
     return;
   }
+  // v2.1.6：回到连接页时停止扫描，避免在 login.html 上无意义扫描
+  try { stopHomeScan(); } catch (_) {}
   currentOrigin = '';
   lastConnectHref = '';
   safeSetTitle(`${APP_NAME} · 连接服务器`);
   if (mainWindow && !mainWindow.isDestroyed()) {
+    // v2.1.6：ERR_FAILED(-2) 重试——便携版首次解压时文件可能暂时被锁定，
+    // 优先用 loadFile，失败后回退到 loadURL(file://) 再试一次
+    let triedUrl = false;
     mainWindow.loadFile(LOGIN_PAGE).catch((e) => {
-      glassErrorBox('加载失败', `无法打开连接页：${e.message}`);
+      try {
+        dlog && dlog('warn', 'login.loadFile.fail', { err: String(e && e.message || e), code: e && e.code });
+      } catch (_) {}
+      if (triedUrl) {
+        // 两种方式都失败，显示错误对话框
+        glassErrorBox('加载失败', `无法打开连接页：${e.message}`);
+        return;
+      }
+      triedUrl = true;
+      // 回退：用 loadURL + file:// 协议加载（绕过 loadFile 的 asar 路径解析）
+      try {
+        const fileUrl = url.pathToFileURL(LOGIN_PAGE).href;
+        dlog && dlog('info', 'login.loadFile.retryWithURL', { url: fileUrl.slice(0, 80) });
+        mainWindow.loadURL(fileUrl).catch((e2) => {
+          try { dlog && dlog('warn', 'login.loadURL.fail', { err: String(e2 && e2.message || e2) }); } catch (_) {}
+          glassErrorBox('加载失败', `无法打开连接页：${e2.message}`);
+        });
+      } catch (e3) {
+        glassErrorBox('加载失败', `无法打开连接页：${e3.message}`);
+      }
     });
   }
 }
@@ -3753,6 +4698,10 @@ function parseOpenAppArg() {
     const argv = process.argv || [];
     for (let i = 0; i < argv.length; i++) {
       const a = String(argv[i] || '');
+      // v2.1.5: Support --app= parameter (used by create-desktop-shortcut)
+      if (a === '--app' && argv[i + 1]) { pendingOpenAppUrl = decodeURIComponent(String(argv[i + 1])); return; }
+      if (a.startsWith('--app=')) { pendingOpenAppUrl = decodeURIComponent(a.slice('--app='.length)); return; }
+      // Legacy --open-app support
       if (a === '--open-app' && argv[i + 1]) { pendingOpenAppUrl = String(argv[i + 1]); return; }
       if (a.startsWith('--open-app=')) { pendingOpenAppUrl = a.slice('--open-app='.length); return; }
     }
@@ -3768,6 +4717,7 @@ function takePendingOpenApp() {
 // 未登录时应用窗口打开是登录页（无意义），用户登录完成后自动打开对应应用。
 let __pendingAppUrl = '';
 let __pendingAppStart = 0;
+let __pendingFromShortcut = false; // v2.1.10：快捷方式触发的应用，打开后隐藏主窗口到托盘
 function queuePendingApp(u) {
   __pendingAppUrl = String(u || '');
   __pendingAppStart = Date.now();
@@ -3781,14 +4731,20 @@ function consumePendingOpenApp() {
     if (!u) return;
     queuePendingApp(u);
     tryOpenPendingApp();
+    // v2.1.13：轮询 1500ms → 400ms，显著缩短快捷方式打开应用的等待
     const pt = setInterval(() => {
       try {
         tryOpenPendingApp();
         if (!__pendingAppUrl) clearInterval(pt);
       } catch (_) {}
-    }, 1500);
+    }, 400);
   } catch (_) {}
 }
+
+// v2.1.13：主页 dom-ready 就绪标记。did-finish-load（isLoading=false）在飞牛主页上
+// 常常要等很久（轮询请求/长连接挂在页面上），只看它会让快捷方式打开应用慢十几秒；
+// dom-ready 时文档已加载、登录 cookie 已随文档请求生效，足以安全打开应用窗口。
+let __homeDomReady = false;
 
 function tryOpenPendingApp() {
   try {
@@ -3796,14 +4752,29 @@ function tryOpenPendingApp() {
     const u = __pendingAppUrl;
     let ready = false;
     try {
-      const cur = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.getURL() : '';
-      const p = String(cur || '').toLowerCase();
-      if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) ready = true;
+      // v2.1.11：必须等主窗口页面加载完成（did-finish-load 后 isLoading=false）才算就绪。
+      // 之前只看 URL 非 /login 就打开：冷启动时主窗口刚导航到主页（页面仍在加载、
+      // Electron session / cookie 尚未就绪），应用窗口立即请求会拿到 401 → 跳登录页
+      // （日志证据：fnos-diag 06:48:44 appwin.create 早于主窗口 preload.boot，随后 401）。
+      // v2.1.13：放宽为 dom-ready 即就绪（__homeDomReady），大幅提速且不会 401。
+      const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+      if (wc && (__homeDomReady || !wc.isLoading())) {
+        const cur = wc.getURL() || '';
+        const p = String(cur || '').toLowerCase();
+        if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) ready = true;
+      }
     } catch (_) {}
     const elapsed = Date.now() - __pendingAppStart;
-    if (!ready && elapsed < 25000) return; // 未登录且未超时 → 等登录
+    if (!ready && elapsed < 30000) return; // 未就绪且未超时 → 等主窗口加载完成/登录
     __pendingAppUrl = '';
-    if (u) { try { createAppWindow(u, {}); } catch (_) {} }
+    if (u) {
+      try { createAppWindow(u, {}); } catch (_) {}
+      // v2.1.11：快捷方式触发的应用打开后，按用户设置隐藏主窗口到托盘或最小化到任务栏
+      if (__pendingFromShortcut) {
+        __pendingFromShortcut = false;
+        setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300);
+      }
+    }
   } catch (_) {}
 }
 
@@ -3811,6 +4782,8 @@ function doConnectTo(serverInput) {
   const parsed = normalizeServer(serverInput);
   const targetPartition = partitionForServer(parsed);
   upsertHistory(serverInput, parsed);
+  // v2.0.0：同步记录到多账号列表
+  upsertAccount(serverInput, parsed);
   // v1.12.1：立即把历史写入磁盘，避免 30s 定时 flush 前进程被强杀导致历史不记录
   try { flushPartition(targetPartition); } catch (_) {}
 
@@ -3830,6 +4803,8 @@ function doConnectTo(serverInput) {
   setImmediate(() => { try { warmupXteBase(); } catch (_) {} });
   // v1.67.0：登录成功后尽快注入页面级 WS/长连接保活，避免 FRP 空闲超时被回收导致"已断开"
   setTimeout(() => { try { bumpAuthHeartbeat(); } catch (_) {} }, 3000);
+  // v2.0.0：启动网络健康探测（每30s检测NAS连通性，区分抖动/真断连）
+  setImmediate(() => { try { startNetworkProbe(); } catch (_) {} });
   if (mainWindow && !mainWindow.isDestroyed()) {
     const onFail = (e) => {
       glassErrorBox(
@@ -3979,16 +4954,24 @@ function buildMenuTemplate() {
     {
       label: '文件',
       submenu: [
+        // v2.0.1：已移除"切换服务器"菜单项，多账号切换已足够
         { label: '返回 FNOS 主页', accelerator: 'Alt+H', click: goHomeWithPrompt },
-        { label: '切换服务器…', accelerator: 'Ctrl+Shift+L', click: () => {
-          glassMessageBox(mainWindow, {
-            type: 'question', buttons: ['切换', '取消'],
-            defaultId: 0, cancelId: 1,
-            title: '切换服务器',
-          }).then(({ response }) => {
-            if (response === 0) showConnectPage();
-          });
-        }},
+        // v2.0.0：多账号快速切换
+        (() => {
+          const accts = getAccounts();
+          if (accts.length === 0) return { label: '切换账号', submenu: [{ label: '（暂无已登录账号）', enabled: false }] };
+          return {
+            label: '切换账号',
+            submenu: [
+              ...accts.map(a => ({
+                label: (a.isActive ? '● ' : '  ') + (a.label || a.origin),
+                click: () => { if (!a.isActive) switchAccount(a.origin); },
+              })),
+              { type: 'separator' },
+              { label: '登录其它账号…', click: () => showConnectPage() },
+            ],
+          };
+        })(),
         { type: 'separator' },
         {
           label: '切换窗口',
@@ -4075,8 +5058,6 @@ function buildMenuTemplate() {
           accelerator: 'Ctrl+Shift+C',
           click: () => copyCurrentWindowLink(),
         },
-        { type: 'separator' },
-        { label: '📌 创建桌面快捷方式', submenu: buildShortcutMenuItems() },
       ],
     },
     {
@@ -4136,10 +5117,28 @@ ipcMain.handle('auth:remove-history', async (_e, payload) => {
   return { ok: true, history: removeHistoryByKey(href) };
 });
 
+// v2.1.13：登录凭据保存/读取（preload 登录表单捕获 + 自动填充用）
+ipcMain.on('auth:save-credential', (_e, payload) => {
+  try {
+    const { origin, username, password } = payload || {};
+    // 只接受 http(s) origin，防止任意页面写凭据库
+    if (!origin || !/^https?:\/\//i.test(String(origin))) return;
+    const ok = saveCredential(String(origin), String(username || ''), String(password || ''));
+    fnosLog('info', 'cred', ok ? '登录凭据已保存' : '登录凭据保存失败', { origin: String(origin), username: String(username || '') });
+  } catch (_) {}
+});
+ipcMain.handle('auth:get-saved-credential', async (_e, payload) => {
+  try {
+    const { origin } = payload || {};
+    if (!origin || !/^https?:\/\//i.test(String(origin))) return null;
+    return getCredential(String(origin));
+  } catch (_) { return null; }
+});
+
 // v1.72.0：主页扫描到的应用列表上报（创建桌面快捷方式的数据源）。
 // v1.76.0：抽成独立函数 processScannedApps——主进程直接扫描主页时也复用，
 // IPC（shell 页面上报）仅作兼容保留。
-function processScannedApps(apps) {
+async function processScannedApps(apps) {
   try {
     if (!Array.isArray(apps) || !apps.length) return;
     const s = loadSettings();
@@ -4149,12 +5148,18 @@ function processScannedApps(apps) {
     const fresh = [];
     for (const a of apps) {
       if (!a || !a.url || !a.name) continue;
+      // v2.1.13：归一化 appview 地址，顺带治愈旧缓存中的错误 anchor
+      a.url = normalizeAppLaunchUrl(String(a.url));
       byUrl.set(a.url, {
         name: String(a.name).slice(0, 40),
         url: String(a.url),
         icon: String(a.icon || ''),
         // v1.74.0：保存 appName（飞牛应用内部名，用于构造 appview anchor 打开地址）
-        appName: String(a.appName || ''),
+        appName: String(a.appName || a.appId || ''),
+        // v2.1.5：保存 appId（用于快捷方式启动和 manifest 匹配）
+        appId: String(a.appId || a.url),
+        // v2.1.5：保存应用类型
+        type: String(a.type || 'unknown'),
         addedAt: Date.now(),
       });
       // v1.73.0：识别「新增」应用（之前没扫到过）→ 触发桌面快捷方式自动创建
@@ -4163,11 +5168,159 @@ function processScannedApps(apps) {
     const merged = Array.from(byUrl.values());
     saveSettings({ apps: merged.slice(0, 50) });
     try { cachedSettings.apps = merged.slice(0, 50); } catch (_) {}
+    // v2.1.4: sync to apps-manifest.json with synchronous icon caching
+    // Icons are downloaded BEFORE writing manifest so shortcuts always get correct iconPath
+    try {
+      const existing = readManifest();
+      const existingByUrl = new Map(existing.apps.map(a => [a.url, a]));
+      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+
+      // Collect all icon download tasks
+      const iconTasks = [];
+      for (const a of merged) {
+        let origin = '';
+        try { origin = new URL(a.url).origin; } catch (_) {}
+        const prev = existingByUrl.get(a.url) || {};
+        let iconPath = prev.iconPath || '';
+        let iconData = a.icon || '';
+        // v2.1.9：旧版用错误的 serviceicon 占位符路径（icon-{0}.png）作为图标 URL，
+        // 导致 manifest 里 iconPath/iconData 陈旧错误。这里在图标 URL 变化时强制重新下载，
+        // 修复「快捷方式图标不是对应应用图标」。
+        const iconChanged = !!(prev.iconData && iconData && String(prev.iconData) !== String(iconData));
+        if (iconData && /^https?:/i.test(iconData) && (!iconPath || iconChanged)) {
+          const ext = iconData.split('?')[0].split('.').pop().toLowerCase();
+          const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
+          const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
+          const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
+          if (!iconChanged && fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) {
+            iconPath = iconFile;
+          } else {
+            // v2.1.4: await icon download before writing manifest（iconChanged 时覆盖旧文件）
+            const fetchUrl = /^https?:/i.test(iconData) ? iconData : origin + iconData;
+            iconTasks.push({ iconFile, fetchUrl, appName: a.name, url: a.url, origin });
+          }
+        }
+        existingByUrl.set(a.url, {
+          appId: a.appId || a.url,
+          appName: a.name || a.appName || '',
+          nasAddress: origin,
+          url: a.url,
+          iconData: iconData,
+          iconPath: iconPath
+        });
+      }
+
+      // Download all icons concurrently and wait for completion
+      if (iconTasks.length > 0) {
+        // v2.1.12：图标下载必须复用主窗口 session（登录后 cookie 所在）。
+        // 旧版用 session.fromPartition(currentPartition)——多账号模式下 currentPartition
+        // 可能与实际登录 session 不一致，导致 /app-center-static/icon/ 等需鉴权路径 401，
+        // 图标下载失败 → manifest iconPath 为空 → 设置面板"应用快捷方式"大部分图标不显示。
+        const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
+          ? mainWindow.webContents.session
+          : null;
+        await Promise.all(iconTasks.map(async (task) => {
+          try {
+            if (!iconSes) return;
+            // v2.1.13：系统应用图标兜底——应用中心图标接口需鉴权/可能 401 404，
+            // 而系统应用图标在 /static/app/icons/<appName>/icon.png 公开可访问。
+            const candidates = [task.fetchUrl];
+            const sysName = sysAppNameFromEntry({ url: task.url });
+            if (sysName && task.origin) candidates.push(task.origin + '/static/app/icons/' + sysName + '/icon.png');
+            for (const cu of candidates) {
+              let resp = null;
+              try { resp = await iconSes.fetch(cu, { credentials: 'include' }); } catch (_) { continue; }
+              if (!resp || !resp.ok) {
+                fnosLog('warn', 'icon.download', { app: task.appName, status: resp && resp.status, url: String(cu).slice(0, 120) });
+                continue;
+              }
+              const ab = await resp.arrayBuffer();
+              const buf = Buffer.from(ab);
+              if (buf.length > 100) {
+                fs.writeFileSync(task.iconFile, buf);
+                // Update manifest entry with the downloaded icon path
+                const entry = existingByUrl.get(task.url);
+                if (entry) entry.iconPath = task.iconFile;
+                fnosLog('info', 'icon.download', { app: task.appName, ok: true, size: buf.length });
+                break;
+              }
+            }
+          } catch (e) { fnosLog('warn', 'icon.download', { app: task.appName, err: e.message }); }
+        }));
+      }
+
+      writeManifest({ apps: Array.from(existingByUrl.values()) });
+    } catch (_) {}
     // v1.75.0：日志带上具体应用名，便于排障
     dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length, apps: merged.map((a) => a.name + '|' + a.url).slice(0, 12) });
     // v1.78.0：不再自动创建桌面快捷方式（用户按需手动创建，避免桌面被自动铺满）
   } catch (_) {}
 }
+
+// v2.1.8：REST 拉取「应用中心已安装应用」完整列表（含第三方应用）。
+// 旧方案只扫主页 DOM（系统应用）+ WS appStoreList（商店列表，非已安装），
+// 拿不到用户在应用中心实际安装的第三方应用。这里直接请求飞牛 app-center 接口
+// GET /app-center/v1/app/installed，复用主窗口登录 cookie，拿到正确图标与启动地址。
+function buildAppCenterUrl(origin, svc) {
+  try {
+    if (!svc) return '';
+    // 后端返回的完整外部访问地址优先（如 http://公网IP:10303/，第三方应用反代端口）
+    if (svc.fullUrl && /^https?:/i.test(svc.fullUrl)) return svc.fullUrl;
+    const urls = svc.urls || {};
+    const o = new URL(origin);
+    const protocol = (urls.protocol || o.protocol).replace(/:+$/, '');
+    const host = urls.host || o.hostname;
+    const port = urls.port || o.port;
+    const path = urls.path || '/';
+    return protocol + '://' + host + ':' + port + path;
+  } catch (_) { return ''; }
+}
+
+async function scanAppCenterViaRest() {
+  try {
+    const s = loadSettings();
+    const origin = s.origin || '';
+    if (!origin || !/^https?:/i.test(origin)) return;
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isDestroyed()) return;
+    const ses = mainWindow.webContents.session;
+    const url = origin.replace(/\/+$/, '') + '/app-center/v1/app/installed?language=zh-CN';
+    const resp = await ses.fetch(url, { credentials: 'include' });
+    if (!resp.ok) {
+      fnosLog('warn', 'appcenter.rest', 'app-center fetch failed', { status: resp.status, url });
+      return;
+    }
+    const json = await resp.json().catch(() => ({}));
+    const list = (json && json.data && json.data.list) || [];
+    fnosLog('info', 'appcenter.rest', 'installed apps fetched', {
+      total: (json && json.data && json.data.total) || 0,
+      listLen: list.length,
+    });
+    const apps = [];
+    for (const a of list) {
+      const appName = a.appName || '';
+      const name = a.name || appName;
+      if (!appName || !name) continue;
+      const appUrl = buildAppCenterUrl(origin, a.appServiceInfo);
+      if (!appUrl) continue; // 无独立启动地址的应用（依赖/运行时如 python312、nodejs）跳过
+      const icon = a.icon
+        ? (/^https?:/i.test(a.icon) ? a.icon : origin.replace(/\/+$/, '') + (a.icon[0] === '/' ? '' : '/') + a.icon)
+        : '';
+      apps.push({
+        name: String(name).slice(0, 40),
+        appId: appName,
+        url: appUrl,
+        icon: icon,
+        appName: appName,
+        type: 'appCenter',
+      });
+    }
+    if (apps.length) processScannedApps(apps);
+    else fnosLog('warn', 'appcenter.rest', 'empty app list', {});
+  } catch (e) {
+    fnosLog('warn', 'appcenter.rest', 'scan failed', { err: e.message });
+  }
+}
+
 ipcMain.on('shell:report-apps', (_e, apps) => {
   try { processScannedApps(apps); } catch (_) {}
 });
@@ -4196,7 +5349,7 @@ const __HOME_SCAN_JS = String.raw`(function(){
     };
     var appNameFromUrl = function(u){
       if (!u) return '';
-      var m = /\/icons\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);
+      var m = /\/(?:icons|icon)\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);
       if (m) { try { return decodeURIComponent(m[1]); } catch(e){ return m[1]; } }
       return '';
     };
@@ -4217,7 +5370,7 @@ const __HOME_SCAN_JS = String.raw`(function(){
     for (var i = 0; i < links.length; i++) {
       var a = links[i];
       var img = a.querySelector('img');
-      var icon = img ? (img.currentSrc || img.src || '') : '';
+      var icon = img ? toAbs(img.getAttribute('data-src') || img.currentSrc || img.src || '') : '';
       var nm = clean(a.innerText || a.title || (img && img.alt) || '');
       if (!nm && img) nm = clean(img.alt || '');
       pushApp(nm, a.href, icon, appNameFromUrl(icon));
@@ -4226,7 +5379,7 @@ const __HOME_SCAN_JS = String.raw`(function(){
     var done = {};
     for (var q = 0; q < imgs.length; q++) {
       var im = imgs[q];
-      var icon2 = im.currentSrc || im.src || '';
+      var icon2 = toAbs(im.getAttribute('data-src') || im.currentSrc || im.src || '');
       var nm2 = clean(im.alt || '');
       var href2 = '';
       var cur = im;
@@ -4252,6 +5405,9 @@ function scanHomeApps(force) {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const wc = mainWindow.webContents;
     if (!wc || wc.isDestroyed()) return;
+    // v2.1.6：只在 http/https 页面扫描（NAS 主页），跳过 file:// 等本地页面（login.html 等）
+    const curUrl = wc.getURL() || '';
+    if (!/^https?:/i.test(curUrl)) return;
     wc.executeJavaScript(__HOME_SCAN_JS, true).then((apps) => {
       try {
         const found = Array.isArray(apps) ? apps.length : -1;
@@ -4274,62 +5430,504 @@ function scanHomeApps(force) {
 function startHomeScan() {
   try {
     if (__homeScanTimer) { clearInterval(__homeScanTimer); __homeScanTimer = null; }
+    // v2.1.6：如果当前不在 NAS 页面（非 http/https），不启动扫描定时器
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+      const u = mainWindow.webContents.getURL() || '';
+      if (!/^https?:/i.test(u)) return;
+    }
     scanHomeApps(true);
-    __homeScanTimer = setInterval(() => { try { scanHomeApps(false); } catch (_) {} }, 10000);
+    // v2.1.13：10s → 60s。应用列表变化极少，结果有签名去重；缩短间隔纯属浪费
+    // CPU/网络（每次都要 executeJavaScript + 图标比对），还拖慢窗口响应。
+    __homeScanTimer = setInterval(() => { try { scanHomeApps(false); } catch (_) {} }, 60000);
   } catch (_) {}
+}
+function stopHomeScan() {
+  if (__homeScanTimer) { clearInterval(__homeScanTimer); __homeScanTimer = null; }
 }
 
 // v1.79.0：主页只显示部分应用（系统应用），Docker 等第三方应用在「应用中心」页。
 // 登录后用一个隐藏窗口加载应用中心页，扫描全部应用卡片，补全应用列表（去重合并）。
+// v2.1.3: 修复 /appstore 404 + center 变量作用域 bug + 多策略应用发现（WebSocket拦截 + DOM扫描 + React状态提取）
+// ── v2.1.4: WebSocket API 直连扫描 ──────────────────────────────────
+// 通过隐藏窗口内直接创建 WebSocket 连接 FNOS API，获取完整应用列表
+// 不再依赖 DOM 扫描 + WebSocket 拦截（旧方案无法捕获已建立的连接）
+const __WS_SCANNER_JS = String.raw`
+(function() {
+  try {
+    if (window.__fnosWsScanner) return;
+    window.__fnosWsScanner = true;
+    var origin = location.origin;
+    var wsProto = origin.indexOf('https') === 0 ? 'wss:' : 'ws:';
+    var wsUrl = wsProto + '//' + location.host + '/websocket?type=main';
+
+    // v2.1.5: UUID fallback for non-secure contexts (HTTP)
+    function genUUID() {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        try { return crypto.randomUUID(); } catch(e) {}
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+
+    function b64url(b64) { return b64.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+    function ab2b64(buf) {
+      var bytes = new Uint8Array(buf), bin = '';
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+    function str2ab(s) { return new TextEncoder().encode(s).buffer; }
+
+    async function signRequest(reqId, req, data, secretB64) {
+      var ts = Date.now();
+      var body = { reqid: reqId, req: req, data: data || {} };
+      var bodyJson = JSON.stringify(body);
+      var signStr = reqId + req + ts;
+      var keyBytes = Uint8Array.from(atob(secretB64), function(c){ return c.charCodeAt(0); });
+      var key = await crypto.subtle.importKey('raw', keyBytes.buffer, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      var sigBuf = await crypto.subtle.sign('HMAC', key, str2ab(signStr));
+      var sigB64 = b64url(ab2b64(sigBuf));
+      return sigB64 + bodyJson;
+    }
+
+    function createWS() {
+      return new Promise(function(resolve, reject) {
+        var ws = new WebSocket(wsUrl);
+        var timer = setTimeout(function() { reject(new Error('WS connect timeout')); }, 10000);
+        ws.onopen = function() { clearTimeout(timer); resolve(ws); };
+        ws.onerror = function() { clearTimeout(timer); reject(new Error('WS connect error')); };
+      });
+    }
+
+    function sendAndWait(ws, payload, reqid) {
+      return new Promise(function(resolve, reject) {
+        var timer = setTimeout(function() { reject(new Error('Request timeout')); }, 15000);
+        var handler = function(event) {
+          try {
+            var raw = typeof event.data === 'string' ? event.data : '';
+            var idx = raw.indexOf('{');
+            if (idx < 0) return;
+            var resp = JSON.parse(raw.substring(idx));
+            if (resp.reqid === reqid) { clearTimeout(timer); ws.removeEventListener('message', handler); resolve(resp); }
+          } catch(e) {}
+        };
+        ws.addEventListener('message', handler);
+        ws.send(payload);
+      });
+    }
+
+    async function main() {
+      window.__fnosWsScanStatus = 'connecting';
+      var ws;
+      try { ws = await createWS(); } catch(e) {
+        window.__fnosWsScanError = e.message;
+        window.__fnosWsScanStatus = 'error';
+        try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: e.message }, '*'); } catch(e2) {}
+        return;
+      }
+      window.__fnosWsScanStatus = 'connected';
+
+      var token = '', secret = '';
+      try {
+        var stored = localStorage.getItem('token');
+        if (stored) {
+          var t = typeof stored === 'string' ? JSON.parse(stored) : stored;
+          token = t.token || t.access_token || t.accessToken || '';
+          secret = t.secret || t.signSecret || '';
+        }
+      } catch(e) {}
+
+      if (!token || !secret) {
+        try {
+          var keys = Object.keys(localStorage);
+          for (var ki = 0; ki < keys.length; ki++) {
+            var val = localStorage.getItem(keys[ki]);
+            try {
+              var parsed = JSON.parse(val);
+              if (parsed && (parsed.token || parsed.access_token)) {
+                token = parsed.token || parsed.access_token || '';
+                secret = parsed.secret || parsed.signSecret || '';
+                break;
+              }
+            } catch(e2) {}
+          }
+        } catch(e) {}
+      }
+
+      if (!token || !secret) {
+        window.__fnosWsScanError = 'Not logged in - no token/secret found';
+        window.__fnosWsScanStatus = 'error';
+        try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: 'not_logged_in' }, '*'); } catch(e2) {}
+        try { ws.close(); } catch(e2) {}
+        return;
+      }
+
+      var allApps = [];
+
+      // Fetch entry list
+      try {
+        var reqId1 = genUUID();
+        var payload1 = await signRequest(reqId1, 'appcgi.sac.entry.v1.getEntryList', {}, secret);
+        var resp1 = await sendAndWait(ws, payload1, reqId1);
+        if (resp1 && resp1.errno === 0 && resp1.data && resp1.data.list) {
+          var entries = Array.isArray(resp1.data.list) ? resp1.data.list : [];
+          for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            var appName = e.appName || e.name || '';
+            if (!appName) continue;
+            var isSystem = (e.type === 'builtIn' || e.appType === 'builtIn' || e.category === 'system');
+            var iconPath = e.icon || '';
+            var iconUrl = '';
+            if (iconPath) {
+              if (iconPath.indexOf('http') === 0) iconUrl = iconPath;
+              else if (iconPath.indexOf('/') === 0) iconUrl = origin + iconPath;
+              else iconUrl = origin + '/' + iconPath;
+            }
+            if (!iconUrl) {
+              iconUrl = isSystem
+                ? origin + '/static/app/icons/' + appName + '/icon.png'
+                : origin + '/app-center-static/serviceicon/' + appName + '/ui/images/icon_0.png';
+            }
+            var appUrl = '';
+            if (e.fullUrl) { appUrl = e.fullUrl; }
+            else if (e.uri && e.uri.host) {
+              appUrl = (e.uri.protocol || 'http') + '://' + e.uri.host + (e.uri.port ? ':' + e.uri.port : '') + (e.uri.path || '/');
+            }
+            if (!appUrl) {
+              // v2.1.13：anchor 只能是纯 appName，带 https:// 会被飞牛前端解析成应用"https"
+              appUrl = isSystem ? (origin + '/appview?anchor=' + encodeURIComponent(appName)) : appName;
+            }
+            allApps.push({
+              name: e.title || appName,
+              appId: isSystem ? ('https://' + appName) : appName,
+              url: appUrl,
+              icon: iconUrl,
+              type: isSystem ? 'builtIn' : 'appCenter'
+            });
+          }
+        }
+      } catch(e) {}
+
+      // Also fetch appStoreList for additional installed apps
+      try {
+        var reqId2 = genUUID();
+        var payload2 = await signRequest(reqId2, 'appcgi.sac.entry.v1.appStoreList', {}, secret);
+        var resp2 = await sendAndWait(ws, payload2, reqId2);
+        if (resp2 && resp2.errno === 0 && resp2.data && Array.isArray(resp2.data)) {
+          var existIds = {};
+          allApps.forEach(function(a) { existIds[a.appId] = true; });
+          resp2.data.forEach(function(item) {
+            var an = item.appName || '';
+            if (!an || existIds[an]) return;
+            var iconP = item.icon || '';
+            var iconU = '';
+            if (iconP) {
+              if (iconP.indexOf('http') === 0) iconU = iconP;
+              else if (iconP.indexOf('/') === 0) iconU = origin + iconP;
+              else iconU = origin + '/' + iconP;
+            }
+            if (!iconU) iconU = origin + '/app-center-static/serviceicon/' + an + '/ui/images/icon_0.png';
+            var au = '';
+            if (item.fullUrl) au = item.fullUrl;
+            else if (item.uri && item.uri.host) au = (item.uri.protocol || 'http') + '://' + item.uri.host + (item.uri.port ? ':' + item.uri.port : '') + (item.uri.path || '/');
+            if (!au) au = an;
+            allApps.push({ name: item.title || an, appId: an, url: au, icon: iconU, type: 'appCenter' });
+            existIds[an] = true;
+          });
+        }
+      } catch(e) {}
+
+      window.__fnosWsScanApps = allApps;
+      window.__fnosWsScanStatus = 'done';
+      // v2.1.5: Post result to main process via postMessage
+      try { window.postMessage({ type: 'fnos-ws-scan-result', data: allApps }, '*'); } catch(e) {}
+      try { ws.close(); } catch(e) {}
+    }
+    main().catch(function(e) {
+      window.__fnosWsScanError = e.message || String(e);
+      window.__fnosWsScanStatus = 'error';
+      try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: e.message }, '*'); } catch(e2) {}
+    });
+  } catch(e) {
+    window.__fnosWsScanError = e.message || String(e);
+    window.__fnosWsScanStatus = 'error';
+    try { window.postMessage({ type: 'fnos-ws-scan-result', data: [], error: e.message }, '*'); } catch(e2) {}
+  }
+})()
+`;
+
+
+// v2.1.5: PNG to ICO converter for Windows shortcuts
+function pngToIco(pngBuffer) {
+  // ICO header: 6 bytes (reserved=0, type=1(icon), count=1)
+  // ICO dir entry: 16 bytes
+  // Total overhead: 22 bytes
+  const headerSize = 6 + 16;
+  const ico = Buffer.alloc(headerSize + pngBuffer.length);
+  let offset = 0;
+  // Header
+  ico.writeUInt16LE(0, offset); offset += 2;  // reserved
+  ico.writeUInt16LE(1, offset); offset += 2;  // type = 1 (icon)
+  ico.writeUInt16LE(1, offset); offset += 2;  // count = 1
+  // Directory entry
+  const w = pngBuffer.readUInt32BE(16); // PNG IHDR width
+  const h = pngBuffer.readUInt32BE(20); // PNG IHDR height
+  ico.writeUInt8(w >= 256 ? 0 : w, offset); offset += 1;  // width (0 = 256)
+  ico.writeUInt8(h >= 256 ? 0 : h, offset); offset += 1;  // height
+  ico.writeUInt8(0, offset); offset += 1;  // color palette
+  ico.writeUInt8(0, offset); offset += 1;  // reserved
+  ico.writeUInt16LE(1, offset); offset += 2;  // color planes
+  ico.writeUInt16LE(32, offset); offset += 2; // bits per pixel
+  ico.writeUInt32LE(pngBuffer.length, offset); offset += 4;  // image data size
+  ico.writeUInt32LE(headerSize, offset); offset += 4;        // image data offset
+  // Image data (raw PNG)
+  pngBuffer.copy(ico, offset);
+  return ico;
+}
+
 let __appCenterScanAt = 0;
 let __appCenterScanWin = null;
+let __appCenterScanResult = null; // v2.1.5: store scan results from postMessage
+
 function scanAppCenterApps() {
   try {
-    if (__appCenterScanWin && !__appCenterScanWin.isDestroyed()) return;
     const s = loadSettings();
-    const apps = Array.isArray(s.apps) ? s.apps : [];
-    const center = apps.find((a) => /app-center/i.test(String(a.url)) || /应用中心/.test(String(a.name)));
-    if (!center || !/^https?:/i.test(String(center.url))) return; // 还没扫到应用中心，下次主页扫描再试
+    const origin = s.origin || '';
+    if (!origin || !/^https?:/i.test(origin)) {
+      fnosLog('warn', 'appcenter.scan', { err: 'no origin' });
+      return;
+    }
     const now = Date.now();
-    if (now - __appCenterScanAt < 60000) return; // 每分钟最多一次
+    if (now - __appCenterScanAt < 60000) return;
     __appCenterScanAt = now;
-    const win = new BrowserWindow({
-      show: false, width: 1500, height: 1000,
-      backgroundColor: '#0b0d12',
-      webPreferences: {
-        contextIsolation: true, nodeIntegration: false,
-        sandbox: true,
-        partition: SHARED_PARTITION,
-        backgroundThrottling: false,
-      },
-    });
-    __appCenterScanWin = win;
-    let done = false;
-    const finish = () => {
-      try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {}
-      __appCenterScanWin = null;
-    };
-    const scanOnce = () => {
+    fnosLog('info', 'appcenter.scan', { msg: 'starting WebSocket scanner in main window', origin });
+
+    // v2.1.5: Use mainWindow instead of hidden window to ensure same auth context
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      fnosLog('warn', 'appcenter.scan', { err: 'no mainWindow available' });
+      return;
+    }
+
+    try {
+      mainWindow.webContents.executeJavaScript(__WS_SCANNER_JS, true);
+      fnosLog('info', 'appcenter.scan', { msg: 'WS scanner injected into main window' });
+    } catch (e) {
+      fnosLog('error', 'appcenter.scan', { err: 'inject: ' + e.message });
+      return;
+    }
+
+    // v2.1.8：同时用 REST 拉取应用中心已安装应用（第三方应用，WS getEntryList 拿不到）
+    scanAppCenterViaRest();
+
+    // Poll for scan results via executeJavaScript
+    let pollCount = 0;
+    const maxPolls = 30; // 30 * 1.5s = 45s timeout
+    const pollInterval = setInterval(() => {
+      pollCount++;
+      if (pollCount >= maxPolls) {
+        clearInterval(pollInterval);
+        fnosLog('warn', 'appcenter.scan', { err: 'scan timeout after 45s' });
+        return;
+      }
       try {
-        if (done) return;
-        done = true;
-        win.webContents.executeJavaScript(__HOME_SCAN_JS, true).then((list) => {
+        mainWindow.webContents.executeJavaScript(
+          'JSON.stringify({s:window.__fnosWsScanStatus||"",a:window.__fnosWsScanApps||[],e:window.__fnosWsScanError||""})',
+          true
+        ).then((result) => {
           try {
-            if (Array.isArray(list) && list.length) {
-              dlog && dlog('info', 'appcenter.scan', { count: list.length, apps: list.map((a) => a.name + '|' + a.url).slice(0, 15) });
-              processScannedApps(list);
+            const r = JSON.parse(result);
+            if (r.s === 'done' || r.s === 'error') {
+              clearInterval(pollInterval);
+              if (r.e) {
+                fnosLog('warn', 'appcenter.scan', { error: r.e });
+              }
+              if (Array.isArray(r.a) && r.a.length) {
+                fnosLog('info', 'appcenter.scan', {
+                  count: r.a.length,
+                  apps: r.a.map(a => a.name + '|' + (a.type || '') + '|' + (a.url || '').slice(0, 60)).slice(0, 20)
+                });
+                processScannedApps(r.a);
+              } else if (r.s === 'done') {
+                fnosLog('warn', 'appcenter.scan', { err: 'scan completed but no apps found' });
+              }
+            } else if (r.s === 'connecting' || r.s === 'connected') {
+              fnosLog('info', 'appcenter.scan', { status: r.s, poll: pollCount });
             }
-          } catch (_) {}
-          finish();
-        }).catch(() => { finish(); });
-      } catch (_) { finish(); }
-    };
-    win.webContents.on('dom-ready', () => { setTimeout(scanOnce, 3500); });
-    win.webContents.on('did-fail-load', () => { finish(); });
-    win.loadURL(center.url, { userAgent: getNasUA() }).catch(() => { finish(); });
-    setTimeout(() => { if (!done) { done = true; finish(); } }, 20000); // 20s 兜底
-  } catch (_) {}
+          } catch (e) {
+            fnosLog('error', 'appcenter.scan', { err: 'parse result: ' + e.message });
+          }
+        }).catch((e) => {
+          fnosLog('error', 'appcenter.scan', { err: 'poll: ' + e.message });
+        });
+      } catch (e) {
+        clearInterval(pollInterval);
+        fnosLog('error', 'appcenter.scan', { err: 'poll outer: ' + e.message });
+      }
+    }, 1500);
+  } catch (e) {
+    fnosLog('error', 'appcenter.scan', { err: e.message, stack: e.stack });
+  }
 }
+
+
+function getAccounts() {
+  const s = loadSettings();
+  return Array.isArray(s.accounts) ? s.accounts : [];
+}
+
+function saveAccounts(accounts) {
+  try {
+    saveSettings({ accounts });
+    fnosLog('info', 'account', '账号列表已更新', { count: accounts.length });
+    return { success: true, msg: '' };
+  } catch (e) {
+    fnosLog('error', 'account', '保存账号列表失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 登录成功后调用：将当前连接信息加入账号列表
+function upsertAccount(serverInput, parsed) {
+  try {
+    const accounts = getAccounts();
+    const key = parsed.origin || parsed.href;
+    const partition = partitionForServer(parsed);
+    const idx = accounts.findIndex(a => a.origin === key);
+    
+    const entry = {
+      id: 'acct_' + crypto.createHash('md5').update(key).digest('hex').slice(0, 12),
+      label: parsed.isFnId ? `FN ID: ${parsed.fnId}` : serverInput.trim(),
+      origin: parsed.origin,
+      href: parsed.href,
+      partition,
+      lastConnectedAt: Date.now(),
+      isActive: true,
+    };
+    
+    // 将所有账号设为非活跃，当前账号设为活跃
+    accounts.forEach(a => a.isActive = false);
+    
+    if (idx >= 0) {
+      accounts[idx] = { ...accounts[idx], ...entry };
+    } else {
+      accounts.push(entry);
+    }
+    
+    saveAccounts(accounts);
+    saveSettings({ activeAccountOrigin: key });
+    fnosLog('info', 'account', '账号已记录', { origin: key, label: entry.label });
+  } catch (e) {
+    fnosLog('error', 'account', 'upsertAccount失败', { err: e.message });
+  }
+}
+
+// 切换账号：切换到指定 origin 的账号
+function switchAccount(targetOrigin) {
+  try {
+    const accounts = getAccounts();
+    const target = accounts.find(a => a.origin === targetOrigin);
+    if (!target) {
+      fnosLog('warn', 'account', '切换账号失败：未找到目标账号', { targetOrigin });
+      return { success: false, msg: '未找到该账号' };
+    }
+    
+    // 更新活跃状态
+    accounts.forEach(a => a.isActive = (a.origin === targetOrigin));
+    saveAccounts(accounts);
+    saveSettings({ activeAccountOrigin: targetOrigin, currentPartition: target.partition });
+    
+    fnosLog('info', 'account', '切换账号', { origin: targetOrigin, label: target.label });
+    
+    // 重建主窗口使用目标 partition
+    currentPartition = target.partition;
+    currentOrigin = target.origin;
+    lastConnectHref = target.href;
+    createMainWindow(target.partition, { origin: target.origin, href: target.href });
+    
+    return { success: true, msg: '切换成功' };
+  } catch (e) {
+    fnosLog('error', 'account', 'switchAccount失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 移除账号
+function removeAccount(accountId) {
+  try {
+    const accounts = getAccounts();
+    const target = accounts.find(a => a.id === accountId);
+    if (!target) {
+      return { success: false, msg: '未找到该账号' };
+    }
+    
+    const wasActive = target.isActive;
+    const filtered = accounts.filter(a => a.id !== accountId);
+    saveAccounts(filtered);
+    
+    // 清除该 partition 的 session 数据
+    try {
+      const ses = session.fromPartition(target.partition);
+      ses.clearStorageData().catch(() => {});
+      ses.clearCache().catch(() => {});
+    } catch (_) {}
+    
+    fnosLog('info', 'account', '账号已移除', { accountId, origin: target.origin });
+    
+    // 如果移除的是当前活跃账号，跳转到连接页
+    if (wasActive) {
+      saveSettings({ activeAccountOrigin: '', currentPartition: 'persist:connect' });
+      showConnectPage();
+    }
+    
+    return { success: true, msg: '移除成功' };
+  } catch (e) {
+    fnosLog('error', 'account', 'removeAccount失败', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+}
+
+// 多账号 IPC
+ipcMain.handle('account:list', async () => {
+  try {
+    const accounts = getAccounts();
+    fnosLog('info', 'ipc', 'account:list', { count: accounts.length });
+    return { success: true, msg: '', data: accounts };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'account:list error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+ipcMain.handle('account:switch', async (_e, { origin }) => {
+  try {
+    fnosLog('info', 'ipc', 'account:switch', { origin });
+    return switchAccount(origin);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'account:switch error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('account:remove', async (_e, { accountId }) => {
+  try {
+    fnosLog('info', 'ipc', 'account:remove', { accountId });
+    return removeAccount(accountId);
+  } catch (e) {
+    fnosLog('error', 'ipc', 'account:remove error', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+ipcMain.handle('account:get-active', async () => {
+  try {
+    const accounts = getAccounts();
+    const active = accounts.find(a => a.isActive) || null;
+    return { success: true, msg: '', data: active };
+  } catch (e) {
+    return { success: false, msg: e.message, data: null };
+  }
+});
 
 // ---------------------- 锁屏 / 设置 IPC ----------------------
 ipcMain.handle('lock:get-info', async (e) => {
@@ -4439,6 +6037,8 @@ ipcMain.handle('settings:get', async () => {
     themeColor: String(s.themeColor || '#4F6EF7'),
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
+    // v2.1.11：快捷方式打开应用后主程序后台化方式
+    shortcutHideMode: s.shortcutHideMode === 'minimize' ? 'minimize' : 'tray',
     // v1.17.7：FPK 会话面板默认地址（首个 NAS 的 34500 服务）
     fpkBaseUrl: resolveIptvBase() || '',
     // v1.17.7：直播源配置（非代理；代理已移除）
@@ -4497,6 +6097,18 @@ ipcMain.handle('settings:set-shortcuts', async (_e, payload) => {
     registerGlobalShortcuts();
     scheduleMenuRebuild();
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+// v2.1.11：通过桌面快捷方式打开应用后，主程序后台化方式（'tray' 隐藏到托盘 | 'minimize' 最小化到任务栏）
+ipcMain.handle('settings:set-shortcut-hide-mode', async (_e, mode) => {
+  try {
+    const next = String(mode || '') === 'minimize' ? 'minimize' : 'tray';
+    saveSettings({ shortcutHideMode: next });
+    cachedSettings.shortcutHideMode = next;
+    return { ok: true, mode: next };
   } catch (err) {
     return { ok: false, error: err?.message || '保存失败' };
   }
@@ -4629,6 +6241,413 @@ ipcMain.handle('shell:close', () => {
     mainWindow.close();
   } catch (_) {}
 });
+
+// v2.1.5: IPC handler for getting installed apps from manifest
+ipcMain.handle('get-installed-apps', async () => {
+  try {
+    const manifest = readManifest();
+    const apps = (manifest && Array.isArray(manifest.apps)) ? manifest.apps : [];
+    // v2.1.12：图标补齐——旧版本因下载 session 无登录 cookie（/app-center-static/icon/ 401），
+    // manifest 里 iconPath 为空/失效，导致设置面板"应用快捷方式"大部分图标不显示。
+    // 这里复用主窗口 session（登录 cookie 所在）现场补齐缺失图标，并写回 manifest。
+    const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
+      ? mainWindow.webContents.session
+      : null;
+    if (iconSes && apps.length) {
+      let changed = false;
+      try {
+        if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+        for (const a of apps) {
+          const iconUrl = a && (a.iconData || a.icon || '');
+          if (!iconUrl || !/^https?:/i.test(iconUrl)) continue;
+          const hasValidPath = a.iconPath && fs.existsSync(a.iconPath) && fs.statSync(a.iconPath).size > 100;
+          if (hasValidPath) continue;
+          const ext = iconUrl.split('?')[0].split('.').pop().toLowerCase();
+          const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
+          const safeName = Buffer.from(a.url || iconUrl).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
+          const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
+          if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) { a.iconPath = iconFile; changed = true; continue; }
+          // v2.1.13：系统应用图标兜底——/static/app/icons/<appName>/icon.png 公开可访问
+          const candidates = [iconUrl];
+          const sysName = sysAppNameFromEntry(a);
+          if (sysName) {
+            let o2 = a.nasAddress || '';
+            if (!o2) { try { o2 = new URL(a.url).origin; } catch (_) {} }
+            if (o2) candidates.push(o2.replace(/\/+$/, '') + '/static/app/icons/' + sysName + '/icon.png');
+          }
+          for (const cu of candidates) {
+            try {
+              const resp = await iconSes.fetch(cu, { credentials: 'include' });
+              if (!resp.ok) {
+                fnosLog('warn', 'icon.fill', { app: a.appName || a.name, status: resp.status, url: String(cu).slice(0, 120) });
+                continue;
+              }
+              const buf = Buffer.from(await resp.arrayBuffer());
+              if (buf.length > 100) {
+                fs.writeFileSync(iconFile, buf);
+                a.iconPath = iconFile;
+                changed = true;
+                fnosLog('info', 'icon.fill', { app: a.appName || a.name, size: buf.length });
+                break;
+              }
+            } catch (e) { fnosLog('warn', 'icon.fill', { app: a.appName || a.name, err: e.message }); }
+          }
+        }
+      } catch (_) {}
+      if (changed) { try { writeManifest({ apps }); } catch (_) {} }
+    }
+    fnosLog('info', 'ipc', 'get-installed-apps', { count: apps.length });
+    return { success: true, msg: '', data: apps };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'get-installed-apps error', { err: e.message });
+    return { success: false, msg: e.message, data: [] };
+  }
+});
+
+// v2.1.5: IPC handler for creating desktop shortcuts with proper icon handling
+ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
+  try {
+    const { appId, appName, iconPath, nasAddress } = payload || {};
+    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+
+    const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    // Resolve the launch URL for this app
+    let launchUrl = appId;
+    try {
+      const manifest = readManifest();
+      const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
+      if (entry && entry.url) {
+        if (/^https?:\/\//i.test(entry.url)) {
+          // v2.1.13：归一化旧缓存里错误的 appview?anchor=https://xxx 地址
+          launchUrl = normalizeAppLaunchUrl(entry.url);
+        } else if (entry.appId && entry.appId.startsWith('https://')) {
+          // v2.1.13：anchor 用纯 appName（buildAppviewUrl 内部会剥离 https:// 前缀）
+          launchUrl = buildAppviewUrl(nasAddress || '', entry.appId);
+        } else {
+          launchUrl = entry.url;
+        }
+      } else if (appId && appId.startsWith('https://')) {
+        launchUrl = buildAppviewUrl(nasAddress || '', appId);
+      }
+    } catch (_) {}
+
+    // v2.1.5: Ensure icon is in ICO format for Windows shortcuts
+    let icoPath = '';
+    let resolvedIconPath = iconPath || '';
+
+    // If iconPath is empty, try to find it from manifest
+    if (!resolvedIconPath) {
+      try {
+        const manifest = readManifest();
+        const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
+        if (entry && entry.iconPath) resolvedIconPath = entry.iconPath;
+      } catch (_) {}
+    }
+
+    // Convert PNG/JPG to ICO if needed
+    if (resolvedIconPath && fs.existsSync(resolvedIconPath)) {
+      try {
+        const ext = path.extname(resolvedIconPath).toLowerCase();
+        if (ext === '.ico') {
+          icoPath = resolvedIconPath;
+        } else {
+          // Read the image file and convert to ICO
+          const imgBuf = fs.readFileSync(resolvedIconPath);
+          // Verify it's a valid PNG (starts with PNG signature)
+          if (imgBuf.length > 8 && imgBuf[0] === 0x89 && imgBuf[1] === 0x50) {
+            const icoBuf = pngToIco(imgBuf);
+            icoPath = resolvedIconPath.replace(/\.[^.]+$/, '.ico');
+            fs.writeFileSync(icoPath, icoBuf);
+            fnosLog('info', 'icon.convert', { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
+          } else {
+            // Not a PNG, use as-is (Windows might still display it)
+            icoPath = resolvedIconPath;
+          }
+        }
+      } catch (e) {
+        fnosLog('warn', 'icon.convert', { err: e.message, iconPath: resolvedIconPath });
+        icoPath = resolvedIconPath;
+      }
+    }
+
+    const args = `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
+    const desktop = path.join(os.homedir(), 'Desktop');
+    const lnkPath = path.join(desktop, `${appName}.lnk`);
+
+    // PowerShell script to create shortcut
+    const iconPs = icoPath ? `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'` : '';
+    const ps = `
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')
+$sc.TargetPath = '${exePath.replace(/'/g, "''")}'
+$sc.Arguments = '${args}'
+$sc.WorkingDirectory = '${path.dirname(exePath).replace(/'/g, "''")}'
+$sc.Description = 'FNOS 应用: ${appName}'
+${iconPs}
+$sc.Save()
+`;
+
+    const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+
+    if (result.status === 0) {
+      fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath, icoPath, launchUrl });
+      return { success: true, msg: '快捷方式已创建', data: { path: lnkPath } };
+    } else {
+      fnosLog('error', 'ipc', '快捷方式创建失败', { stderr: result.stderr });
+      return { success: false, msg: result.stderr || '创建失败', data: null };
+    }
+  } catch (e) {
+    fnosLog('error', 'ipc', 'create-desktop-shortcut error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+// v2.1.5: IPC handler for uninstalling a NAS app (remove from manifest + delete shortcut + delete icon)
+ipcMain.handle('uninstall-nas-app', async (_e, payload) => {
+  try {
+    const { appId } = payload || {};
+    if (!appId) return { success: false, msg: '缺少 appId' };
+
+    const manifest = readManifest();
+    const appIndex = manifest.apps.findIndex(a => a.appId === appId || a.url === appId);
+    if (appIndex === -1) {
+      return { success: false, msg: '未找到该应用' };
+    }
+
+    const appInfo = manifest.apps[appIndex];
+    const appName = appInfo.appName || appInfo.name || appId;
+
+    // Remove from manifest
+    manifest.apps.splice(appIndex, 1);
+    writeManifest(manifest);
+
+    // Also remove from settings.apps
+    try {
+      const s = loadSettings();
+      if (Array.isArray(s.apps)) {
+        s.apps = s.apps.filter(a => a.appId !== appId && a.url !== appId);
+        saveSettings(s);
+        try { cachedSettings.apps = s.apps; } catch (_) {}
+      }
+    } catch (_) {}
+
+    // Delete desktop shortcut
+    try {
+      const desktop = path.join(os.homedir(), 'Desktop');
+      const lnkPath = path.join(desktop, appName + '.lnk');
+      if (fs.existsSync(lnkPath)) {
+        fs.unlinkSync(lnkPath);
+        fnosLog('info', 'uninstall', '已删除桌面快捷方式', { lnkPath });
+      }
+    } catch (_) {}
+
+    // Delete icon file
+    try {
+      if (appInfo.iconPath && fs.existsSync(appInfo.iconPath)) {
+        fs.unlinkSync(appInfo.iconPath);
+        // Also try to delete .ico version
+        const icoPath = appInfo.iconPath.replace(/\.[^.]+$/, '.ico');
+        if (icoPath !== appInfo.iconPath && fs.existsSync(icoPath)) {
+          fs.unlinkSync(icoPath);
+        }
+      }
+    } catch (_) {}
+
+    fnosLog('info', 'uninstall', '应用已卸载', { appId, appName });
+    return { success: true, msg: '已卸载' };
+  } catch (e) {
+    fnosLog('error', 'uninstall', '卸载失败', { err: e.message });
+    return { success: false, msg: e.message };
+  }
+});
+
+
+// (2) install-nas-app
+ipcMain.handle('install-nas-app', async (_e, payload) => {
+  try {
+    fnosLog('info', 'ipc', 'install-nas-app called', payload);
+    const { appId, appName, iconData, iconExt, nasAddress } = payload || {};
+    if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+
+    const data = readManifest();
+    // 检查是否已存在
+    const existIdx = data.apps.findIndex(a => a.appId === appId);
+
+    // 保存图标
+    let iconPath = '';
+    if (iconData) {
+      const ext = iconExt || 'png';
+      iconPath = path.join(ASSETS_DIR, `${appId}.${ext}`);
+      const buf = Buffer.from(iconData, 'base64');
+      fs.writeFileSync(iconPath, buf);
+      fnosLog('info', 'ipc', '图标保存成功', { iconPath });
+    }
+
+    const appEntry = {
+      appId,
+      appName,
+      iconPath,
+      nasAddress: nasAddress || '',
+      installedAt: new Date().toISOString(),
+    };
+
+    if (existIdx >= 0) {
+      data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+    } else {
+      data.apps.push(appEntry);
+    }
+
+    const res = writeManifest(data);
+    // v2.0.7：如果图标是 SVG 格式或为空，尝试从 NAS 获取 favicon 并转换为 PNG
+    if ((!iconPath || iconPath.endsWith('.svg')) && nasAddress) {
+      try {
+        const favUrl = nasAddress.replace(/\/$/, '') + '/favicon.ico';
+        const ses = session.defaultSession;
+        const resp = await ses.fetch(favUrl, { credentials: 'include' });
+        if (resp.ok) {
+          const ct = (resp.headers.get('content-type') || '').toLowerCase();
+          const buf = Buffer.from(await resp.arrayBuffer());
+          if (ct.includes('svg') || buf.slice(0, 5).toString().includes('svg') || buf.slice(0, 4).toString() === '<svg' || buf.slice(0, 100).toString().includes('<svg')) {
+            // SVG favicon，通过隐藏窗口转换为 PNG
+            const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(buf.toString('utf-8'));
+            const convertResult = await (async () => {
+              const pngBuf = await __svgToPng(buf.toString('utf-8'), 128);
+              if (!pngBuf) return null;
+              const savePath = path.join(ASSETS_DIR, appId + '.png');
+              fs.writeFileSync(savePath, Buffer.from(pngBuf));
+              return { iconPath: savePath };
+            })();
+            if (convertResult && convertResult.iconPath) {
+              appEntry.iconPath = convertResult.iconPath;
+              if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+              writeManifest(data);
+              fnosLog('info', 'ipc', 'install时SVG图标已转换', { appId, iconPath: convertResult.iconPath });
+            }
+          } else if (!ct.includes('svg') && !buf.slice(0, 100).toString().includes('<svg')) {
+            // 非 SVG，直接保存为 PNG/ICO
+            const ext = ct.includes('png') ? 'png' : (ct.includes('x-icon') || ct.includes('vnd.microsoft.icon') ? 'ico' : 'png');
+            const savePath = path.join(ASSETS_DIR, appId + '.' + ext);
+            fs.writeFileSync(savePath, buf);
+            appEntry.iconPath = savePath;
+            if (existIdx >= 0) data.apps[existIdx] = { ...data.apps[existIdx], ...appEntry };
+            writeManifest(data);
+            fnosLog('info', 'ipc', 'install时favicon已缓存', { appId, iconPath: savePath });
+          }
+        }
+      } catch (e) {
+        fnosLog('warn', 'ipc', 'install时获取favicon失败', { appId, err: e.message });
+      }
+    }
+    return { success: res.success, msg: res.msg || '安装成功', data: appEntry };
+  } catch (e) {
+    fnosLog('error', 'ipc', 'install-nas-app error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message, data: null };
+  }
+});
+
+// v2.0.7：SVG 转 PNG——创建隐藏窗口渲染 SVG 并截图为 PNG buffer
+async function __svgToPng(svgText, size) {
+  size = size || 128;
+  let hiddenWin;
+  try {
+    hiddenWin = new BrowserWindow({
+      show: false, width: size + 20, height: size + 20,
+      webPreferences: { offscreen: true, sandbox: true },
+    });
+    const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+    const html = '<!DOCTYPE html><html><body style="margin:0;background:transparent;display:flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;">' +
+      '<img src="' + dataUrl + '" width="' + size + '" height="' + size + '" style="max-width:100%;max-height:100%;" />' +
+      '</body></html>';
+    await hiddenWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await new Promise(r => setTimeout(r, 600));
+    const img = await hiddenWin.webContents.capturePage();
+    try { hiddenWin.close(); } catch (_) {}
+    return img.toPNG();
+  } catch (e) {
+    try { if (hiddenWin && !hiddenWin.isDestroyed()) hiddenWin.close(); } catch (_) {}
+    fnosLog('error', 'icon', 'SVG转PNG失败', { err: e.message });
+    return null;
+  }
+}
+ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
+  try {
+    const { svgDataUrl, appId, size } = payload || {};
+    if (!svgDataUrl || !appId) return { success: false, msg: '缺少参数' };
+    // 解码 SVG 内容
+    let svgText;
+    try {
+      svgText = decodeURIComponent(svgDataUrl.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
+    } catch (_) {
+      return { success: false, msg: 'SVG解码失败' };
+    }
+    // 转换为 PNG
+    const pngBuf = await __svgToPng(svgText, size || 128);
+    if (!pngBuf) return { success: false, msg: '转换失败' };
+    // 保存到 assets 目录
+    const iconPath = path.join(ASSETS_DIR, appId + '.png');
+    try {
+      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+      fs.writeFileSync(iconPath, Buffer.from(pngBuf));
+      fnosLog('info', 'icon', 'SVG图标已转换并保存', { appId, iconPath });
+    } catch (e) {
+      fnosLog('error', 'icon', '保存转换后图标失败', { err: e.message });
+      return { success: false, msg: '保存失败: ' + e.message };
+    }
+    return { success: true, msg: '转换成功', data: { iconPath } };
+  } catch (e) {
+    fnosLog('error', 'icon', 'convert-svg-icon error', { err: e.message, stack: e.stack });
+    return { success: false, msg: e.message };
+  }
+});
+
+// 2.2 命令行启动：携带 --app 参数时，标记待打开应用 + 正常启动主程序（隐藏到托盘），
+// 登录后由 tryOpenPendingApp 复用主程序内 createAppWindow 打开（依赖主程序登录态）。
+function launchSubAppFromArgs() {
+  if (!launchArgs.appId) return false;
+  fnosLog('info', 'launch', '检测到快捷方式启动参数，转主程序内打开', launchArgs);
+
+  const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
+  let appUrl = '';
+  try { appUrl = decodeURIComponent(launchArgs.appId); } catch (_) { appUrl = launchArgs.appId; }
+  const url = nasAddr || '';
+  // v2.1.5: 从 manifest 解析正确的启动 URL（支持 appId、url、appName 多种匹配）
+  try {
+    const manifest = readManifest();
+    const decodedAppId = launchArgs.appId ? decodeURIComponent(launchArgs.appId) : '';
+    const entry = manifest.apps.find(a =>
+      a.appId === appUrl || a.url === appUrl || a.appId === decodedAppId ||
+      a.appId === launchArgs.appId || a.name === appUrl || a.url === decodedAppId
+    );
+    if (entry && entry.url && /^https?:/i.test(entry.url)) {
+      // v2.1.13：归一化旧缓存里错误的 appview?anchor=https://xxx 地址
+      appUrl = normalizeAppLaunchUrl(entry.url);
+    } else if (appUrl && /^https:\/\/[^/]+$/i.test(appUrl)) {
+      // v2.1.13：系统应用内部标识（https://trim.xxx）→ 正确 appview 地址（纯 appName anchor）。
+      // 旧条件 !appUrl.includes('/') 永远不会成立（'https://' 本身带 /），是死代码。
+      appUrl = buildAppviewUrl(url, appUrl);
+    } else if (entry && entry.nasAddress) {
+      // App center app - use nasAddress + appName
+      appUrl = entry.nasAddress.replace(/\/$/, '') + '/' + (entry.appId || entry.appName || '');
+    }
+    fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl });
+  } catch (e) { fnosLog('warn', 'launch', 'manifest lookup failed', { err: e.message }); }
+  if (!url) {
+    fnosLog('warn', 'launch', '缺少 nas 地址参数，转普通主程序启动');
+    return false;
+  }
+
+  // v2.1.10：不再创建独立子窗口（旧 doLaunch 冷启动模式已废弃）。
+  // 快捷方式冷启动改为：标记待打开应用 + 正常启动主程序（隐藏到托盘），
+  // 登录后由 consumePendingOpenApp / tryOpenPendingApp 复用主程序内
+  // createAppWindow 的统一应用打开链路（同一 partition、登录态共享、免二次登录），
+  // 打开应用后主程序隐藏到托盘（见 tryOpenPendingApp 的 __pendingFromShortcut 分支）。
+  if (appUrl) {
+    queuePendingApp(appUrl);
+  }
+  __pendingFromShortcut = true;
+  return true;
+}
+
 ipcMain.handle('shell:popup-menu', (_e, payload) => {
   try {
     if (!payload || !payload.id) return;
@@ -4656,6 +6675,48 @@ ipcMain.handle('settings:set-accent-color', async (_e, color) => {
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+// v2.0.0：设置 - 开机自启动（Windows 注册表）
+// 注册表路径：HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+// 键名：FNOS，键值：exe 完整路径
+// 支持便携版：用 PORTABLE_EXECUTABLE_FILE 稳定路径，避免解压临时目录变化导致自启失效
+ipcMain.handle('settings:get-autostart', async () => {
+  try {
+    if (process.platform !== 'win32') return { success: false, msg: '仅 Windows 支持', data: false };
+    return new Promise((resolve) => {
+      cp.exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS', { timeout: 10000, windowsHide: true }, (err, stdout) => {
+        const exists = !err && /FNOS\s+REG_SZ/i.test(stdout);
+        resolve({ success: true, msg: '', data: exists });
+      });
+    });
+  } catch (e) {
+    return { success: false, msg: String(e.message || e).slice(0, 200), data: false };
+  }
+});
+
+ipcMain.handle('settings:set-autostart', async (_e, { enabled }) => {
+  try {
+    if (process.platform !== 'win32') return { success: false, msg: '仅 Windows 支持' };
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    const safeExe = String(exe).replace(/"/g, '');
+    if (!safeExe) return { success: false, msg: '可执行文件路径为空' };
+    const cmd = enabled
+      ? 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /t REG_SZ /d "' + safeExe + '" /f'
+      : 'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /f 2>nul';
+    return new Promise((resolve) => {
+      cp.exec(cmd, { timeout: 10000, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) {
+          const msg = String(stderr || err.message || err).slice(0, 200);
+          resolve({ success: false, msg: '注册表写入失败: ' + msg });
+        } else {
+          resolve({ success: true, msg: enabled ? '已开启开机自启' : '已关闭开机自启' });
+        }
+      });
+    });
+  } catch (e) {
+    return { success: false, msg: String(e.message || e).slice(0, 200) };
   }
 });
 
@@ -4748,6 +6809,8 @@ function createLiveWindow(autoplayChannel) {
       },
     });
     liveWindow.setMenuBarVisibility(false);
+    // v2.0.6：直播窗口独立 AppUserModelId，任务栏不与其他窗口合并
+    try { liveWindow.setAppUserModelId('com.fnos.client.app.live'); } catch (_) {}
     // v1.16.1：直播窗口与主窗口共享同一会话 partition（Cookie / 登录态互通）
     try {
       const ses = liveWindow.webContents.session;
@@ -4766,6 +6829,100 @@ function createLiveWindow(autoplayChannel) {
       console.warn('[FNOS] live window load fail', code, desc);
     };
     liveWindow.webContents.on('did-fail-load', loadFail);
+    // v2.0.6：直播窗口也提取页面图标作为任务栏图标
+    liveWindow.webContents.on('did-finish-load', () => {
+      try {
+        const __liveApplyIcon = () => {
+          try {
+            if (!liveWindow || liveWindow.isDestroyed() || !liveWindow.webContents) return;
+            liveWindow.webContents.executeJavaScript(`(function(){
+              try {
+                var candidates = [];
+                var seen = {};
+                var allLinks = document.querySelectorAll('link[rel]');
+                for (var i = 0; i < allLinks.length; i++) {
+                  var lnk = allLinks[i];
+                  var rel = (lnk.getAttribute('rel') || '').toLowerCase();
+                  if (rel.indexOf('icon') === -1) continue;
+                  var href = lnk.href || lnk.getAttribute('href') || '';
+                  var type = (lnk.getAttribute('type') || '').toLowerCase();
+                  var isSvg = type === 'image/svg+xml' || type === 'image/svg' || /\.svg($|[?#])/i.test(href);
+                  if (href && !seen[href]) { seen[href] = true; candidates.push({ href: href, isSvg: isSvg }); }
+                }
+                if (!candidates.length) { try { candidates.push({ href: location.origin + '/favicon.ico', isSvg: false }); } catch(_) {} }
+                if (!candidates.some(function(c){ return !c.isSvg; })) {
+                  for (var j = 0; j < allLinks.length; j++) {
+                    var lnk2 = allLinks[j];
+                    var rel2 = (lnk2.getAttribute('rel') || '').toLowerCase();
+                    if (rel2.indexOf('icon') === -1) continue;
+                    var href2 = lnk2.href || lnk2.getAttribute('href') || '';
+                    if (href2 && !seen[href2]) { seen[href2] = true; candidates.push({ href: href2, isSvg: true }); }
+                  }
+                }
+                return candidates;
+              } catch (e) { return []; }
+            })()`, true).then((candidates) => {
+              try {
+                if (!Array.isArray(candidates) || !candidates.length || !liveWindow || liveWindow.isDestroyed()) return;
+                const ses = liveWindow.webContents ? liveWindow.webContents.session : null;
+                const tryNext = (idx) => {
+                  if (idx >= candidates.length || !liveWindow || liveWindow.isDestroyed()) return;
+                  const c = candidates[idx];
+                  const iconRef = typeof c === 'string' ? c : c.href;
+                  const isSvg = typeof c === 'object' && c.isSvg;
+                  if (/^data:image\//i.test(iconRef)) {
+                    if (/^data:image\/svg/i.test(iconRef) || isSvg) {
+                      try {
+                        const svgText = decodeURIComponent(iconRef.replace(/^data:image\/svg\+xml;?(?:charset=utf-8)?,/, ''));
+                        __svgToPng(svgText, 128).then(pngBuf => {
+                          if (pngBuf) {
+                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                            if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
+                          }
+                          tryNext(idx + 1);
+                        });
+                      } catch(_) { tryNext(idx + 1); }
+                    } else {
+                      try {
+                        const img = nativeImage.createFromDataURL(iconRef);
+                        if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
+                      } catch (_) {}
+                      tryNext(idx + 1);
+                    }
+                    return;
+                  }
+                  if (!/^https?:/i.test(iconRef) || !ses) { tryNext(idx + 1); return; }
+                  ses.fetch(iconRef, { credentials: 'include' }).then((res) => {
+                    if (!res.ok) throw new Error('bad status');
+                    const ct = (res.headers.get('content-type') || '').toLowerCase();
+                    if (ct.includes('svg') || isSvg) {
+                      return res.text().then(svgText => {
+                        return __svgToPng(svgText, 128).then(pngBuf => {
+                          if (pngBuf) {
+                            const img = nativeImage.createFromBuffer(Buffer.from(pngBuf));
+                            if (!img.isEmpty()) { liveWindow.setIcon(img); return; }
+                          }
+                          tryNext(idx + 1);
+                        });
+                      });
+                    }
+                    return res.arrayBuffer();
+                  }).then((buf) => {
+                    if (!buf) return;
+                    const img = nativeImage.createFromBuffer(Buffer.from(buf));
+                    if (!img.isEmpty()) { liveWindow.setIcon(img); }
+                    else { tryNext(idx + 1); }
+                  }).catch(() => { tryNext(idx + 1); });
+                };
+                tryNext(0);
+              } catch (_) {}
+            }).catch(() => {});
+          } catch (_) {}
+        };
+        __liveApplyIcon();
+        setTimeout(() => { try { __liveApplyIcon(); } catch (_) {} }, 2000);
+      } catch (_) {}
+    });
     liveWindow.webContents.on('render-process-gone', (_e, details) => {
       console.error('[FNOS] live render-process-gone', details);
       // v1.16.2：渲染器崩溃时 2 秒后自动重载，避免直接闪退 / 白屏
@@ -6487,33 +8644,60 @@ ipcMain.handle('iptv:clear-cache', async () => ({ ok: true, status: { listening:
 
 // ---------------------- 生命周期 ----------------------
 app.on('second-instance', (_e, commandLine) => {
-  // v1.76.0：第二次双击桌面快捷方式时，把 --open-app 应用转交给主实例打开
+  // v1.76.0：第二次双击桌面快捷方式时，把 --open-app / --app 应用转交给主实例打开
+  // v2.1.5：同时支持 --app= 和 --open-app= 参数，以及 --nas= 参数
   try {
     const argv = commandLine || [];
     let u = '';
+    let nasAddr = '';
     for (let i = 0; i < argv.length; i++) {
       const a = String(argv[i] || '');
+      // v2.1.5: Support --app= parameter (used by create-desktop-shortcut)
+      if (a === '--app' && argv[i + 1]) { u = decodeURIComponent(String(argv[i + 1])); break; }
+      if (a.startsWith('--app=')) { u = decodeURIComponent(a.slice('--app='.length)); break; }
+      // Legacy --open-app support
       if (a === '--open-app' && argv[i + 1]) { u = String(argv[i + 1]); break; }
       if (a.startsWith('--open-app=')) { u = a.slice('--open-app='.length); break; }
     }
+    // Also extract --nas= parameter
+    for (let i = 0; i < argv.length; i++) {
+      const a = String(argv[i] || '');
+      if (a.startsWith('--nas=')) { nasAddr = decodeURIComponent(a.slice('--nas='.length)); break; }
+      if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
+    }
+    // v2.1.13：兼容旧快捷方式里错误的 appview?anchor=https://xxx 地址
+    if (u) u = normalizeAppLaunchUrl(u);
     if (u && mainWindow && !mainWindow.isDestroyed()) {
+      // v2.1.10：快捷方式触发 → 打开应用后主程序进入后台，不显示主窗口
       setTimeout(() => {
         try {
-          const cur = mainWindow.webContents.getURL() || '';
+          const wc = mainWindow.webContents;
+          const cur = wc.getURL() || '';
           const p = String(cur).toLowerCase();
-          const loggedIn = /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
+          // v2.1.11：仅当页面加载完成（isLoading=false）且非登录页才认为已登录，
+          // 避免主程序刚启动/加载中时立即打开应用窗口导致 401。
+          const loggedIn = !wc.isLoading() && /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
           if (loggedIn) {
             createAppWindow(u, {});
+            setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300);
           } else {
-            // v1.78.0：主程序已运行但未登录 → 等待登录后自动打开（不再直接开登录页）
+            // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
+            __pendingFromShortcut = true;
             queuePendingApp(u);
             tryOpenPendingApp();
+            // v2.1.13：轮询 1500ms → 400ms，缩短快捷方式打开应用等待
             const pt = setInterval(() => {
               try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
-            }, 1500);
+            }, 400);
+            // v2.1.13：需求 2.2——确定停在登录页时，显示主窗口并提示"请先打开飞牛并登录"
+            if (/\/login([\/?#]|$)/.test(p)) {
+              try { restoreMainWindow(); } catch (_) {}
+              setTimeout(() => { promptShortcutLoginChoice(); }, 800);
+            }
           }
-        } catch (_) { try { createAppWindow(u, {}); } catch (_) {} }
+        } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300); } catch (_) {} }
       }, 300);
+      return;
     }
   } catch (_) {}
   if (isCompletelyHidden) {
@@ -6526,12 +8710,14 @@ app.on('second-instance', (_e, commandLine) => {
     return;
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
-    if (!mainWindow.isVisible()) { try { mainWindow.show(); } catch (_) {} }
-    try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
+    // v2.1.13：通过启动程序/快捷方式二次启动（second-instance）恢复主窗口，含黑屏重绘修复
+    restoreMainWindow();
+    try { mainWindow.moveTop(); } catch (_) {}
   }
 });
 
+// v2.0.0: 命令行参数启动时跳过主界面
+const subAppLaunched = launchSubAppFromArgs();
 app.whenReady().then(() => {
   // v1.72.0：解析 --open-app 参数（桌面快捷方式启动单个应用）
   try { parseOpenAppArg(); } catch (_) {}
@@ -6652,7 +8838,10 @@ app.whenReady().then(() => {
 
   startMenuAutoHide();
 
-  // 启动密码
+  // v2.1.10：桌面快捷方式（--app）冷启动不再只开子窗口，改为统一走主程序启动：
+  // 正常创建主窗口（未登录显示登录页、已登录自动重连），锁定状态走解锁流程。
+  // 待打开应用已在 launchSubAppFromArgs 里 queuePendingApp，登录后由 did-navigate/
+  // tryOpenPendingApp 自动打开并隐藏主窗口到托盘。
   if (hasAppPassword()) {
     isLocked = true;
     // 后台预加载主窗口（不显示）
@@ -6663,9 +8852,46 @@ app.whenReady().then(() => {
     createMainWindow(initialPartition, initialTarget);
     ensureTray();
   }
+  // 快捷方式冷启动兜底：主窗口加载后若 pending 应用尚未被消费（无导航事件时），
+  // 主动触发一次；登录后打开应用并隐藏主窗口。
+  if (subAppLaunched) {
+    // v2.1.11：快捷方式冷启动时主窗口先不显示——已登录用户不会看到主页闪烁；
+    // 未登录（导航到 /login）时显示登录页提示登录；已登录则保持后台，
+    // 应用打开后按用户设置（托盘/最小化）后台化。
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide(); } catch (_) {}
+    try {
+      let __shortcutLoginPrompted = false;
+      const onShortcutNeedsLogin = () => {
+        if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { try { mainWindow.show(); } catch (_) {} }
+        // v2.1.13：按需求 2.2——主程序未启动时点快捷方式，明确提示"请先打开飞牛并登录"，
+        // 并让用户现场选择登录后主程序的后台化方式（托盘/任务栏）。
+        if (!__shortcutLoginPrompted) {
+          __shortcutLoginPrompted = true;
+          setTimeout(() => { promptShortcutLoginChoice(); }, 800);
+        }
+      };
+      mainWindow.webContents.on('did-navigate', () => {
+        try {
+          const cur = mainWindow.webContents.getURL() || '';
+          const p = String(cur).toLowerCase();
+          if (/^https?:/i.test(p) && (p.indexOf('/login') === 0 || /\/login([\/?#]|$)/.test(p))) {
+            onShortcutNeedsLogin();
+          }
+        } catch (_) {}
+      });
+      // v2.1.13：兜底——部分情况下 /login 是 SPA 内部路由（did-navigate-in-page）
+      mainWindow.webContents.on('did-navigate-in-page', () => {
+        try {
+          const cur = mainWindow.webContents.getURL() || '';
+          const p = String(cur).toLowerCase();
+          if (/^https?:/i.test(p) && /\/login([\/?#]|$)/.test(p)) onShortcutNeedsLogin();
+        } catch (_) {}
+      });
+    } catch (_) {}
+    setTimeout(() => { try { tryOpenPendingApp(); } catch (_) {} }, 1500);
+  }
 
   // v1.79.0：启动后自动修复桌面快捷方式 TargetPath（便携版解压路径变化导致失效）
-  setTimeout(() => { try { fixDesktopShortcuts(); } catch (_) {} }, 8000);
 
   // 注册全局快捷键
   registerGlobalShortcuts();
@@ -6699,6 +8925,8 @@ app.on('before-quit', () => {
     if (g_networkWatcher) clearInterval(g_networkWatcher);
     if (menuRebuildTimer) clearTimeout(menuRebuildTimer);
     if (g_persistTimer) clearInterval(g_persistTimer);
+    // v2.1.6：清理主页扫描定时器，避免退出时访问已销毁窗口
+    if (__homeScanTimer) clearInterval(__homeScanTimer);
   } catch (_) {}
   try {
     BrowserWindow.getAllWindows().forEach((w) => {

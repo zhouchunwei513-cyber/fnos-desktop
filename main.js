@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.10';
+const APP_VERSION = '2.1.11';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -795,6 +795,9 @@ function defaultSettings() {
     apps: [],
     currentPartition: 'persist:connect',
     closeAction: '', // 'tray' | 'exit'
+    // v2.1.11：通过桌面快捷方式打开应用后，主程序后台化方式（用户可选项）
+    // 'tray'（默认，隐藏到托盘）| 'minimize'（最小化到任务栏）
+    shortcutHideMode: 'tray',
     // 启动密码（scrypt 哈希 + 随机 salt），明文永不落盘
     appPasswordHash: '',
     appPasswordSalt: '',
@@ -1525,6 +1528,8 @@ function loadSettings() {
   // v1.18.0：历史代理与外部播放器字段不再生效；disableGpu 兜底。
   if (typeof cachedSettings.disableGpu !== 'boolean') cachedSettings.disableGpu = false;
   delete cachedSettings.externalPlayerPath;
+  // v2.1.11：快捷方式后台化方式只允许 tray / minimize
+  cachedSettings.shortcutHideMode = cachedSettings.shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
   return cachedSettings;
 }
 
@@ -4142,13 +4147,29 @@ function handleMainClose(win) {
 
 // v2.1.10：隐藏主窗口到托盘（不销毁窗口、不销毁托盘）。
 // 区别于 handleMainClose（弹窗让用户选）与 hideCompletely（连托盘一起销毁）。
-// 快捷方式打开应用后调用：主程序面板退到托盘，点击托盘图标可恢复。
-function hideMainToTray() {
+// 快捷方式打开应用后调用：按用户设置（shortcutHideMode）把主程序面板退到后台——
+//   'tray'（默认）：隐藏到系统托盘，点击托盘图标可恢复；
+//   'minimize'：最小化到任务栏，点击任务栏图标可恢复。
+function hideMainToBackground() {
+  const mode = loadSettings().shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
+  if (mode === 'minimize') {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        // 窗口可见才最小化；已隐藏（如冷启动后台加载）则保持隐藏即可
+        if (mainWindow.isVisible() && !mainWindow.isMinimized()) mainWindow.minimize();
+      } catch (_) { try { mainWindow.hide(); } catch (_) {} }
+    }
+    ensureTray();
+    return;
+  }
+  // 默认：隐藏到托盘（不销毁窗口、不销毁托盘）
   if (mainWindow && !mainWindow.isDestroyed()) {
     try { mainWindow.hide(); } catch (_) {}
   }
   ensureTray();
 }
+// v2.1.10 旧名保留：仅隐藏到托盘（供其他内部调用）
+function hideMainToTray() { hideMainToBackground(); }
 
 // ---------------------- 系统托盘 ----------------------
 function ensureTray() {
@@ -4173,6 +4194,8 @@ function ensureTray() {
       return;
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
+      // v2.1.11：minimize 模式下主窗口最小化到任务栏，点托盘也要能恢复
+      if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
       if (mainWindow.isVisible()) mainWindow.focus();
       else mainWindow.show();
     } else {
@@ -4416,6 +4439,8 @@ function createMainWindow(partition, loadTarget) {
 
   // v1.76.0：主页加载/导航时启动应用扫描 + 处理待打开应用（快捷方式 --open-app）。
   // 主页未登录(/login)时扫描自动跳过；用户登录跳回主页后立即扫描并打开 pending 应用。
+  // v2.1.11：新增 did-finish-load 触发——只有页面完全加载（cookie/session 就绪）后才
+  // 打开 pending 应用，避免冷启动时应用窗口过早请求拿到 401 跳登录页。
   try {
     mainWindow.webContents.on('dom-ready', () => {
       try { consumePendingOpenApp(); startHomeScan(); } catch (_) {}
@@ -4424,6 +4449,9 @@ function createMainWindow(partition, loadTarget) {
       try { consumePendingOpenApp(); startHomeScan(); tryOpenPendingApp(); } catch (_) {}
     });
     mainWindow.webContents.on('did-navigate-in-page', () => {
+      try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
+    });
+    mainWindow.webContents.on('did-finish-load', () => {
       try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
     });
   } catch (_) {}
@@ -4571,19 +4599,26 @@ function tryOpenPendingApp() {
     const u = __pendingAppUrl;
     let ready = false;
     try {
-      const cur = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.getURL() : '';
-      const p = String(cur || '').toLowerCase();
-      if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) ready = true;
+      // v2.1.11：必须等主窗口页面加载完成（did-finish-load 后 isLoading=false）才算就绪。
+      // 之前只看 URL 非 /login 就打开：冷启动时主窗口刚导航到主页（页面仍在加载、
+      // Electron session / cookie 尚未就绪），应用窗口立即请求会拿到 401 → 跳登录页
+      // （日志证据：fnos-diag 06:48:44 appwin.create 早于主窗口 preload.boot，随后 401）。
+      const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+      if (wc && !wc.isLoading()) {
+        const cur = wc.getURL() || '';
+        const p = String(cur || '').toLowerCase();
+        if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) ready = true;
+      }
     } catch (_) {}
     const elapsed = Date.now() - __pendingAppStart;
-    if (!ready && elapsed < 25000) return; // 未登录且未超时 → 等登录
+    if (!ready && elapsed < 30000) return; // 未就绪且未超时 → 等主窗口加载完成/登录
     __pendingAppUrl = '';
     if (u) {
       try { createAppWindow(u, {}); } catch (_) {}
-      // v2.1.10：快捷方式触发的应用打开后，隐藏主窗口到托盘（保留托盘可恢复主面板）
+      // v2.1.11：快捷方式触发的应用打开后，按用户设置隐藏主窗口到托盘或最小化到任务栏
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
-        setTimeout(() => { try { hideMainToTray(); } catch (_) {} }, 300);
+        setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300);
       }
     }
   } catch (_) {}
@@ -5807,6 +5842,8 @@ ipcMain.handle('settings:get', async () => {
     themeColor: String(s.themeColor || '#4F6EF7'),
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
+    // v2.1.11：快捷方式打开应用后主程序后台化方式
+    shortcutHideMode: s.shortcutHideMode === 'minimize' ? 'minimize' : 'tray',
     // v1.17.7：FPK 会话面板默认地址（首个 NAS 的 34500 服务）
     fpkBaseUrl: resolveIptvBase() || '',
     // v1.17.7：直播源配置（非代理；代理已移除）
@@ -5865,6 +5902,18 @@ ipcMain.handle('settings:set-shortcuts', async (_e, payload) => {
     registerGlobalShortcuts();
     scheduleMenuRebuild();
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+// v2.1.11：通过桌面快捷方式打开应用后，主程序后台化方式（'tray' 隐藏到托盘 | 'minimize' 最小化到任务栏）
+ipcMain.handle('settings:set-shortcut-hide-mode', async (_e, mode) => {
+  try {
+    const next = String(mode || '') === 'minimize' ? 'minimize' : 'tray';
+    saveSettings({ shortcutHideMode: next });
+    cachedSettings.shortcutHideMode = next;
+    return { ok: true, mode: next };
   } catch (err) {
     return { ok: false, error: err?.message || '保存失败' };
   }
@@ -8369,17 +8418,20 @@ app.on('second-instance', (_e, commandLine) => {
       if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
     }
     if (u && mainWindow && !mainWindow.isDestroyed()) {
-      // v2.1.10：快捷方式触发 → 打开应用后主程序隐藏到托盘，不显示主窗口
+      // v2.1.10：快捷方式触发 → 打开应用后主程序进入后台，不显示主窗口
       setTimeout(() => {
         try {
-          const cur = mainWindow.webContents.getURL() || '';
+          const wc = mainWindow.webContents;
+          const cur = wc.getURL() || '';
           const p = String(cur).toLowerCase();
-          const loggedIn = /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
+          // v2.1.11：仅当页面加载完成（isLoading=false）且非登录页才认为已登录，
+          // 避免主程序刚启动/加载中时立即打开应用窗口导致 401。
+          const loggedIn = !wc.isLoading() && /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
           if (loggedIn) {
             createAppWindow(u, {});
-            setTimeout(() => { try { hideMainToTray(); } catch (_) {} }, 300);
+            setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300);
           } else {
-            // v1.78.0：主程序已运行但未登录 → 等待登录后自动打开（打开后隐藏主窗口）
+            // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
             __pendingFromShortcut = true;
             queuePendingApp(u);
             tryOpenPendingApp();
@@ -8387,7 +8439,7 @@ app.on('second-instance', (_e, commandLine) => {
               try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
             }, 1500);
           }
-        } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToTray(); } catch (_) {} }, 300); } catch (_) {} }
+        } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300); } catch (_) {} }
       }, 300);
       return;
     }
@@ -8547,6 +8599,21 @@ app.whenReady().then(() => {
   // 快捷方式冷启动兜底：主窗口加载后若 pending 应用尚未被消费（无导航事件时），
   // 主动触发一次；登录后打开应用并隐藏主窗口。
   if (subAppLaunched) {
+    // v2.1.11：快捷方式冷启动时主窗口先不显示——已登录用户不会看到主页闪烁；
+    // 未登录（导航到 /login）时显示登录页提示登录；已登录则保持后台，
+    // 应用打开后按用户设置（托盘/最小化）后台化。
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide(); } catch (_) {}
+    try {
+      mainWindow.webContents.on('did-navigate', () => {
+        try {
+          const cur = mainWindow.webContents.getURL() || '';
+          const p = String(cur).toLowerCase();
+          if (/^https?:/i.test(p) && (p.indexOf('/login') === 0 || /\/login([\/?#]|$)/.test(p))) {
+            if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { try { mainWindow.show(); } catch (_) {} }
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
     setTimeout(() => { try { tryOpenPendingApp(); } catch (_) {} }, 1500);
   }
 

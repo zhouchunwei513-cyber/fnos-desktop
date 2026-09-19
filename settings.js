@@ -79,6 +79,9 @@
   const autoLockSel = bindGlassSelect(document.querySelector('[data-select="auto-lock"]'));
   const autoLockHint = $('auto-lock-hint');
 
+  // v2.1.11：快捷方式打开应用后主程序后台化方式
+  const shortcutHideSel = bindGlassSelect(document.querySelector('[data-select="shortcut-hide-mode"]'));
+
   const DEFAULTS = { lockApp: 'Ctrl+Alt+L', hideAll: 'Ctrl+Alt+H' };
 
   function updateAutoLockHint(hasPwd, mins) {
@@ -532,6 +535,26 @@
     });
   }
 
+  // v2.1.11：快捷方式打开应用后主程序后台化方式（tray 隐藏到托盘 / minimize 最小化到任务栏）
+  if (shortcutHideSel) {
+    shortcutHideSel.addEventListener('change', async () => {
+      try {
+        const mode = shortcutHideSel.value === 'minimize' ? 'minimize' : 'tray';
+        const res = await fnosSettings.setShortcutHideMode(mode);
+        const statusEl = document.getElementById('app-action-status');
+        if (res && res.ok) {
+          if (statusEl) statusEl.textContent = '已保存：打开应用后主程序' + (mode === 'minimize' ? '最小化到任务栏' : '隐藏到托盘');
+        } else {
+          shortcutHideSel.value = mode === 'minimize' ? 'tray' : 'minimize'; // 回滚
+          if (statusEl) statusEl.textContent = '保存失败: ' + ((res && res.error) || '未知错误');
+        }
+      } catch (err) {
+        const statusEl = document.getElementById('app-action-status');
+        if (statusEl) statusEl.textContent = '保存失败: ' + (err?.message || '未知错误');
+      }
+    });
+  }
+
   // v2.0.0：开机自启动开关
   if (autostartToggle) {
     autostartToggle.addEventListener('change', async () => {
@@ -584,6 +607,10 @@
         const mins = Number(info?.autoLockMinutes) || 0;
         autoLockSel.value = String(mins);
         updateAutoLockHint(!!info?.hasPassword, mins);
+      }
+      // v2.1.11：加载快捷方式后台化方式
+      if (shortcutHideSel) {
+        shortcutHideSel.value = info?.shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
       }
       loadLiveConfig();
       loadVlcConfig();

@@ -131,6 +131,23 @@
         <h2>应用快捷方式创建</h2>
       </div>
       <p class="section-desc">列出已安装的 NAS 应用，可为每个应用创建桌面快捷方式。双击快捷方式由飞牛主程序代为打开对应应用（依赖主程序登录态）。</p>
+      <!-- v2.1.11：通过快捷方式打开应用后，主程序后台化方式（用户可选项） -->
+      <div class="hotkey-row" style="align-items:center;margin-bottom:14px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">打开应用后主程序</div>
+          <div class="hotkey-sub">通过桌面快捷方式打开应用后，主程序退到后台的方式（应用窗口仍正常显示）</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto">
+          <div class="glass-select" data-select="shortcut-hide-mode" data-value="tray" tabindex="0">
+            <span class="glass-select-value">隐藏到托盘</span>
+            <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="glass-select-menu">
+              <div class="glass-select-option" data-value="tray">隐藏到托盘</div>
+              <div class="glass-select-option" data-value="minimize">最小化到任务栏</div>
+            </div>
+          </div>
+        </div>
+      </div>
       <div id="app-list-container">
         <div id="app-list-loading" style="color:#94a3b8;font-size:13px;padding:12px 0;">加载中...</div>
         <div id="app-list" class="app-grid" style="display:none"></div>

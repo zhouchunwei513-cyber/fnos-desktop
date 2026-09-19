@@ -62,6 +62,9 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   createDesktopShortcut: (payload) => ipcRenderer.invoke('create-desktop-shortcut', payload),
   uninstallNasApp: (payload) => ipcRenderer.invoke('uninstall-nas-app', payload),
   convertSvgIcon: (payload) => ipcRenderer.invoke('app:convert-svg-icon', payload),
+  // v2.1.11：快捷方式打开应用后主程序后台化方式（tray 隐藏到托盘 / minimize 最小化到任务栏）
+  setShortcutHideMode: (mode) =>
+    ipcRenderer.invoke('settings:set-shortcut-hide-mode', String(mode === 'minimize' ? 'minimize' : 'tray')),
   restartApp: () => ipcRenderer.invoke('app:restart'),
   close: () => ipcRenderer.send('settings:close'),
 });

@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.13';
+const APP_VERSION = '2.1.14';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -5189,7 +5189,9 @@ const __HOME_SCAN_JS = String.raw`(function(){
       var abs = toAbs(url);
       var finalUrl = /^https?:/i.test(abs) ? abs : '';
       if (!finalUrl && appName) {
-        finalUrl = origin + '/appview?anchor=' + encodeURIComponent('https://' + appName);
+        // v2.1.14：anchor 只传应用名，不加 https:// 前缀
+        // appview 的 openAppFromAnchor 会自动加 https:// 再解析 hostname
+        finalUrl = origin + '/appview?anchor=' + encodeURIComponent(appName);
       }
       if (!finalUrl) return;
       if (seen[finalUrl]) return;
@@ -5423,11 +5425,11 @@ const __WS_SCANNER_JS = String.raw`
               appUrl = (e.uri.protocol || 'http') + '://' + e.uri.host + (e.uri.port ? ':' + e.uri.port : '') + (e.uri.path || '/');
             }
             if (!appUrl) {
-              appUrl = isSystem ? (origin + '/appview?anchor=https%3A%2F%2F' + appName) : appName;
+              appUrl = isSystem ? (origin + '/appview?anchor=' + encodeURIComponent(appName)) : appName;
             }
             allApps.push({
               name: e.title || appName,
-              appId: isSystem ? ('https://' + appName) : appName,
+              appId: appName,
               url: appUrl,
               icon: iconUrl,
               type: isSystem ? 'builtIn' : 'appCenter'
@@ -6135,13 +6137,24 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
       if (entry && entry.url) {
         if (/^https?:\/\//i.test(entry.url)) {
           launchUrl = entry.url;
-        } else if (entry.appId && entry.appId.startsWith('https://')) {
-          launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(entry.appId);
+          // v2.1.14：修复旧 manifest 中 url 含 anchor=https:// 的情况
+          // appview 的 openAppFromAnchor 会在 anchor 前再加 https://，
+          // 所以 anchor 值只能是应用名（如 trim.file-manager），不能含协议前缀
+          if (entry.url.includes('/appview?anchor=') && entry.url.includes('https%3A%2F%2F')) {
+            const anchorName = (entry.appId || '').replace(/^https?:\/\//i, '');
+            if (anchorName) {
+              launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(anchorName);
+            }
+          }
         } else {
           launchUrl = entry.url;
         }
-      } else if (appId && appId.startsWith('https://')) {
-        launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(appId);
+      } else {
+        // v2.1.14：appId 可能含旧格式 https:// 前缀，去掉后作为 anchor
+        const anchorName = (appId || '').replace(/^https?:\/\//i, '');
+        if (anchorName) {
+          launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(anchorName);
+        }
       }
     } catch (_) {}
 
@@ -6434,9 +6447,11 @@ function launchSubAppFromArgs() {
     );
     if (entry && entry.url && /^https?:/i.test(entry.url)) {
       appUrl = entry.url;
-    } else if (appUrl && appUrl.startsWith('https://') && !appUrl.includes('/')) {
-      // System app without full URL - construct appview URL
-      appUrl = url.replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(appUrl);
+    } else if (appUrl && appUrl.startsWith('https://')) {
+      // v2.1.14：系统应用 appId 含 https:// 前缀，去掉后作为 anchor
+      // appview 的 openAppFromAnchor 会自动加 https:// 前缀
+      const anchorName = appUrl.replace(/^https?:\/\//i, '');
+      appUrl = url.replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(anchorName);
     } else if (entry && entry.nasAddress) {
       // App center app - use nasAddress + appName
       appUrl = entry.nasAddress.replace(/\/$/, '') + '/' + (entry.appId || entry.appName || '');

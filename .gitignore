@@ -18,6 +18,9 @@ Thumbs.db
 
 # Packaged artifacts
 *.exe
+
+# 本地探测脚本（含 NAS 账号密码，禁止提交）
+fnos-api-test.js
 *.blockmap
 *.yaml
 !pnpm-lock.yaml

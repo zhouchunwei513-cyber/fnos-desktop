@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.11';
+const APP_VERSION = '2.1.12';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3341,6 +3341,7 @@ function createSettingsWindow() {
       sandbox: false,
       spellcheck: false,
       backgroundThrottling: false,
+      partition: currentPartition, // v2.1.12：与主窗口一致（登录 cookie 所在分区），设置页 http 图标请求不 401
     },
   });
   settingsWindow.__isSettings = true; // 供 refreshMpvLayer 识别为应浮于 mpv 之上的子弹窗
@@ -5038,10 +5039,17 @@ async function processScannedApps(apps) {
 
       // Download all icons concurrently and wait for completion
       if (iconTasks.length > 0) {
+        // v2.1.12：图标下载必须复用主窗口 session（登录后 cookie 所在）。
+        // 旧版用 session.fromPartition(currentPartition)——多账号模式下 currentPartition
+        // 可能与实际登录 session 不一致，导致 /app-center-static/icon/ 等需鉴权路径 401，
+        // 图标下载失败 → manifest iconPath 为空 → 设置面板"应用快捷方式"大部分图标不显示。
+        const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
+          ? mainWindow.webContents.session
+          : null;
         await Promise.all(iconTasks.map(async (task) => {
           try {
-            const ses = session.fromPartition(currentPartition);
-            const resp = await ses.fetch(task.fetchUrl, { credentials: 'include' });
+            if (!iconSes) return;
+            const resp = await iconSes.fetch(task.fetchUrl, { credentials: 'include' });
             if (resp.ok) {
               const ab = await resp.arrayBuffer();
               const buf = Buffer.from(ab);
@@ -5052,6 +5060,8 @@ async function processScannedApps(apps) {
                 if (entry) entry.iconPath = task.iconFile;
                 fnosLog('info', 'icon.download', { app: task.appName, ok: true, size: buf.length });
               }
+            } else {
+              fnosLog('warn', 'icon.download', { app: task.appName, status: resp.status, url: String(task.fetchUrl).slice(0, 120) });
             }
           } catch (e) { fnosLog('warn', 'icon.download', { app: task.appName, err: e.message }); }
         }));
@@ -6052,6 +6062,44 @@ ipcMain.handle('get-installed-apps', async () => {
   try {
     const manifest = readManifest();
     const apps = (manifest && Array.isArray(manifest.apps)) ? manifest.apps : [];
+    // v2.1.12：图标补齐——旧版本因下载 session 无登录 cookie（/app-center-static/icon/ 401），
+    // manifest 里 iconPath 为空/失效，导致设置面板"应用快捷方式"大部分图标不显示。
+    // 这里复用主窗口 session（登录 cookie 所在）现场补齐缺失图标，并写回 manifest。
+    const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
+      ? mainWindow.webContents.session
+      : null;
+    if (iconSes && apps.length) {
+      let changed = false;
+      try {
+        if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+        for (const a of apps) {
+          const iconUrl = a && (a.iconData || a.icon || '');
+          if (!iconUrl || !/^https?:/i.test(iconUrl)) continue;
+          const hasValidPath = a.iconPath && fs.existsSync(a.iconPath) && fs.statSync(a.iconPath).size > 100;
+          if (hasValidPath) continue;
+          const ext = iconUrl.split('?')[0].split('.').pop().toLowerCase();
+          const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
+          const safeName = Buffer.from(a.url || iconUrl).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
+          const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
+          if (fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) { a.iconPath = iconFile; changed = true; continue; }
+          try {
+            const resp = await iconSes.fetch(iconUrl, { credentials: 'include' });
+            if (resp.ok) {
+              const buf = Buffer.from(await resp.arrayBuffer());
+              if (buf.length > 100) {
+                fs.writeFileSync(iconFile, buf);
+                a.iconPath = iconFile;
+                changed = true;
+                fnosLog('info', 'icon.fill', { app: a.appName || a.name, size: buf.length });
+              }
+            } else {
+              fnosLog('warn', 'icon.fill', { app: a.appName || a.name, status: resp.status, url: String(iconUrl).slice(0, 120) });
+            }
+          } catch (e) { fnosLog('warn', 'icon.fill', { app: a.appName || a.name, err: e.message }); }
+        }
+      } catch (_) {}
+      if (changed) { try { writeManifest({ apps }); } catch (_) {} }
+    }
     fnosLog('info', 'ipc', 'get-installed-apps', { count: apps.length });
     return { success: true, msg: '', data: apps };
   } catch (e) {

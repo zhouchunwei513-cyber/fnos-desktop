@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.15';
+const APP_VERSION = '2.1.16';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4128,7 +4128,145 @@ function createAppWindow(url, opts = {}) {
           elapsedMs: Date.now() - __cw_t0,
         });
       } catch (_) {}
-      win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+
+      // v2.1.16：非 appview 应用预认证优化——
+      // 非 appview 应用（如影视、音乐等）首次打开需要 OAuth 认证链（/v → /v/login → /signin → /v/oauth/result → /v），
+      // 整个过程约 15 秒。如果在可见窗口中执行，用户会看到多次重定向页面，体验很差。
+      // 优化方案：在隐藏窗口中先完成 OAuth（cookies 存入共享 partition），
+      // 然后在可见窗口中加载 URL（此时已有认证 cookies，直接显示最终页面，约 1-2 秒）。
+      const __shouldPreAuth = !__isAppview && typeof url === 'string';
+      if (__shouldPreAuth) {
+        try {
+          const __preAuthT0 = Date.now();
+          dlog && dlog('info', 'appwin.preauth.start', { app: __appLabel, url: String(url).slice(0, 120) });
+
+          // 创建隐藏预认证窗口（共享同一 partition，cookies 互通）
+          const __preAuthWin = new BrowserWindow({
+            show: false,
+            width: 800,
+            height: 600,
+            webPreferences: {
+              preload: path.join(__dirname, 'preload.js'),
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: false,
+              webSecurity: true,
+              allowRunningInsecureContent: true,
+              spellcheck: false,
+              backgroundThrottling: false,
+              partition,
+            },
+          });
+
+          let __preAuthDone = false;
+          let __preAuthNavCount = 0;
+          let __lastPreAuthUrl = '';
+
+          // 监听隐藏窗口的导航，跟踪 OAuth 流程进度
+          __preAuthWin.webContents.on('did-navigate', (_e, navUrl) => {
+            __preAuthNavCount++;
+            __lastPreAuthUrl = String(navUrl);
+            try {
+              dlog && dlog('info', 'appwin.preauth.navigate', {
+                app: __appLabel,
+                step: __preAuthNavCount,
+                url: __lastPreAuthUrl.slice(0, 120),
+                elapsedMs: Date.now() - __preAuthT0,
+              });
+            } catch (_) {}
+          });
+
+          // 检测 OAuth 完成：URL 回到原始应用路径（不再重定向到 login/oauth/signin）
+          __preAuthWin.webContents.on('did-finish-load', () => {
+            try {
+              const curUrl = __preAuthWin.webContents.getURL();
+              const urlObj = new URL(url);
+              const curObj = new URL(curUrl);
+              // 检查条件：
+              // 1. 同源
+              // 2. pathname 匹配目标应用路径（精确匹配或在目标路径下）
+              // 3. URL 不包含 OAuth 相关路径段
+              const isOAuthDone = curObj.origin === urlObj.origin &&
+                (curObj.pathname === urlObj.pathname || curObj.pathname.startsWith(urlObj.pathname.replace(/\/$/, '') + '/')) &&
+                !curObj.pathname.includes('/login') &&
+                !curObj.pathname.includes('/oauth') &&
+                !curObj.pathname.includes('/signin') &&
+                __preAuthNavCount >= 2; // 至少经历了 2 次导航（初始 + 至少一次重定向）
+
+              if (isOAuthDone && !__preAuthDone) {
+                __preAuthDone = true;
+                dlog && dlog('info', 'appwin.preauth.done', {
+                  app: __appLabel,
+                  finalUrl: String(curUrl).slice(0, 120),
+                  elapsedMs: Date.now() - __preAuthT0,
+                  navSteps: __preAuthNavCount,
+                });
+                // OAuth 完成，刷新 cookie 存储后加载真实 URL
+                const __sess = (partition && partition !== 'default') ? session.fromPartition(partition) : session.defaultSession;
+                try { __sess.cookies.flushStore(() => {}); } catch (_) {}
+                // 短暂延迟确保 cookies 完全写入
+                setTimeout(() => __loadRealUrl(), 500);
+              }
+            } catch (_) {}
+          });
+
+          // 超时保护：最多等待 20 秒
+          const __preAuthTimeout = setTimeout(() => {
+            if (!__preAuthDone) {
+              __preAuthDone = true;
+              dlog && dlog('warn', 'appwin.preauth.timeout', {
+                app: __appLabel,
+                timeoutMs: 20000,
+                elapsedMs: Date.now() - __preAuthT0,
+                navSteps: __preAuthNavCount,
+                lastUrl: __lastPreAuthUrl.slice(0, 120),
+              });
+              __loadRealUrl();
+            }
+          }, 20000);
+
+          function __loadRealUrl() {
+            clearTimeout(__preAuthTimeout);
+            try {
+              dlog && dlog('info', 'appwin.preauth.loadReal', {
+                app: __appLabel,
+                totalElapsedMs: Date.now() - __preAuthT0,
+                totalFromEntryMs: Date.now() - __cw_t0,
+              });
+            } catch (_) {}
+            win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+            // 延迟关闭隐藏窗口，确保 cookies 已完全写入
+            setTimeout(() => {
+              try { if (!__preAuthWin.isDestroyed()) __preAuthWin.destroy(); } catch (_) {}
+            }, 3000);
+          }
+
+          // 在可见窗口先显示加载提示页
+          const __loadingHtml = `data:text/html;charset=utf-8,<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+.wrap{text-align:center}
+.spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,0.1);border-top-color:%234f8cff;border-radius:50%25;animation:spin 0.8s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.text{font-size:14px;color:rgba(255,255,255,0.6);letter-spacing:0.5px}
+</style></head><body>
+<div class="wrap"><div class="spinner"></div><div class="text">正在连接应用…</div></div>
+</body></html>`;
+          win.loadURL(__loadingHtml).catch(() => {});
+
+          // 在隐藏窗口开始 OAuth 流程
+          __preAuthWin.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+
+        } catch (err) {
+          try { dlog && dlog('error', 'appwin.preauth.error', { app: __appLabel, error: String(err).slice(0, 200) }); } catch (_) {}
+          // 预认证出错，直接加载真实 URL（回退到原有行为）
+          win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+        }
+      } else {
+        // appview 应用或本地 URL，直接加载（无需预认证）
+        win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+      }
     } else {
       win.loadFile(url).catch(() => {});
     }

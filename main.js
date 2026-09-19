@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.12';
+const APP_VERSION = '2.1.13';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4198,7 +4198,14 @@ function ensureTray() {
       // v2.1.11：minimize 模式下主窗口最小化到任务栏，点托盘也要能恢复
       if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
       if (mainWindow.isVisible()) mainWindow.focus();
-      else mainWindow.show();
+      else {
+        mainWindow.show();
+        // v2.1.13：修复从托盘恢复时黑屏——窗口 hide 后 Chromium 可能清除渲染缓存，
+        // show 后调用 invalidate 强制重绘；同时暂停后台节流确保渲染正常。
+        try { mainWindow.webContents.setBackgroundThrottling(false); } catch (_) {}
+        try { mainWindow.webContents.invalidate(); } catch (_) {}
+        try { mainWindow.webContents.setBackgroundThrottling(true); } catch (_) {}
+      }
     } else {
       // 主窗口已关，重建
       const s = loadSettings();
@@ -4221,7 +4228,11 @@ function ensureTray() {
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
-      if (!mainWindow.isVisible()) { try { mainWindow.show(); } catch (_) {} }
+      if (!mainWindow.isVisible()) {
+        try { mainWindow.show(); } catch (_) {}
+        // v2.1.13：修复从托盘恢复时黑屏
+        try { mainWindow.webContents.invalidate(); } catch (_) {}
+      }
       try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
     } else {
       // 主窗口已关，重建
@@ -4619,7 +4630,8 @@ function tryOpenPendingApp() {
       // v2.1.11：快捷方式触发的应用打开后，按用户设置隐藏主窗口到托盘或最小化到任务栏
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
-        setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300);
+        // v2.1.13：延迟从 300ms 降到 100ms，减少等待
+        setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100);
       }
     }
   } catch (_) {}
@@ -8466,29 +8478,29 @@ app.on('second-instance', (_e, commandLine) => {
       if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
     }
     if (u && mainWindow && !mainWindow.isDestroyed()) {
-      // v2.1.10：快捷方式触发 → 打开应用后主程序进入后台，不显示主窗口
-      setTimeout(() => {
-        try {
-          const wc = mainWindow.webContents;
-          const cur = wc.getURL() || '';
-          const p = String(cur).toLowerCase();
-          // v2.1.11：仅当页面加载完成（isLoading=false）且非登录页才认为已登录，
-          // 避免主程序刚启动/加载中时立即打开应用窗口导致 401。
-          const loggedIn = !wc.isLoading() && /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
-          if (loggedIn) {
-            createAppWindow(u, {});
-            setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300);
-          } else {
-            // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
-            __pendingFromShortcut = true;
-            queuePendingApp(u);
-            tryOpenPendingApp();
-            const pt = setInterval(() => {
-              try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
-            }, 1500);
-          }
-        } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 300); } catch (_) {} }
-      }, 300);
+      // v2.1.13：去掉 300ms setTimeout 延迟，改为立即执行——与主程序内
+      // setWindowOpenHandler 打开应用（setImmediate → createAppWindow）速度一致。
+      // 轮询间隔从 1500ms 降到 500ms，隐藏主窗口延迟从 300ms 降到 100ms。
+      try {
+        const wc = mainWindow.webContents;
+        const cur = wc.getURL() || '';
+        const p = String(cur).toLowerCase();
+        // v2.1.11：仅当页面加载完成（isLoading=false）且非登录页才认为已登录，
+        // 避免主程序刚启动/加载中时立即打开应用窗口导致 401。
+        const loggedIn = !wc.isLoading() && /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
+        if (loggedIn) {
+          createAppWindow(u, {});
+          setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100);
+        } else {
+          // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
+          __pendingFromShortcut = true;
+          queuePendingApp(u);
+          tryOpenPendingApp();
+          const pt = setInterval(() => {
+            try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
+          }, 500);
+        }
+      } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100); } catch (_) {} }
       return;
     }
   } catch (_) {}
@@ -8609,17 +8621,20 @@ app.whenReady().then(() => {
 
   // v1.17.7：本地 IPTV 代理已移除，不再启动 8340 端口。
   const s = loadSettings();
-  // v1.16.3：所有窗口强制走共享 partition，忽略旧版按 host 分的 currentPartition
-  let initialPartition = SHARED_PARTITION;
+  // v2.1.13：从 settings 恢复上次的 partition（persist:nas-{hash}），确保 cookie/session
+  // 与上次登录时一致。旧版硬编码 SHARED_PARTITION，而登录后 cookie 存在 persist:nas-{hash}
+  // 中，下次启动用 SHARED_PARTITION → cookie 不在同一 partition → 每次都要重新登录。
+  let initialPartition = (s.currentPartition && s.currentPartition.startsWith('persist:'))
+    ? s.currentPartition : SHARED_PARTITION;
   let initialTarget = null;
 
   if (s.lastConnectHref && s.origin) {
     initialTarget = { origin: s.origin, href: s.lastConnectHref };
     currentOrigin = s.origin;
     lastConnectHref = s.lastConnectHref;
-    applyUA(SHARED_PARTITION);
+    applyUA(initialPartition);
     try {
-      const targetSes = session.fromPartition(SHARED_PARTITION);
+      const targetSes = session.fromPartition(initialPartition);
       const u = new URL(s.lastConnectHref);
       targetSes.resolveHost(u.host).catch(() => {});
       if (typeof targetSes.preconnect === 'function') {

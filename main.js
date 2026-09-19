@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.14';
+const APP_VERSION = '2.1.15';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3464,6 +3464,11 @@ function registerWindow(win, opts = {}) {
   } catch (_) {}
   win.webContents.on('did-navigate', (_e, url) => {
     entry.url = url;
+    // v2.1.15：增强日志——记录 app 窗口的导航事件
+    try {
+      const __isAppview = /\/appview(\?|$)/i.test(url);
+      dlog && dlog('info', 'appwin.did-navigate', { app: __appLabel, winId: win.id, url: String(url).slice(0, 160), appview: __isAppview, totalMs: Date.now() - __t0 });
+    } catch (_) {}
     scheduleMenuRebuild();
     // v1.12.1：每次主框架导航后立即把 Cookie / localStorage 落盘，
     // 确保登录态不会因为强杀进程而丢失（Electron 默认有延迟写盘）。
@@ -3476,6 +3481,13 @@ function registerWindow(win, opts = {}) {
   });
   win.webContents.on('did-navigate-in-page', (_e, url) => {
     entry.url = url;
+    // v2.1.15：增强日志——记录 appview SPA 内部路由跳转
+    try {
+      const __isAppview = /\/appview(\?|$)/i.test(url);
+      if (__isAppview) {
+        dlog && dlog('info', 'appwin.spa-navigate', { app: __appLabel, winId: win.id, url: String(url).slice(0, 160), totalMs: Date.now() - __t0 });
+      }
+    } catch (_) {}
   });
 
   // 渲染进程崩溃：自动重载入口
@@ -3695,10 +3707,22 @@ const APP_UI_INJECT_CSS = [
 
 
 function createAppWindow(url, opts = {}) {
+  const __cw_t0 = Date.now();
   // v2.0.5：修复——子应用窗口必须与主窗口使用同一 partition，否则 cookie/session 不共享，
   // 导致子应用打开后被重定向到登录页。不再将 persist:nas-* 替换为 SHARED_PARTITION。
   let partition = opts.partition || currentPartition;
   applyUA(partition);
+
+  // v2.1.15：增强日志——记录 createAppWindow 入口
+  const __isAppview = typeof url === 'string' && /\/appview(\?|$)/i.test(url);
+  try {
+    dlog && dlog('info', 'appwin.create.entry', {
+      url: String(url).slice(0, 160),
+      appview: __isAppview,
+      partition: String(partition || '').slice(0, 40),
+      opts: { title: opts.title || '', name: opts.name || '', appId: opts.appId || '' },
+    });
+  } catch (_) {}
 
   // v1.70.0：应用窗口打开前主动应用 URL 重写（外网端口/域名映射）。
   // 飞牛主页点击 Docker 应用时生成的地址常为"外网IP+内网端口"（如
@@ -3721,12 +3745,17 @@ function createAppWindow(url, opts = {}) {
 
   // v1.66.0：应用窗口打开前预预热（DNS 预解析 + 预连接），显著缩短应用首屏加载——
   // 用户点开应用时 DNS/TLS 建连已在后台完成，避免首次访问"转圈"。
+  // v2.1.15：appview URL 与主窗口同 origin，DNS/连接已建立，跳过预连接减少开销
   try {
-    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url) && !/\/appview(\?|$)/i.test(url)) {
       const warmSession = (partition && partition !== 'default') ? session.fromPartition(partition) : session.defaultSession;
+      const __preconnT0 = Date.now();
       try { warmSession.dns.resolveHost(new URL(url).hostname, () => {}); } catch (_) {}
       setTimeout(() => { try { warmSession.net?.preconnect?.(new URL(url).origin); } catch (_) {} }, 0);
       setTimeout(() => { try { warmSession.net?.preconnect?.(new URL(url).origin); } catch (_) {} }, 400);
+      try { dlog && dlog('info', 'appwin.preconnect', { origin: new URL(url).origin, elapsedMs: Date.now() - __preconnT0 }); } catch (_) {}
+    } else if (typeof url === 'string' && /\/appview(\?|$)/i.test(url)) {
+      try { dlog && dlog('info', 'appwin.preconnect.skip', { reason: 'appview same-origin', url: String(url).slice(0, 120) }); } catch (_) {}
     }
   } catch (_) {}
 
@@ -3809,13 +3838,30 @@ function createAppWindow(url, opts = {}) {
   try {
     win.webContents.on('did-start-loading', () => {
       try {
+        const __prevNavStart = win.__appNavStart || 0;
         win.__appNavStart = Date.now();
-        win.__appResPending = true;
-        dlog && dlog('info', 'appwin.load.start', { app: __appLabel, winId: win.id, url: String(win.webContents.getURL()).slice(0, 120) });
+        const __curUrl = String(win.webContents.getURL()).slice(0, 160);
+        const __isAppview = /\/appview(\?|$)/i.test(__curUrl);
+        // v2.1.15：appview SPA 内部路由（anchor 解析后的 hash/pushState 导航）会触发
+        // did-start-loading，但不需要等待 did-finish-load。检测到二次导航时不重置 pending 状态，
+        // 避免 dom-ready 已标记完成后又被覆盖为 true 导致 30s 超时误报。
+        const __isSpaReNav = __isAppview && __prevNavStart > 0 && (Date.now() - __prevNavStart) < 5000;
+        if (!__isSpaReNav) {
+          win.__appResPending = true;
+        }
+        dlog && dlog('info', 'appwin.load.start', { app: __appLabel, winId: win.id, url: __curUrl, appview: __isAppview, spaReNav: __isSpaReNav, pending: win.__appResPending });
       } catch (_) {}
     });
     win.webContents.on('dom-ready', () => {
-      try { dlog && dlog('info', 'appwin.dom-ready', { app: __appLabel, winId: win.id, ms: Date.now() - (win.__appNavStart || __t0) }); } catch (_) {}
+      const __navMs = Date.now() - (win.__appNavStart || __t0);
+      const __curUrl = (() => { try { return String(win.webContents.getURL()).slice(0, 160); } catch (_) { return ''; } })();
+      const __isAppview = /\/appview(\?|$)/i.test(__curUrl);
+      try { dlog && dlog('info', 'appwin.dom-ready', { app: __appLabel, winId: win.id, ms: __navMs, totalMs: Date.now() - __t0, appview: __isAppview, url: __curUrl }); } catch (_) {}
+      // v2.1.15：appview 是 SPA，内部路由会触发 did-start-loading 但不会再触发 did-finish-load
+      // 在 dom-ready 时标记加载完成，避免 30s 超时误报
+      if (__isAppview && win.__appResPending !== false) {
+        try { win.__appResPending = false; dlog && dlog('info', 'appwin.appview.dom-ready.done', { app: __appLabel, winId: win.id, ms: __navMs }); } catch (_) {}
+      }
       // v2.0.0：修复子应用窗口输入框无法输入——延迟强制 webContents 聚焦，避免窗口焦点被抢占
       try { setTimeout(() => { if (win && !win.isDestroyed()) win.webContents.focus(); }, 150); } catch (_) {}
       // v2.0.5：CSS 注入范围限定——只对客户端自身页面（file:// 协议的 login.html/lock.html/settings.html）
@@ -4074,6 +4120,14 @@ function createAppWindow(url, opts = {}) {
 
   if (url) {
     if (/^https?:/i.test(url)) {
+      // v2.1.15：增强日志——记录 loadURL 时机
+      try {
+        dlog && dlog('info', 'appwin.loadURL', {
+          app: __appLabel,
+          url: String(url).slice(0, 160),
+          elapsedMs: Date.now() - __cw_t0,
+        });
+      } catch (_) {}
       win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
     } else {
       win.loadFile(url).catch(() => {});
@@ -4596,12 +4650,13 @@ function consumePendingOpenApp() {
     if (!u) return;
     queuePendingApp(u);
     tryOpenPendingApp();
+    // v2.1.15：轮询间隔从 1500ms 降到 300ms，冷启动快捷方式能更快检测到登录就绪
     const pt = setInterval(() => {
       try {
         tryOpenPendingApp();
         if (!__pendingAppUrl) clearInterval(pt);
       } catch (_) {}
-    }, 1500);
+    }, 300);
   } catch (_) {}
 }
 
@@ -4610,22 +4665,33 @@ function tryOpenPendingApp() {
     if (!__pendingAppUrl) return;
     const u = __pendingAppUrl;
     let ready = false;
+    let readyReason = 'not_ready';
     try {
       // v2.1.11：必须等主窗口页面加载完成（did-finish-load 后 isLoading=false）才算就绪。
       // 之前只看 URL 非 /login 就打开：冷启动时主窗口刚导航到主页（页面仍在加载、
       // Electron session / cookie 尚未就绪），应用窗口立即请求会拿到 401 → 跳登录页
       // （日志证据：fnos-diag 06:48:44 appwin.create 早于主窗口 preload.boot，随后 401）。
       const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
-      if (wc && !wc.isLoading()) {
+      if (!wc) { readyReason = 'no_main_window'; }
+      else if (wc.isLoading()) { readyReason = 'main_window_loading'; }
+      else {
         const cur = wc.getURL() || '';
         const p = String(cur || '').toLowerCase();
-        if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) ready = true;
+        if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) {
+          ready = true;
+          readyReason = 'logged_in';
+        } else {
+          readyReason = 'on_login_page_or_not_http';
+        }
       }
-    } catch (_) {}
+    } catch (e) { readyReason = 'check_error: ' + (e.message || e); }
     const elapsed = Date.now() - __pendingAppStart;
+    // v2.1.15：增强日志——记录每次轮询的状态
+    try { dlog && dlog('info', 'pending_app.poll', { url: String(u).slice(0, 120), ready, reason: readyReason, elapsedMs: elapsed }); } catch (_) {}
     if (!ready && elapsed < 30000) return; // 未就绪且未超时 → 等主窗口加载完成/登录
     __pendingAppUrl = '';
     if (u) {
+      try { dlog && dlog('info', 'pending_app.opening', { url: String(u).slice(0, 160), elapsedMs: elapsed, fromShortcut: __pendingFromShortcut }); } catch (_) {}
       try { createAppWindow(u, {}); } catch (_) {}
       // v2.1.11：快捷方式触发的应用打开后，按用户设置隐藏主窗口到托盘或最小化到任务栏
       if (__pendingFromShortcut) {
@@ -5268,7 +5334,11 @@ function startHomeScan() {
       if (!/^https?:/i.test(u)) return;
     }
     scanHomeApps(true);
-    __homeScanTimer = setInterval(() => { try { scanHomeApps(false); } catch (_) {} }, 10000);
+    // v2.1.15：扫描间隔从 10s 放宽到 60s，减少资源浪费——
+    // 应用列表变化不频繁（安装/卸载才变），10s 太频繁占 CPU 和网络。
+    // 首次扫描后立即扫一次 REST 补全（已在 scanAppCenterViaRest 内部触发），
+    // 后续 60s 扫一次足够覆盖用户在主页面停留期间的变化。
+    __homeScanTimer = setInterval(() => { try { scanHomeApps(false); } catch (_) {} }, 60000);
   } catch (_) {}
 }
 function stopHomeScan() {
@@ -6431,7 +6501,8 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // 登录后由 tryOpenPendingApp 复用主程序内 createAppWindow 打开（依赖主程序登录态）。
 function launchSubAppFromArgs() {
   if (!launchArgs.appId) return false;
-  fnosLog('info', 'launch', '检测到快捷方式启动参数，转主程序内打开', launchArgs);
+  // v2.1.15：增强日志——记录快捷方式冷启动的完整参数
+  fnosLog('info', 'launch', '检测到快捷方式启动参数，转主程序内打开', { ...launchArgs, t0: new Date().toISOString() });
 
   const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
   let appUrl = '';
@@ -6456,7 +6527,7 @@ function launchSubAppFromArgs() {
       // App center app - use nasAddress + appName
       appUrl = entry.nasAddress.replace(/\/$/, '') + '/' + (entry.appId || entry.appName || '');
     }
-    fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl });
+    fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl, isAppview: /\/appview(\?|$)/i.test(appUrl), matchField: entry ? (entry.url === appUrl ? 'entry.url' : entry.nasAddress ? 'entry.nasAddress' : 'fallback') : 'no_entry' });
   } catch (e) { fnosLog('warn', 'launch', 'manifest lookup failed', { err: e.message }); }
   if (!url) {
     fnosLog('warn', 'launch', '缺少 nas 地址参数，转普通主程序启动');
@@ -6470,6 +6541,8 @@ function launchSubAppFromArgs() {
   // 打开应用后主程序隐藏到托盘（见 tryOpenPendingApp 的 __pendingFromShortcut 分支）。
   if (appUrl) {
     queuePendingApp(appUrl);
+    // v2.1.15：增强日志——记录 pending app 已入队
+    fnosLog('info', 'launch', 'pending app queued', { appUrl: String(appUrl).slice(0, 160), nasAddr: String(url).slice(0, 80) });
   }
   __pendingFromShortcut = true;
   return true;
@@ -8503,17 +8576,22 @@ app.on('second-instance', (_e, commandLine) => {
         // v2.1.11：仅当页面加载完成（isLoading=false）且非登录页才认为已登录，
         // 避免主程序刚启动/加载中时立即打开应用窗口导致 401。
         const loggedIn = !wc.isLoading() && /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
+        // v2.1.15：增强日志——记录快捷方式热启动路径
+        try { dlog && dlog('info', 'shortcut.hot_start', { url: String(u).slice(0, 160), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) }); } catch (_) {}
         if (loggedIn) {
+          const __t0 = Date.now();
           createAppWindow(u, {});
+          try { dlog && dlog('info', 'shortcut.app_created', { url: String(u).slice(0, 160), elapsedMs: Date.now() - __t0 }); } catch (_) {}
           setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100);
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
           __pendingFromShortcut = true;
           queuePendingApp(u);
           tryOpenPendingApp();
+          // v2.1.15：轮询间隔从 500ms 降到 300ms
           const pt = setInterval(() => {
             try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
-          }, 500);
+          }, 300);
         }
       } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100); } catch (_) {} }
       return;

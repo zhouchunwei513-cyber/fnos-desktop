@@ -5427,7 +5427,10 @@ async function scanAppCenterViaRest() {
     const url = origin.replace(/\/+$/, '') + '/app-center/v1/app/installed?language=zh-CN';
     const resp = await ses.fetch(url, { credentials: 'include' });
     if (!resp.ok) {
-      fnosLog('warn', 'appcenter.rest', 'app-center fetch failed', { status: resp.status, url });
+      // v2.2.0: 失败详情（URL、状态、响应片段），排查 appcenter 接口地址/鉴权问题
+      let bodySnippet = '';
+      try { bodySnippet = String(await resp.text()).slice(0, 200); } catch (_) {}
+      fnosLog('warn', 'appcenter.rest', 'app-center fetch failed', { status: resp.status, url, bodySnippet });
       return;
     }
     const json = await resp.json().catch(() => ({}));
@@ -5435,6 +5438,7 @@ async function scanAppCenterViaRest() {
     fnosLog('info', 'appcenter.rest', 'installed apps fetched', {
       total: (json && json.data && json.data.total) || 0,
       listLen: list.length,
+      sample: list.slice(0, 5).map((a) => String(a.appName || a.name || '').slice(0, 40)),
     });
     const apps = [];
     for (const a of list) {
@@ -5911,7 +5915,11 @@ async function refreshFpkApps(force) {
 // 从应用 URL 反推 FPK 应用名（name），用于图标查询
 function fpkAppNameFromUrl(url) {
   try {
-    if (!__fpkApps.length || !url) return '';
+    if (!__fpkApps.length || !url) {
+      // v2.2.0: 记录空列表/空 URL 场景，便于确认 FPK 列表是否已加载
+      console.log('[FPK] name resolve skipped', JSON.stringify({ url: String(url || '').slice(0, 100), fpkCount: __fpkApps.length }));
+      return '';
+    }
     const u = new URL(url);
     const pathLower = (u.pathname || '').replace(/\/+$/, '');
     let anchor = '';
@@ -5935,6 +5943,12 @@ function fpkAppNameFromUrl(url) {
       }
       if (score > bestScore) { bestScore = score; bestMatch = aName; }
     }
+    // v2.2.0: 匹配过程日志
+    console.log('[FPK] name resolve result', JSON.stringify({
+      url: String(url).slice(0, 100), anchor, pathLower,
+      match: bestMatch || '', score: bestScore,
+      candidates: __fpkApps.map((a) => `${a.name}|${a.path || ''}|${a.url || ''}`).slice(0, 30),
+    }));
     if (bestMatch) return bestMatch;
     const seg = (u.pathname || '').split('/').filter(Boolean).pop() || '';
     return seg;
@@ -6568,6 +6582,17 @@ ipcMain.handle('get-installed-apps', async () => {
       if (changed) { try { writeManifest({ apps }); } catch (_) {} }
     }
     fnosLog('info', 'ipc', 'get-installed-apps', { count: apps.length });
+    // v2.2.0: 打印应用详情（appId/name/图标状态），便于排查"面板应用不全/图标缺失"
+    try {
+      fnosLog('info', 'ipc', 'get-installed-apps.detail', {
+        apps: apps.map((a) => ({
+          appId: String(a.appId || '').slice(0, 60),
+          name: String(a.name || '').slice(0, 40),
+          hasIcon: !!(a.iconPath && fs.existsSync(a.iconPath)),
+          iconUrl: String(a.icon || a.iconData || '').slice(0, 80),
+        })).slice(0, 50),
+      });
+    } catch (_) {}
     return { success: true, msg: '', data: apps };
   } catch (e) {
     fnosLog('error', 'ipc', 'get-installed-apps error', { err: e.message });

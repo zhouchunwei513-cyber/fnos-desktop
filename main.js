@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.1.16';
+const APP_VERSION = '2.2.2';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -1745,12 +1745,15 @@ function normalizeServer(input) {
   if (fnIdFromPath) {
     const fnId = fnIdFromPath[1];
     const href = `https://fnos.net/${encodeURIComponent(fnId)}`;
-    return { origin: `https://fnos.net/${encodeURIComponent(fnId)}`, href, isFnId: true, fnId };
+    // v2.2.2：origin 语义修正——origin 应为真实 origin（scheme+host，不含路径），
+    // 含路径的 fnid 地址单独存于 href/baseHref，避免 currentOrigin 被污染导致
+    // preauth external-app 误判、IPTV nasOrigin 拼接错误（FNID 登录异常根因之一）。
+    return { origin: 'https://fnos.net', href, baseHref: href, isFnId: true, fnId };
   }
   if (/^[A-Za-z0-9_-]+$/.test(raw) && !/^\d+$/.test(raw)) {
     const fnId = raw.replace(/^fn[-_]/i, '');
     const href = `https://fnos.net/${encodeURIComponent(fnId)}`;
-    return { origin: `https://fnos.net/${encodeURIComponent(fnId)}`, href, isFnId: true, fnId };
+    return { origin: 'https://fnos.net', href, baseHref: href, isFnId: true, fnId };
   }
   let u;
   try { u = new URL(`http://${raw}`); } catch (_) { throw new Error('服务器地址格式不正确'); }
@@ -1765,8 +1768,11 @@ const SHARED_PARTITION = 'persist:fnos-shared';
 function partitionForServer(parsed) {
   // v2.0.0：多账号支持——每个 NAS 服务器地址使用独立 partition，
   // 确保多个 NAS 账号的登录态互不干扰、可同时保持在线。
-  if (parsed && parsed.origin) {
-    const hash = parsed.origin.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').slice(0, 24);
+  // v2.2.2：FNID（isFnId）用 baseHref/href（含 fnid 路径）生成 hash，保持不同 fnid
+  // 账号间隔离，同时避免 origin 语义修正后所有 fnid 塌缩到同一 partition。
+  if (parsed && (parsed.origin || parsed.href)) {
+    const key = (parsed.isFnId && (parsed.baseHref || parsed.href)) ? (parsed.baseHref || parsed.href) : (parsed.origin || parsed.href);
+    const hash = String(key).replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').slice(0, 24);
     return 'persist:nas-' + hash;
   }
   return SHARED_PARTITION;
@@ -4209,7 +4215,21 @@ function createAppWindow(url, opts = {}) {
           try { dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'external-app', urlOrigin: __urlOrigin, nasOrigin: __nasOrigin }); } catch (_) {}
         }
       } catch (_) {}
-      let __shouldPreAuth = !__isAppview && !__isExternalApp && typeof url === 'string';
+      // v2.2.2：主窗口已登录（当前 URL 已是主页而非 /login）时跳过 PreAuth——
+      // 认证 cookie 已在共享 partition 中，直接 load 应用 URL 即可进入，
+      // 无需再跑一遍 OAuth（否则已登录用户打开影视/音乐等非 appview 应用仍会
+      // 白等 3 秒 force-login + 8 秒超时，表现为快捷方式/应用打开非常慢）。
+      let __alreadyLoggedIn = false;
+      try {
+        const __mainUrl = (mainWindow && !mainWindow.isDestroyed()) ? (mainWindow.webContents.getURL() || '') : '';
+        const __mp = String(__mainUrl).toLowerCase();
+        __alreadyLoggedIn = /^https?:/i.test(__mp) && __mp.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(__mp);
+        if (__alreadyLoggedIn) {
+          dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'already-logged-in', mainUrl: String(__mainUrl).slice(0, 100) });
+        }
+      } catch (_) {}
+
+      let __shouldPreAuth = !__isAppview && !__isExternalApp && !__alreadyLoggedIn && typeof url === 'string';
       // v2.1.17: 检查 PreAuth 缓存
       try {
         if (__shouldPreAuth) {
@@ -4664,6 +4684,11 @@ function createMainWindow(partition, loadTarget) {
   currentPartition = partition || 'persist:connect';
   applyUA(currentPartition);
 
+  // v2.2.2：快捷方式冷启动且已恢复 NAS 地址时，主窗口全程保持后台（不 show），
+  // 避免 createMainWindow 内部 show 与 app.whenReady 里的 hide 竞态，导致恢复黑屏/标题栏按钮失效。
+  // 未登录（无 loadTarget，load 本地连接页/登录页）时仍需显示，由 did-navigate 到 https /login 兜底显示。
+  const __shortcutKeepHidden = !!__pendingFromShortcut && !!(loadTarget && loadTarget.href);
+
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
@@ -4697,13 +4722,16 @@ function createMainWindow(partition, loadTarget) {
   });
 
   // 渲染就绪即显示，不等整页加载完成，显著提升启动观感速度
+  // v2.2.2：快捷方式冷启动（__pendingFromShortcut）时保持后台，不在此处 show，
+  // 避免 show→hide 快速竞态导致主窗口渲染异常（恢复黑屏/自定义标题栏按钮失效）。
+  // 已登录场景应用打开后由 tryOpenPendingApp 隐藏；未登录场景由 did-navigate 到 https /login 触发显示。
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed() && !isLocked) mainWindow.show();
+    if (mainWindow && !mainWindow.isDestroyed() && !isLocked && !__shortcutKeepHidden) mainWindow.show();
   });
   // v2.1.6：兜底——若 ready-to-show 10 秒未触发（页面加载卡住），强制显示窗口
   setTimeout(() => {
     try {
-      if (mainWindow && !mainWindow.isDestroyed() && !isLocked && !mainWindow.isVisible()) {
+      if (mainWindow && !mainWindow.isDestroyed() && !isLocked && !__shortcutKeepHidden && !mainWindow.isVisible()) {
         dlog && dlog('warn', 'main.ready-to-show.timeout', { ms: 10000 });
         mainWindow.show();
       }
@@ -4790,15 +4818,16 @@ function createMainWindow(partition, loadTarget) {
   }
 
   buildMenu();
-  if (!isLocked) {
+  if (!isLocked && !__shortcutKeepHidden) {
     mainWindow.show();
     setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !isLocked) mainWindow.show();
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !isLocked && !__shortcutKeepHidden) mainWindow.show();
     }, 200);
-  } else {
+  } else if (isLocked) {
     // 启动锁定状态：主窗口后台加载，但不显示
     try { mainWindow.hide(); } catch (_) {}
   }
+  // else: 快捷方式冷启动 + 已登录 → 保持后台（应用打开后由 tryOpenPendingApp 决定是否隐藏到托盘）
 }
 
 function showConnectPage() {
@@ -5864,7 +5893,7 @@ async function fetchFpkIcon(appname, size = 256) {
   const url = `${base}/api/icons/${encodeURIComponent(appname)}/${size}`;
   console.log('[FPK] icon fetch start', JSON.stringify({ appname, size, url }));
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: { 'X-FNOS-Client': 'desktop' } });
     console.log('[FPK] icon fetch response', JSON.stringify({ appname, status: res.status, ok: res.ok }));
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
@@ -5886,7 +5915,7 @@ async function fetchFpkAppList(nasHost) {
   try {
     const url = nasHost ? `${base}/api/client/apps?nas_host=${encodeURIComponent(nasHost)}` : `${base}/api/client/apps`;
     console.log('[FPK] appList fetch start', JSON.stringify({ nasHost, url }));
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: { 'X-FNOS-Client': 'desktop' } });
     console.log('[FPK] appList fetch response', JSON.stringify({ status: res.status, ok: res.ok }));
     if (!res.ok) return null;
     const data = await res.json();
@@ -6600,6 +6629,40 @@ ipcMain.handle('get-installed-apps', async () => {
       } catch (_) {}
       if (changed) { try { writeManifest({ apps }); } catch (_) {} }
     }
+    // v2.2.2: FPK 图标管理器优先——设置页应用列表图标统一用 FPK 图标
+    //（用户需求：设置页创建快捷方式的应用列表，只能调 FPK 图标管理器的图标和列表）
+    try {
+      const __fpkList = await refreshFpkApps(true);
+      if (Array.isArray(__fpkList) && __fpkList.length) {
+        const __fpkByName = new Map(__fpkList.map((x) => [x && x.name, x]));
+        for (const a of apps) {
+          const __appId = String((a && a.appId) || '');
+          const __url = String((a && a.url) || '');
+          let __fpkName = '';
+          // appId 通常是飞牛 appname（如 trim.file-manager）；旧数据可能是 URL，需反推
+          if (__appId && !/^https?:/i.test(__appId) && __fpkByName.has(__appId)) {
+            __fpkName = __appId;
+          } else if (__appId && /^https?:/i.test(__appId)) {
+            __fpkName = fpkAppNameFromUrl(__appId);
+          }
+          if (!__fpkName && __url) __fpkName = fpkAppNameFromUrl(__url);
+          if (!__fpkName || !__fpkByName.has(__fpkName)) continue;
+          try {
+            const __fpkBuf = await fetchFpkIcon(__fpkName, 256);
+            if (__fpkBuf && __fpkBuf.length > 100) {
+              const __safeName = 'fpklist_' + Buffer.from(__fpkName).toString('base64url').slice(0, 40);
+              const __iconFile = path.join(ASSETS_DIR, __safeName + '.png');
+              fs.writeFileSync(__iconFile, __fpkBuf);
+              a.iconPath = __iconFile;
+              a.iconData = (__fpkByName.get(__fpkName) || {}).icon_256 || (a.iconData || '');
+              a.fpkName = __fpkName;
+              fnosLog('info', 'icon.fpk-list', { app: a.appName || __fpkName, fpkName: __fpkName, size: __fpkBuf.length });
+            }
+          } catch (e) { fnosLog('warn', 'icon.fpk-list', { app: __fpkName, err: e.message }); }
+        }
+        try { writeManifest({ apps }); } catch (_) {}
+      }
+    } catch (_) {}
     fnosLog('info', 'ipc', 'get-installed-apps', { count: apps.length });
     // v2.2.0: 打印应用详情（appId/name/图标状态），便于排查"面板应用不全/图标缺失"
     try {
@@ -8029,6 +8092,8 @@ function gatherCookiesForOrigin(originUrl) {
 }
 
 // 用 MPV 播放媒体地址（自动注入飞牛登录 Cookie / Referer / UA）
+// 记录上一次 VOD 播放的片名，用于直播场景识别 renderer 残留的旧片名
+let __lastVodTitle = '';
 async function playMediaWithMpv(mediaUrl, opts) {
   opts = opts || {};
   try {
@@ -8089,8 +8154,21 @@ async function playMediaWithMpv(mediaUrl, opts) {
     if (referer) headers['Referer'] = referer;
     headers['User-Agent'] = getNasUA();
 
+    const rawTitle = String(opts.title || '').trim();
+    const isLive = !!opts.isLive;
+    let finalTitle = rawTitle;
+    if (isLive) {
+      // 直播频道：renderer 可能残留上一部 VOD 片名，若与上次片名一致（或为空）则清空，
+      // 交给 mpv 从直播流元数据（icy-title / #EXTINF）读取真实频道名，避免串台
+      if (!rawTitle || rawTitle === __lastVodTitle) {
+        finalTitle = '';
+      }
+    } else if (rawTitle) {
+      __lastVodTitle = rawTitle;  // 记录 VOD 片名，供直播残留判断
+    }
+
     try {
-      await surf.play(url, headers, { isLive: !!opts.isLive, title: opts.title || '飞牛影视', hwDecode: st.hwDecode });
+      await surf.play(url, headers, { isLive, title: finalTitle || '飞牛影视', hwDecode: st.hwDecode });
       try { liveLog('info', 'mpv.play', { ok: true, reason: '', isLive: !!opts.isLive, standalone: true }); } catch (_) {}
       return { ok: true };
     } catch (e) {

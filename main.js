@@ -3843,8 +3843,15 @@ function createAppWindow(url, opts = {}) {
 
   // v1.48.0：应用窗口完整启动/加载/运行链路日志（便于分析 FNDESK 等大型应用卡顿）
   const __appLabel = (opts.title || APP_NAME);
-  // v2.1.18: 从 URL 反推 FPK 应用名（如 /music → trim.music），用于 FPK 图标查询
-  const __appName = (opts.title || opts.name || opts.appId || '') || (() => { try { return fpkAppNameFromUrl(url); } catch (_) { return ''; } })();
+  // v2.1.19: 从 URL 反推 FPK 应用名（如 /music → trim.music），延迟到图标应用时解析，
+  // 避免 FPK 应用列表尚未加载时 appname 被固定为空导致图标查询失败
+  const __resolveAppName = () => {
+    try {
+      if (opts.title || opts.name || opts.appId) return (opts.title || opts.name || opts.appId);
+      return fpkAppNameFromUrl(url) || '';
+    } catch (_) { return ''; }
+  };
+  const __appName = __resolveAppName();
   const __t0 = Date.now();
   dlog && dlog('info', 'appwin.create', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120) });
   try {
@@ -3965,12 +3972,12 @@ function createAppWindow(url, opts = {}) {
           (async () => {
             try {
               await refreshFpkApps(false);
-              const fpkBuf = await fetchFpkIcon(__appName || __appLabel, 256);
+              const fpkBuf = await fetchFpkIcon(__resolveAppName() || __appLabel, 256);
               if (fpkBuf && !win.isDestroyed()) {
                 const img = nativeImage.createFromBuffer(fpkBuf);
                 if (!img.isEmpty()) {
                   win.setIcon(img);
-                  dlog && dlog('info', 'appwin.icon.fpk', { app: __appLabel, name: __appName, winId: win.id });
+                  dlog && dlog('info', 'appwin.icon.fpk', { app: __appLabel, name: __resolveAppName(), winId: win.id });
                   return;
                 }
               }
@@ -3985,7 +3992,7 @@ function createAppWindow(url, opts = {}) {
                   // v2.1.17: 所有 favicon 候选失败，尝试 FPK API 图标作为兜底
                   (async () => {
                     try {
-                      const fpkBuf = await fetchFpkIcon(__appName || __appLabel, 256);
+                      const fpkBuf = await fetchFpkIcon(__resolveAppName() || __appLabel, 256);
                       if (fpkBuf && !win.isDestroyed()) {
                         const img = nativeImage.createFromBuffer(fpkBuf);
                         if (!img.isEmpty()) {
@@ -5845,6 +5852,8 @@ async function fetchFpkIcon(appname, size = 256) {
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     console.log('[FPK] icon fetch success', JSON.stringify({ appname, bytes: buf.length }));
+    // v2.1.19: 空 body 视为无图标，避免上层把空 buffer 当成功继续转 ICO
+    if (!buf.length) return null;
     return buf;
   } catch (err) {
     console.log('[FPK] icon fetch error', JSON.stringify({ appname, error: err.message }));
@@ -6648,7 +6657,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
       const fpkAppName = (appId && /^https?:/i.test(appId)) ? (fpkAppNameFromUrl(appId) || appName) : (appName || appId);
       console.log('[FPK] shortcut icon: resolved name', JSON.stringify({ fpkAppName }));
       const fpkBuf = await fetchFpkIcon(fpkAppName, 256);
-      if (fpkBuf) {
+      if (fpkBuf && fpkBuf.length > 0) {
         try {
           const safeName = Buffer.from(appId).toString('base64url').slice(0, 32);
           const fpkIconPath = path.join(ASSETS_DIR, `fpk_${safeName}.ico`);

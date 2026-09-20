@@ -3843,6 +3843,8 @@ function createAppWindow(url, opts = {}) {
 
   // v1.48.0：应用窗口完整启动/加载/运行链路日志（便于分析 FNDESK 等大型应用卡顿）
   const __appLabel = (opts.title || APP_NAME);
+  // v2.1.18: 从 URL 反推 FPK 应用名（如 /music → trim.music），用于 FPK 图标查询
+  const __appName = (opts.title || opts.name || opts.appId || '') || (() => { try { return fpkAppNameFromUrl(url); } catch (_) { return ''; } })();
   const __t0 = Date.now();
   dlog && dlog('info', 'appwin.create', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120) });
   try {
@@ -3959,6 +3961,20 @@ function createAppWindow(url, opts = {}) {
       const __applyAppIcon = () => {
         try {
           if (win.isDestroyed() || !win.webContents) return;
+          // v2.1.18: FPK 图标优先（应用专属图标），失败再走 favicon 候选
+          (async () => {
+            try {
+              await refreshFpkApps(false);
+              const fpkBuf = await fetchFpkIcon(__appName || __appLabel, 256);
+              if (fpkBuf && !win.isDestroyed()) {
+                const img = nativeImage.createFromBuffer(fpkBuf);
+                if (!img.isEmpty()) {
+                  win.setIcon(img);
+                  dlog && dlog('info', 'appwin.icon.fpk', { app: __appLabel, name: __appName, winId: win.id });
+                  return;
+                }
+              }
+            } catch (_) {}
           __allIconCandidates().then((candidates) => {
             try {
               if (!Array.isArray(candidates) || !candidates.length || win.isDestroyed()) return;
@@ -3969,7 +3985,7 @@ function createAppWindow(url, opts = {}) {
                   // v2.1.17: 所有 favicon 候选失败，尝试 FPK API 图标作为兜底
                   (async () => {
                     try {
-                      const fpkBuf = await fetchFpkIcon(__appLabel, 256);
+                      const fpkBuf = await fetchFpkIcon(__appName || __appLabel, 256);
                       if (fpkBuf && !win.isDestroyed()) {
                         const img = nativeImage.createFromBuffer(fpkBuf);
                         if (!img.isEmpty()) {
@@ -4037,6 +4053,7 @@ function createAppWindow(url, opts = {}) {
               tryNext(0);
             } catch (_) {}
           }).catch(() => {});
+          })();
         } catch (_) {}
       };
       __applyAppIcon();
@@ -5856,6 +5873,65 @@ async function fetchFpkAppList(nasHost) {
   }
 }
 
+// ---- v2.1.18: FPK 应用列表缓存 + URL→应用名映射 ----
+let __fpkApps = [];
+let __fpkAppsAt = 0;
+const FPK_APPS_TTL = 5 * 60 * 1000; // 5分钟缓存
+
+// 刷新 FPK 应用列表（懒加载，带 TTL 缓存）
+async function refreshFpkApps(force) {
+  try {
+    const now = Date.now();
+    if (!force && __fpkApps.length && (now - __fpkAppsAt < FPK_APPS_TTL)) return __fpkApps;
+    let nasHost = '';
+    try {
+      const s = loadSettings();
+      nasHost = s.fpkApi?.host || '';
+      if (!nasHost) { try { nasHost = s.origin ? new URL(s.origin).hostname : ''; } catch (_) {} }
+    } catch (_) {}
+    const list = await fetchFpkAppList(nasHost);
+    if (Array.isArray(list) && list.length) {
+      __fpkApps = list;
+      __fpkAppsAt = now;
+      dlog && dlog('info', 'fpk.applist', { count: list.length, host: nasHost });
+    }
+    return __fpkApps;
+  } catch (_) { return __fpkApps; }
+}
+
+// 从应用 URL 反推 FPK 应用名（name），用于图标查询
+function fpkAppNameFromUrl(url) {
+  try {
+    if (!__fpkApps.length || !url) return '';
+    const u = new URL(url);
+    const pathLower = (u.pathname || '').replace(/\/+$/, '');
+    let anchor = '';
+    try { anchor = decodeURIComponent(u.searchParams.get('anchor') || ''); } catch (_) {}
+    let bestMatch = '';
+    let bestScore = 0;
+    for (const a of __fpkApps) {
+      const aName = a.name || '';
+      if (!aName) continue;
+      const aPath = (a.path || '/').replace(/\/+$/, '');
+      const aUrl = a.url || '';
+      let score = 0;
+      if (anchor && (anchor === aName || anchor === (a.applaunchname || aName))) {
+        score = 100;
+      } else if (aUrl && aUrl === url) {
+        score = 90;
+      } else if (aPath && aPath !== '/' && pathLower && (pathLower === aPath || pathLower.startsWith(aPath + '/'))) {
+        score = 80;
+      } else if (aPath && aPath !== '/' && pathLower === aPath) {
+        score = 70;
+      }
+      if (score > bestScore) { bestScore = score; bestMatch = aName; }
+    }
+    if (bestMatch) return bestMatch;
+    const seg = (u.pathname || '').split('/').filter(Boolean).pop() || '';
+    return seg;
+  } catch (_) { return ''; }
+}
+
 let __appCenterScanAt = 0;
 let __appCenterScanWin = null;
 let __appCenterScanResult = null; // v2.1.5: store scan results from postMessage
@@ -6568,7 +6644,10 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     // v2.1.17: 如果没有本地图标，尝试从 FPK API 获取
     if (!icoPath) {
       console.log('[FPK] shortcut icon: checking for FPK icon', JSON.stringify({ appId, appName }));
-      const fpkBuf = await fetchFpkIcon(appId, 256);
+      try { await refreshFpkApps(true); } catch (_) {}
+      const fpkAppName = (appId && /^https?:/i.test(appId)) ? (fpkAppNameFromUrl(appId) || appName) : (appName || appId);
+      console.log('[FPK] shortcut icon: resolved name', JSON.stringify({ fpkAppName }));
+      const fpkBuf = await fetchFpkIcon(fpkAppName, 256);
       if (fpkBuf) {
         try {
           const safeName = Buffer.from(appId).toString('base64url').slice(0, 32);

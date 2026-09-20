@@ -784,6 +784,10 @@ const launchArgs = parseAppArgs();
 // v2.0.7：运行模式标记——日志中区分主程序/独立子应用
 const __RUN_MODE = launchArgs.appId ? 'subapp:' + launchArgs.appId : 'main';
 
+// v2.1.17: PreAuth 缓存 - 同一 origin 认证成功后 5 分钟内不再重复
+const __preAuthCache = new Map(); // key: origin, value: { ts: number, navSteps: number }
+const PREAUTH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 // ---------------------- 设置持久化 ----------------------
 function defaultSettings() {
   return {
@@ -4168,7 +4172,23 @@ function createAppWindow(url, opts = {}) {
           try { dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'external-app', urlOrigin: __urlOrigin, nasOrigin: __nasOrigin }); } catch (_) {}
         }
       } catch (_) {}
-      const __shouldPreAuth = !__isAppview && !__isExternalApp && typeof url === 'string';
+      let __shouldPreAuth = !__isAppview && !__isExternalApp && typeof url === 'string';
+      // v2.1.17: 检查 PreAuth 缓存
+      try {
+        if (__shouldPreAuth) {
+          const __cachedOrigin = new URL(url).origin;
+          const __cached = __preAuthCache.get(__cachedOrigin);
+          if (__cached && (Date.now() - __cached.ts < PREAUTH_CACHE_TTL)) {
+            __shouldPreAuth = false;
+            dlog && dlog('info', 'appwin.preauth.cache-hit', {
+              app: __appLabel,
+              origin: __cachedOrigin,
+              cachedAt: new Date(__cached.ts).toISOString(),
+              navSteps: __cached.navSteps,
+            });
+          }
+        }
+      } catch (_) {}
       if (__shouldPreAuth) {
         try {
           const __preAuthT0 = Date.now();
@@ -4235,7 +4255,13 @@ function createAppWindow(url, opts = {}) {
                   elapsedMs: Date.now() - __preAuthT0,
                   navSteps: __preAuthNavCount,
                 });
+                // v2.1.17: 写入 PreAuth 缓存
+                try {
+                  const __cacheOrigin = new URL(url).origin;
+                  __preAuthCache.set(__cacheOrigin, { ts: Date.now(), navSteps: __preAuthNavCount });
+                } catch (_) {}
                 // OAuth 完成，刷新 cookie 存储后加载真实 URL
+                clearTimeout(__preAuthFallbackTimer);
                 const __sess = (partition && partition !== 'default') ? session.fromPartition(partition) : session.defaultSession;
                 try { __sess.cookies.flushStore(() => {}); } catch (_) {}
                 // 短暂延迟确保 cookies 完全写入
@@ -4246,6 +4272,7 @@ function createAppWindow(url, opts = {}) {
 
           // 超时保护：最多等待 8 秒（v2.1.17: 从 20s 优化到 8s）
           const __preAuthTimeout = setTimeout(() => {
+            clearTimeout(__preAuthFallbackTimer);
             if (!__preAuthDone) {
               __preAuthDone = true;
               dlog && dlog('warn', 'appwin.preauth.timeout', {
@@ -4259,8 +4286,30 @@ function createAppWindow(url, opts = {}) {
             }
           }, 8000);
 
+          // v2.1.17: 如果 3 秒内 SPA 没有重定向到登录页，强制导航到 /login
+          const __preAuthFallbackTimer = setTimeout(() => {
+            try {
+              if (!__preAuthDone && __preAuthNavCount <= 1) {
+                const __curUrl = __preAuthWin.webContents.getURL();
+                const __curObj = new URL(__curUrl);
+                // 如果还在应用路径下（没进入 OAuth 流程），强制跳转 /login
+                if (!__curUrl.includes('/login') && !__curUrl.includes('/signin') && !__curUrl.includes('/oauth')) {
+                  const __loginUrl = __curObj.origin + '/login';
+                  dlog && dlog('info', 'appwin.preauth.force-login', {
+                    app: __appLabel,
+                    from: __curUrl.slice(0, 120),
+                    to: __loginUrl,
+                    elapsedMs: Date.now() - __preAuthT0,
+                  });
+                  __preAuthWin.loadURL(__loginUrl, { userAgent: getNasUA() }).catch(() => {});
+                }
+              }
+            } catch (_) {}
+          }, 3000);
+
           function __loadRealUrl() {
             clearTimeout(__preAuthTimeout);
+            clearTimeout(__preAuthFallbackTimer);
             try {
               dlog && dlog('info', 'appwin.preauth.loadReal', {
                 app: __appLabel,
@@ -6504,14 +6553,14 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
             const icoBuf = pngToIco(imgBuf);
             icoPath = resolvedIconPath.replace(/\.[^.]+$/, '.ico');
             fs.writeFileSync(icoPath, icoBuf);
-            fnosLog('info', 'icon.convert', { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
+            fnosLog('info', 'icon.convert', `PNG → ICO: ${path.basename(resolvedIconPath)}`, { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
           } else {
             // Not a PNG, use as-is (Windows might still display it)
             icoPath = resolvedIconPath;
           }
         }
       } catch (e) {
-        fnosLog('warn', 'icon.convert', { err: e.message, iconPath: resolvedIconPath });
+        fnosLog('warn', 'icon.convert', 'icon convert error', { err: e.message, iconPath: resolvedIconPath });
         icoPath = resolvedIconPath;
       }
     }
@@ -6527,10 +6576,10 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
           const icoBuf = pngToIco(fpkBuf);
           fs.writeFileSync(fpkIconPath, icoBuf);
           icoPath = fpkIconPath;
-          fnosLog('info', 'icon.fpk', { appId, icoPath, size: icoBuf.length });
+          fnosLog('info', 'icon.fpk', `FPK icon saved for ${appId}`, { appId, icoPath, size: icoBuf.length });
           console.log('[FPK] shortcut icon: FPK icon saved', JSON.stringify({ appId, icoPath, size: icoBuf.length }));
         } catch (e) {
-          fnosLog('warn', 'icon.fpk', { err: e.message, appId });
+          fnosLog('warn', 'icon.fpk', 'FPK icon error', { err: e.message, appId });
           console.log('[FPK] shortcut icon: FPK icon convert failed', JSON.stringify({ appId, error: e.message }));
         }
       } else {

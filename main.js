@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.2.4';
+const APP_VERSION = '2.2.5';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3958,17 +3958,10 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v2.2.4：记录窗口创建时间，供 render-process-gone 判断"创建即崩"（load.start 后 ~50ms 崩）
   try { win.__appCreatedAt = Date.now(); } catch (_) {}
 
-  // v2.2.4：XTE 等自带标题栏的应用跳过自定义标题栏注入（titlebar-inject 会查询该标志）——
-  // 用户截图确认 XTE 启动界面标题栏菜单错位（自定义 34px 栏 + ☰/窗口按钮 叠加在 XTE 自带标题栏上）。
-  // 识别特征：端口 34500（XTE）、路径含 /xte；主窗口/普通应用仍注入。
-  try {
-    const __skipUrl = String(url || '');
-    const __skipTitlebar = /:34500([\/?#]|$)/.test(__skipUrl) || /\/xte([\/?#]|$)/i.test(__skipUrl) || /\/xte$/i.test(__skipUrl);
-    if (__skipTitlebar) {
-      win.__skipTitlebar = true;
-      dlog && dlog('info', 'appwin.skip-titlebar', { app: __appLabel, winId: win.id, url: __skipUrl.slice(0, 120), reason: 'app-has-own-titlebar' });
-    }
-  } catch (_) {}
+  // v2.2.5：撤销 v2.2.4 的 XTE 跳过标题栏注入——
+  // 实测 XTE 并无自带标题栏，跳过注入后整个窗口没有标题栏（用户反馈"标题栏不见了"），
+  // 因此 XTE 与普通应用一样注入自定义标题栏。保留 __skipTitlebar 标志位机制供未来使用，
+  // 但默认不再为 XTE 设置跳过。若未来某应用确有自带标题栏，可在下方按 URL 特征显式设置。
 
   const isHome = !!opts.isHome;
   registerWindow(win, {
@@ -3979,15 +3972,58 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   const __appLabel = (opts.title || APP_NAME);
   // v2.1.19: 从 URL 反推 FPK 应用名（如 /music → trim.music），延迟到图标应用时解析，
   // 避免 FPK 应用列表尚未加载时 appname 被固定为空导致图标查询失败
+  // v2.2.5: 增强——anchor 截断兜底：FPK 列表已加载时，对未命中的候选名做
+  // 前缀/去点归一化模糊匹配（如 trim.resource-mana → trim.resource-manager、
+  // trim.backup-and-sy → trim.backup-and-sync），确保任务栏/快捷方式图标命中 FPK 高清图标。
   const __resolveAppName = () => {
     try {
       // v2.3.0: appname 语义修正——appId/name 才可能是飞牛 appname，
       // title 是窗口显示名（如"系统设置"），用它兜底会得到显示名导致图标 404
+      let candidate = '';
       if (opts.appId) {
-        return /^https?:/i.test(opts.appId) ? (fpkAppNameFromUrl(opts.appId) || '') : String(opts.appId);
+        candidate = /^https?:/i.test(opts.appId) ? (fpkAppNameFromUrl(opts.appId) || '') : String(opts.appId);
+      } else if (opts.name) {
+        candidate = String(opts.name);
+      } else {
+        candidate = fpkAppNameFromUrl(url) || '';
       }
-      if (opts.name) return String(opts.name);
-      return fpkAppNameFromUrl(url) || '';
+      if (!candidate) return '';
+      // FPK 列表模糊匹配：精确 > 前缀（截断 anchor）> 去点归一化
+      try {
+        if (__fpkApps.length) {
+          const cLower = String(candidate).toLowerCase();
+          for (const a of __fpkApps) {
+            const n = String((a && a.name) || '');
+            if (n && n.toLowerCase() === cLower) return n;
+          }
+          // 前缀匹配（anchor 被截断：trim.resource-mana 缺 "ger"）
+          for (const a of __fpkApps) {
+            const n = String((a && a.name) || '');
+            if (n && cLower.length >= 4 && n.toLowerCase().startsWith(cLower)) {
+              dlog && dlog('info', 'appwin.resolve-name.prefix', { app: __appLabel, candidate, matched: n });
+              return n;
+            }
+          }
+          // 反向前缀（FPK name 是候选名的前缀）
+          for (const a of __fpkApps) {
+            const n = String((a && a.name) || '');
+            if (n && n.toLowerCase().length >= 4 && cLower.startsWith(n.toLowerCase())) {
+              dlog && dlog('info', 'appwin.resolve-name.reverse-prefix', { app: __appLabel, candidate, matched: n });
+              return n;
+            }
+          }
+          // 去点归一化（trim.file-manager.trash ↔ trim.filemanager.trash）
+          const cNorm = cLower.replace(/[-_.]/g, '');
+          for (const a of __fpkApps) {
+            const n = String((a && a.name) || '');
+            if (n && n.toLowerCase().replace(/[-_.]/g, '') === cNorm) {
+              dlog && dlog('info', 'appwin.resolve-name.norm', { app: __appLabel, candidate, matched: n });
+              return n;
+            }
+          }
+        }
+      } catch (_) {}
+      return candidate;
     } catch (_) { return ''; }
   };
   const __appName = __resolveAppName();
@@ -4124,6 +4160,10 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                     return;
                   }
                 }
+                // v2.2.5: FPK 图标获取失败日志（便于排查任务栏图标缺失）
+                dlog && dlog('warn', 'appwin.icon.fpk-empty', { app: __appLabel, name: __fpkName, winId: win.id, bufLen: fpkBuf ? fpkBuf.length : 0 });
+              } else {
+                dlog && dlog('info', 'appwin.icon.fpk-skip', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120), reason: 'no-fpk-name' });
               }
             } catch (_) {}
           __allIconCandidates().then((candidates) => {
@@ -4308,6 +4348,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // 图标与初始标题（不依赖页面 favicon）。解决"任务栏图标只是部分改过来"：
   // 飞牛 appview 页面 favicon 是前端默认图标，应用图标必须从扫描数据直接取。
   // favicon 提取仍保留作为兜底（未命中缓存图标时）。
+  // v2.2.5: 任务栏图标优先走 FPK 高清图标（用户要求：只能调用 FPK 图标管理器的对应应用图标）。
+  // 先用 settings.apps 缓存兜底，再异步尝试 FPK 256 高清图标覆盖（__resolveAppName 已增强截断匹配）。
   try {
     const __s = loadSettings();
     const __apps = Array.isArray(__s.apps) ? __s.apps : [];
@@ -4335,6 +4377,27 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         } catch (_) {}
       }
     }
+    // v2.2.5：异步立即尝试 FPK 高清图标（不等 did-finish-load），确保任务栏尽快用 FPK 图标
+    try {
+      (async () => {
+        try {
+          await refreshFpkApps(false);
+          const __f2 = __resolveAppName();
+          if (__f2) {
+            const __b2 = await fetchFpkIcon(__f2, 256);
+            if (__b2 && __b2.length > 100 && win && !win.isDestroyed()) {
+              const __img2 = nativeImage.createFromBuffer(__b2);
+              if (!__img2.isEmpty()) {
+                win.setIcon(__img2);
+                win.__appIconSet = true;
+                win.__appFpkIcon = true;
+                dlog && dlog('info', 'appwin.icon.fpk-early', { app: __appLabel, name: __f2, winId: win.id, size: __b2.length });
+              }
+            }
+          }
+        } catch (_) {}
+      })();
+    } catch (_) {}
   } catch (_) {}
 
   if (url) {
@@ -4963,10 +5026,11 @@ function createMainWindow(partition, loadTarget) {
     });
     mainWindow.webContents.on('did-finish-load', () => {
       try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
-      // v2.2.4：FNID 检测页自动跳转——
-      // browser_use 实测 https://fnos.net/dashuaibi888/ 检测页只列出访问地址（dashuaibi888.fnos.net、
-      // http://110.90.205.103:5666 等）不自动跳转，导致 FNID 登录后卡在检测页。
-      // 这里在页面加载完成后提取页面内访问地址链接，自动导航到第一个可用地址（每个 FNID 只执行一次）。
+      // v2.2.5：FNID 检测页自动跳转（修复 v2.2.4 跳备案页问题）——
+      // https://fnos.net/{fnid} 是 SPA：页面加载时只显示"正在连接..."，真实访问地址
+      // 是通过 POST /api/v1/fn/con 异步获取后渲染的 a[href]。did-finish-load 时抓取
+      // 只会得到 footer 备案链接（beian.miit.gov.cn / beian.gov.cn / conac.cn）。
+      // 方案：轮询等待渲染完成 + 过滤备案/政务链接 + 按权重挑选真实 NAS 地址。
       try {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         const __cur = mainWindow.webContents.getURL() || '';
@@ -4975,43 +5039,88 @@ function createMainWindow(partition, loadTarget) {
         if (!__fnidMatch) return;
         if (global.__fnidAutoNavDone === __cur) return; // 每个检测页 URL 只自动跳转一次
         global.__fnidAutoNavDone = __cur;
-        dlog && dlog('info', 'fnid.detect-page', { url: __cur.slice(0, 120) });
-        setTimeout(() => {
+        const __fnid = __fnidMatch[1];
+        dlog && dlog('info', 'fnid.detect-page', { url: __cur.slice(0, 120), fnid: __fnid });
+
+        // 备案/政务链接黑名单：检测页 footer 固定出现的链接，绝不是 NAS 访问地址
+        const __isBadLink = (u) => {
           try {
-            if (!mainWindow || mainWindow.isDestroyed()) return;
-            mainWindow.webContents.executeJavaScript(`(function(){
-              try {
-                var links = [];
-                var all = document.querySelectorAll('a[href]');
-                for (var i = 0; i < all.length; i++) {
-                  var h = all[i].getAttribute('href') || '';
-                  if (/^https?:/i.test(h)) links.push(h);
-                }
-                return JSON.stringify(links.slice(0, 10));
-              } catch (e) { return ''; }
-            })()`, true).then((json) => {
+            const hn = new URL(u).hostname || '';
+            return /(^|\.)beian\.miit\.gov\.cn$/i.test(hn) ||
+                   /(^|\.)beian\.gov\.cn$/i.test(hn) ||
+                   /(^|\.)conac\.cn$/i.test(hn) ||
+                   /(^|\.)gov\.cn$/i.test(hn) ||
+                   /(^|\.)12377\.cn$/i.test(hn) ||
+                   /(^|\.)12321\.cn$/i.test(hn) ||
+                   /(^|\.)12318\.cn$/i.test(hn) ||
+                   /(^|\.)12315\.cn$/i.test(hn);
+          } catch (_) { return true; }
+        };
+        const __extract = () => {
+          return mainWindow.webContents.executeJavaScript(`(function(){
+            try {
+              var links = [];
+              var all = document.querySelectorAll('a[href]');
+              for (var i = 0; i < all.length; i++) {
+                var h = all[i].getAttribute('href') || '';
+                if (/^https?:/i.test(h)) links.push(h);
+              }
+              var seen = {}, out = [];
+              for (var j = 0; j < links.length; j++) {
+                if (!seen[links[j]]) { seen[links[j]] = 1; out.push(links[j]); }
+              }
+              return JSON.stringify(out.slice(0, 20));
+            } catch (e) { return ''; }
+          })()`, true);
+        };
+        // 按权重挑选：本 FNID 隧道域 > *.fnos.net > 公网 IP > 其他 http(s)；https 加分
+        const __pickBest = (arr) => {
+          let pick = '';
+          let bestScore = -1;
+          for (const u of arr) {
+            try {
+              if (__isBadLink(u)) continue;
+              const h = new URL(u).hostname || '';
+              let score = 0;
+              if (h === `${__fnid}.fnos.net`) score += 130;
+              else if (h === 'fnos.net' || h.endsWith('.fnos.net')) score += 100;
+              else if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) score += 50; // 公网 IPv4
+              if (/^https:/i.test(u)) score += 10;
+              if (score > bestScore) { bestScore = score; pick = u; }
+            } catch (_) {}
+          }
+          return pick;
+        };
+        // 轮询：每 700ms 一次，最多 12 次（约 8.4s），覆盖 SPA 异步渲染
+        let __attempts = 0;
+        const __timer = setInterval(() => {
+          try {
+            if (!mainWindow || mainWindow.isDestroyed()) { clearInterval(__timer); return; }
+            __attempts++;
+            __extract().then((json) => {
               try {
                 let arr = [];
                 try { arr = JSON.parse(json || '[]'); } catch (_) {}
-                // 优先选择 FN Connect 隧道域（*.fnos.net），其次第一个 http(s) 地址
-                let pick = '';
-                for (const u of arr) {
-                  try {
-                    const h = new URL(u).hostname || '';
-                    if (h.endsWith('.fnos.net') || h === 'fnos.net') { pick = u; break; }
-                  } catch (_) {}
-                }
-                if (!pick && arr.length) pick = arr[0];
-                if (pick && /^https?:/i.test(pick) && mainWindow && !mainWindow.isDestroyed()) {
-                  dlog && dlog('info', 'fnid.auto-navigate', { from: __cur.slice(0, 120), to: pick.slice(0, 140), candidates: arr.length });
+                const valid = arr.filter((u) => /^https?:/i.test(u) && !__isBadLink(u));
+                const pick = __pickBest(valid);
+                if (pick && mainWindow && !mainWindow.isDestroyed()) {
+                  clearInterval(__timer);
+                  dlog && dlog('info', 'fnid.auto-navigate', { from: __cur.slice(0, 120), to: pick.slice(0, 140), candidates: valid.length, total: arr.length, attempts: __attempts });
                   mainWindow.loadURL(pick, { userAgent: getNasUA() }).catch(() => {});
+                } else if (__attempts >= 12) {
+                  clearInterval(__timer);
+                  dlog && dlog('warn', 'fnid.auto-navigate.no-candidate', { attempts: __attempts, json: String(json || '').slice(0, 300) });
                 } else {
-                  dlog && dlog('warn', 'fnid.auto-navigate.no-candidate', { candidates: arr.length, json: String(json || '').slice(0, 200) });
+                  dlog && dlog('info', 'fnid.poll-waiting', { attempts: __attempts, candidates: valid.length, total: arr.length, json: String(json || '').slice(0, 200) });
                 }
               } catch (_) {}
-            }).catch(() => {});
-          } catch (_) {}
-        }, 800);
+            }).catch(() => {
+              if (__attempts >= 12) clearInterval(__timer);
+            });
+          } catch (_) { clearInterval(__timer); }
+        }, 700);
+        // 总超时兜底
+        setTimeout(() => { clearInterval(__timer); }, 12000);
       } catch (_) {}
     });
   } catch (_) {}
@@ -5556,6 +5665,11 @@ async function processScannedApps(apps) {
     const fresh = [];
     for (const a of apps) {
       if (!a || !a.url || !a.name) continue;
+      // v2.2.5：过滤备案/政务垃圾链接（FNID 跳错页时主页扫描曾写入 beian.miit.gov.cn 等）
+      if (isBadNavLink(a.url)) {
+        fnosLog('warn', 'appcenter.scan', { msg: 'skip bad nav link', url: String(a.url).slice(0, 100) });
+        continue;
+      }
       byUrl.set(a.url, {
         name: String(a.name).slice(0, 40),
         url: String(a.url),
@@ -6843,8 +6957,9 @@ ipcMain.on('settings:close', (e) => {
   if (win && !win.isDestroyed()) win.close();
 });
 
-// v2.2.4：查询当前窗口是否应跳过自定义标题栏注入（XTE 等自带标题栏的应用）。
-// titlebar-inject.js 在 build() 前调用 sendSync 查询；主窗口/普通应用返回注入。
+// v2.2.5：查询当前窗口是否应跳过自定义标题栏注入。
+// v2.2.4 曾对 XTE 设置 __skipTitlebar=true 导致标题栏完全消失，已在窗口创建处撤销；
+// 现在所有窗口均返回 skip=false（始终注入自定义标题栏）。该 IPC 保留供未来按需跳过。
 ipcMain.on('titlebar:should-inject', (e) => {
   try {
     const win = BrowserWindow.fromWebContents(e.sender);
@@ -6885,17 +7000,118 @@ ipcMain.handle('shell:close', () => {
   } catch (_) {}
 });
 
+// v2.2.5：判断是否为备案/政务垃圾链接（FNID 检测页 footer 固定出现；主页扫描可能误收录）
+function isBadNavLink(input) {
+  try {
+    if (!input) return false;
+    let hn = '';
+    try { hn = new URL(input).hostname || ''; } catch (_) {
+      // 非完整 URL（如 anchor=xxx）视为正常应用名，不是垃圾链接
+      return false;
+    }
+    if (!hn) return false;
+    return /(^|\.)beian\.miit\.gov\.cn$/i.test(hn) ||
+           /(^|\.)beian\.gov\.cn$/i.test(hn) ||
+           /(^|\.)conac\.cn$/i.test(hn) ||
+           /(^|\.)gov\.cn$/i.test(hn) ||
+           /(^|\.)12377\.cn$/i.test(hn) ||
+           /(^|\.)12321\.cn$/i.test(hn) ||
+           /(^|\.)12318\.cn$/i.test(hn) ||
+           /(^|\.)12315\.cn$/i.test(hn) ||
+           /(^|\.)miit\.gov\.cn$/i.test(hn);
+  } catch (_) { return false; }
+}
+
+// v2.2.5：从 manifest 应用中过滤备案垃圾（FNID 跳错页后主页扫描可能写入）
+function filterBadNavApps(apps) {
+  if (!Array.isArray(apps)) return [];
+  return apps.filter((a) => {
+    try {
+      const u = String(a.url || a.appId || '');
+      return !isBadNavLink(u);
+    } catch (_) { return true; }
+  });
+}
+
 // v2.1.5: IPC handler for getting installed apps from manifest
+// v2.2.5: 重写——以 FPK 图标管理器 client_apps 列表为唯一数据源（用户强调要求）：
+//   * 列表 = FPK /api/client/apps（含系统应用+第三方应用+完整名字+高清图标）
+//   * 名字 = FPK title（显示名，如"系统设置"），不再依赖被污染的 manifest
+//   * 图标 = FPK icon_256 下载缓存（settings 页直接可用 file:// 显示）
+//   * manifest 仅 FPK 不可用时兜底（过滤备案垃圾、补齐名字）
 ipcMain.handle('get-installed-apps', async () => {
   try {
-    const manifest = readManifest();
-    const apps = (manifest && Array.isArray(manifest.apps)) ? manifest.apps : [];
-    // v2.1.12：图标补齐——旧版本因下载 session 无登录 cookie（/app-center-static/icon/ 401），
-    // manifest 里 iconPath 为空/失效，导致设置面板"应用快捷方式"大部分图标不显示。
-    // 这里复用主窗口 session（登录 cookie 所在）现场补齐缺失图标，并写回 manifest。
     const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
       ? mainWindow.webContents.session
       : null;
+    const nasHost = (() => {
+      try {
+        const s = loadSettings();
+        if (s.fpkApi?.host) return s.fpkApi.host;
+        if (s.origin) { try { return new URL(s.origin).hostname; } catch (_) {} }
+      } catch (_) {}
+      return '';
+    })();
+    fnosLog('info', 'ipc', 'get-installed-apps', { source: 'fpk-primary', nasHost });
+
+    // ── 1) FPK 列表优先（唯一数据源） ──
+    const __fpkList = await refreshFpkApps(true);
+    if (Array.isArray(__fpkList) && __fpkList.length) {
+      const out = [];
+      if (!fs.existsSync(ASSETS_DIR)) fs.mkdirSync(ASSETS_DIR, { recursive: true });
+      for (const f of __fpkList) {
+        try {
+          const fpkName = String((f && f.name) || '').trim();
+          if (!fpkName) continue;
+          const title = String((f && f.title) || fpkName).trim() || fpkName;
+          // 下载 FPK 高清图标（256）到本地，settings 页 file:// 直接显示
+          let iconPath = '';
+          try {
+            const __buf = await fetchFpkIcon(fpkName, 256);
+            if (__buf && __buf.length > 100) {
+              const __safe = 'fpklist_' + Buffer.from(fpkName).toString('base64url').slice(0, 40);
+              iconPath = path.join(ASSETS_DIR, __safe + '.png');
+              fs.writeFileSync(iconPath, __buf);
+            }
+          } catch (e) { fnosLog('warn', 'icon.fpk-list', { app: fpkName, err: e.message }); }
+          out.push({
+            appId: fpkName,                    // 快捷方式/启动锚点用飞牛 appname
+            appName: title,                    // 设置页显示名
+            name: title,
+            title,
+            nasAddress: nasHost,
+            url: String((f && f.url) || ''),   // 完整 URL（打开用）
+            port: String((f && f.port) || ''),
+            path: String((f && f.path) || '/'),
+            protocol: String((f && f.protocol) || 'http'),
+            iconPath,
+            iconData: String((f && (f.icon_256 || f.icon)) || ''),
+            hasCustomIcon: !!(f && f.has_custom_icon),
+            system: !!(f && f.system),
+            fpkName,
+            source: 'fpk',
+          });
+        } catch (_) {}
+      }
+      fnosLog('info', 'ipc', 'get-installed-apps.done', { count: out.length, source: 'fpk', names: out.map((a) => a.title).slice(0, 40) });
+      try {
+        fnosLog('info', 'ipc', 'get-installed-apps.detail', {
+          apps: out.map((a) => ({
+            appId: String(a.appId || '').slice(0, 60),
+            name: String(a.name || '').slice(0, 40),
+            hasIcon: !!(a.iconPath && fs.existsSync(a.iconPath)),
+            iconUrl: String(a.iconData || '').slice(0, 80),
+          })).slice(0, 50),
+        });
+      } catch (_) {}
+      return { success: true, msg: '', data: out };
+    }
+
+    // ── 2) FPK 不可用 → manifest 兜底（过滤备案垃圾 + 名字补齐） ──
+    fnosLog('warn', 'ipc', 'get-installed-apps', { msg: 'FPK list empty, fallback to manifest', fpkCount: (__fpkList || []).length });
+    const manifest = readManifest();
+    let apps = (manifest && Array.isArray(manifest.apps)) ? filterBadNavApps(manifest.apps) : [];
+    // v2.1.12：图标补齐——复用主窗口 session 现场补齐缺失图标
     if (iconSes && apps.length) {
       let changed = false;
       try {
@@ -6928,42 +7144,21 @@ ipcMain.handle('get-installed-apps', async () => {
       } catch (_) {}
       if (changed) { try { writeManifest({ apps }); } catch (_) {} }
     }
-    // v2.2.2: FPK 图标管理器优先——设置页应用列表图标统一用 FPK 图标
-    //（用户需求：设置页创建快捷方式的应用列表，只能调 FPK 图标管理器的图标和列表）
+    // 名字补齐：name 为空时用 appId 反推显示名（trim.setting → 系统设置等）
     try {
-      const __fpkList = await refreshFpkApps(true);
-      if (Array.isArray(__fpkList) && __fpkList.length) {
-        const __fpkByName = new Map(__fpkList.map((x) => [x && x.name, x]));
-        for (const a of apps) {
-          const __appId = String((a && a.appId) || '');
-          const __url = String((a && a.url) || '');
-          let __fpkName = '';
-          // appId 通常是飞牛 appname（如 trim.file-manager）；旧数据可能是 URL，需反推
-          if (__appId && !/^https?:/i.test(__appId) && __fpkByName.has(__appId)) {
-            __fpkName = __appId;
-          } else if (__appId && /^https?:/i.test(__appId)) {
-            __fpkName = fpkAppNameFromUrl(__appId);
-          }
-          if (!__fpkName && __url) __fpkName = fpkAppNameFromUrl(__url);
-          if (!__fpkName || !__fpkByName.has(__fpkName)) continue;
-          try {
-            const __fpkBuf = await fetchFpkIcon(__fpkName, 256);
-            if (__fpkBuf && __fpkBuf.length > 100) {
-              const __safeName = 'fpklist_' + Buffer.from(__fpkName).toString('base64url').slice(0, 40);
-              const __iconFile = path.join(ASSETS_DIR, __safeName + '.png');
-              fs.writeFileSync(__iconFile, __fpkBuf);
-              a.iconPath = __iconFile;
-              a.iconData = (__fpkByName.get(__fpkName) || {}).icon_256 || (a.iconData || '');
-              a.fpkName = __fpkName;
-              fnosLog('info', 'icon.fpk-list', { app: a.appName || __fpkName, fpkName: __fpkName, size: __fpkBuf.length });
-            }
-          } catch (e) { fnosLog('warn', 'icon.fpk-list', { app: __fpkName, err: e.message }); }
-        }
-        try { writeManifest({ apps }); } catch (_) {}
+      const __knownNames = {
+        'trim.setting': '系统设置', 'trim.app-center': '应用中心', 'trim.docker': 'Docker',
+        'trim.backup-and-sync': '备份', 'trim.log-center': '日志中心',
+        'trim.file-manager.trash': '回收站', 'trim.resource-manager': '资源管理',
+      };
+      for (const a of apps) {
+        if (!a.name && a.appId) a.name = __knownNames[a.appId] || a.appId;
+        if (!a.appName) a.appName = a.name || a.appId || '';
+        if (!a.title) a.title = a.name || a.appId || '';
+        if (!a.nasAddress) a.nasAddress = nasHost;
       }
     } catch (_) {}
-    fnosLog('info', 'ipc', 'get-installed-apps', { count: apps.length });
-    // v2.2.0: 打印应用详情（appId/name/图标状态），便于排查"面板应用不全/图标缺失"
+    fnosLog('info', 'ipc', 'get-installed-apps', { count: apps.length, source: 'manifest' });
     try {
       fnosLog('info', 'ipc', 'get-installed-apps.detail', {
         apps: apps.map((a) => ({
@@ -6988,8 +7183,20 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
 
     const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    // Resolve the launch URL for this app
+    // v2.2.5：优先从 FPK 列表解析 launchUrl（设置页应用列表现以 FPK 为唯一数据源，
+    // manifest 可能没有该 entry）。FPK 返回的 url 即真实打开地址（含端口/路径）。
     let launchUrl = appId;
+    try {
+      const __fpkL = await refreshFpkApps(false);
+      if (Array.isArray(__fpkL) && __fpkL.length) {
+        const __entry = __fpkL.find((f) => f && f.name === appId);
+        if (__entry && __entry.url && /^https?:/i.test(__entry.url)) {
+          launchUrl = __entry.url;
+          fnosLog('info', 'shortcut.url', { appId, source: 'fpk', url: launchUrl.slice(0, 140) });
+        }
+      }
+    } catch (_) {}
+    if (!launchUrl || launchUrl === appId) {
     try {
       const manifest = readManifest();
       const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
@@ -7016,6 +7223,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
         }
       }
     } catch (_) {}
+    }
 
     // v2.1.5: Ensure icon is in ICO format for Windows shortcuts
     let icoPath = '';

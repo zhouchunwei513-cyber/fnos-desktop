@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.2.6';
+const APP_VERSION = '2.2.7';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -646,6 +646,10 @@ function sanitizeForLog(obj) {
 
 function fnosLog(level, module, msg, extra) {
   try {
+    // v2.2.7: msg 若传了对象会在模板串里变 [object Object]，统一兜底序列化。
+    if (msg && typeof msg === 'object' && !(msg instanceof Error)) {
+      try { msg = JSON.stringify(msg); } catch (_) { msg = String(msg); }
+    }
     if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
     const now = new Date();
     const ts = now.toISOString();
@@ -5342,6 +5346,17 @@ function doConnectTo(serverInput) {
   lastConnectHref = parsed.href;
   safeSetTitle(APP_NAME);
   // v1.16.1：连上 NAS 后预热 XTE 基地址缓存（异步，不阻塞）
+  // v2.2.7: 连接后主动探测 FPK 服务（18080），成功后自动启用并刷新应用列表/主页图标
+  setImmediate(() => {
+    try {
+      const _base = getFpkBaseUrl();
+      if (_base) {
+        refreshFpkApps(true).then(() => {
+          try { applyHomeFpkIcons(); } catch (_) {}
+        });
+      }
+    } catch (_) {}
+  });
   setImmediate(() => { try { warmupXteBase(); } catch (_) {} });
   // v1.67.0：登录成功后尽快注入页面级 WS/长连接保活，避免 FRP 空闲超时被回收导致"已断开"
   setTimeout(() => { try { bumpAuthHeartbeat(); } catch (_) {} }, 3000);
@@ -5761,12 +5776,12 @@ async function processScannedApps(apps) {
                 // Update manifest entry with the downloaded icon path
                 const entry = existingByUrl.get(task.url);
                 if (entry) entry.iconPath = task.iconFile;
-                fnosLog('info', 'icon.download', { app: task.appName, ok: true, size: buf.length });
+                fnosLog('info', 'icon.download', 'icon downloaded', { app: task.appName, ok: true, size: buf.length });
               }
             } else {
-              fnosLog('warn', 'icon.download', { app: task.appName, status: resp.status, url: String(task.fetchUrl).slice(0, 120) });
+              fnosLog('warn', 'icon.download', 'icon download bad status', { app: task.appName, status: resp.status, url: String(task.fetchUrl).slice(0, 120) });
             }
-          } catch (e) { fnosLog('warn', 'icon.download', { app: task.appName, err: e.message }); }
+          } catch (e) { fnosLog('warn', 'icon.download', 'icon download error', { app: task.appName, err: e.message }); }
         }));
       }
 
@@ -5999,8 +6014,8 @@ async function applyHomeFpkIcons() {
     dlog && dlog('info', 'home.fpk-icon', { msg: 'inject', count: custom.length, base });
     const js = String.raw`(function(){
       try {
-        if (window.__fnosHomeFpkIcon) return;
-        window.__fnosHomeFpkIcon = true;
+        window.__fnosHomeFpkIcon = (window.__fnosHomeFpkIcon || 0) + 1;
+        var myGen = window.__fnosHomeFpkIcon;
         var custom = ${JSON.stringify(custom)};
         var base = ${JSON.stringify(base)};
         function apply(){
@@ -6022,8 +6037,25 @@ async function applyHomeFpkIcons() {
             }
           } catch(e){}
         }
+        // v2.2.7: 周期刷新 custom 列表（fntb 修改图标后主页 10s 内同步生效）
+        function refreshCustom(){
+          try {
+            if (myGen !== window.__fnosHomeFpkIcon) return;
+            fetch(base + '/api/client/apps?status=custom', { headers: { 'X-FNOS-Client': 'desktop', 'Cache-Control': 'no-cache' } })
+              .then(function(r){ return r.ok ? r.json() : null; })
+              .then(function(j){
+                if (myGen !== window.__fnosHomeFpkIcon) return;
+                var arr = (j && (j.list || j.apps)) || [];
+                var next = [];
+                for (var i = 0; i < arr.length; i++) { if (arr[i] && arr[i].name) next.push(arr[i].name); }
+                if (next.length) custom = next;
+                apply();
+              }).catch(function(){});
+          } catch(e){}
+        }
         apply();
         setInterval(apply, 10000);
+        setInterval(refreshCustom, 10000);
         try {
           var mo = new MutationObserver(apply);
           mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
@@ -6325,15 +6357,53 @@ function pngToIco(pngBuffer) {
 }
 
 // ---- v2.1.17: FPK 图标管理器 API ----
+// v2.2.7: FPK 自动探测缓存（避免每次同步调用都发探测请求）
+let __fpkAutoProbe = null; // { base, at }
+let __fpkProbeInFlight = null;
+
 function getFpkBaseUrl() {
   const s = loadSettings();
-  if (!s.fpkApi?.enabled || !s.fpkApi?.host) {
-    console.log('[FPK] config check: not enabled or no host', JSON.stringify({ enabled: s.fpkApi?.enabled, host: s.fpkApi?.host }));
-    return null;
+  if (s.fpkApi?.enabled && s.fpkApi?.host) {
+    const base = `http://${s.fpkApi.host}:${s.fpkApi.port || 18080}`;
+    console.log('[FPK] config check: OK', JSON.stringify({ baseUrl: base }));
+    return base;
   }
-  const base = `http://${s.fpkApi.host}:${s.fpkApi.port || 18080}`;
-  console.log('[FPK] config check: OK', JSON.stringify({ baseUrl: base }));
-  return base;
+  // v2.2.7: 未手动配置 FPK 时自动探测（同一 NAS 的 18080 端口，FNOS 主页同主机）
+  try {
+    const origin = s.origin || '';
+    let host = '';
+    try { host = new URL(origin).hostname; } catch (_) {}
+    if (!host) {
+      console.log('[FPK] config check: no origin host', JSON.stringify({ origin }));
+      return null;
+    }
+    if (__fpkAutoProbe && __fpkAutoProbe.base && (Date.now() - __fpkAutoProbe.at < 60000)) {
+      return __fpkAutoProbe.base;
+    }
+    const base = `http://${host}:18080`;
+    console.log('[FPK] config check: auto-probe', JSON.stringify({ origin, base }));
+    // 异步探测并缓存；同步场景先乐观返回 base，探测失败由 refreshFpkApps 兜底置空
+    if (!__fpkProbeInFlight) {
+      __fpkProbeInFlight = (async () => {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 4000);
+          const resp = await fetch(`${base}/api/health`, { signal: ctrl.signal, headers: { 'X-FNOS-Client': 'desktop' } });
+          clearTimeout(timer);
+          if (resp.ok) {
+            __fpkAutoProbe = { base, at: Date.now() };
+            // 自动写回设置，后续 getFpkBaseUrl 直接命中手动配置分支
+            saveSettings({ fpkApi: { enabled: true, host, port: 18080 } });
+            console.log('[FPK] auto-probe success', JSON.stringify({ base }));
+            return base;
+          }
+        } catch (_) {}
+        console.log('[FPK] auto-probe failed', JSON.stringify({ base }));
+        return null;
+      })().finally(() => { __fpkProbeInFlight = null; });
+    }
+    return base;
+  } catch (_) { return null; }
 }
 async function fetchFpkIcon(appname, size = 256) {
   const base = getFpkBaseUrl();
@@ -6451,6 +6521,14 @@ function fpkAppNameFromUrl(url) {
       const aUrl = a.url || '';
       const aNameLower = String(aName).toLowerCase();
       let score = 0;
+      // v2.2.7: 端口匹配。外部端口窗口（如 :34600/:8085/:5666）URL 解析不出 appname，
+      // 用 FPK 列表的 port 字段反查，修复 no-fpk-name 导致任务栏图标缺失/回退默认图标。
+      if (score === 0 && u.port && a.port) {
+        const aPorts = Array.isArray(a.port) ? a.port : [a.port];
+        if (aPorts.some((pt) => String(pt) === String(u.port))) {
+          score = 88;
+        }
+      }
       if (anchor && (anchor === aName || anchor === (a.applaunchname || aName))) {
         score = 100;
       } else if (aUrl && aUrl === url) {
@@ -7211,12 +7289,12 @@ ipcMain.handle('get-installed-apps', async () => {
                 fs.writeFileSync(iconFile, buf);
                 a.iconPath = iconFile;
                 changed = true;
-                fnosLog('info', 'icon.fill', { app: a.appName || a.name, size: buf.length });
+                fnosLog('info', 'icon.fill', 'icon filled', { app: a.appName || a.name, size: buf.length });
               }
             } else {
-              fnosLog('warn', 'icon.fill', { app: a.appName || a.name, status: resp.status, url: String(iconUrl).slice(0, 120) });
+              fnosLog('warn', 'icon.fill', 'icon fill bad status', { app: a.appName || a.name, status: resp.status, url: String(iconUrl).slice(0, 120) });
             }
-          } catch (e) { fnosLog('warn', 'icon.fill', { app: a.appName || a.name, err: e.message }); }
+          } catch (e) { fnosLog('warn', 'icon.fill', 'icon fill error', { app: a.appName || a.name, err: e.message }); }
         }
       } catch (_) {}
       if (changed) { try { writeManifest({ apps }); } catch (_) {} }
@@ -7266,10 +7344,18 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     try {
       const __fpkL = await refreshFpkApps(false);
       if (Array.isArray(__fpkL) && __fpkL.length) {
-        const __entry = __fpkL.find((f) => f && f.name === appId);
+        // v2.2.7: appId 可能是 URL（外部端口/应用页）或应用名，统一先按 name/url 双匹配，
+        // 再回退到 fpkAppNameFromUrl 按端口/path 反查，确保快捷方式拿到的 launchUrl 指向真实应用。
+        let __entry = null;
+        if (appId && /^https?:/i.test(appId)) {
+          const __nm = fpkAppNameFromUrl(appId);
+          __entry = __fpkL.find((f) => f && f.name === __nm) || null;
+        } else {
+          __entry = __fpkL.find((f) => f && (f.name === appId || f.url === appId)) || null;
+        }
         if (__entry && __entry.url && /^https?:/i.test(__entry.url)) {
           launchUrl = __entry.url;
-          fnosLog('info', 'shortcut.url', { appId, source: 'fpk', url: launchUrl.slice(0, 140) });
+          fnosLog('info', 'shortcut.url', 'FPK url resolved', { appId, name: __entry.name, url: launchUrl.slice(0, 140) });
         }
       }
     } catch (_) {}
@@ -7386,7 +7472,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     // v2.2.6：appName 可能含 / : * ? " < > | 等 Windows 非法文件名字符，清洗后用于 lnk 文件名
     const lnkBaseName = String(appName || '应用').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '应用';
     const lnkPath = path.join(desktop, `${lnkBaseName}.lnk`);
-    fnosLog('info', 'shortcut.path', { desktop, lnkPath, appName, appId });
+    fnosLog('info', 'shortcut.path', 'shortcut created', { desktop, lnkPath, appName, appId });
 
     // PowerShell script to create shortcut
     const iconPs = icoPath ? `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'` : '';

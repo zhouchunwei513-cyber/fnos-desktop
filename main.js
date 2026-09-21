@@ -72,6 +72,15 @@ if (process.platform === 'win32') {
   } catch (_) {}
 }
 
+// v2.2.3：全局禁用硬件加速（必须在 app ready 前调用）。
+// 此前 v1.76.0 把 disableHardwareAcceleration 写在 BrowserWindow webPreferences 里——
+// 该选项在 Electron 中无效（Electron 仅支持 app.disableHardwareAcceleration() 全局调用），
+// 导致应用窗口创建时仍走 GPU 合成，Windows 上部分 Docker 应用（影视/音乐/34500 XTE 等）
+// 触发 GPU 进程崩溃（render-process-gone crashed exitCode=0x80000003），
+// 并连锁拖垮主窗口渲染进程（日志 00:37:56/00:38:17/00:38:18 主窗口三次崩溃）→ 黑屏/标题栏按钮失效。
+// 全局软件渲染：视频播放走 MPV 外部播放器不受影响；网页内视频降为软解，NAS 管理界面无感知。
+try { app.disableHardwareAcceleration(); } catch (_) {}
+
 // v1.16.2：全局兜底——未捕获异常 / 未处理 Promise 拒绝时只记录日志，绝不闪退
 process.on('uncaughtException', (err) => {
   try {
@@ -99,7 +108,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.2.2';
+const APP_VERSION = '2.2.3';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3508,11 +3517,47 @@ function registerWindow(win, opts = {}) {
 
   // 渲染进程崩溃：自动重载入口
   win.webContents.on('render-process-gone', (_e, details) => {
-    console.error('render-process-gone', details);
+    try {
+      const reason = details && details.reason;
+      dlog && dlog('error', 'appwin.render-gone.register', {
+        winId: win.id,
+        isHome: !!entry.isHome,
+        reason,
+        exitCode: details && details.exitCode,
+        url: String(entry.url || '').slice(0, 140),
+      });
+    } catch (_) {}
     if (entry.isHome) {
-      if (lastConnectHref) win.loadURL(lastConnectHref).catch(() => {});
-      else showConnectPage();
+      // v2.2.3：主窗口崩溃恢复强化——此前裸 loadURL 无日志/无延迟/无次数限制/无 UA，
+      // 崩溃后立即重载大概率再次失败（渲染进程尚未完全重建），表现为黑屏无法自愈。
+      // 现在：延迟 1200ms 重载（带 NAS UA）、最多 2 次、不可见时补 show、最后兜底连接页。
+      try {
+        const tries = (win.__mainCrashTries || 0) + 1;
+        win.__mainCrashTries = tries;
+        dlog && dlog('warn', 'main.render-gone.recover', { try: tries, reason, winId: win.id });
+        if (tries > 2) {
+          dlog && dlog('error', 'main.render-gone.giveup', { try: tries, winId: win.id, reason });
+          try { if (!win.isDestroyed()) showConnectPage(); } catch (_) {}
+          return;
+        }
+        setTimeout(() => {
+          try {
+            if (!win || win.isDestroyed()) return;
+            if (!win.isVisible()) { try { win.show(); } catch (_) {} }
+            const target = lastConnectHref || win.webContents.getURL();
+            if (target && /^https?:/i.test(target)) {
+              dlog && dlog('info', 'main.render-gone.reload', { try: tries, url: String(target).slice(0, 140), winId: win.id });
+              win.loadURL(target, { userAgent: getNasUA() }).catch(() => { try { if (!win.isDestroyed()) showConnectPage(); } catch (_) {} });
+            } else {
+              showConnectPage();
+            }
+          } catch (_) {}
+        }, 1200);
+      } catch (_) {}
+      return;
     }
+    // 应用窗口崩溃恢复由 createAppWindow 内 appwin.render-gone（L4121）处理，
+    // 这里仅记录，避免与上面 isHome 分支重复逻辑。
   });
 
   // 页面无响应：玻璃对话框
@@ -3567,6 +3612,23 @@ function registerWindow(win, opts = {}) {
       };
     }
     if (/^https?:\/\//i.test(url)) {
+      // v2.2.3：FNID 生态域识别——*.fnos.net / fnos.net 链接在主窗口内导航，
+      // 避免 FNID 检测页点击访问地址后被当外部应用反复建窗 + 302 循环。
+      try {
+        const _u = new URL(url);
+        const _h = String(_u.hostname || '').toLowerCase();
+        if (_h === 'fnos.net' || _h.endsWith('.fnos.net')) {
+          setImmediate(() => {
+            try {
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                dlog && dlog('info', 'appwin.open.fnos-domain-in-main', { url: url.slice(0, 140), from: 'appwin' });
+                mainWindow.webContents.loadURL(url);
+              }
+            } catch (_) {}
+          });
+          return { action: 'deny' };
+        }
+      } catch (_) {}
       // 普通 http(s) 链接：在独立窗口中打开（共享 partition 以保持登录态）
       setImmediate(() => createAppWindow(url, { partition: entry.partition }));
       return { action: 'deny' };
@@ -3842,6 +3904,9 @@ function createAppWindow(url, opts = {}) {
     win.setAppUserModelId(`com.fnos.client.app.${appId}`);
   } catch (_) {}
 
+  // v2.2.3：记录窗口创建时间，供 render-process-gone 判断"创建即崩"（load.start 后 ~50ms 崩）
+  try { win.__appCreatedAt = Date.now(); } catch (_) {}
+
   const isHome = !!opts.isHome;
   registerWindow(win, {
     url, title: opts.title || APP_NAME, isMain: isHome, isHome, partition,
@@ -4095,13 +4160,19 @@ function createAppWindow(url, opts = {}) {
     win.webContents.on('render-process-gone', (_e, detail) => {
       try {
         const reason = detail && detail.reason;
-        dlog && dlog('error', 'appwin.render-gone', { app: __appLabel, winId: win.id, reason });
+        const exitCode = detail && detail.exitCode;
+        // v2.2.3：补充 exitCode 与"创建后多久崩"（判断是否创建即崩）。
+        // 日志 34500 XTE/music 窗口 load.start 后 ~50ms 即崩 exitCode=0x80000003，
+        // 属 GPU 进程崩溃连锁（v1.76.0 webPreferences.disableHardwareAcceleration 无效，
+        // 已改全局 app.disableHardwareAcceleration，见文件头 v2.2.3 注释）。
+        const __bornMs = Date.now() - (win.__appCreatedAt || win.__t0 || Date.now());
+        dlog && dlog('error', 'appwin.render-gone', { app: __appLabel, winId: win.id, reason, exitCode, bornMs: __bornMs });
         // v1.76.0：渲染进程崩溃自动恢复（最多 2 次），避免应用窗口直接消失
         if (reason === 'crashed' && win && !win.isDestroyed()) {
           const tries = (win.__appCrashTries || 0) + 1;
           win.__appCrashTries = tries;
           if (tries <= 2) {
-            dlog && dlog('info', 'appwin.render-restart', { app: __appLabel, winId: win.id, try: tries });
+            dlog && dlog('info', 'appwin.render-restart', { app: __appLabel, winId: win.id, try: tries, exitCode });
             setTimeout(() => {
               try {
                 if (win.isDestroyed()) return;
@@ -4110,6 +4181,9 @@ function createAppWindow(url, opts = {}) {
                 else win.reloadIgnoringCache();
               } catch (_) {}
             }, 800);
+          } else {
+            // v2.2.3：2 次恢复后仍崩——记录最终放弃，避免窗口黑屏悬挂无日志
+            dlog && dlog('error', 'appwin.render-gone.giveup', { app: __appLabel, winId: win.id, try: tries, reason, exitCode });
           }
         }
       } catch (_) {}
@@ -4210,7 +4284,12 @@ function createAppWindow(url, opts = {}) {
       try {
         const __urlOrigin = new URL(url).origin;
         const __nasOrigin = currentOrigin || (function() { try { return loadSettings().origin || ''; } catch(_) { return ''; } })();
-        if (__nasOrigin && __urlOrigin !== __nasOrigin) {
+        // v2.2.3：FNID 生态域排除——*.fnos.net（FN Connect 隧道域，如 dashuaibi888.fnos.net）
+        // 与 fnos.net 检测页同属飞牛生态，不应按 origin 不同判为 external-app（否则走
+        // createAppWindow 独立窗口 + 302 回检测页形成循环，FNID 登录后无法进入主页）。
+        const __urlHost = String(__urlOrigin || '').toLowerCase();
+        const __isFnosDomain = __urlHost === 'https://fnos.net' || __urlHost.endsWith('.fnos.net');
+        if (__nasOrigin && __urlOrigin !== __nasOrigin && !__isFnosDomain) {
           __isExternalApp = true;
           try { dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'external-app', urlOrigin: __urlOrigin, nasOrigin: __nasOrigin }); } catch (_) {}
         }
@@ -4781,6 +4860,9 @@ function createMainWindow(partition, loadTarget) {
   mainWindow.setAutoHideMenuBar(mainAutoHide);
   mainWindow.setMenuBarVisibility(!mainAutoHide);
 
+  // v2.2.3：主窗口重建时重置崩溃恢复计数（registerWindow 内 isHome 恢复最多 2 次）
+  try { mainWindow.__mainCrashTries = 0; } catch (_) {}
+
   registerWindow(mainWindow, {
     url: (loadTarget && loadTarget.href) || LOGIN_PAGE,
     title: APP_NAME,
@@ -4960,15 +5042,18 @@ function tryOpenPendingApp() {
       // （日志证据：fnos-diag 06:48:44 appwin.create 早于主窗口 preload.boot，随后 401）。
       const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
       if (!wc) { readyReason = 'no_main_window'; }
-      else if (wc.isLoading()) { readyReason = 'main_window_loading'; }
       else {
         const cur = wc.getURL() || '';
         const p = String(cur || '').toLowerCase();
+        // v2.2.3：放宽就绪条件——只要求主窗口已导航到 https 主页（非 /login）。
+        // 旧逻辑还要求 isLoading=false，但主页完整加载（JS/图片）可能 5-15s，
+        // 此时 session cookie 早已就绪（did-navigate 到主页本身就证明登录态有效），
+        // 导致快捷方式冷启动白白多等数秒（用户反馈"快捷方式打开应用非常慢"）。
         if (/^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p)) {
           ready = true;
           readyReason = 'logged_in';
         } else {
-          readyReason = 'on_login_page_or_not_http';
+          readyReason = wc.isLoading() ? 'main_window_loading' : 'on_login_page_or_not_http';
         }
       }
     } catch (e) { readyReason = 'check_error: ' + (e.message || e); }
@@ -5127,20 +5212,23 @@ function resolveActiveWebContents(win) {
 }
 
 // v1.71.0：复制当前窗口链接地址（主窗口取 webview guest 当前 URL，应用窗口取自身 URL）
+// v2.2.2-fix：玻璃外壳已移除（v1.18+），主窗口直接承载页面、不再有 webview guest，
+// 旧逻辑 pickMenuGuest() 恒为 null 导致"复制当前窗口连接"失效（日志 menu.copy-link no-url）。
+// 修复：统一优先取 win.webContents 当前 URL（主窗口/应用窗口均适用），guest 仅作历史兜底。
 function copyCurrentWindowLink() {
   try {
     const win = BrowserWindow.getFocusedWindow() || mainWindow;
     if (!win || win.isDestroyed()) return;
     let url = '';
-    if (win === mainWindow || win.__isMainShell) {
+    const selfUrl = win.webContents.getURL();
+    if (selfUrl && /^https?:/i.test(selfUrl)) {
+      url = selfUrl;
+    } else {
       const guest = pickMenuGuest();
       if (guest && !guest.isDestroyed()) {
         const u = guest.getURL();
         if (u && /^https?:/i.test(u)) url = u;
       }
-    } else {
-      const u = win.webContents.getURL();
-      if (u && /^https?:/i.test(u)) url = u;
     }
     if (!url) { dlog && dlog('warn', 'menu.copy-link', { err: 'no-url', winId: win.id }); return; }
     clipboard.writeText(url);
@@ -8577,8 +8665,26 @@ try {
             if (isIptvStreamUrl(u)) {
               return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride() };
             }
-            // http(s)/飞牛应用链接：由主进程创建无边框、注入统一标题栏的应用窗口
+            // v2.2.3：FNID 生态域识别——*.fnos.net（FN Connect 隧道域，如 dashuaibi888.fnos.net）
+            // 与 fnos.net 检测页同属飞牛生态，点击后应在主窗口内导航（保持登录态），
+            // 不应创建独立应用窗口。此前该域名被 preauth 判为 external-app 反复建窗，
+            // 且服务端又 302 回检测页，形成窗口循环导致 FNID 登录后不跳转主页。
             if (/^https?:/i.test(u)) {
+              try {
+                const _u = new URL(u);
+                const _h = String(_u.hostname || '').toLowerCase();
+                if (_h === 'fnos.net' || _h.endsWith('.fnos.net')) {
+                  setImmediate(() => {
+                    try {
+                      if (mainWindow && !mainWindow.isDestroyed()) {
+                        dlog && dlog('info', 'appwin.open.fnos-domain-in-main', { url: u.slice(0, 140), from: 'catchall' });
+                        mainWindow.webContents.loadURL(u);
+                      }
+                    } catch (_) {}
+                  });
+                  return { action: 'deny' };
+                }
+              } catch (_) {}
               setImmediate(() => {
                 try { createAppWindow(u, { partition: SHARED_PARTITION, title: APP_NAME }); } catch (_) {}
               });
@@ -9113,9 +9219,10 @@ app.on('second-instance', (_e, commandLine) => {
         const wc = mainWindow.webContents;
         const cur = wc.getURL() || '';
         const p = String(cur).toLowerCase();
-        // v2.1.11：仅当页面加载完成（isLoading=false）且非登录页才认为已登录，
-        // 避免主程序刚启动/加载中时立即打开应用窗口导致 401。
-        const loggedIn = !wc.isLoading() && /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
+        // v2.2.3：放宽登录判断——仅要求主窗口已导航到 https 主页（非 /login）。
+        // 旧逻辑要求 !isLoading()，但主页完整加载可能数秒，此时 cookie 已就绪，
+        // 放宽后第二次双击快捷方式（主程序在托盘）能更快打开应用。
+        const loggedIn = /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
         // v2.1.15：增强日志——记录快捷方式热启动路径
         try { dlog && dlog('info', 'shortcut.hot_start', { url: String(u).slice(0, 160), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) }); } catch (_) {}
         if (loggedIn) {

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.2.5';
+const APP_VERSION = '2.2.6';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4145,27 +4145,37 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           if (win.isDestroyed() || !win.webContents) return;
           // v2.1.18: FPK 图标优先（应用专属图标），失败再走 favicon 候选
           (async () => {
+            let __fpkInList = false;
             try {
               await refreshFpkApps(false);
               const __fpkName = __resolveAppName();
               // v2.3.0: appname 解析为空时跳过 FPK 图标请求，
               // 不再用窗口名（FNOS）兜底导致 /api/icons/FNOS/256 必然 404
               if (__fpkName) {
+                // v2.2.6: 任务栏图标以 FPK 图标管理器为准（用户要求"只能调用 FPK 对应应用图标"）。
+                // 判断该应用是否在 FPK 列表（区分"FPK 有它但请求失败"与"FPK 根本没有它"）。
+                __fpkInList = (__fpkApps || []).some((a) => a && a.name && String(a.name).toLowerCase() === String(__fpkName).toLowerCase());
                 const fpkBuf = await fetchFpkIcon(__fpkName, 256);
                 if (fpkBuf && !win.isDestroyed()) {
                   const img = nativeImage.createFromBuffer(fpkBuf);
                   if (!img.isEmpty()) {
                     win.setIcon(img);
-                    dlog && dlog('info', 'appwin.icon.fpk', { app: __appLabel, name: __fpkName, winId: win.id });
+                    win.__appFpkIcon = true;
+                    dlog && dlog('info', 'appwin.icon.fpk', { app: __appLabel, name: __fpkName, winId: win.id, inList: __fpkInList });
                     return;
                   }
                 }
                 // v2.2.5: FPK 图标获取失败日志（便于排查任务栏图标缺失）
-                dlog && dlog('warn', 'appwin.icon.fpk-empty', { app: __appLabel, name: __fpkName, winId: win.id, bufLen: fpkBuf ? fpkBuf.length : 0 });
+                dlog && dlog('warn', 'appwin.icon.fpk-empty', { app: __appLabel, name: __fpkName, winId: win.id, bufLen: fpkBuf ? fpkBuf.length : 0, inList: __fpkInList });
+                // v2.2.6: FPK 列表已命中该应用但请求失败 → 不 fallback 页面 favicon，
+                // 保持缓存图标/空白（任务栏以 FPK 为准，页面 favicon 是 fnOS 默认图标会覆盖 FPK 语义）
+                if (__fpkInList) return;
               } else {
                 dlog && dlog('info', 'appwin.icon.fpk-skip', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120), reason: 'no-fpk-name' });
               }
             } catch (_) {}
+            // v2.2.6: 已设置 FPK 图标后不再用 favicon 覆盖（任务栏图标以 FPK 为准）
+            if (win.__appFpkIcon === true) return;
           __allIconCandidates().then((candidates) => {
             try {
               if (!Array.isArray(candidates) || !candidates.length || win.isDestroyed()) return;
@@ -5016,10 +5026,10 @@ function createMainWindow(partition, loadTarget) {
   // 打开 pending 应用，避免冷启动时应用窗口过早请求拿到 401 跳登录页。
   try {
     mainWindow.webContents.on('dom-ready', () => {
-      try { consumePendingOpenApp(); startHomeScan(); } catch (_) {}
+      try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_) {}
     });
     mainWindow.webContents.on('did-navigate', () => {
-      try { consumePendingOpenApp(); startHomeScan(); tryOpenPendingApp(); } catch (_) {}
+      try { consumePendingOpenApp(); startHomeScan(); tryOpenPendingApp(); applyHomeFpkIcons(); } catch (_) {}
     });
     mainWindow.webContents.on('did-navigate-in-page', () => {
       try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
@@ -5959,6 +5969,73 @@ function startHomeScan() {
 }
 function stopHomeScan() {
   if (__homeScanTimer) { clearInterval(__homeScanTimer); __homeScanTimer = null; }
+}
+
+// ---- v2.2.6: 主页图标覆盖 ----
+// 飞牛 NAS 主页（webview 内 fnOS Web）系统应用图标走 /static/app/icons/{app}/icon.png
+// （fnOS 系统内置静态资源，nginx 服务，与 /var/apps 无关），fntb 写回 /var/apps 无法
+// 覆盖 → 修改图标后主页强制刷新也不变。这里在主页注入 JS：把有自定义图标
+// （FPK 列表 has_custom_icon=true）的应用卡片图标替换为 FPK API 图标 URL
+// （/api/icons/{app}/256?t=...&v=... 带 cache-busting），修改图标后主页即可生效。
+async function applyHomeFpkIcons() {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const wc = mainWindow.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    const curUrl = wc.getURL() || '';
+    if (!/^https?:/i.test(curUrl)) return;
+    const base = getFpkBaseUrl();
+    if (!base) {
+      dlog && dlog('info', 'home.fpk-icon', { msg: 'FPK not enabled, skip' });
+      return;
+    }
+    const apps = await refreshFpkApps(false);
+    if (!Array.isArray(apps)) return;
+    const custom = (apps || []).filter((a) => a && a.has_custom_icon).map((a) => a.name);
+    if (!custom.length) {
+      dlog && dlog('info', 'home.fpk-icon', { msg: 'no custom icons, skip' });
+      return;
+    }
+    dlog && dlog('info', 'home.fpk-icon', { msg: 'inject', count: custom.length, base });
+    const js = String.raw`(function(){
+      try {
+        if (window.__fnosHomeFpkIcon) return;
+        window.__fnosHomeFpkIcon = true;
+        var custom = ${JSON.stringify(custom)};
+        var base = ${JSON.stringify(base)};
+        function apply(){
+          try {
+            var t = Date.now();
+            var v = Math.floor(t / 60000);
+            var imgs = document.querySelectorAll('img');
+            for (var i = 0; i < imgs.length; i++) {
+              var im = imgs[i];
+              var src = im.currentSrc || im.src || '';
+              if (!src) continue;
+              var m = /\/(?:static\/app\/icons|app-center-static\/icon|app-center-static\/serviceicon)\/([^\/?#]+?)(?:\/|\.)/i.exec(src);
+              if (!m) continue;
+              var app;
+              try { app = decodeURIComponent(m[1]); } catch(e){ app = m[1]; }
+              if (!app || custom.indexOf(app) === -1) continue;
+              var ns = base + '/api/icons/' + encodeURIComponent(app) + '/256?t=' + t + '&v=' + v;
+              if (im.getAttribute('src') !== ns) { im.setAttribute('src', ns); }
+            }
+          } catch(e){}
+        }
+        apply();
+        setInterval(apply, 10000);
+        try {
+          var mo = new MutationObserver(apply);
+          mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+        } catch(e){}
+      } catch(e){}
+    })()`;
+    wc.executeJavaScript(js, true).then(() => {
+      dlog && dlog('info', 'home.fpk-icon', { msg: 'injected ok', count: custom.length });
+    }).catch((e) => {
+      dlog && dlog('warn', 'home.fpk-icon', { err: String(e && e.message || e).slice(0, 120) });
+    });
+  } catch (_) {}
 }
 
 // v1.79.0：主页只显示部分应用（系统应用），Docker 等第三方应用在「应用中心」页。
@@ -7300,8 +7377,16 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     }
 
     const args = `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
-    const desktop = path.join(os.homedir(), 'Desktop');
-    const lnkPath = path.join(desktop, `${appName}.lnk`);
+    // v2.2.6：桌面路径用 app.getPath('desktop')——os.homedir()/Desktop 在 OneDrive
+    // 桌面重定向、非英文系统或权限受限时可能不存在/不可写，导致快捷方式创建失败。
+    let desktop = '';
+    try { desktop = app.getPath('desktop'); } catch (_) {}
+    if (!desktop || !fs.existsSync(desktop)) desktop = path.join(os.homedir(), 'Desktop');
+    if (!fs.existsSync(desktop)) { try { fs.mkdirSync(desktop, { recursive: true }); } catch (_) {} }
+    // v2.2.6：appName 可能含 / : * ? " < > | 等 Windows 非法文件名字符，清洗后用于 lnk 文件名
+    const lnkBaseName = String(appName || '应用').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '应用';
+    const lnkPath = path.join(desktop, `${lnkBaseName}.lnk`);
+    fnosLog('info', 'shortcut.path', { desktop, lnkPath, appName, appId });
 
     // PowerShell script to create shortcut
     const iconPs = icoPath ? `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'` : '';
@@ -7362,8 +7447,12 @@ ipcMain.handle('uninstall-nas-app', async (_e, payload) => {
 
     // Delete desktop shortcut
     try {
-      const desktop = path.join(os.homedir(), 'Desktop');
-      const lnkPath = path.join(desktop, appName + '.lnk');
+      // v2.2.6：与创建路径一致——app.getPath('desktop') 优先（OneDrive 重定向兼容）
+      let desktop = '';
+      try { desktop = app.getPath('desktop'); } catch (_) {}
+      if (!desktop || !fs.existsSync(desktop)) desktop = path.join(os.homedir(), 'Desktop');
+      const lnkName = String(appName || '应用').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '应用';
+      const lnkPath = path.join(desktop, lnkName + '.lnk');
       if (fs.existsSync(lnkPath)) {
         fs.unlinkSync(lnkPath);
         fnosLog('info', 'uninstall', '已删除桌面快捷方式', { lnkPath });

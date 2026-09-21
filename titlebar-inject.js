@@ -13,6 +13,16 @@ module.exports = function injectTitleBar(ctx) {
     if (typeof window === 'undefined') return;
     if (window.top !== window) return; // 仅顶层框架
 
+    // v2.2.4：查询主进程——XTE 等自带标题栏的应用跳过自定义标题栏注入，
+    // 避免叠加错位（用户截图：XTE 启动界面左上汉堡菜单 + 右上窗口按钮重叠）。
+    try {
+      const __skipQuery = ipcRenderer.sendSync('titlebar:should-inject');
+      if (__skipQuery && __skipQuery.skip) {
+        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.skipped', reason: __skipQuery.reason, path: (location.pathname || '').slice(0, 60) }); } catch (_) {}
+        return;
+      }
+    } catch (_) {}
+
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
     const TB = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
     try {

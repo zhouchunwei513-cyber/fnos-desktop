@@ -81,6 +81,18 @@ if (process.platform === 'win32') {
 // 全局软件渲染：视频播放走 MPV 外部播放器不受影响；网页内视频降为软解，NAS 管理界面无感知。
 try { app.disableHardwareAcceleration(); } catch (_) {}
 
+// v2.2.4：崩溃链修复增强——仅 app.disableHardwareAcceleration() 未能阻止
+// 用户环境崩溃链（v2.2.3 日志：34500/music 创建即崩 0x80000003、主窗口连崩 4 次）。
+// 追加 --disable-gpu（完全禁用 GPU 进程，不再创建 GPU 子进程），从根源消除
+// "GPU 进程崩溃 → 渲染进程连锁崩溃"；视频硬解由 MPV 外部播放器承担，不受影响。
+// 若未来需要恢复 GPU 合成，可改由设置项控制（此处先强制关闭以恢复稳定性）。
+try {
+  if (process.platform === 'win32') {
+    app.commandLine.appendSwitch('disable-gpu');
+    app.commandLine.appendSwitch('disable-software-rasterizer');
+  }
+} catch (_) {}
+
 // v1.16.2：全局兜底——未捕获异常 / 未处理 Promise 拒绝时只记录日志，绝不闪退
 process.on('uncaughtException', (err) => {
   try {
@@ -108,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.2.3';
+const APP_VERSION = '2.2.4';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3140,6 +3152,8 @@ function resetIdleAutoLock() {
 // FRP / 内网穿透场景：隧道空闲超时易被服务端回收，导致前端 WebSocket 断开提示“已断开”。
 // 因此心跳刻意保持高频（90s）+ keep-alive，并支持网络恢复时立即补跳。
 let authHeartbeatTimer = null;
+// v2.2.4: FPK 连接心跳定时器（向 fntb 上报客户端活跃，避免"未连接"误报）
+let fpkHeartbeatTimer = null;
 let authHeartbeatBusy = false;
 function authHeartbeatOnce() {
   try {
@@ -3531,28 +3545,43 @@ function registerWindow(win, opts = {}) {
       // v2.2.3：主窗口崩溃恢复强化——此前裸 loadURL 无日志/无延迟/无次数限制/无 UA，
       // 崩溃后立即重载大概率再次失败（渲染进程尚未完全重建），表现为黑屏无法自愈。
       // 现在：延迟 1200ms 重载（带 NAS UA）、最多 2 次、不可见时补 show、最后兜底连接页。
+      // v2.2.4：恢复次数 2→5 次 + 指数退避（1200/2000/3200/4800/6800ms），
+      // 并记录崩溃间隔，避免"连锁崩溃"（一个窗口崩 → GPU/渲染资源异常 → 主窗口连环崩）直接放弃。
       try {
         const tries = (win.__mainCrashTries || 0) + 1;
         win.__mainCrashTries = tries;
-        dlog && dlog('warn', 'main.render-gone.recover', { try: tries, reason, winId: win.id });
-        if (tries > 2) {
-          dlog && dlog('error', 'main.render-gone.giveup', { try: tries, winId: win.id, reason });
+        // 连续崩溃计数（全局，30 秒内计数，用于连锁崩溃判断）
+        const now = Date.now();
+        if (!global.__crashSeriesStart) global.__crashSeriesStart = now;
+        if (now - global.__crashSeriesStart > 30000) { global.__crashSeriesStart = now; global.__crashSeriesCount = 0; }
+        global.__crashSeriesCount = (global.__crashSeriesCount || 0) + 1;
+        dlog && dlog('warn', 'main.render-gone.recover', {
+          try: tries, reason, winId: win.id,
+          seriesCount: global.__crashSeriesCount,
+          seriesSpanMs: now - global.__crashSeriesStart,
+          openWindows: (() => { try { return BrowserWindow.getAllWindows().filter(w => !w.isDestroyed()).length; } catch (_) { return -1; } })(),
+        });
+        if (tries > 5) {
+          dlog && dlog('error', 'main.render-gone.giveup', { try: tries, winId: win.id, reason, seriesCount: global.__crashSeriesCount });
           try { if (!win.isDestroyed()) showConnectPage(); } catch (_) {}
           return;
         }
+        // 指数退避：1200, 2000, 3200, 4800, 6800ms
+        const delays = [1200, 2000, 3200, 4800, 6800];
+        const delayMs = delays[Math.min(tries - 1, delays.length - 1)] || 1200;
         setTimeout(() => {
           try {
             if (!win || win.isDestroyed()) return;
             if (!win.isVisible()) { try { win.show(); } catch (_) {} }
             const target = lastConnectHref || win.webContents.getURL();
             if (target && /^https?:/i.test(target)) {
-              dlog && dlog('info', 'main.render-gone.reload', { try: tries, url: String(target).slice(0, 140), winId: win.id });
+              dlog && dlog('info', 'main.render-gone.reload', { try: tries, url: String(target).slice(0, 140), winId: win.id, delayMs });
               win.loadURL(target, { userAgent: getNasUA() }).catch(() => { try { if (!win.isDestroyed()) showConnectPage(); } catch (_) {} });
             } else {
               showConnectPage();
             }
           } catch (_) {}
-        }, 1200);
+        }, delayMs);
       } catch (_) {}
       return;
     }
@@ -3786,6 +3815,28 @@ const APP_UI_INJECT_CSS = [
 
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
+  // v2.2.4：崩溃风暴抑制——若最近 30 秒内渲染进程崩溃 >=4 次（应用窗口连崩），
+  // 新窗口创建延迟 2.5s，等 GPU/渲染资源稳定再建，避免"创建即崩→连锁崩"。
+  // 日志证据：02:47:39/02:49:48 34500 创建即崩、主窗口 02:47:07-10 连崩 4 次。
+  try {
+    const now = Date.now();
+    if (global.__appCrashSeriesStart && (now - global.__appCrashSeriesStart < 30000) && (global.__appCrashSeriesCount || 0) >= 4) {
+      const __stormWait = 2500;
+      dlog && dlog('warn', 'appwin.create.crash-storm-delay', {
+        url: String(url).slice(0, 120),
+        seriesCount: global.__appCrashSeriesCount,
+        waitMs: __stormWait,
+      });
+      setTimeout(() => {
+        try { createAppWindowInner(url, opts, __cw_t0); } catch (_) {}
+      }, __stormWait);
+      return;
+    }
+    createAppWindowInner(url, opts, __cw_t0);
+  } catch (_) { try { createAppWindowInner(url, opts, __cw_t0); } catch (_) {} }
+}
+
+function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v2.0.5：修复——子应用窗口必须与主窗口使用同一 partition，否则 cookie/session 不共享，
   // 导致子应用打开后被重定向到登录页。不再将 persist:nas-* 替换为 SHARED_PARTITION。
   let partition = opts.partition || currentPartition;
@@ -3904,8 +3955,20 @@ function createAppWindow(url, opts = {}) {
     win.setAppUserModelId(`com.fnos.client.app.${appId}`);
   } catch (_) {}
 
-  // v2.2.3：记录窗口创建时间，供 render-process-gone 判断"创建即崩"（load.start 后 ~50ms 崩）
+  // v2.2.4：记录窗口创建时间，供 render-process-gone 判断"创建即崩"（load.start 后 ~50ms 崩）
   try { win.__appCreatedAt = Date.now(); } catch (_) {}
+
+  // v2.2.4：XTE 等自带标题栏的应用跳过自定义标题栏注入（titlebar-inject 会查询该标志）——
+  // 用户截图确认 XTE 启动界面标题栏菜单错位（自定义 34px 栏 + ☰/窗口按钮 叠加在 XTE 自带标题栏上）。
+  // 识别特征：端口 34500（XTE）、路径含 /xte；主窗口/普通应用仍注入。
+  try {
+    const __skipUrl = String(url || '');
+    const __skipTitlebar = /:34500([\/?#]|$)/.test(__skipUrl) || /\/xte([\/?#]|$)/i.test(__skipUrl) || /\/xte$/i.test(__skipUrl);
+    if (__skipTitlebar) {
+      win.__skipTitlebar = true;
+      dlog && dlog('info', 'appwin.skip-titlebar', { app: __appLabel, winId: win.id, url: __skipUrl.slice(0, 120), reason: 'app-has-own-titlebar' });
+    }
+  } catch (_) {}
 
   const isHome = !!opts.isHome;
   registerWindow(win, {
@@ -4168,11 +4231,24 @@ function createAppWindow(url, opts = {}) {
         const __bornMs = Date.now() - (win.__appCreatedAt || win.__t0 || Date.now());
         dlog && dlog('error', 'appwin.render-gone', { app: __appLabel, winId: win.id, reason, exitCode, bornMs: __bornMs });
         // v1.76.0：渲染进程崩溃自动恢复（最多 2 次），避免应用窗口直接消失
+        // v2.2.4：恢复次数 2→5 次 + 指数退避（800/1400/2200/3200/4400ms）；
+        // "创建即崩"（bornMs<1000）先等待更长延迟（渲染/GPU 资源可能仍异常），
+        // 并抑制短时间连续崩溃的窗口叠加创建（30s 内 >=5 次崩溃时不再立即恢复）。
         if (reason === 'crashed' && win && !win.isDestroyed()) {
           const tries = (win.__appCrashTries || 0) + 1;
           win.__appCrashTries = tries;
-          if (tries <= 2) {
-            dlog && dlog('info', 'appwin.render-restart', { app: __appLabel, winId: win.id, try: tries, exitCode });
+          // 全局连续崩溃计数
+          const now = Date.now();
+          if (!global.__appCrashSeriesStart) global.__appCrashSeriesStart = now;
+          if (now - global.__appCrashSeriesStart > 30000) { global.__appCrashSeriesStart = now; global.__appCrashSeriesCount = 0; }
+          global.__appCrashSeriesCount = (global.__appCrashSeriesCount || 0) + 1;
+          const crashStorm = global.__appCrashSeriesCount >= 5;
+          if (tries <= 5 && !crashStorm) {
+            const delays = [800, 1400, 2200, 3200, 4400];
+            let delayMs = delays[Math.min(tries - 1, delays.length - 1)] || 800;
+            // 创建即崩：额外 +1000ms 等待 GPU/渲染资源稳定
+            if (__bornMs < 1000) delayMs += 1000;
+            dlog && dlog('info', 'appwin.render-restart', { app: __appLabel, winId: win.id, try: tries, exitCode, bornMs: __bornMs, delayMs, seriesCount: global.__appCrashSeriesCount });
             setTimeout(() => {
               try {
                 if (win.isDestroyed()) return;
@@ -4180,10 +4256,10 @@ function createAppWindow(url, opts = {}) {
                 if (cur && /^https?:/i.test(cur)) win.loadURL(cur, { userAgent: getNasUA() }).catch(() => {});
                 else win.reloadIgnoringCache();
               } catch (_) {}
-            }, 800);
+            }, delayMs);
           } else {
-            // v2.2.3：2 次恢复后仍崩——记录最终放弃，避免窗口黑屏悬挂无日志
-            dlog && dlog('error', 'appwin.render-gone.giveup', { app: __appLabel, winId: win.id, try: tries, reason, exitCode });
+            // v2.2.3：恢复耗尽或崩溃风暴——记录最终放弃，避免窗口黑屏悬挂无日志
+            dlog && dlog('error', 'appwin.render-gone.giveup', { app: __appLabel, winId: win.id, try: tries, reason, exitCode, crashStorm });
           }
         }
       } catch (_) {}
@@ -4887,6 +4963,56 @@ function createMainWindow(partition, loadTarget) {
     });
     mainWindow.webContents.on('did-finish-load', () => {
       try { consumePendingOpenApp(); tryOpenPendingApp(); } catch (_) {}
+      // v2.2.4：FNID 检测页自动跳转——
+      // browser_use 实测 https://fnos.net/dashuaibi888/ 检测页只列出访问地址（dashuaibi888.fnos.net、
+      // http://110.90.205.103:5666 等）不自动跳转，导致 FNID 登录后卡在检测页。
+      // 这里在页面加载完成后提取页面内访问地址链接，自动导航到第一个可用地址（每个 FNID 只执行一次）。
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const __cur = mainWindow.webContents.getURL() || '';
+        // 仅处理 fnos.net/{fnid} 检测页
+        const __fnidMatch = /^https:\/\/fnos\.net\/([A-Za-z0-9_-]+)\/?$/i.exec(__cur);
+        if (!__fnidMatch) return;
+        if (global.__fnidAutoNavDone === __cur) return; // 每个检测页 URL 只自动跳转一次
+        global.__fnidAutoNavDone = __cur;
+        dlog && dlog('info', 'fnid.detect-page', { url: __cur.slice(0, 120) });
+        setTimeout(() => {
+          try {
+            if (!mainWindow || mainWindow.isDestroyed()) return;
+            mainWindow.webContents.executeJavaScript(`(function(){
+              try {
+                var links = [];
+                var all = document.querySelectorAll('a[href]');
+                for (var i = 0; i < all.length; i++) {
+                  var h = all[i].getAttribute('href') || '';
+                  if (/^https?:/i.test(h)) links.push(h);
+                }
+                return JSON.stringify(links.slice(0, 10));
+              } catch (e) { return ''; }
+            })()`, true).then((json) => {
+              try {
+                let arr = [];
+                try { arr = JSON.parse(json || '[]'); } catch (_) {}
+                // 优先选择 FN Connect 隧道域（*.fnos.net），其次第一个 http(s) 地址
+                let pick = '';
+                for (const u of arr) {
+                  try {
+                    const h = new URL(u).hostname || '';
+                    if (h.endsWith('.fnos.net') || h === 'fnos.net') { pick = u; break; }
+                  } catch (_) {}
+                }
+                if (!pick && arr.length) pick = arr[0];
+                if (pick && /^https?:/i.test(pick) && mainWindow && !mainWindow.isDestroyed()) {
+                  dlog && dlog('info', 'fnid.auto-navigate', { from: __cur.slice(0, 120), to: pick.slice(0, 140), candidates: arr.length });
+                  mainWindow.loadURL(pick, { userAgent: getNasUA() }).catch(() => {});
+                } else {
+                  dlog && dlog('warn', 'fnid.auto-navigate.no-candidate', { candidates: arr.length, json: String(json || '').slice(0, 200) });
+                }
+              } catch (_) {}
+            }).catch(() => {});
+          } catch (_) {}
+        }, 800);
+      } catch (_) {}
     });
   } catch (_) {}
 
@@ -5934,31 +6060,77 @@ const __WS_SCANNER_JS = String.raw`
 
 
 // v2.1.5: PNG to ICO converter for Windows shortcuts
+// v2.2.4: 多尺寸 ICO（16/24/32/48/64/128/256）——此前单尺寸 256 在 Windows 缩放
+// 后毛刺/方角/质量差；多尺寸让资源管理器按目标尺寸取最近源，小尺寸也清晰。
 function pngToIco(pngBuffer) {
-  // ICO header: 6 bytes (reserved=0, type=1(icon), count=1)
-  // ICO dir entry: 16 bytes
-  // Total overhead: 22 bytes
-  const headerSize = 6 + 16;
-  const ico = Buffer.alloc(headerSize + pngBuffer.length);
-  let offset = 0;
-  // Header
-  ico.writeUInt16LE(0, offset); offset += 2;  // reserved
-  ico.writeUInt16LE(1, offset); offset += 2;  // type = 1 (icon)
-  ico.writeUInt16LE(1, offset); offset += 2;  // count = 1
-  // Directory entry
-  const w = pngBuffer.readUInt32BE(16); // PNG IHDR width
-  const h = pngBuffer.readUInt32BE(20); // PNG IHDR height
-  ico.writeUInt8(w >= 256 ? 0 : w, offset); offset += 1;  // width (0 = 256)
-  ico.writeUInt8(h >= 256 ? 0 : h, offset); offset += 1;  // height
-  ico.writeUInt8(0, offset); offset += 1;  // color palette
-  ico.writeUInt8(0, offset); offset += 1;  // reserved
-  ico.writeUInt16LE(1, offset); offset += 2;  // color planes
-  ico.writeUInt16LE(32, offset); offset += 2; // bits per pixel
-  ico.writeUInt32LE(pngBuffer.length, offset); offset += 4;  // image data size
-  ico.writeUInt32LE(headerSize, offset); offset += 4;        // image data offset
-  // Image data (raw PNG)
-  pngBuffer.copy(ico, offset);
-  return ico;
+  try {
+    const src = nativeImage.createFromBuffer(Buffer.from(pngBuffer));
+    if (src.isEmpty()) throw new Error('empty source image');
+    // 统一源尺寸：先缩放到 256（高清源），再向下取各档
+    let base = src;
+    const sw = src.getSize().width || 256;
+    const sh = src.getSize().height || 256;
+    const maxDim = Math.max(sw, sh);
+    if (maxDim !== 256) {
+      const scale = 256 / maxDim;
+      base = src.resize({ width: Math.max(1, Math.round(sw * scale)), height: Math.max(1, Math.round(sh * scale)), quality: 'best' });
+    }
+    const sizes = [256, 128, 64, 48, 32, 24, 16];
+    const entries = [];
+    for (const s of sizes) {
+      try {
+        const img = (s === 256) ? base : base.resize({ width: s, height: s, quality: 'best' });
+        const png = img.toPNG();
+        if (png && png.length > 8) entries.push({ size: s, data: Buffer.from(png) });
+      } catch (_) {}
+    }
+    if (!entries.length) { entries.push({ size: 256, data: Buffer.from(pngBuffer) }); }
+    // ICO header: reserved=0, type=1(icon), count=N
+    const headerSize = 6 + entries.length * 16;
+    const total = headerSize + entries.reduce((s, e) => s + e.data.length, 0);
+    const ico = Buffer.alloc(total);
+    let offset = 0;
+    ico.writeUInt16LE(0, offset); offset += 2;  // reserved
+    ico.writeUInt16LE(1, offset); offset += 2;  // type = 1 (icon)
+    ico.writeUInt16LE(entries.length, offset); offset += 2;  // count
+    let dataOffset = headerSize;
+    for (const e of entries) {
+      ico.writeUInt8(e.size >= 256 ? 0 : e.size, offset); offset += 1;  // width (0 = 256)
+      ico.writeUInt8(e.size >= 256 ? 0 : e.size, offset); offset += 1;  // height
+      ico.writeUInt8(0, offset); offset += 1;  // color palette
+      ico.writeUInt8(0, offset); offset += 1;  // reserved
+      ico.writeUInt16LE(1, offset); offset += 2;  // color planes
+      ico.writeUInt16LE(32, offset); offset += 2; // bits per pixel
+      ico.writeUInt32LE(e.data.length, offset); offset += 4;  // image data size
+      ico.writeUInt32LE(dataOffset, offset); offset += 4;     // image data offset
+      dataOffset += e.data.length;
+    }
+    for (const e of entries) {
+      e.data.copy(ico, offset);
+      offset += e.data.length;
+    }
+    return ico;
+  } catch (e) {
+    // 兜底：退回原单尺寸逻辑
+    const headerSize = 6 + 16;
+    const ico = Buffer.alloc(headerSize + pngBuffer.length);
+    let offset = 0;
+    ico.writeUInt16LE(0, offset); offset += 2;
+    ico.writeUInt16LE(1, offset); offset += 2;
+    ico.writeUInt16LE(1, offset); offset += 2;
+    const w = pngBuffer.readUInt32BE(16);
+    const h = pngBuffer.readUInt32BE(20);
+    ico.writeUInt8(w >= 256 ? 0 : w, offset); offset += 1;
+    ico.writeUInt8(h >= 256 ? 0 : h, offset); offset += 1;
+    ico.writeUInt8(0, offset); offset += 1;
+    ico.writeUInt8(0, offset); offset += 1;
+    ico.writeUInt16LE(1, offset); offset += 2;
+    ico.writeUInt16LE(32, offset); offset += 2;
+    ico.writeUInt32LE(pngBuffer.length, offset); offset += 4;
+    ico.writeUInt32LE(headerSize, offset); offset += 4;
+    pngBuffer.copy(ico, offset);
+    return ico;
+  }
 }
 
 // ---- v2.1.17: FPK 图标管理器 API ----
@@ -5978,10 +6150,15 @@ async function fetchFpkIcon(appname, size = 256) {
     console.log('[FPK] icon fetch skipped: FPK API not enabled');
     return null;
   }
-  const url = `${base}/api/icons/${encodeURIComponent(appname)}/${size}`;
+  // v2.2.4：加 cache-busting（t=时间戳 + v=应用版本）——fntb 此前返回 max-age=3600
+  // 缓存头导致修改图标后客户端/浏览器仍命中旧缓存，强制刷新也不变。
+  // 服务端对带 t/v 参数的请求返回 no-cache，保证最新图标；列表 5 分钟 TTL 不受影响。
+  const t = Date.now();
+  const v = Math.floor(t / 60000); // 每分钟一档，缩短 URL 长度且足够新鲜
+  const url = `${base}/api/icons/${encodeURIComponent(appname)}/${size}?t=${t}&v=${v}`;
   console.log('[FPK] icon fetch start', JSON.stringify({ appname, size, url }));
   try {
-    const res = await fetch(url, { headers: { 'X-FNOS-Client': 'desktop' } });
+    const res = await fetch(url, { headers: { 'X-FNOS-Client': 'desktop', 'Cache-Control': 'no-cache' } });
     console.log('[FPK] icon fetch response', JSON.stringify({ appname, status: res.status, ok: res.ok }));
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
@@ -6043,6 +6220,10 @@ async function refreshFpkApps(force) {
 }
 
 // 从应用 URL 反推 FPK 应用名（name），用于图标查询
+// v2.2.4：
+//   1) 增加 app- 前缀归一化（'/app-baidu-netdisk' ↔ FPK 列表 'baidu.netdisk'）；
+//   2) 单字符路径（如 '/p'）不再作为有效 appname（此前误判导致 /api/icons/p/256 404）；
+//   3) 路径首段与 name 做模糊匹配（首段去掉 app-/尾缀后比对 name 前缀/包含）。
 function fpkAppNameFromUrl(url) {
   try {
     if (!url) {
@@ -6054,20 +6235,30 @@ function fpkAppNameFromUrl(url) {
     let anchor = '';
     try { anchor = decodeURIComponent(u.searchParams.get('anchor') || ''); } catch (_) {}
     const seg = (u.pathname || '').split('/').filter(Boolean).pop() || '';
+    // 候选名生成：anchor 优先，其次路径末段；单字符视为无效
+    const mkCandidate = () => {
+      const raw = anchor || seg || '';
+      if (raw.length < 2) return '';
+      return raw;
+    };
     // v2.3.0: 列表未加载时也从 URL 直接提取 appname（anchor 优先，其次路径末段），
     // 避免 FPK 列表加载失败导致 appname 恒为空、图标查询退化为窗口名造成 404
     if (!__fpkApps.length) {
-      const guess = anchor || seg || '';
+      const guess = mkCandidate();
       console.log('[FPK] name resolve (no list)', JSON.stringify({ url: String(url).slice(0, 100), anchor, seg, guess }));
       return guess;
     }
     let bestMatch = '';
     let bestScore = 0;
+    // path 首段（如 'app-baidu-netdisk'、'baidu.netdisk'、'music'）
+    const firstSeg = (pathLower || '').split('/').filter(Boolean)[0] || '';
+    const firstSegNorm = String(firstSeg).replace(/^app[-_.]/i, '').replace(/^trim[-_.]/i, '').toLowerCase();
     for (const a of __fpkApps) {
       const aName = a.name || '';
       if (!aName) continue;
       const aPath = (a.path || '/').replace(/\/+$/, '');
       const aUrl = a.url || '';
+      const aNameLower = String(aName).toLowerCase();
       let score = 0;
       if (anchor && (anchor === aName || anchor === (a.applaunchname || aName))) {
         score = 100;
@@ -6078,16 +6269,23 @@ function fpkAppNameFromUrl(url) {
       } else if (aPath && aPath !== '/' && pathLower === aPath) {
         score = 70;
       }
+      // v2.2.4：首段归一化比对——覆盖 app-baidu-netdisk → baidu.netdisk 场景
+      if (score === 0 && firstSegNorm && firstSegNorm.length >= 2) {
+        const aNorm = aNameLower.replace(/^app[-_.]/i, '').replace(/^trim[-_.]/i, '').replace(/[-_.]/g, '');
+        const fNorm = firstSegNorm.replace(/[-_.]/g, '');
+        if (aNorm === fNorm) score = 85;
+        else if (aNorm && fNorm && (aNorm.startsWith(fNorm) || fNorm.startsWith(aNorm)) && Math.min(aNorm.length, fNorm.length) >= 4) score = 65;
+      }
       if (score > bestScore) { bestScore = score; bestMatch = aName; }
     }
     // v2.2.0: 匹配过程日志
     console.log('[FPK] name resolve result', JSON.stringify({
-      url: String(url).slice(0, 100), anchor, pathLower,
+      url: String(url).slice(0, 100), anchor, pathLower, firstSeg, firstSegNorm,
       match: bestMatch || '', score: bestScore,
       candidates: __fpkApps.map((a) => `${a.name}|${a.path || ''}|${a.url || ''}`).slice(0, 30),
     }));
     if (bestMatch) return bestMatch;
-    return anchor || seg;
+    return mkCandidate();
   } catch (_) { return ''; }
 }
 
@@ -6537,9 +6735,12 @@ ipcMain.handle('settings:test-fpk-api', async (_e) => {
   if (!s.fpkApi?.host) return { ok: false, error: '未配置 FPK 服务地址' };
   const baseUrl = `http://${s.fpkApi.host}:${s.fpkApi.port || 18080}`;
   try {
-    const res = await fetch(`${baseUrl}/api/health`);
+    // v2.2.4：连接检测修复——客户端测试连接时也带 X-FNOS-Client 头请求 /api/client/status，
+    // 让 FPK 图标管理器的"PC客户端连接"状态能识别到本客户端（此前 /api/health 无客户端标识，
+    // fntb 只认 300s 窗口内的 X-FNOS-Client 请求，导致客户端显示已连接、图标管理器显示未连接）。
+    const res = await fetch(`${baseUrl}/api/client/status`, { headers: { 'X-FNOS-Client': 'desktop' } });
     const data = await res.json();
-    if (data?.status === 'ok') return { ok: true, version: data.version };
+    if (data?.status === 'running') return { ok: true, version: data.version };
     return { ok: false, error: '服务响应异常' };
   } catch (err) {
     return { ok: false, error: err.message || '连接失败' };
@@ -6640,6 +6841,16 @@ ipcMain.on('settings:get-titlebar', (e) => {
 ipcMain.on('settings:close', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (win && !win.isDestroyed()) win.close();
+});
+
+// v2.2.4：查询当前窗口是否应跳过自定义标题栏注入（XTE 等自带标题栏的应用）。
+// titlebar-inject.js 在 build() 前调用 sendSync 查询；主窗口/普通应用返回注入。
+ipcMain.on('titlebar:should-inject', (e) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const skip = !!(win && win.__skipTitlebar);
+    e.returnValue = { skip, reason: skip ? 'app-has-own-titlebar' : '' };
+  } catch (_) { e.returnValue = { skip: false, reason: '' }; }
 });
 
 // v1.14：重启应用（用于玻璃标题栏等需要重建窗口才能生效的设置）
@@ -9436,6 +9647,24 @@ app.whenReady().then(() => {
   // v1.16.1：监听网络接口变化（内网↔外网切换），失效线路探测缓存
   try { startNetworkWatcher(); } catch (_) {}
 
+  // v2.2.4：FPK 连接心跳——客户端启动后立即向 fntb 打一次带 X-FNOS-Client 头的请求，
+  // 并在运行期间每 4 分钟静默上报一次，让 fntb 的"PC客户端连接"检测（1800s 窗口）
+  // 始终能看到活跃客户端，不再出现"客户端显示已连接、图标管理器显示未连接"的误报。
+  try {
+    const fpkHeartbeat = async () => {
+      try {
+        const hs = loadSettings();
+        if (!hs.fpkApi || !hs.fpkApi.enabled || !hs.fpkApi.host) return;
+        const hbBase = `http://${hs.fpkApi.host}:${hs.fpkApi.port || 18080}`;
+        await fetch(`${hbBase}/api/client/status`, { headers: { 'X-FNOS-Client': 'desktop' } }).catch(() => {});
+      } catch (_) {}
+    };
+    setTimeout(() => { fpkHeartbeat(); }, 1500);
+    fpkHeartbeatTimer = setInterval(() => { fpkHeartbeat(); }, 4 * 60 * 1000);
+    if (fpkHeartbeatTimer.unref) fpkHeartbeatTimer.unref();
+    dlog('info', 'fpk.heartbeat.started', { interval: '4m' });
+  } catch (_) {}
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow(initialPartition, initialTarget);
@@ -9451,6 +9680,7 @@ app.on('before-quit', () => {
   try {
     if (idleAutoLockTimer) clearInterval(idleAutoLockTimer);
     if (authHeartbeatTimer) clearInterval(authHeartbeatTimer);
+    if (fpkHeartbeatTimer) clearInterval(fpkHeartbeatTimer);
     if (g_networkWatcher) clearInterval(g_networkWatcher);
     if (menuRebuildTimer) clearTimeout(menuRebuildTimer);
     if (g_persistTimer) clearInterval(g_persistTimer);

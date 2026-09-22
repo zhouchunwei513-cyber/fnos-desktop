@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.3.2';
+const APP_VERSION = '2.3.3';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -795,6 +795,9 @@ function parseAppArgs() {
   for (const arg of args) {
     const m1 = arg.match(/^--app=(.+)$/);
     if (m1) result.appId = m1[1];
+    // v2.3.3: --launch-app={应用唯一ID}（appname）
+    const m0 = arg.match(/^--launch-app=(.+)$/);
+    if (m0) result.appId = m0[1];
     const m2 = arg.match(/^--nas=(.+)$/);
     if (m2) result.nas = m2[1];
   }
@@ -4704,21 +4707,10 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
 
 // ---------------------- 主窗口关闭逻辑 ----------------------
 function handleMainClose(win) {
-  glassMessageBox(win, {
-    title: '关闭 FNOS',
-    buttons: ['隐藏到托盘', '退出程序', '取消'],
-    defaultId: 0,
-    cancelId: 2,
-  }).then(({ response }) => {
-    if (response === 2 || response === undefined) return;
-    if (response === 1) {
-      app.isQuitting = true;
-      app.quit();
-      return;
-    }
-    BrowserWindow.getAllWindows().forEach((w) => { if (!w.isDestroyed()) w.hide(); });
-    ensureTray();
-  }).catch(() => {});
+  // v2.3.3：按产品需求，点击窗口关闭 = 隐藏到托盘（不弹窗、不退出），
+  // 程序继续驻留托盘；只有托盘菜单「退出」或 app.isQuitting 才真正退出。
+  if (mainWindow && !mainWindow.isDestroyed()) { try { mainWindow.hide(); } catch (_) {} }
+  ensureTray();
 }
 
 // v2.1.10：隐藏主窗口到托盘（不销毁窗口、不销毁托盘）。
@@ -7541,7 +7533,14 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
       }
     }
 
-    const args = `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
+    // v2.3.3: 系统应用（trim.*）快捷方式用 --launch-app={appname}（飞牛唯一ID），
+    // 第三方应用（依赖 FPK 端口/路径，appview 无法覆盖）保留 --app={URL} 兜底。
+    let __launchName = '';
+    try { __launchName = appId && /^https?:/i.test(appId) ? fpkAppNameFromUrl(appId) : String(appId || ''); } catch (_) {}
+    const __isSysApp = /^trim\./i.test(__launchName);
+    const args = __isSysApp && __launchName
+      ? `--launch-app=${encodeURIComponent(__launchName)} --nas=${encodeURIComponent(nasAddress || '')}`
+      : `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
     // v2.2.6：桌面路径用 app.getPath('desktop')——os.homedir()/Desktop 在 OneDrive
     // 桌面重定向、非英文系统或权限受限时可能不存在/不可写，导致快捷方式创建失败。
     let desktop = '';
@@ -7785,38 +7784,42 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 
 // 2.2 命令行启动：携带 --app 参数时，标记待打开应用 + 正常启动主程序（隐藏到托盘），
 // 登录后由 tryOpenPendingApp 复用主程序内 createAppWindow 打开（依赖主程序登录态）。
+// v2.3.3: 统一把快捷方式/启动参数里的“应用唯一ID”或 URL 解析为完整打开地址。
+// raw 可能是：完整 URL（旧 --app= 格式）、appname（新 --launch-app= 格式，如 trim.music）。
+// 依赖 FPK 提供端口/路径的第三方应用（非 trim.*）不在同步解析范围，由调用方回退 --app=URL。
+function __resolveLaunchUrl(raw, nasAddr) {
+  let appName = '';
+  try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
+  if (!appName) return '';
+  // 1) 已是完整 URL（旧快捷方式 --app=http://...），直接用
+  if (/^https?:\/\//i.test(appName)) return appName;
+  // 2) appId/appname 命中 manifest entry
+  try {
+    const mf = readManifest();
+    const entry = mf && Array.isArray(mf.apps) ? mf.apps.find(a => a && (a.appId === appName || a.name === appName || a.url === appName)) : null;
+    if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return entry.url;
+  } catch (_) {}
+  // 3) appname → appview?anchor（飞牛系统应用统一入口，服务端/客户端会补端口归一化）
+  let base = String(nasAddr || '').trim().replace(/\/+$/, '');
+  if (base) {
+    if (!/^https?:/i.test(base)) base = 'http://' + base;
+    return base + '/appview?anchor=' + encodeURIComponent(appName);
+  }
+  return appName;
+}
+
 function launchSubAppFromArgs() {
   if (!launchArgs.appId) return false;
   // v2.1.15：增强日志——记录快捷方式冷启动的完整参数
   fnosLog('info', 'launch', '检测到快捷方式启动参数，转主程序内打开', { ...launchArgs, t0: new Date().toISOString() });
 
   const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
-  let appUrl = '';
-  try { appUrl = decodeURIComponent(launchArgs.appId); } catch (_) { appUrl = launchArgs.appId; }
   const url = nasAddr || '';
-  // v2.1.5: 从 manifest 解析正确的启动 URL（支持 appId、url、appName 多种匹配）
-  try {
-    const manifest = readManifest();
-    const decodedAppId = launchArgs.appId ? decodeURIComponent(launchArgs.appId) : '';
-    const entry = manifest.apps.find(a =>
-      a.appId === appUrl || a.url === appUrl || a.appId === decodedAppId ||
-      a.appId === launchArgs.appId || a.name === appUrl || a.url === decodedAppId
-    );
-    if (entry && entry.url && /^https?:/i.test(entry.url)) {
-      appUrl = entry.url;
-    } else if (appUrl && appUrl.startsWith('https://')) {
-      // v2.1.14：系统应用 appId 含 https:// 前缀，去掉后作为 anchor
-      // appview 的 openAppFromAnchor 会自动加 https:// 前缀
-      const anchorName = appUrl.replace(/^https?:\/\//i, '');
-      appUrl = url.replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(anchorName);
-    } else if (entry && entry.nasAddress) {
-      // App center app - use nasAddress + appName
-      appUrl = entry.nasAddress.replace(/\/$/, '') + '/' + (entry.appId || entry.appName || '');
-    }
-    fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl, isAppview: /\/appview(\?|$)/i.test(appUrl), matchField: entry ? (entry.url === appUrl ? 'entry.url' : entry.nasAddress ? 'entry.nasAddress' : 'fallback') : 'no_entry' });
-  } catch (e) { fnosLog('warn', 'launch', 'manifest lookup failed', { err: e.message }); }
-  if (!url) {
-    fnosLog('warn', 'launch', '缺少 nas 地址参数，转普通主程序启动');
+  // v2.3.3: 统一用 __resolveLaunchUrl 解析启动目标（支持 --launch-app=appname / --app=URL）
+  const appUrl = __resolveLaunchUrl(launchArgs.appId, url);
+  fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl, isAppview: /\/appview(\?|$)/i.test(appUrl) });
+  if (!url && !/^https?:\/\//i.test(appUrl)) {
+    fnosLog('warn', 'launch', '缺少 nas 地址参数且无法解析启动地址，转普通主程序启动');
     return false;
   }
 
@@ -9874,6 +9877,9 @@ app.on('second-instance', (_e, commandLine) => {
       // v2.1.5: Support --app= parameter (used by create-desktop-shortcut)
       if (a === '--app' && argv[i + 1]) { u = decodeURIComponent(String(argv[i + 1])); break; }
       if (a.startsWith('--app=')) { u = decodeURIComponent(a.slice('--app='.length)); break; }
+      // v2.3.3: --launch-app={应用唯一ID}（appname），值为 ID 不做 decode
+      if (a === '--launch-app' && argv[i + 1]) { u = String(argv[i + 1]); break; }
+      if (a.startsWith('--launch-app=')) { u = a.slice('--launch-app='.length); break; }
       // Legacy --open-app support
       if (a === '--open-app' && argv[i + 1]) { u = String(argv[i + 1]); break; }
       if (a.startsWith('--open-app=')) { u = a.slice('--open-app='.length); break; }
@@ -9883,6 +9889,14 @@ app.on('second-instance', (_e, commandLine) => {
       const a = String(argv[i] || '');
       if (a.startsWith('--nas=')) { nasAddr = decodeURIComponent(a.slice('--nas='.length)); break; }
       if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
+    }
+    // v2.3.3: --launch-app 传的是 appname，统一解析成完整 URL 再打开
+    if (u) { u = __resolveLaunchUrl(u, nasAddr); }
+    // v2.3.3: 解析失败（无 nas 地址或应用 ID 无法定位）→ 提示用户重建快捷方式
+    if (u && !/^https?:\/\//i.test(u)) {
+      try { dlog && dlog('warn', 'shortcut.resolve_fail', { raw: String(u).slice(0, 120) }); } catch (_) {}
+      try { dialog.showMessageBox({ type: 'warning', title: 'FNOS', message: '找不到该应用，请重新创建快捷方式', buttons: ['确定'] }); } catch (_) {}
+      u = '';
     }
     if (u && mainWindow && !mainWindow.isDestroyed()) {
       // v2.1.13：去掉 300ms setTimeout 延迟，改为立即执行——与主程序内

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.3.1';
+const APP_VERSION = '2.3.2';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4160,27 +4160,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                   dlog && dlog('info', 'appwin.icon.fpk-skip', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120), reason: 'not-in-list', name: __fpkName });
                   return;
                 }
-                // v2.3.0: 系统应用（FPK 标记 system 且无自定义图标）优先从 NAS 官方 webui 加载
-                // /static/app/icons/{app}/icon.png——fntb 未配置 nas_webui 时其 /api/icons 返回
-                // 占位图，官方图标更符合"任务栏图标=对应应用图标"。
-                let fpkBuf = null;
-                let __sysIconUsed = false;
-                const __fpkApp = (__fpkApps || []).find((a) => a && a.name && String(a.name).toLowerCase() === String(__fpkName).toLowerCase());
-                if (__fpkApp && __fpkApp.system && !__fpkApp.has_custom_icon) {
-                  try {
-                    const __o = (() => { try { return new URL(String(url || '')).origin; } catch (_) { return ''; } })();
-                    if (/^https?:\/\//i.test(__o || '')) {
-                      const __sysUrl = __o + '/static/app/icons/' + encodeURIComponent(__fpkName) + '/icon.png';
-                      const __sb = await __fetchBuf(__sysUrl);
-                      if (__sb && __sb.length > 0) {
-                        fpkBuf = __sb;
-                        __sysIconUsed = true;
-                        dlog && dlog('info', 'appwin.icon.system', { app: __appLabel, name: __fpkName, winId: win.id, bytes: __sb.length, url: __sysUrl });
-                      }
-                    }
-                  } catch (_) {}
-                }
-                if (!fpkBuf) fpkBuf = await fetchFpkIcon(__fpkName, 256);
+                // v2.3.2: 移除系统应用直连 NAS 官方 webui 图标分支（原 v2.3.0 逻辑）。
+                // 用户明确要求"任务栏图标只能调用 FPK 图标管理器的对应应用图标"。
+                // fntb v2.18.2 探测 NAS webui 成功后 /api/icons/{app}/256 对系统应用
+                // 自动 302 官方图标，fetchFpkIcon 跟随重定向拿到官方图标，来源始终是 FPK。
+                let fpkBuf = await fetchFpkIcon(__fpkName, 256);
                 if (fpkBuf && !win.isDestroyed()) {
                   const img = nativeImage.createFromBuffer(fpkBuf);
                   if (!img.isEmpty()) {
@@ -6745,8 +6729,16 @@ function switchAccount(targetOrigin) {
     saveAccounts(accounts);
     saveSettings({ activeAccountOrigin: targetOrigin, currentPartition: target.partition });
     
-    fnosLog('info', 'account', '切换账号', { origin: targetOrigin, label: target.label });
-    
+    fnosLog('info', 'account', '切换账号', { origin: targetOrigin, label: target.label, href: (target.href || '').slice(0, 120), partition: target.partition });
+
+    // v2.3.2: 重置 FNID 检测页自动跳转防重标记——否则切回同一 FNID 账号时
+    // __fnidAutoNavDone 仍等于该检测页 URL，did-finish-load 的 detect-page 直接
+    // return，卡在 fnos.net 无法跳转到 NAS（用户反馈"切换账号后无法跳转"的根因）。
+    if (target.origin === 'https://fnos.net' || /^https:\/\/fnos\.net\//i.test(String(target.href || ''))) {
+      global.__fnidAutoNavDone = '';
+      fnosLog('info', 'account', 'FNID 切换：已重置 auto-nav 防重标记', { origin: target.origin });
+    }
+
     // 重建主窗口使用目标 partition
     currentPartition = target.partition;
     currentOrigin = target.origin;
@@ -7372,6 +7364,10 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
   try {
     const { appId, appName, iconPath, nasAddress } = payload || {};
     if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+    // v2.3.2: 归一化 nasAddress——设置页传入的可能无协议头（如 192.168.31.101），
+    // 拼 appview URL 必须带 http://，否则 Electron loadURL 当文件路径 -> chrome-error
+    let __nasBase = String(nasAddress || '').trim().replace(/\/+$/, '');
+    if (__nasBase && !/^https?:/i.test(__nasBase)) __nasBase = 'http://' + __nasBase;
 
     const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
     // v2.2.5：优先从 FPK 列表解析 launchUrl（设置页应用列表现以 FPK 为唯一数据源，
@@ -7419,7 +7415,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
               // 2) 系统应用（非 fntb 自身）：构造 appview 入口
               if (!__fixedUrl && (__entry.system || /^trim\./i.test(String(__entry.name || ''))) && !/^com\.fntb\.iconmgr$/i.test(String(__entry.name || ''))) {
                 try {
-                  const __base2 = (nasAddress || '').replace(/\/+$/, '');
+                  const __base2 = __nasBase;
                   if (__base2) __fixedUrl = __base2 + '/appview?anchor=' + encodeURIComponent(__entry.name);
                 } catch (_) {}
               }
@@ -7455,7 +7451,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
           if (entry.url.includes('/appview?anchor=') && entry.url.includes('https%3A%2F%2F')) {
             const anchorName = (entry.appId || '').replace(/^https?:\/\//i, '');
             if (anchorName) {
-              launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(anchorName);
+              launchUrl = __nasBase + '/appview?anchor=' + encodeURIComponent(anchorName);
             }
           }
         } else {
@@ -7465,7 +7461,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
         // v2.1.14：appId 可能含旧格式 https:// 前缀，去掉后作为 anchor
         const anchorName = (appId || '').replace(/^https?:\/\//i, '');
         if (anchorName) {
-          launchUrl = (nasAddress || '').replace(/\/$/, '') + '/appview?anchor=' + encodeURIComponent(anchorName);
+          launchUrl = __nasBase + '/appview?anchor=' + encodeURIComponent(anchorName);
         }
       }
     } catch (_) {}

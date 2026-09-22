@@ -22,7 +22,8 @@ const __rl = (() => {
   }
 })();
 // v2.4.0（需求 2.5-1）：Main → Renderer：open-fpk-app，携带参数 appId。
-// found:true  = 唤起成功，主进程已在飞牛框架内（独立应用窗口）加载应用，渲染进程记录唤起指令；
+// found:true  = 唤起成功，渲染进程在主窗口内同窗导航到应用页面——程序内启动
+//               （v2.4.2 用户反馈：不新建独立应用窗口，≡主页点击应用图标）；
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2），渲染进程弹窗提示（边界用例 7）。
 ipcRenderer.on('open-fpk-app', (e, p) => {
   try {
@@ -30,6 +31,12 @@ ipcRenderer.on('open-fpk-app', (e, p) => {
     if (p && p.found === false) {
       // 需求 2.6-2：appId 对应的 FPK 应用已删除 → 弹出提示（文案按需求固定）
       alert('找不到该应用，请重新创建快捷方式。');
+    } else if (p && p.found && p.url && /^https?:/i.test(String(p.url))) {
+      // v2.4.2（用户反馈）：程序内启动——主窗口同窗导航到应用页面，不新建窗口
+      __rl.log('info', 'ipc', 'open-fpk-app navigate-in-main', { params: { url: p.url, appId: p.appId } });
+      try { window.location.assign(String(p.url)); } catch (navErr) {
+        try { __rl.log('error', 'ipc', 'open-fpk-app navigate error', { err: navErr }); } catch (_) {}
+      }
     }
     try { window.__fnosLastOpenApp = p; } catch (_) {}
   } catch (err) {

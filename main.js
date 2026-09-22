@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.1';
+const APP_VERSION = '2.4.2';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -5384,15 +5384,18 @@ function tryOpenPendingApp() {
     __pendingAppUrl = '';
     if (u) {
       try { require('./logger.js').log('info', 'app', 'pending_app.opening', { params: { url: String(u).slice(0, 160), elapsedMs: elapsed, fromShortcut: __pendingFromShortcut, appId: String(__pendingAppId || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
-      // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）
+      // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——
+      // v2.4.2（用户反馈）：程序内启动——渲染进程在主窗口内同窗打开应用页面，
+      // 不新建独立应用窗口。应用页主导航完成（did-navigate）后显示主窗口，避免主页闪现；
+      // 2s 兜底防跳转未发起导致窗口不可见。
+      try {
+        mainWindow.webContents.once('did-navigate', () => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} });
+      } catch (_) {}
       __notifyOpenFpkApp(__pendingAppId, true, u);
-      try { createAppWindow(u, {}); } catch (_) {}
-      // v2.1.11：快捷方式触发的应用打开后，按用户设置隐藏主窗口到托盘或最小化到任务栏
+      setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
         __pendingAppId = '';
-        // v2.1.13：延迟从 300ms 降到 100ms，减少等待
-        setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100);
       }
     }
   } catch (_) {}
@@ -7912,9 +7915,9 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // raw 可能是：完整 URL（旧 --app= 格式）、appname（新 --launch-app= 格式，如 trim.music）。
 // 依赖 FPK 提供端口/路径的第三方应用（非 trim.*）不在同步解析范围，由调用方回退 --app=URL。
 // v2.4.0（需求 2.5/2.6）：open-fpk-app —— Main → Renderer 通知，携带参数 appId。
-// found:true  = 目标 FPK 应用已解析成功，主进程随即在飞牛框架内部（独立应用窗口）加载，
-//               渲染进程记录唤起指令（本项目渲染进程为 NAS Web 页面，无 SPA 路由跳转能力，
-//               与需求 2.5-1"渲染进程路由跳转加载应用"的映射关系见开发说明文档·已知限制）。
+// found:true  = 目标 FPK 应用已解析成功，渲染进程在主窗口内同窗导航到应用页面——
+//               程序内启动（需求 2.5-1"渲染进程路由跳转加载应用"，v2.4.2 按用户反馈落实，
+//               不再由主进程新建独立应用窗口）。
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2、边界用例 7），
 //               渲染进程弹窗提示"找不到该应用，请重新创建快捷方式。"
 let __pendingAppId = ''; // 原始应用唯一 ID（--launch-app 值），open-fpk-app 携带字段 appId
@@ -8032,10 +8035,9 @@ function launchSubAppFromArgs() {
   }
 
   // v2.1.10：不再创建独立子窗口（旧 doLaunch 冷启动模式已废弃）。
-  // 快捷方式冷启动改为：标记待打开应用 + 正常启动主程序（隐藏到托盘），
-  // 登录后由 consumePendingOpenApp / tryOpenPendingApp 复用主程序内
-  // createAppWindow 的统一应用打开链路（同一 partition、登录态共享、免二次登录），
-  // 打开应用后主程序隐藏到托盘（见 tryOpenPendingApp 的 __pendingFromShortcut 分支）。
+  // 快捷方式冷启动改为：标记待打开应用 + 正常启动主程序，登录后由
+  // consumePendingOpenApp / tryOpenPendingApp 触发 open-fpk-app，渲染进程在主窗口内
+  // 同窗打开应用（程序内启动，v2.4.2 用户反馈），不新建独立应用窗口、登录态共享免二次登录。
   if (appUrl) {
     queuePendingApp(appUrl);
     // v2.1.15：增强日志——记录 pending app 已入队
@@ -10165,6 +10167,8 @@ function __handleSecondInstance(_e, commandLine) {
       // open-fpk-app(found:false)，渲染进程弹窗"找不到该应用，请重新创建快捷方式。"
       // （主进程 dialog 仅在无渲染窗口时兜底，避免重复弹窗）
       __notifyOpenFpkApp(rawAppId, false);
+      // v2.4.2：渲染 alert 需窗口可见才能被用户看到
+      try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {}
       if (!mainWindow || mainWindow.isDestroyed()) {
         try { dialog.showMessageBox({ type: 'warning', title: 'FNOS', message: '找不到该应用，请重新创建快捷方式。', buttons: ['确定'] }); } catch (_) {}
       }
@@ -10185,14 +10189,16 @@ function __handleSecondInstance(_e, commandLine) {
         // v2.1.15：增强日志——记录快捷方式热启动路径（v2.4.0：统一走 logger.js 带参数落盘）
         try { require('./logger.js').log('info', 'app', 'shortcut.hot_start', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) } }, __RUN_MODE); } catch (_) {}
         if (loggedIn) {
-          // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——渲染进程记录
-          // 唤起指令并处理；应用由主进程在飞牛框架内（独立应用窗口）加载，主窗口保持隐藏（2.4-1）。
+          // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——
+          // v2.4.2（用户反馈）：程序内启动——渲染进程在主窗口内同窗打开应用页面，
+          // 不新建独立应用窗口、不隐藏主窗口（主窗口内容即应用，≡主页点击图标）。
+          // 应用页主导航完成（did-navigate）后显示主窗口，避免主页闪现；2s 兜底防跳转未发起。
+          try {
+            mainWindow.webContents.once('did-navigate', () => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} });
+          } catch (_) {}
           __notifyOpenFpkApp(rawAppId, true, u);
-          const __t0 = Date.now();
-          createAppWindow(u, {});
-          try { require('./logger.js').log('info', 'app', 'shortcut.app_created', { params: { url: String(u).slice(0, 160) }, ret: { elapsedMs: Date.now() - __t0 } }, __RUN_MODE); } catch (_) {}
-          // v2.1.11: 桌面快捷方式唤起应用后，主窗口隐藏到托盘，不自动弹出主页
-          setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100);
+          try { require('./logger.js').log('info', 'app', 'shortcut.app_open_in_main', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+          setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
           __pendingFromShortcut = true;
@@ -10206,14 +10212,18 @@ function __handleSecondInstance(_e, commandLine) {
         }
       } catch (err) {
         try { require('./logger.js').log('error', 'app', 'shortcut.hot_start error', { err }, __RUN_MODE); } catch (_) {}
-        try { __notifyOpenFpkApp(rawAppId, true, u); createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100); } catch (_) {}
+        try {
+          // v2.4.2（用户反馈）：程序内启动——不新建窗口，渲染进程在主窗口内同窗打开应用
+          __notifyOpenFpkApp(rawAppId, true, u);
+          setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
+        } catch (_) {}
       }
       return;
     }
   } catch (_) {}
   // v2.4.1（用户真机反馈，覆盖 v2.4.0 无参 noop）：用户点击主程序启动（无应用参数的
   // second-instance）= 显式查看主界面意图 → 显示并聚焦主窗口；带应用参数的快捷方式
-  // 唤起走上方分支（notify + createAppWindow + hideMainToBackground）隐藏主窗口。
+  // 唤起走上方分支（程序内启动应用：主窗口同窗打开应用页面，v2.4.2）。
   try {
     if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); try { mainWindow.focus(); } catch (_) {} }
     require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);

@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",

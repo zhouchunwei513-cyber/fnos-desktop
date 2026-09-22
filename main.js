@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.3.4';
+const APP_VERSION = '2.3.5';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -607,10 +607,86 @@ let isSwitchingPartition = false;
 let isLocked = false;
 let isCompletelyHidden = false; // 一键隐藏：连托盘也隐藏
 
-// ---------------------- 单实例锁 ----------------------
+// ---------------------- 单实例锁 + 进程异常检测（v2.3.5） ----------------------
 // v2.1.8：恢复单实例锁。双击桌面快捷方式（--app）时第二次启动会触发 second-instance，
 // 应用地址转交给已运行实例打开，避免每次点快捷方式都新起一个主程序（出现一大一小两个窗口）。
-if (!app.requestSingleInstanceLock()) app.quit();
+// v2.3.5（需求 2.6.1）：获取锁失败 = 已有飞牛实例在运行。
+//   正常：主进程 second-instance 秒级处理参数，本实例静默退出；
+//   异常：主进程卡死无响应（second-instance 不触发），本实例 2.6s 后弹窗提示重启飞牛。
+const __HANDSHAKE_FILE = () => path.join(app.getPath('userData'), 'shortcut-handshake.json');
+
+// 新实例侧：写握手文件，等待主进程标记 done（证明其响应）；超时则提示重启
+function __secondInstanceHandshake() {
+  try {
+    const token = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    const argv = (process.argv || []).slice(1);
+    try {
+      fs.writeFileSync(__HANDSHAKE_FILE(), JSON.stringify({ token, argv, pending: true, ts: Date.now() }), 'utf-8');
+    } catch (_) {}
+    try { dlog && dlog('warn', 'shortcut.handshake.wait', { token, argv: argv.slice(0, 6) }); } catch (_) {}
+    const deadline = Date.now() + 2600;
+    const iv = setInterval(() => {
+      let done = false, pid = 0;
+      try {
+        const obj = JSON.parse(fs.readFileSync(__HANDSHAKE_FILE(), 'utf-8'));
+        if (obj && !obj.pending && obj.token === token) { done = true; pid = obj.pid || 0; }
+      } catch (_) {}
+      if (done) {
+        clearInterval(iv);
+        try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
+        app.quit();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        clearInterval(iv);
+        try { dlog && dlog('warn', 'shortcut.handshake.timeout', { pid }); } catch (_) {}
+        app.whenReady().then(() => {
+          const rc = dialog.showMessageBoxSync({
+            type: 'warning',
+            title: APP_NAME || '飞牛客户端',
+            message: '飞牛客户端进程异常，无法唤起应用，是否重启飞牛？',
+            detail: '主程序可能已无响应。重启后请再次点击桌面快捷方式。',
+            buttons: ['重启飞牛', '取消'],
+            defaultId: 0,
+            cancelId: 1,
+          });
+          if (rc === 0) {
+            try {
+              if (pid) { require('child_process').execSync('taskkill /F /PID ' + pid + ' /T', { stdio: 'ignore' }); }
+            } catch (_) {}
+            try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
+            try {
+              const cp = require('child_process');
+              cp.spawn(process.execPath, argv, { detached: true, stdio: 'ignore' }).unref();
+            } catch (_) {}
+          } else {
+            try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
+          }
+          app.quit();
+        });
+      }
+    }, 150);
+  } catch (_) { app.quit(); }
+}
+
+// 主进程侧：second-instance 收到启动参数后立即标记 done（写 pid），告知新实例本进程已响应
+function __markHandshakeDone() {
+  try {
+    const hf = __HANDSHAKE_FILE();
+    if (!fs.existsSync(hf)) return;
+    const obj = JSON.parse(fs.readFileSync(hf, 'utf-8'));
+    if (obj && obj.pending) {
+      fs.writeFileSync(hf, JSON.stringify({ token: obj.token, argv: obj.argv || [], pending: false, pid: process.pid, ts: Date.now() }), 'utf-8');
+    }
+  } catch (_) {}
+}
+
+let __gotSingleLock = false;
+if (app.requestSingleInstanceLock()) {
+  __gotSingleLock = true;
+} else {
+  __secondInstanceHandshake();
+}
 
 
 // ===================== v2.0.0 子应用系统 =====================
@@ -9879,6 +9955,8 @@ app.on('second-instance', (_e, commandLine) => {
   // v1.76.0：第二次双击桌面快捷方式时，把 --open-app / --app 应用转交给主实例打开
   // v2.1.5：同时支持 --app= 和 --open-app= 参数，以及 --nas= 参数
   try {
+    // v2.3.5：标记握手完成（写 pid），告知新实例主进程已响应，避免误报"进程异常"。
+    try { __markHandshakeDone(); } catch (_) {}
     const argv = commandLine || [];
     let u = '';
     let nasAddr = '';
@@ -9960,6 +10038,23 @@ app.on('second-instance', (_e, commandLine) => {
 // v2.0.0: 命令行参数启动时跳过主界面
 const subAppLaunched = launchSubAppFromArgs();
 app.whenReady().then(() => {
+  // v2.3.5（需求 2.6.4）：托盘图标丢失自动重建。
+  // Windows 下 Explorer 重启/托盘被系统回收时图标会消失：定时检查 + 系统恢复事件兜底重建。
+  try {
+    const __trayGuard = () => {
+      try {
+        if (!tray || typeof tray.isDestroyed !== 'function' || tray.isDestroyed()) {
+          ensureTray();
+          try { dlog && dlog('warn', 'tray.rebuilt.auto'); } catch (_) {}
+        }
+      } catch (_) { try { ensureTray(); } catch (_) {} }
+    };
+    setInterval(__trayGuard, 30000);
+    if (powerMonitor && typeof powerMonitor.on === 'function') {
+      powerMonitor.on('resume', () => setTimeout(__trayGuard, 3000));
+    }
+    setTimeout(__trayGuard, 5000); // Explorer 重启后托盘区域重建，启动 5s 兜底一次
+  } catch (_) {}
   // v2.3.0: main process startup log (version / single-instance / argv)
   try {
     dlog('info', 'main.start', {

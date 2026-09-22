@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.3.1';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -277,25 +277,21 @@ app.commandLine.appendSwitch('disable-features', [
   'SchemefulSameSite',
   'ThirdPartyCookieBlocking',
 ].join(','));
-app.commandLine.appendSwitch('enable-gpu-rasterization');
-app.commandLine.appendSwitch('enable-zero-copy');
-app.commandLine.appendSwitch('ignore-gpu-blocklist');
+// v2.3.1：移除与全局 disable-gpu 冲突的 GPU 开关——
+// enable-gpu-rasterization / enable-zero-copy / ignore-gpu-blocklist 与上方
+// v2.2.4 的 disable-gpu + disable-software-rasterizer 直接矛盾：GPU 进程被禁
+// 却仍尝试启用 GPU raster/光栅化，导致影视(/v)、音乐(/music)等媒体页面渲染
+// 进程创建即崩（render-process-gone crashed 0x80000003，bornMs<100ms）。
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+// v2.3.1：enable-features 移除 GPU/媒体硬解特性——D3D11/Mojo/Vaapi/PlatformHEVC/
+// MediaFoundation 等硬解开关在全局 disable-gpu 下仍可能强制初始化 GPU 媒体栈，
+// 是 /music、/v 媒体页面渲染进程创建即崩的另一诱因。视频播放走 MPV 外部播放器
+// 不受影响；网页内视频退回软解更稳定。
 app.commandLine.appendSwitch('enable-features', [
-  'CanvasOopRasterization',
-  'VaapiVideoDecoder',
-  'VaapiVideoEncoder',
-  // v1.29.2：HEVC/H.265 硬解（原在 win32 块里单独 append 会被本列表覆盖，现并入这里生效）
-  'PlatformHEVCDecoderSupport',
-  'D3D11VideoDecoder',
-  'MojoVideoDecoder',
-  'PlatformEncryptedVerification',
-  'MediaFoundationVideoCapture',
   'RawDraw',
   'ScrollPredictorSmoothness',
-  'GpuMemoryBufferCompositorResources',
 ].join(','));
 app.commandLine.appendSwitch('enable-async-dns');
 // v1.10.5: 移除 max-connections-per-host=32 和 enable-parallel-downloading
@@ -7396,6 +7392,53 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
         if (__entry && __entry.url && /^https?:/i.test(__entry.url)) {
           launchUrl = __entry.url;
           fnosLog('info', 'shortcut.url', 'FPK url resolved', { appId, name: __entry.name, url: launchUrl.slice(0, 140) });
+          // v2.3.1: FPK client_apps 对系统应用（port 空、path=/）构造的 url 是 NAS
+          // 根地址（http://nas/），直接当 launchUrl 会让系统应用快捷方式指向根地址
+          // 而非真实应用入口。根地址型 url 做二次解析：manifest 真实 URL → 系统应用
+          // 构造 /appview?anchor=name → fntb 自身用 FPK 服务地址（host:18080）。
+          try {
+            const __isRootUrl = (function (u) {
+              try {
+                const __pu = new URL(u);
+                const __pp = String(__pu.pathname || '').replace(/\/+$/, '');
+                return (__pp === '' || __pp === '/') && !__pu.port;
+              } catch (_) { return false; }
+            })(launchUrl);
+            if (__isRootUrl) {
+              let __fixedUrl = '';
+              // 1) manifest 真实 URL（apps.scan 扫描得到 appview?anchor 或端口路径）
+              try {
+                const __mf2 = readManifest();
+                const __me2 = (__mf2 && Array.isArray(__mf2.apps)) ? __mf2.apps.find((a) => a && (a.appId === __entry.name || a.name === __entry.name || a.url === launchUrl)) : null;
+                if (__me2 && __me2.url && /^https?:/i.test(__me2.url) && !(function (u) {
+                  try { const __p2 = new URL(u); const __pp2 = String(__p2.pathname || '').replace(/\/+$/, ''); return (__pp2 === '' || __pp2 === '/') && !__p2.port; } catch (_) { return true; }
+                })(__me2.url)) {
+                  __fixedUrl = __me2.url;
+                }
+              } catch (_) {}
+              // 2) 系统应用（非 fntb 自身）：构造 appview 入口
+              if (!__fixedUrl && (__entry.system || /^trim\./i.test(String(__entry.name || ''))) && !/^com\.fntb\.iconmgr$/i.test(String(__entry.name || ''))) {
+                try {
+                  const __base2 = (nasAddress || '').replace(/\/+$/, '');
+                  if (__base2) __fixedUrl = __base2 + '/appview?anchor=' + encodeURIComponent(__entry.name);
+                } catch (_) {}
+              }
+              // 3) fntb 自身（com.fntb.iconmgr）：用 FPK 服务地址（host:18080）
+              if (!__fixedUrl && /^com\.fntb\.iconmgr$/i.test(String(__entry.name || ''))) {
+                try {
+                  const __s3 = loadSettings();
+                  const __h3 = (__s3 && __s3.fpkApi && __s3.fpkApi.host) ? 'http://' + __s3.fpkApi.host + ':' + (__s3.fpkApi.port || 18080) + '/' : '';
+                  if (__h3) __fixedUrl = __h3;
+                } catch (_) {}
+              }
+              if (__fixedUrl) {
+                launchUrl = __fixedUrl;
+                fnosLog('info', 'shortcut.url', 'root url re-resolved', { appId, name: __entry.name, from: String(__entry.url).slice(0, 100), to: launchUrl.slice(0, 140) });
+              } else {
+                fnosLog('warn', 'shortcut.url', 'root url cannot re-resolve', { appId, name: __entry.name, url: String(launchUrl).slice(0, 100) });
+              }
+            }
+          } catch (_) {}
         }
       }
     } catch (_) {}

@@ -1,5 +1,24 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
+// v2.4.0（需求第一部分-3 / 2.5-1 / 2.6-2）：渲染进程统一日志 logger.js forRenderer——
+// console 输出 + 经既有 fnos:media-log IPC 汇入主进程日志文件（不新增 IPC 事件，前置约定 2）。
+// 禁止只打一句话不带参数和堆栈：关键节点日志均带 params / err.stack。
+const __rl = require('./logger.js').forRenderer((d) => ipcRenderer.send('fnos:media-log', d), 'renderer');
+// v2.4.0（需求 2.5-1）：Main → Renderer：open-fpk-app，携带参数 appId。
+// found:true  = 唤起成功，主进程已在飞牛框架内（独立应用窗口）加载应用，渲染进程记录唤起指令；
+// found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2），渲染进程弹窗提示（边界用例 7）。
+ipcRenderer.on('open-fpk-app', (e, p) => {
+  try {
+    __rl.log('info', 'ipc', 'open-fpk-app recv', { params: p });
+    if (p && p.found === false) {
+      // 需求 2.6-2：appId 对应的 FPK 应用已删除 → 弹出提示（文案按需求固定）
+      alert('找不到该应用，请重新创建快捷方式。');
+    }
+    try { window.__fnosLastOpenApp = p; } catch (_) {}
+  } catch (err) {
+    try { __rl.log('error', 'ipc', 'open-fpk-app handler error', { err }); } catch (_) {}
+  }
+});
 
 // 点播断流重新取流函数：由下方 installEmbeddedMpv IIFE 在同一隔离世界内赋值。
 // 关键：不能把函数写进 contextBridge 暴露的对象（window.fnos.xxx.fn = ...）——

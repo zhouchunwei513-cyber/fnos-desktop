@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.3.6';
+const APP_VERSION = '2.4.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -703,6 +703,11 @@ function __markHandshakeDone() {
 }
 
 let __gotSingleLock = false;
+// v2.4.0（需求 2.3 强制编码顺序）：单实例锁判断在代码最开头第一时间执行；second-instance
+// 监听紧跟锁判断注册（在 app.ready/whenReady 注册之前）。handler __handleSecondInstance
+// 为文件后部的函数声明，函数提升（hoisting）保证此处引用有效。
+app.on('second-instance', __handleSecondInstance);
+try { require('./logger.js').earlyLog('info', 'startup', '单实例锁判断开始', { params: { argv: (process.argv || []).slice(1).map((x) => String(x).slice(0, 80)) } }); } catch (_) {}
 // v2.3.6（需求 2.6.1 竞态修复）：先写握手文件再申请锁——主进程 second-instance 事件
 // 一定在 requestSingleInstanceLock() 之后到达，此时文件必已存在，__markHandshakeDone 不再扑空。
 const __hsToken = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
@@ -714,7 +719,14 @@ try {
 if (app.requestSingleInstanceLock()) {
   __gotSingleLock = true;
   if (__hsWritten) { try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {} }
+  // 场景 B：锁成功 → 初始化 + 窗口加载完成 win.hide() + 托盘常驻；带 --launch-app 则经
+  // open-fpk-app IPC 打开对应应用（见 launchSubAppFromArgs / __handleSecondInstance）
+  try { require('./logger.js').earlyLog('info', 'startup', '单实例锁获取成功（首个实例）', { params: { token: __hsToken } }); } catch (_) {}
 } else {
+  // 场景 A：锁失败 → 已有实例运行。解析 --launch-app={appId} 经 second-instance 传给主进程，
+  // 主进程在飞牛框架内打开对应 FPK 应用并经 open-fpk-app IPC 通知渲染进程；
+  // 新进程 __secondInstanceHandshakeSync 同步阻塞后 app.exit(0)——不建窗、不加载页面。
+  try { require('./logger.js').earlyLog('info', 'startup', '单实例锁获取失败（已有实例运行）→ second-instance 握手后退出', { params: { token: __hsToken } }); } catch (_) {}
   __secondInstanceHandshakeSync(__hsToken); // 同步等待握手，内部 app.exit()，主流程不会继续
 }
 
@@ -747,39 +759,22 @@ function sanitizeForLog(obj) {
 }
 
 function fnosLog(level, module, msg, extra) {
+  // v2.4.0（需求第一部分-3）：委托统一日志工具 logger.js（交付物 logger.ts 的 JS 映射，
+  // 主进程/渲染进程共用）。行格式补齐进程类型字段 [main|renderer]；Error 或带 stack 的对象
+  // 展开为错误堆栈，其余对象作为 params 落盘——关键节点必须带参数/返回值/堆栈，
+  // 禁止只打一句话不带参数和堆栈。logger.js 自带敏感字段脱敏（password/token 等）。
   try {
-    // v2.2.7: msg 若传了对象会在模板串里变 [object Object]，统一兜底序列化。
-    if (msg && typeof msg === 'object' && !(msg instanceof Error)) {
-      try { msg = JSON.stringify(msg); } catch (_) { msg = String(msg); }
+    const Logger = require('./logger.js');
+    let errObj = null;
+    if (extra instanceof Error) {
+      errObj = extra;
+    } else if (extra && typeof extra === 'object' && extra.stack) {
+      errObj = { message: String(extra.err || extra.message || msg), stack: String(extra.stack) };
     }
-    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
-    const now = new Date();
-    const ts = now.toISOString();
-    const dateStr = ts.slice(0, 10);
-    const logFile = path.join(LOG_DIR, `fnos-${dateStr}.log`);
-    
-    // 格式化日志行
-    const levelTag = level.toUpperCase().padEnd(5);
-    const sanitizedExtra = extra ? sanitizeForLog(extra) : null;
-    let extraStr = '';
-    if (sanitizedExtra) {
-      try {
-        if (sanitizedExtra instanceof Error || (sanitizedExtra && sanitizedExtra.stack)) {
-          extraStr = `\n  Error: ${sanitizedExtra.message || sanitizedExtra}\n  ${(sanitizedExtra.stack || '').split('\n').join('\n  ')}`;
-        } else {
-          extraStr = ' ' + JSON.stringify(sanitizedExtra);
-        }
-      } catch (_) {
-        extraStr = ' [serialize error]';
-      }
-    }
-    
-    const line = `[${ts}] [${levelTag}] [${module}] [${__RUN_MODE}] ${msg}${extraStr}\n`;
-    fs.appendFileSync(logFile, line);
-    
-    // 控制台输出
-    const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-    consoleFn(`[FNOS] [${levelTag}] [${module}] [${__RUN_MODE}] ${msg}`, extra || '');
+    Logger.log(level, module, msg, {
+      params: (extra && extra !== errObj) ? extra : undefined,
+      err: errObj,
+    }, __RUN_MODE, 'main');
   } catch (_) {}
 }
 
@@ -838,7 +833,7 @@ ipcMain.handle('log:read', async (_e, { fileName, lines }) => {
       return { success: false, msg: '无效文件名' };
     }
     const fp = path.join(LOG_DIR, fileName);
-    if (!fs.existsSync(fp)) return { success: false, msg: '文件不存在' };
+    if (!fs.existsSync(fp)) return { success: false, msg: '文件未找到' };
     const content = fs.readFileSync(fp, 'utf-8');
     const allLines = content.split('\n');
     const maxLines = Math.min(lines || 200, 2000);
@@ -1248,7 +1243,7 @@ const DownloadManager = {
   // 开始/恢复下载
   async startDownload(taskId) {
     const task = this.tasks.get(taskId);
-    if (!task) return { success: false, msg: '任务不存在' };
+    if (!task) return { success: false, msg: '任务未找到' };
     
     // 如果已有活跃的下载，先停止
     if (this.activeDownloads.has(taskId)) {
@@ -1411,7 +1406,7 @@ const DownloadManager = {
   // 暂停下载
   pauseDownload(taskId) {
     const task = this.tasks.get(taskId);
-    if (!task) return { success: false, msg: '任务不存在' };
+    if (!task) return { success: false, msg: '任务未找到' };
     
     const active = this.activeDownloads.get(taskId);
     if (active) {
@@ -1434,7 +1429,7 @@ const DownloadManager = {
   // 取消下载
   cancelDownload(taskId) {
     const task = this.tasks.get(taskId);
-    if (!task) return { success: false, msg: '任务不存在' };
+    if (!task) return { success: false, msg: '任务未找到' };
     
     // 先暂停
     this.pauseDownload(taskId);
@@ -1518,7 +1513,7 @@ ipcMain.handle('download:resume', async (_e, { taskId }) => {
   try {
     fnosLog('info', 'ipc', 'download:resume', { taskId });
     const task = DownloadManager.tasks.get(taskId);
-    if (!task) return { success: false, msg: '任务不存在' };
+    if (!task) return { success: false, msg: '任务未找到' };
     setImmediate(() => DownloadManager.startDownload(taskId));
     return { success: true, msg: '继续下载' };
   } catch (e) {
@@ -1700,14 +1695,27 @@ function dlog(level, event, extra) {
   } catch (_) {}
 }
 
-// preload（飞牛 webview）上报的解析/自动接管日志，统一汇入诊断日志
+// preload（飞牛 webview / 渲染进程）上报的解析/自动接管/统一日志，汇入诊断日志与 fnos 日志文件
+// v2.4.0（需求第一部分-3）：渲染进程日志经既有 fnos:media-log IPC 汇入主进程日志文件
+// （不新增 IPC 事件，遵守需求前置约定 2），保留 level / msg / params / ret / err.stack 字段。
 ipcMain.on('fnos:media-log', (e, data) => {
   try {
     const wcId = e && e.sender ? e.sender.id : -1;
-    dlog('info', 'mpv.preload.' + String((data && data.stage) || 'unknown'), {
+    const lvl = (data && ['info', 'warn', 'error'].indexOf(String(data.level)) !== -1) ? String(data.level) : 'info';
+    const stage = String((data && data.stage) || 'unknown');
+    dlog(lvl, 'mpv.preload.' + stage, {
       wcId,
       ...(data && typeof data === 'object' ? (() => { const { stage, ...rest } = data; return rest; })() : {})
     });
+    // v2.4.0：渲染进程统一日志（preload 内 logger.js forRenderer）→ 写入 fnos-{date}.log
+    try {
+      if (data && (data.msg !== undefined || data.err !== undefined)) {
+        require('./logger.js').log(lvl, 'renderer.' + stage, String(data.msg || stage), {
+          params: Object.assign({ wcId }, data.params !== undefined ? { in: data.params } : {}, data.ret !== undefined ? { ret: data.ret } : {}),
+          err: data.err ? { message: String(data.err.message || '').slice(0, 300), stack: String(data.err.stack || '').slice(0, 1200) } : undefined,
+        }, String(data.runMode || 'renderer'), 'renderer');
+      }
+    } catch (_) {}
   } catch (_) {}
 });
 
@@ -4480,12 +4488,10 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     });
   } catch (_) {}
 
-  // v1.74.0：应用窗口打开时，URL 匹配已扫描应用 → 立即用缓存的应用图标设置窗口
-  // 图标与初始标题（不依赖页面 favicon）。解决"任务栏图标只是部分改过来"：
-  // 飞牛 appview 页面 favicon 是前端默认图标，应用图标必须从扫描数据直接取。
-  // favicon 提取仍保留作为兜底（未命中缓存图标时）。
-  // v2.2.5: 任务栏图标优先走 FPK 高清图标（用户要求：只能调用 FPK 图标管理器的对应应用图标）。
-  // 先用 settings.apps 缓存兜底，再异步尝试 FPK 256 高清图标覆盖（__resolveAppName 已增强截断匹配）。
+  // v1.74.0：应用窗口打开时，URL 匹配已扫描应用 → 立即设置初始标题（不依赖页面 favicon）。
+  // v2.4.0（需求第一部分-1）：禁止本地缓存 FPK/NAS 图标资源——移除 app-icons/{hash}.png
+  // 磁盘缓存读取（appwin.icon-cache 路径）；任务栏窗口图标一律由下方 FPK 实时拉取链路
+  // （refreshFpkApps → fetchFpkIcon → win.setIcon）设置，修改图标后无需重启即生效。
   try {
     const __s = loadSettings();
     const __apps = Array.isArray(__s.apps) ? __s.apps : [];
@@ -4498,19 +4504,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       ));
       if (hit) {
         try { if (hit.name && !opts.title) win.setTitle(String(hit.name).slice(0, 40)); } catch (_) {}
-        try {
-          const __hash = require('crypto').createHash('sha1').update(hit.url).digest('hex').slice(0, 12);
-          const __png = path.join(app.getPath('userData'), 'app-icons', __hash + '.png');
-          if (fs.existsSync(__png)) {
-            const __img = nativeImage.createFromPath(__png);
-            if (!__img.isEmpty()) {
-              win.setIcon(__img);
-              win.__appIconSet = true;
-              win.__appMeta = hit;
-              dlog && dlog('info', 'appwin.icon-cache', { app: String(hit.name).slice(0, 40), winId: win.id, url: String(hit.url).slice(0, 100) });
-            }
-          }
-        } catch (_) {}
+        win.__appMeta = hit;
+        try { dlog && dlog('info', 'appwin.icon', { app: String(hit.name).slice(0, 40), winId: win.id, cacheUsed: false }); } catch (_) {}
       }
     }
     // v2.2.5：异步立即尝试 FPK 高清图标（不等 did-finish-load），确保任务栏尽快用 FPK 图标
@@ -4828,6 +4823,8 @@ function handleMainClose(win) {
 //   'minimize'：最小化到任务栏，点击任务栏图标可恢复。
 function hideMainToBackground() {
   const mode = loadSettings().shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
+  // v2.4.0（需求第一部分-3）：窗口显隐日志
+  try { require('./logger.js').log('info', 'window', 'main.hide_to_background', { params: { mode } }, __RUN_MODE); } catch (_) {}
   if (mode === 'minimize') {
     if (mainWindow && !mainWindow.isDestroyed()) {
       try {
@@ -4838,7 +4835,7 @@ function hideMainToBackground() {
     ensureTray();
     return;
   }
-  // 默认：隐藏到托盘（不销毁窗口、不销毁托盘）
+  // 默认：隐藏到托盘（不销毁窗口、不销毁托盘）——需求 2.8：禁止 destroy 主窗口实例，只能 hide
   if (mainWindow && !mainWindow.isDestroyed()) {
     try { mainWindow.hide(); } catch (_) {}
   }
@@ -4859,6 +4856,8 @@ function ensureTray() {
   }
   tray = new Tray(iconImage);
   tray.setToolTip(`${APP_NAME} 桌面客户端`);
+  // v2.4.0（需求第一部分-3）：托盘创建日志（关键节点，含图标状态参数）
+  try { require('./logger.js').log('info', 'tray', 'tray created', { params: { iconEmpty: iconImage.isEmpty() } }, __RUN_MODE); } catch (_) {}
   tray.on('click', () => {
     if (isCompletelyHidden) {
       restoreFromCompletelyHidden();
@@ -4924,94 +4923,50 @@ function ensureTray() {
 }
 
 function rebuildTrayMenu() {
+  // v2.4.0（需求 2.3 / 2.8）：托盘菜单固定 2 项——【显示主界面】【退出程序】，不增加多余菜单项。
+  // 原多级菜单（已打开的程序/下载/账号切换/锁定/设置）按需求"约束固定，不允许改动业务逻辑"收敛，
+  // 功能入口统一收进主界面；锁定/完全隐藏状态的恢复逻辑合并进【显示主界面】（行为不变）。
   if (!tray) return;
-  const windows = appWindows.filter((e) => e.win && !e.win.isDestroyed());
   const items = [];
-
-  if (isLocked || isCompletelyHidden) {
-    items.push({ label: isLocked ? 'FNOS 已锁定' : 'FNOS 已隐藏', enabled: false });
-    items.push({ label: isLocked ? '输入密码恢复…' : '恢复显示', click: () => {
-      if (isCompletelyHidden) restoreFromCompletelyHidden();
-      else if (isLocked) {
-        if (!lockWindow || lockWindow.isDestroyed()) createLockWindow('unlock');
-        else { try { lockWindow.showInactive(); lockWindow.focus(); } catch (_) {} }
+  items.push({
+    label: '显示主界面',
+    click: () => {
+      try {
+        if (isCompletelyHidden) { restoreFromCompletelyHidden(); return; }
+        if (isLocked) {
+          if (!lockWindow || lockWindow.isDestroyed()) createLockWindow('unlock');
+          else { try { lockWindow.showInactive(); lockWindow.focus(); } catch (_) {} }
+          return;
+        }
+        const home = appWindows.find((e) => e.isHome && e.win && !e.win.isDestroyed());
+        if (home) {
+          if (home.win.isMinimized()) { try { home.win.restore(); } catch (_) {} }
+          if (!home.win.isVisible()) { try { home.win.show(); } catch (_) {} }
+          try { home.win.focus(); home.win.moveTop(); } catch (_) {}
+        } else if (mainWindow && !mainWindow.isDestroyed()) {
+          if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
+          if (!mainWindow.isVisible()) { try { mainWindow.show(); } catch (_) {} }
+          try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
+        } else if (lastConnectHref) {
+          connectTo(loadSettings().server || '');
+        } else {
+          showConnectPage();
+        }
+        require('./logger.js').log('info', 'tray', 'menu.show-main', {}, __RUN_MODE);
+      } catch (e) {
+        try { require('./logger.js').log('error', 'tray', 'menu.show-main error', { err: e }, __RUN_MODE); } catch (_) {}
       }
-    }});
-    items.push({ type: 'separator' });
-    items.push({ label: '退出', click: () => { app.isQuitting = true; app.quit(); } });
-    tray.setContextMenu(Menu.buildFromTemplate(items));
-    return;
-  }
-
-  items.push({ label: '显示 FNOS 主页', click: () => {
-    const home = appWindows.find((e) => e.isHome && e.win && !e.win.isDestroyed());
-    if (home) { home.win.show(); home.win.focus(); }
-    else if (lastConnectHref) connectTo(loadSettings().server || '');
-    else showConnectPage();
-  }});
-
-  if (windows.length > 0) {
-    items.push({ type: 'separator' });
-    items.push({ label: '已打开的程序', enabled: false });
-    windows.forEach((e) => {
-      items.push({
-        label: e.title.length > 30 ? e.title.slice(0, 30) + '…' : e.title,
-        click: () => { if (e.win && !e.win.isDestroyed()) { e.win.show(); e.win.focus(); } },
-      });
-    });
-  }
-
-  // 后台下载（点 X 隐藏后的下载任务）：使用全局 activeDownloads 注册表
-  if (activeDownloads.size > 0) {
-    items.push({ type: 'separator' });
-    const submenu = [];
-    for (const [dlId, info] of activeDownloads) {
-      let label = info.filename || '下载任务';
-      if (label && label.length > 30) label = label.slice(0, 30) + '…';
-      const pct = typeof info.pct === 'number' ? `${Math.round(info.pct)}%` : '';
-      if (pct) label = `${label}  ${pct}`;
-      submenu.push({ label, click: () => showDownloadWindow(dlId) });
-    }
-    submenu.push({ type: 'separator' });
-    submenu.push({ label: '显示全部下载窗口', click: () => showAllDownloadWindows() });
-    items.push({ label: `正在下载（${activeDownloads.size}）`, submenu });
-  }
-
-  // 最近完成的下载（最多 5 条），点击打开所在文件夹
-  if (finishedDownloads.length > 0) {
-    if (activeDownloads.size === 0) items.push({ type: 'separator' });
-    const recent = finishedDownloads.slice(0, 5);
-    const submenu = recent.map((f, idx) => {
-      let label = f.filename || '已完成下载';
-      if (label.length > 30) label = label.slice(0, 30) + '…';
-      return { label, click: () => openFinishedDownload(idx) };
-    });
-    items.push({ label: '最近完成的下载', submenu });
-  }
-
-  items.push({ type: 'separator' });
-  // v2.0.0：托盘菜单中的账号切换
-  const trayAccounts = getAccounts();
-  if (trayAccounts.length > 0) {
-    const acctSubmenu = [
-      ...trayAccounts.map(a => ({
-        label: (a.isActive ? '● ' : '  ') + (a.label || a.origin),
-        click: () => { if (!a.isActive) switchAccount(a.origin); },
-      })),
-      { type: 'separator' },
-      { label: '登录其它账号…', click: () => showConnectPage() },
-    ];
-    items.push({ label: '切换账号', submenu: acctSubmenu });
-  }
-  // v2.0.1：已移除"切换服务器"，多账号切换已足够
-  if (hasAppPassword()) {
-    items.push({ label: '锁定 FNOS', click: () => lockApp() });
-  }
-  items.push({ label: '设置…', click: () => createSettingsWindow() });
-  items.push({ type: 'separator' });
-  items.push({ label: '退出', click: () => { app.isQuitting = true; app.quit(); } });
-
-  tray.setContextMenu(Menu.buildFromTemplate(items));
+    },
+  });
+  items.push({
+    label: '退出程序',
+    click: () => {
+      try { require('./logger.js').log('info', 'tray', 'menu.quit', {}, __RUN_MODE); } catch (_) {}
+      app.isQuitting = true;
+      app.quit();
+    },
+  });
+  try { tray.setContextMenu(Menu.buildFromTemplate(items)); } catch (_) {}
 }
 
 // ---------------------- 窗口创建 ----------------------
@@ -5064,22 +5019,16 @@ function createMainWindow(partition, loadTarget) {
     },
   });
 
-  // 渲染就绪即显示，不等整页加载完成，显著提升启动观感速度
-  // v2.2.2：快捷方式冷启动（__pendingFromShortcut）时保持后台，不在此处 show，
-  // 避免 show→hide 快速竞态导致主窗口渲染异常（恢复黑屏/自定义标题栏按钮失效）。
-  // 已登录场景应用打开后由 tryOpenPendingApp 隐藏；未登录场景由 did-navigate 到 https /login 触发显示。
+  // v2.4.0（需求 2.3 场景 B / 2.4）：窗口加载完成后一律 win.hide() 隐藏主窗口、只驻留托盘——
+  // 全程禁止自动弹出飞牛主页，只有托盘【显示主界面】才展示（核心铁律；开机自启同样适用：
+  // 开机命令不带应用 ID，启动后只驻留托盘、不弹主页、不自动打开任何应用，边界用例 3）。
+  // 移除 v2.1.6 的 10 秒强制 show 兜底（与铁律冲突）。
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed() && !isLocked && !__shortcutKeepHidden) mainWindow.show();
-  });
-  // v2.1.6：兜底——若 ready-to-show 10 秒未触发（页面加载卡住），强制显示窗口
-  setTimeout(() => {
     try {
-      if (mainWindow && !mainWindow.isDestroyed() && !isLocked && !__shortcutKeepHidden && !mainWindow.isVisible()) {
-        dlog && dlog('warn', 'main.ready-to-show.timeout', { ms: 10000 });
-        mainWindow.show();
-      }
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+      require('./logger.js').log('info', 'window', 'main.ready-to-show', { params: { action: 'hide', isLocked: !!isLocked, keepHidden: !!__shortcutKeepHidden, visible: false } }, __RUN_MODE);
     } catch (_) {}
-  }, 10000);
+  });
 
   // v1.29.2：主窗口主框架加载失败（隧道/内网抖动、-137 解析失败、连接重置等）自动重试，
   // 避免"登录后黑屏/错误页"。-3(中止，导航被替换)与本地连接页不重试；最多 4 次、退避。
@@ -5423,11 +5372,14 @@ function tryOpenPendingApp() {
     if (!ready && elapsed < 30000) return; // 未就绪且未超时 → 等主窗口加载完成/登录
     __pendingAppUrl = '';
     if (u) {
-      try { dlog && dlog('info', 'pending_app.opening', { url: String(u).slice(0, 160), elapsedMs: elapsed, fromShortcut: __pendingFromShortcut }); } catch (_) {}
+      try { require('./logger.js').log('info', 'app', 'pending_app.opening', { params: { url: String(u).slice(0, 160), elapsedMs: elapsed, fromShortcut: __pendingFromShortcut, appId: String(__pendingAppId || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+      // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）
+      __notifyOpenFpkApp(__pendingAppId, true, u);
       try { createAppWindow(u, {}); } catch (_) {}
       // v2.1.11：快捷方式触发的应用打开后，按用户设置隐藏主窗口到托盘或最小化到任务栏
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
+        __pendingAppId = '';
         // v2.1.13：延迟从 300ms 降到 100ms，减少等待
         setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100);
       }
@@ -5842,19 +5794,17 @@ async function processScannedApps(apps) {
         // v2.1.9：旧版用错误的 serviceicon 占位符路径（icon-{0}.png）作为图标 URL，
         // 导致 manifest 里 iconPath/iconData 陈旧错误。这里在图标 URL 变化时强制重新下载，
         // 修复「快捷方式图标不是对应应用图标」。
-        const iconChanged = !!(prev.iconData && iconData && String(prev.iconData) !== String(iconData));
-        if (iconData && /^https?:/i.test(iconData) && (!iconPath || iconChanged)) {
+        // v2.4.0（需求第一部分-1）：禁止本地缓存 FPK/NAS 图标资源——图标 URL 存在即每次
+        // 实时重新下载并覆盖本地副本（.lnk 图标机制必须引用本地 .ico/.png 文件，
+        // 该文件仅作 lnk 图标载体，每次同步刷新，不作为图标加载链路的读取缓存）。
+        if (iconData && /^https?:/i.test(iconData)) {
           const ext = iconData.split('?')[0].split('.').pop().toLowerCase();
           const validExt = ['png','jpg','jpeg','gif','svg','webp','ico'].includes(ext) ? ext : 'png';
           const safeName = Buffer.from(a.url).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 32);
           const iconFile = path.join(ASSETS_DIR, safeName + '.' + validExt);
-          if (!iconChanged && fs.existsSync(iconFile) && fs.statSync(iconFile).size > 100) {
-            iconPath = iconFile;
-          } else {
-            // v2.1.4: await icon download before writing manifest（iconChanged 时覆盖旧文件）
-            const fetchUrl = /^https?:/i.test(iconData) ? iconData : origin + iconData;
-            iconTasks.push({ iconFile, fetchUrl, appName: a.name, url: a.url, origin });
-          }
+          // v2.1.4: await icon download before writing manifest
+          const fetchUrl = /^https?:/i.test(iconData) ? iconData : origin + iconData;
+          iconTasks.push({ iconFile, fetchUrl, appName: a.name, url: a.url, origin });
         }
         existingByUrl.set(a.url, {
           appId: a.appId || a.url,
@@ -6129,10 +6079,20 @@ async function applyHomeFpkIcons() {
         var myGen = window.__fnosHomeFpkIcon;
         var custom = ${JSON.stringify(custom)};
         var base = ${JSON.stringify(base)};
+        // v2.4.0（需求第一部分-1）：图标版本表 app -> ver。旧版 bug 根因：ns URL 含 t=Date.now()
+        // 每次 apply 都不同 -> getAttribute('src') !== ns 恒真 -> setAttribute -> MutationObserver(src)
+        // 再触发 apply -> 无限改写循环；且 NAS 前端重渲染把 src 改回旧值 =「短暂生效后自动变回旧图标」。
+        // 修复：URL 版本化（nonce 页面级 + ver 列表级），同版本内 URL 稳定 -> apply 幂等（防死循环）；
+        // NAS 前端改回旧 src 时 apply 立即改回当前版本 URL（防覆盖回退）；refreshCustom 列表刷新时
+        // ver 递增 -> URL 变化强制绕开浏览器 HTTP 缓存取最新图（修改图标后主页刷新即生效，5s 内自动同步）。
+        var iconVer = {};
+        var verSeq = 0;
+        var nonce = String(Date.now());
+        function nsUrl(app){
+          return base + '/api/icons/' + encodeURIComponent(app) + '/256?v=' + nonce + '-' + (iconVer[app] || 0);
+        }
         function apply(){
           try {
-            var t = Date.now();
-            var v = Math.floor(t / 60000);
             var imgs = document.querySelectorAll('img');
             for (var i = 0; i < imgs.length; i++) {
               var im = imgs[i];
@@ -6143,12 +6103,13 @@ async function applyHomeFpkIcons() {
               var app;
               try { app = decodeURIComponent(m[1]); } catch(e){ app = m[1]; }
               if (!app || custom.indexOf(app) === -1) continue;
-              var ns = base + '/api/icons/' + encodeURIComponent(app) + '/256?t=' + t + '&v=' + v;
+              var ns = nsUrl(app);
+              // 仅当当前 src 不等于本应用「当前版本」的 FPK 图标 URL 时才改写（防覆盖 + 防循环）
               if (im.getAttribute('src') !== ns) { im.setAttribute('src', ns); }
             }
           } catch(e){}
         }
-        // v2.2.7: 周期刷新 custom 列表（fntb 修改图标后主页 10s 内同步生效）
+        // 周期刷新 custom 列表并升级图标版本号（fntb 修改图标后 5s 内主页自动同步，无需重启/刷新）
         function refreshCustom(){
           try {
             if (myGen !== window.__fnosHomeFpkIcon) return;
@@ -6159,14 +6120,17 @@ async function applyHomeFpkIcons() {
                 var arr = (j && (j.list || j.apps)) || [];
                 var next = [];
                 for (var i = 0; i < arr.length; i++) { if (arr[i] && arr[i].name) next.push(arr[i].name); }
-                if (next.length) custom = next;
+                custom = next;
+                verSeq++;
+                for (var k = 0; k < next.length; k++) { iconVer[next[k]] = verSeq; }
                 apply();
               }).catch(function(){});
           } catch(e){}
         }
+        verSeq = 1;
+        for (var q = 0; q < custom.length; q++) { iconVer[custom[q]] = 1; }
         apply();
-        setInterval(apply, 10000);
-        setInterval(refreshCustom, 10000);
+        setInterval(refreshCustom, 5000);
         try {
           var mo = new MutationObserver(apply);
           mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
@@ -7473,6 +7437,8 @@ ipcMain.handle('get-installed-apps', async () => {
 ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
   try {
     const { appId, appName, iconPath, nasAddress } = payload || {};
+    // v2.4.0（需求第一部分-3）：IPC 收日志（含入参，敏感字段由 logger.js 脱敏）
+    try { fnosLog('info', 'ipc', 'create-desktop-shortcut recv', { appId, appName, iconPath: String(iconPath || '').slice(0, 160), nasAddress }); } catch (_) {}
     if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
     // v2.3.2: 归一化 nasAddress——设置页传入的可能无协议头（如 192.168.31.101），
     // 拼 appview URL 必须带 http://，否则 Electron loadURL 当文件路径 -> chrome-error
@@ -7591,98 +7557,98 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     } catch (_) {}
     }
 
-    // v2.1.5: Ensure icon is in ICO format for Windows shortcuts
+    // v2.4.0（需求 2.1 + 第一部分-1）：快捷方式图标强制优先从 FPK 图标管理器对应应用 ID
+    // 实时拉取（每次创建快捷方式都重新获取，禁止本地缓存命中旧图）；FPK 无图标/拉取失败
+    // 才回退 renderer 传入 iconPath / manifest 图标（PNG → ICO 转换供 .lnk 引用）。
     let icoPath = '';
-    let resolvedIconPath = iconPath || '';
-
-    // If iconPath is empty, try to find it from manifest
-    if (!resolvedIconPath) {
-      try {
-        const manifest = readManifest();
-        const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
-        if (entry && entry.iconPath) resolvedIconPath = entry.iconPath;
-      } catch (_) {}
-    }
-
-    // Convert PNG/JPG to ICO if needed
-    if (resolvedIconPath && fs.existsSync(resolvedIconPath)) {
-      try {
-        const ext = path.extname(resolvedIconPath).toLowerCase();
-        if (ext === '.ico') {
-          icoPath = resolvedIconPath;
-        } else {
-          // Read the image file and convert to ICO
-          const imgBuf = fs.readFileSync(resolvedIconPath);
-          // Verify it's a valid PNG (starts with PNG signature)
-          if (imgBuf.length > 8 && imgBuf[0] === 0x89 && imgBuf[1] === 0x50) {
-            const icoBuf = pngToIco(imgBuf);
-            icoPath = resolvedIconPath.replace(/\.[^.]+$/, '.ico');
-            fs.writeFileSync(icoPath, icoBuf);
-            fnosLog('info', 'icon.convert', `PNG → ICO: ${path.basename(resolvedIconPath)}`, { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
-          } else {
-            // Not a PNG, use as-is (Windows might still display it)
-            icoPath = resolvedIconPath;
-          }
+    let resolvedIconPath = '';
+    let fpkAppName = '';
+    try { fpkAppName = appId && /^https?:/i.test(appId) ? fpkAppNameFromUrl(appId) : String(appId || ''); } catch (_) {}
+    console.log('[FPK] shortcut icon: checking for FPK icon', JSON.stringify({ appId, appName, fpkAppName }));
+    try { await refreshFpkApps(true); } catch (_) {}
+    if (fpkAppName) {
+      const fpkBuf = await fetchFpkIcon(fpkAppName, 256);
+      if (fpkBuf && fpkBuf.length > 0) {
+        try {
+          const safeName = Buffer.from(String(appId)).toString('base64url').slice(0, 32);
+          const fpkIconPath = path.join(ASSETS_DIR, `fpk_${safeName}.ico`);
+          const icoBuf = pngToIco(fpkBuf);
+          fs.writeFileSync(fpkIconPath, icoBuf);
+          icoPath = fpkIconPath;
+          fnosLog('info', 'icon.fpk', `FPK icon saved for ${appId}`, { appId, fpkAppName, icoPath, size: icoBuf.length });
+          console.log('[FPK] shortcut icon: FPK icon saved', JSON.stringify({ appId, icoPath, size: icoBuf.length }));
+        } catch (e) {
+          fnosLog('warn', 'icon.fpk', 'FPK icon error', { err: e.message, stack: e.stack, appId, fpkAppName });
+          console.log('[FPK] shortcut icon: FPK icon convert failed', JSON.stringify({ appId, error: e.message }));
         }
-      } catch (e) {
-        fnosLog('warn', 'icon.convert', 'icon convert error', { err: e.message, iconPath: resolvedIconPath });
-        icoPath = resolvedIconPath;
+      } else {
+        fnosLog('warn', 'icon.fpk', 'FPK icon not found', { appId, fpkAppName });
+        console.log('[FPK] shortcut icon: no FPK icon found', JSON.stringify({ appId }));
       }
     }
 
-    // v2.1.17: 如果没有本地图标，尝试从 FPK API 获取
+    // v2.4.0：FPK 无图标时回退——renderer 传入 iconPath → manifest 图标
     if (!icoPath) {
-      console.log('[FPK] shortcut icon: checking for FPK icon', JSON.stringify({ appId, appName }));
-      try { await refreshFpkApps(true); } catch (_) {}
-      // v2.3.0: appId 语义修正——URL 时从 anchor/路径提取 appname；
-      // 非 URL 时 appId 本身即飞牛 appname（如 trim.setting）。
-      // 不再用显示名 appName 兜底（服务端按 appname 索引，显示名必然 404）
-      let fpkAppName = '';
-      if (appId && /^https?:/i.test(appId)) {
-        fpkAppName = fpkAppNameFromUrl(appId);
-      } else if (appId) {
-        fpkAppName = appId;
+      resolvedIconPath = iconPath || '';
+
+      // If iconPath is empty, try to find it from manifest
+      if (!resolvedIconPath) {
+        try {
+          const manifest = readManifest();
+          const entry = manifest.apps.find(a => a.appId === appId || a.url === appId || a.name === appName);
+          if (entry && entry.iconPath) resolvedIconPath = entry.iconPath;
+        } catch (_) {}
       }
-      console.log('[FPK] shortcut icon: resolved name', JSON.stringify({ fpkAppName }));
-      if (fpkAppName) {
-        const fpkBuf = await fetchFpkIcon(fpkAppName, 256);
-        if (fpkBuf && fpkBuf.length > 0) {
-          try {
-            const safeName = Buffer.from(appId).toString('base64url').slice(0, 32);
-            const fpkIconPath = path.join(ASSETS_DIR, `fpk_${safeName}.ico`);
-            const icoBuf = pngToIco(fpkBuf);
-            fs.writeFileSync(fpkIconPath, icoBuf);
-            icoPath = fpkIconPath;
-            fnosLog('info', 'icon.fpk', `FPK icon saved for ${appId}`, { appId, icoPath, size: icoBuf.length });
-            console.log('[FPK] shortcut icon: FPK icon saved', JSON.stringify({ appId, icoPath, size: icoBuf.length }));
-          } catch (e) {
-            fnosLog('warn', 'icon.fpk', 'FPK icon error', { err: e.message, appId });
-            console.log('[FPK] shortcut icon: FPK icon convert failed', JSON.stringify({ appId, error: e.message }));
+
+      // Convert PNG/JPG to ICO if needed
+      if (resolvedIconPath && fs.existsSync(resolvedIconPath)) {
+        try {
+          const ext = path.extname(resolvedIconPath).toLowerCase();
+          if (ext === '.ico') {
+            icoPath = resolvedIconPath;
+          } else {
+            // Read the image file and convert to ICO
+            const imgBuf = fs.readFileSync(resolvedIconPath);
+            // Verify it's a valid PNG (starts with PNG signature)
+            if (imgBuf.length > 8 && imgBuf[0] === 0x89 && imgBuf[1] === 0x50) {
+              const icoBuf = pngToIco(imgBuf);
+              icoPath = resolvedIconPath.replace(/\.[^.]+$/, '.ico');
+              fs.writeFileSync(icoPath, icoBuf);
+              fnosLog('info', 'icon.convert', `PNG → ICO: ${path.basename(resolvedIconPath)}`, { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
+            } else {
+              // Not a PNG, use as-is (Windows might still display it)
+              icoPath = resolvedIconPath;
+            }
           }
-        } else {
-          console.log('[FPK] shortcut icon: no FPK icon found', JSON.stringify({ appId }));
+        } catch (e) {
+          fnosLog('warn', 'icon.convert', 'icon convert error', { err: e.message, stack: e.stack, iconPath: resolvedIconPath });
+          icoPath = resolvedIconPath;
         }
       }
     }
 
-    // v2.3.3: 系统应用（trim.*）快捷方式用 --launch-app={appname}（飞牛唯一ID），
-    // 第三方应用（依赖 FPK 端口/路径，appview 无法覆盖）保留 --app={URL} 兜底。
+    // v2.4.0（需求 2.1）：快捷方式启动参数统一为 --launch-app={应用唯一 ID}（不再区分
+    // 系统/第三方应用）。冷启动解析链 __resolveLaunchUrl：FPK 内存缓存 → manifest →
+    // appview?anchor 兜底（v2.3.3 旧 --app=URL 快捷方式参数仍向后兼容解析）。
     let __launchName = '';
     try { __launchName = appId && /^https?:/i.test(appId) ? fpkAppNameFromUrl(appId) : String(appId || ''); } catch (_) {}
-    const __isSysApp = /^trim\./i.test(__launchName);
-    const args = __isSysApp && __launchName
-      ? `--launch-app=${encodeURIComponent(__launchName)} --nas=${encodeURIComponent(__nasBase || nasAddress || '')}`
-      : `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(__nasBase || nasAddress || '')}`;
+    if (!__launchName) __launchName = String(appId || '');
+    const args = `--launch-app=${encodeURIComponent(__launchName)} --nas=${encodeURIComponent(__nasBase || nasAddress || '')}`;
     // v2.2.6：桌面路径用 app.getPath('desktop')——os.homedir()/Desktop 在 OneDrive
-    // 桌面重定向、非英文系统或权限受限时可能不存在/不可写，导致快捷方式创建失败。
+    // 桌面重定向、非英文系统或权限受限时桌面目录可能缺失/不可写，导致快捷方式创建失败。
     let desktop = '';
     try { desktop = app.getPath('desktop'); } catch (_) {}
     if (!desktop || !fs.existsSync(desktop)) desktop = path.join(os.homedir(), 'Desktop');
-    if (!fs.existsSync(desktop)) { try { fs.mkdirSync(desktop, { recursive: true }); } catch (_) {} }
+    if (desktop && !fs.existsSync(desktop)) { try { fs.mkdirSync(desktop, { recursive: true }); } catch (_) {} }
+    // v2.4.0（需求 2.1/2.6-3）：桌面路径无法定位/创建失败 → 明确返回"桌面路径不存在"错误提示
+    if (!desktop || !fs.existsSync(desktop)) {
+      fnosLog('error', 'shortcut.path', 'desktop path unavailable', { desktopTried: String(desktop || ''), err: 'desktop path not found' });
+      return { success: false, msg: '桌面路径不存在：请检查系统桌面目录配置', data: null };
+    }
     // v2.2.6：appName 可能含 / : * ? " < > | 等 Windows 非法文件名字符，清洗后用于 lnk 文件名
     const lnkBaseName = String(appName || '应用').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '应用';
     const lnkPath = path.join(desktop, `${lnkBaseName}.lnk`);
-    fnosLog('info', 'shortcut.path', 'shortcut created', { desktop, lnkPath, appName, appId });
+    fnosLog('info', 'shortcut.path', 'shortcut creating', { desktop, lnkPath, appName, appId });
 
     // PowerShell script to create shortcut
     const iconPs = icoPath ? `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'` : '';
@@ -7700,15 +7666,30 @@ $sc.Save()
     const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
 
     if (result.status === 0) {
-      fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath, icoPath, launchUrl });
-      return { success: true, msg: '快捷方式已创建', data: { path: lnkPath } };
+      fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath, icoPath, launchUrl, appId, appName });
+      // 需求 2.1 结果反馈弹窗：成功提示"桌面快捷方式已生成"
+      return { success: true, msg: '桌面快捷方式已生成', data: { path: lnkPath } };
     } else {
-      fnosLog('error', 'ipc', '快捷方式创建失败', { stderr: result.stderr });
-      return { success: false, msg: result.stderr || '创建失败', data: null };
+      const __errText = String((result && (result.stderr || result.error)) || '');
+      fnosLog('error', 'ipc', '快捷方式创建失败', { lnkPath, appId, appName, stderr: __errText.slice(0, 500) });
+      // 需求 2.1/2.6-3：失败区分错误原因（权限不足 → 对应提示，渲染进程据此弹窗）
+      let __msg = __errText.slice(0, 300) || '创建失败';
+      if (/拒绝访问|access\s*is\s*denied|0x80070005|EPERM|EACCES|unauthorized/i.test(__errText)) {
+        __msg = '权限不足：无法写入桌面快捷方式，请以管理员权限重试';
+      }
+      return { success: false, msg: __msg, data: null };
     }
   } catch (e) {
-    fnosLog('error', 'ipc', 'create-desktop-shortcut error', { err: e.message, stack: e.stack });
-    return { success: false, msg: e.message, data: null };
+    fnosLog('error', 'ipc', 'create-desktop-shortcut error', { err: e.message, stack: e.stack, appId: String((payload && payload.appId) || '').slice(0, 120) });
+    // 需求 2.1/2.6-3：权限不足 / 桌面路径不存在 分类返回（渲染进程据此弹窗）
+    const code = String((e && e.code) || '');
+    let msg = String(e.message || e).slice(0, 300);
+    if (code === 'EACCES' || code === 'EPERM' || /拒绝访问|access\s*is\s*denied/i.test(msg)) {
+      msg = '权限不足：无法创建桌面快捷方式';
+    } else if (code === 'ENOENT' && /desktop/i.test(String((e && e.path) || msg))) {
+      msg = '桌面路径不存在：请检查系统桌面目录配置';
+    }
+    return { success: false, msg, data: null };
   }
 });
 
@@ -7919,6 +7900,51 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // v2.3.3: 统一把快捷方式/启动参数里的“应用唯一ID”或 URL 解析为完整打开地址。
 // raw 可能是：完整 URL（旧 --app= 格式）、appname（新 --launch-app= 格式，如 trim.music）。
 // 依赖 FPK 提供端口/路径的第三方应用（非 trim.*）不在同步解析范围，由调用方回退 --app=URL。
+// v2.4.0（需求 2.5/2.6）：open-fpk-app —— Main → Renderer 通知，携带参数 appId。
+// found:true  = 目标 FPK 应用已解析成功，主进程随即在飞牛框架内部（独立应用窗口）加载，
+//               渲染进程记录唤起指令（本项目渲染进程为 NAS Web 页面，无 SPA 路由跳转能力，
+//               与需求 2.5-1"渲染进程路由跳转加载应用"的映射关系见开发说明文档·已知限制）。
+// found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2、边界用例 7），
+//               渲染进程弹窗提示"找不到该应用，请重新创建快捷方式。"
+let __pendingAppId = ''; // 原始应用唯一 ID（--launch-app 值），open-fpk-app 携带字段 appId
+function __notifyOpenFpkApp(appId, found, url) {
+  try {
+    const payload = {
+      appId: String(appId || (url ? (fpkAppNameFromUrl(url) || '') : '') || '').slice(0, 200),
+      found: !!found,
+      url: String(url || '').slice(0, 300),
+      ts: Date.now(),
+    };
+    const __send = () => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('open-fpk-app', payload);
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    };
+    try { require('./logger.js').log('info', 'ipc', 'open-fpk-app send', { params: payload }, __RUN_MODE); } catch (_) {}
+    if (__send()) return;
+    // 主窗口尚未就绪（冷启动）：最多重试 20 次 × 500ms（preload 监听器随窗口创建即注册）
+    let __tries = 0;
+    const __timer = setInterval(() => {
+      __tries++;
+      if (__send() || __tries >= 20) clearInterval(__timer);
+    }, 500);
+  } catch (_) {}
+}
+// 同步查询 FPK 应用列表内存缓存（refreshFpkApps.__cache，5 分钟 TTL）：
+// __resolveLaunchUrl / second-instance 是同步链路不能 await，只读内存缓存兜底；
+// 缓存未就绪（冷启动）返回 null，回退 manifest → appview?anchor 解析。
+function __fpkLookupSync(name) {
+  try {
+    if (!name) return null;
+    const cache = refreshFpkApps.__cache;
+    if (!Array.isArray(cache) || !cache.length) return null;
+    return cache.find((f) => f && String(f.name || f.appname || '') === String(name)) || null;
+  } catch (_) { return null; }
+}
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
@@ -7940,13 +7966,23 @@ function __resolveLaunchUrl(raw, nasAddr) {
     } catch (_) {}
     return appName;
   }
-  // 2) appId/appname 命中 manifest entry
+  // 2) v2.4.0（需求 2.1）：快捷方式统一传 --launch-app={应用唯一 ID} 后，FPK 第三方应用的
+  //    真实打开地址（端口/路径）以 FPK 图标管理器 url 字段为准——先同步查 FPK 内存缓存
+  //    （refreshFpkApps.__cache，5 分钟 TTL）。缓存未就绪（冷启动）回退下方 manifest / appview。
+  try {
+    const fe = __fpkLookupSync(appName);
+    if (fe && fe.url && /^https?:\/\//i.test(fe.url)) {
+      try { dlog && dlog('info', 'shortcut.url.fpk-cache', { name: String(appName).slice(0, 80), url: String(fe.url).slice(0, 140) }); } catch (_) {}
+      return fe.url;
+    }
+  } catch (_) {}
+  // 3) appId/appname 命中 manifest entry
   try {
     const mf = readManifest();
     const entry = mf && Array.isArray(mf.apps) ? mf.apps.find(a => a && (a.appId === appName || a.name === appName || a.url === appName)) : null;
     if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return entry.url;
   } catch (_) {}
-  // 3) appname → appview?anchor（飞牛系统应用统一入口，服务端/客户端会补端口归一化）
+  // 4) appname → appview?anchor（飞牛系统应用统一入口，服务端/客户端会补端口归一化）
   let base = String(nasAddr || '').trim().replace(/\/+$/, '');
   if (base) {
     if (!/^https?:/i.test(base)) base = 'http://' + base;
@@ -8046,28 +8082,55 @@ ipcMain.handle('settings:get-autostart', async () => {
   }
 });
 
-ipcMain.handle('settings:set-autostart', async (_e, { enabled }) => {
-  try {
-    if (process.platform !== 'win32') return { success: false, msg: '仅 Windows 支持' };
-    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    const safeExe = String(exe).replace(/"/g, '');
-    if (!safeExe) return { success: false, msg: '可执行文件路径为空' };
-    const cmd = enabled
-      ? 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /t REG_SZ /d "' + safeExe + '" /f'
-      : 'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /f 2>nul';
-    return new Promise((resolve) => {
+// v2.4.0（需求 2.2/2.5-3）：开机自启统一走注册表工具函数 __setAutoLaunchRegistry
+// （交付物 src/main/utils/autoLaunch.ts 的 JS 映射，见开发说明文档）。
+// 注册表 HKCU\...\Run 键值固定为 exe 完整路径——开机启动命令不带任何应用 ID（需求 2.2 禁止项）。
+// 不使用打包工具自带开机启动能力（app.setLoginItemSettings 等，需求 2.8 禁止项）。
+// 开关状态持久化：需求要求 electron-store，本项目以既有 settings JSON（saveSettings）持久化
+// autoLaunch 字段实现同等效果（前置约定 1：兼容现有项目结构，不引入新依赖），映射见开发说明文档。
+// 开机启动后行为由需求 2.3 场景 B 保证：窗口加载完成即 win.hide()，只驻留托盘、不弹主页、
+// 不自动打开任何应用（开机命令本身不带应用 ID）。
+function __setAutoLaunchRegistry(enable) {
+  return new Promise((resolve) => {
+    try {
+      if (process.platform !== 'win32') { resolve({ success: false, msg: '仅 Windows 支持' }); return; }
+      const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+      const safeExe = String(exe).replace(/"/g, '');
+      if (!safeExe) { resolve({ success: false, msg: '可执行文件路径为空' }); return; }
+      const cmd = enable
+        ? 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /t REG_SZ /d "' + safeExe + '" /f'
+        : 'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /f 2>nul';
       cp.exec(cmd, { timeout: 10000, windowsHide: true }, (err, stdout, stderr) => {
         if (err) {
           const msg = String(stderr || err.message || err).slice(0, 200);
+          try { require('./logger.js').log('error', 'autolaunch', 'registry write failed', { params: { enable, cmd: cmd.slice(0, 160) }, err: { message: msg } }, __RUN_MODE); } catch (_) {}
           resolve({ success: false, msg: '注册表写入失败: ' + msg });
         } else {
-          resolve({ success: true, msg: enabled ? '已开启开机自启' : '已关闭开机自启' });
+          // 持久化开关状态（等价 electron-store 保存，见上方注释）
+          try { saveSettings({ autoLaunch: !!enable }); } catch (_) {}
+          try { require('./logger.js').log('info', 'autolaunch', 'registry write ok', { params: { enable, key: 'HKCU Run FNOS', exe: safeExe }, ret: { success: true } }, __RUN_MODE); } catch (_) {}
+          resolve({ success: true, msg: enable ? '已开启开机自启' : '已关闭开机自启' });
         }
       });
-    });
-  } catch (e) {
-    return { success: false, msg: String(e.message || e).slice(0, 200) };
-  }
+    } catch (e) {
+      try { require('./logger.js').log('error', 'autolaunch', 'registry write exception', { params: { enable }, err: e }, __RUN_MODE); } catch (_) {}
+      resolve({ success: false, msg: String(e.message || e).slice(0, 200) });
+    }
+  });
+}
+
+ipcMain.handle('settings:set-autostart', async (_e, { enabled }) => {
+  // 兼容保留旧 IPC 事件（内部与 set-auto-launch 共用注册表工具函数）
+  return __setAutoLaunchRegistry(!!enabled);
+});
+
+// v2.4.0（需求 2.5-3）：Renderer → Main：set-auto-launch，参数 { enable: boolean }——
+// 读写注册表开机自启（HKCU Run，开机命令不带应用 ID）。事件名按需求 IPC 定义固定，
+// 仅允许 open-fpk-app / create-desktop-shortcut / set-auto-launch 三个事件，不新增定义外事件。
+ipcMain.handle('set-auto-launch', async (_e, payload) => {
+  const enable = !!(payload && payload.enable);
+  try { require('./logger.js').log('info', 'autolaunch', 'set-auto-launch recv', { params: { enable } }, __RUN_MODE); } catch (_) {}
+  return __setAutoLaunchRegistry(enable);
 });
 
 // ---------------------- IPTV 本地代理控制 ----------------------
@@ -9940,7 +10003,7 @@ async function recordStart(channel) {
 }
 function recordStop(id) {
   const state = RECORDINGS.get(id);
-  if (!state) return { ok: false, error: '录制不存在' };
+  if (!state) return { ok: false, error: '录制未找到' };
   state.stopped = true;
   if (state.timer) clearTimeout(state.timer);
   try { fs.closeSync(state.fd); } catch (_) {}
@@ -10026,14 +10089,20 @@ ipcMain.handle('iptv:set-config', async (_e, patch) => {
 ipcMain.handle('iptv:clear-cache', async () => ({ ok: true, status: { listening: false, port: 0, segments: 0, bytes: 0, sessions: 0 } }));
 
 // ---------------------- 生命周期 ----------------------
-app.on('second-instance', (_e, commandLine) => {
-  // v1.76.0：第二次双击桌面快捷方式时，把 --open-app / --app 应用转交给主实例打开
-  // v2.1.5：同时支持 --app= 和 --open-app= 参数，以及 --nas= 参数
+// v2.4.0（需求 2.3/2.5）：second-instance 处理函数（注册点在文件最前单实例锁判断处，
+// 严格满足"单实例锁判断第一时间执行 + second-instance 在 app.ready 注册之前"的强制编码顺序）。
+// 场景 A：新进程解析 --launch-app={appId} 经 second-instance 传给已运行主进程，主进程在飞牛
+// 框架内部打开对应 FPK 应用（独立应用窗口），并经 open-fpk-app IPC（携带 appId）通知渲染进程；
+// 新进程 __secondInstanceHandshakeSync 同步阻塞后 app.exit(0)——不建窗、不加载页面。
+// 核心铁律：全程禁止自动弹出飞牛主页——本函数不再在无应用参数时自动 show 主窗口，
+// 只有托盘【显示主界面】才展示主页（需求 2.4-2 / 2.8）。
+function __handleSecondInstance(_e, commandLine) {
+  // v2.3.5：标记握手完成（写 pid），告知新实例主进程已响应，避免误报"进程异常"。
+  try { __markHandshakeDone(); } catch (_) {}
   try {
-    // v2.3.5：标记握手完成（写 pid），告知新实例主进程已响应，避免误报"进程异常"。
-    try { __markHandshakeDone(); } catch (_) {}
     const argv = commandLine || [];
     let u = '';
+    let rawAppId = '';
     let nasAddr = '';
     for (let i = 0; i < argv.length; i++) {
       const a = String(argv[i] || '');
@@ -10053,12 +10122,21 @@ app.on('second-instance', (_e, commandLine) => {
       if (a.startsWith('--nas=')) { nasAddr = decodeURIComponent(a.slice('--nas='.length)); break; }
       if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
     }
+    rawAppId = u;
+    // v2.4.0（需求第一部分-3）：second-instance 触发日志（含 argv / appId / nas 参数）
+    try { require('./logger.js').log('info', 'ipc', 'second-instance 触发', { params: { argv: argv.slice(1).map((x) => String(x).slice(0, 80)), rawAppId: String(rawAppId).slice(0, 120), nasAddr: String(nasAddr).slice(0, 80) } }, __RUN_MODE); } catch (_) {}
     // v2.3.3: --launch-app 传的是 appname，统一解析成完整 URL 再打开
     if (u) { u = __resolveLaunchUrl(u, nasAddr); }
     // v2.3.3: 解析失败（无 nas 地址或应用 ID 无法定位）→ 提示用户重建快捷方式
     if (u && !/^https?:\/\//i.test(u)) {
-      try { dlog && dlog('warn', 'shortcut.resolve_fail', { raw: String(u).slice(0, 120) }); } catch (_) {}
-      try { dialog.showMessageBox({ type: 'warning', title: 'FNOS', message: '找不到该应用，请重新创建快捷方式', buttons: ['确定'] }); } catch (_) {}
+      try { require('./logger.js').log('warn', 'ipc', 'second-instance resolve_fail', { params: { raw: String(rawAppId).slice(0, 120), nas: String(nasAddr).slice(0, 80) }, ret: { found: false } }, __RUN_MODE); } catch (_) {}
+      // v2.4.0（需求 2.6-2 / 边界用例 7）：appId 对应 FPK 应用已删除/无法定位 →
+      // open-fpk-app(found:false)，渲染进程弹窗"找不到该应用，请重新创建快捷方式。"
+      // （主进程 dialog 仅在无渲染窗口时兜底，避免重复弹窗）
+      __notifyOpenFpkApp(rawAppId, false);
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        try { dialog.showMessageBox({ type: 'warning', title: 'FNOS', message: '找不到该应用，请重新创建快捷方式。', buttons: ['确定'] }); } catch (_) {}
+      }
       u = '';
     }
     if (u && mainWindow && !mainWindow.isDestroyed()) {
@@ -10073,16 +10151,21 @@ app.on('second-instance', (_e, commandLine) => {
         // 旧逻辑要求 !isLoading()，但主页完整加载可能数秒，此时 cookie 已就绪，
         // 放宽后第二次双击快捷方式（主程序在托盘）能更快打开应用。
         const loggedIn = /^https?:/i.test(p) && p.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(p);
-        // v2.1.15：增强日志——记录快捷方式热启动路径
-        try { dlog && dlog('info', 'shortcut.hot_start', { url: String(u).slice(0, 160), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) }); } catch (_) {}
+        // v2.1.15：增强日志——记录快捷方式热启动路径（v2.4.0：统一走 logger.js 带参数落盘）
+        try { require('./logger.js').log('info', 'app', 'shortcut.hot_start', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) } }, __RUN_MODE); } catch (_) {}
         if (loggedIn) {
+          // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——渲染进程记录
+          // 唤起指令并处理；应用由主进程在飞牛框架内（独立应用窗口）加载，主窗口保持隐藏（2.4-1）。
+          __notifyOpenFpkApp(rawAppId, true, u);
           const __t0 = Date.now();
           createAppWindow(u, {});
-          try { dlog && dlog('info', 'shortcut.app_created', { url: String(u).slice(0, 160), elapsedMs: Date.now() - __t0 }); } catch (_) {}
+          try { require('./logger.js').log('info', 'app', 'shortcut.app_created', { params: { url: String(u).slice(0, 160) }, ret: { elapsedMs: Date.now() - __t0 } }, __RUN_MODE); } catch (_) {}
+          // v2.1.11: 桌面快捷方式唤起应用后，主窗口隐藏到托盘，不自动弹出主页
           setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100);
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
           __pendingFromShortcut = true;
+          __pendingAppId = rawAppId;
           queuePendingApp(u);
           tryOpenPendingApp();
           // v2.1.15：轮询间隔从 500ms 降到 300ms
@@ -10090,25 +10173,17 @@ app.on('second-instance', (_e, commandLine) => {
             try { tryOpenPendingApp(); if (!__pendingAppUrl) clearInterval(pt); } catch (_) {}
           }, 300);
         }
-      } catch (_) { try { createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100); } catch (_) {} }
+      } catch (err) {
+        try { require('./logger.js').log('error', 'app', 'shortcut.hot_start error', { err }, __RUN_MODE); } catch (_) {}
+        try { __notifyOpenFpkApp(rawAppId, true, u); createAppWindow(u, {}); setTimeout(() => { try { hideMainToBackground(); } catch (_) {} }, 100); } catch (_) {}
+      }
       return;
     }
   } catch (_) {}
-  if (isCompletelyHidden) {
-    restoreFromCompletelyHidden();
-    return;
-  }
-  if (isLocked) {
-    if (!lockWindow || lockWindow.isDestroyed()) createLockWindow('unlock');
-    else { try { lockWindow.showInactive(); lockWindow.focus(); } catch (_) {} }
-    return;
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
-    if (!mainWindow.isVisible()) { try { mainWindow.show(); } catch (_) {} }
-    try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
-  }
-});
+  // v2.4.0 核心铁律（需求 2.4-2 / 2.8）：无应用参数的 second-instance 不再自动弹出飞牛主页——
+  // 只有托盘【显示主界面】才展示主窗口；新进程侧由握手同步逻辑 app.exit(0) 退出（场景 A）。
+  try { require('./logger.js').log('info', 'window', 'second-instance.noop', { params: { reason: 'no_app_arg_or_no_window', keepHidden: true } }, __RUN_MODE); } catch (_) {}
+}
 
 // v2.0.0: 命令行参数启动时跳过主界面
 const subAppLaunched = launchSubAppFromArgs();

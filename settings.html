@@ -92,18 +92,20 @@
       </div>
     </section>
 
-    <!-- v2.0.0：开机自启动 -->
+    <!-- v2.0.0：开机自启动（v2.4.0 需求 2.2：文案固定） -->
     <section class="settings-section">
       <div class="section-title">
         <span class="bar"></span>
         <h2>开机自启动</h2>
       </div>
-      <p class="section-desc">开启后，FNOS 会随 Windows 系统自动启动；关闭则取消自启。</p>
+      <!-- 需求 2.2：提示语固定 -->
+      <p class="section-desc">开启后，桌面快捷方式打开应用速度会大幅提升。</p>
       <div class="autostart-row">
         <label class="switch-label">
           <input type="checkbox" id="autostart-toggle" class="switch-input" />
           <span class="switch-slider"></span>
-          <span class="switch-text" id="autostart-text">加载中...</span>
+          <!-- 需求 2.2：开关文字固定，不随开关状态变化 -->
+          <span class="switch-text" id="autostart-text">开机自动启动飞牛（后台托盘常驻，不显示主界面）</span>
         </label>
         <div id="autostart-hint" class="hotkey-sub" style="margin-top:8px;color:#f0b429"></div>
       </div>

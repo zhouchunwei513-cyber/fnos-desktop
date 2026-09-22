@@ -555,21 +555,22 @@
     });
   }
 
-  // v2.0.0：开机自启动开关
+  // v2.0.0：开机自启动开关（v2.4.0 需求 2.2/2.5-3）：经 set-auto-launch({ enable }) 写注册表
+  // （HKCU Run，开机命令不带应用 ID，禁用打包工具自启能力）；autostart-text 文字按需求固定不动，
+  // 状态反馈写 autostart-hint。开关状态持久化于主进程 settings JSON（autoLaunch 字段）。
   if (autostartToggle) {
     autostartToggle.addEventListener('change', async () => {
       const enabled = autostartToggle.checked;
-      autostartText.textContent = enabled ? '开启中...' : '关闭中...';
-      if (autostartHint) autostartHint.textContent = '';
+      if (autostartHint) { autostartHint.textContent = enabled ? '开启中...' : '关闭中...'; autostartHint.style.color = '#f0b429'; }
       try {
-        const res = await fnosSettings.setAutoStart(enabled);
+        const res = await fnosSettings.setAutoLaunch(enabled);
         if (res && res.success) {
-          autostartText.textContent = enabled ? '已开启' : '已关闭';
-          if (autostartHint) autostartHint.textContent = res.msg || (enabled ? '已开启开机自启' : '已关闭开机自启');
-          if (autostartHint) autostartHint.style.color = '#4ade80';
+          if (autostartHint) {
+            autostartHint.textContent = res.msg || (enabled ? '已开启开机自启' : '已关闭开机自启');
+            autostartHint.style.color = '#4ade80';
+          }
         } else {
           autostartToggle.checked = !enabled; // 回滚
-          autostartText.textContent = enabled ? '开启' : '关闭';
           if (autostartHint) {
             autostartHint.textContent = res?.msg || '操作失败';
             autostartHint.style.color = '#f87171';
@@ -577,7 +578,6 @@
         }
       } catch (err) {
         autostartToggle.checked = !enabled;
-        autostartText.textContent = enabled ? '开启' : '关闭';
         if (autostartHint) {
           autostartHint.textContent = err?.message || '操作失败';
           autostartHint.style.color = '#f87171';
@@ -614,22 +614,24 @@
       }
       loadLiveConfig();
       loadVlcConfig();
-      // v2.0.0：加载开机自启动状态
+      // v2.0.0：加载开机自启动状态（v2.4.0 需求 2.2：autostart-text 文字按需求固定不动，
+      // 状态反馈写 autostart-hint）
       if (autostartToggle && fnosSettings.getAutoStart) {
         try {
           const res = await fnosSettings.getAutoStart();
           if (res && res.success) {
             autostartToggle.checked = !!res.data;
-            autostartText.textContent = res.data ? '已开启' : '已关闭';
+            if (autostartHint) {
+              autostartHint.textContent = res.data ? '已开启开机自启' : '未开启开机自启';
+              autostartHint.style.color = res.data ? '#4ade80' : '#f0b429';
+            }
           } else {
-            autostartText.textContent = '获取失败';
             if (autostartHint) {
               autostartHint.textContent = res?.msg || '无法获取自启状态';
               autostartHint.style.color = '#f0b429';
             }
           }
         } catch (err) {
-          autostartText.textContent = '获取失败';
           if (autostartHint) {
             autostartHint.textContent = err?.message || '加载失败';
             autostartHint.style.color = '#f0b429';
@@ -757,7 +759,7 @@
             '<div class="app-card-addr">' + (app.nasAddress || '') + '</div>' +
           '</div>' +
           '<div class="app-card-actions">' +
-            '<button class="app-card-btn shortcut-btn" data-app-id="' + app.appId + '" title="创建桌面快捷方式">🔗 快捷方式</button>' +
+            '<button class="app-card-btn shortcut-btn" data-app-id="' + app.appId + '" title="创建桌面快捷方式">创建快捷方式</button>' +
           '</div>';
         appListEl.appendChild(card);
       });
@@ -776,19 +778,24 @@
               iconPath: appData.iconPath || '',
               nasAddress: appData.nasAddress || '',
             });
+            // 需求 2.1：结果反馈弹窗——成功固定文案"桌面快捷方式已生成"；
+            // 失败弹出主进程分类错误信息（权限不足 / 桌面路径不存在 / 其他）
             if (result.success) {
               btn.textContent = '✓ 已创建';
               btn.classList.add('success');
               if (appActionStatus) appActionStatus.textContent = '已创建快捷方式: ' + (appData.appName || appData.appId);
+              alert('桌面快捷方式已生成');
             } else {
               btn.textContent = '创建失败';
               if (appActionStatus) appActionStatus.textContent = '创建失败: ' + (result.msg || '未知错误');
+              alert('创建失败：' + (result.msg || '未知错误'));
             }
           } catch (e) {
             btn.textContent = '创建失败';
             if (appActionStatus) appActionStatus.textContent = '创建失败: ' + e.message;
+            alert('创建失败：' + e.message);
           }
-          setTimeout(() => { btn.disabled = false; btn.textContent = '🔗 快捷方式'; btn.classList.remove('success'); }, 3000);
+          setTimeout(() => { btn.disabled = false; btn.textContent = '创建快捷方式'; btn.classList.remove('success'); }, 3000);
         });
       });
     } catch (e) {

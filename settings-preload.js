@@ -46,6 +46,9 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   // v2.0.0：开机自启动
   getAutoStart: () => ipcRenderer.invoke('settings:get-autostart'),
   setAutoStart: (enabled) => ipcRenderer.invoke('settings:set-autostart', { enabled: !!enabled }),
+  // v2.4.0（需求 2.5-3）：Renderer → Main：set-auto-launch，参数 { enable: boolean }
+  // —— 注册表写入开机自启（HKCU Run，开机命令不带应用 ID），事件名按需求 IPC 定义固定
+  setAutoLaunch: (enable) => ipcRenderer.invoke('set-auto-launch', { enable: !!enable }),
   // v2.0.0：多账号管理
   listAccounts: () => ipcRenderer.invoke('account:list'),
   switchAccount: (origin) => ipcRenderer.invoke('account:switch', { origin }),

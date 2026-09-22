@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.4.1';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -5019,16 +5019,27 @@ function createMainWindow(partition, loadTarget) {
     },
   });
 
-  // v2.4.0（需求 2.3 场景 B / 2.4）：窗口加载完成后一律 win.hide() 隐藏主窗口、只驻留托盘——
-  // 全程禁止自动弹出飞牛主页，只有托盘【显示主界面】才展示（核心铁律；开机自启同样适用：
-  // 开机命令不带应用 ID，启动后只驻留托盘、不弹主页、不自动打开任何应用，边界用例 3）。
-  // 移除 v2.1.6 的 10 秒强制 show 兜底（与铁律冲突）。
+  // v2.4.1（用户真机反馈，覆盖 v2.4.0 恒 hide）：点击启动飞牛主程时不隐藏主窗口——
+  // 只有点击应用快捷方式（--launch-app/--app/--open-app）时才隐藏；开机自启（--autostart）
+  // 同样隐藏、只驻留托盘（需求 2.2：开机命令不带应用 ID，不自动打开任何应用）。
   mainWindow.once('ready-to-show', () => {
     try {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-      require('./logger.js').log('info', 'window', 'main.ready-to-show', { params: { action: 'hide', isLocked: !!isLocked, keepHidden: !!__shortcutKeepHidden, visible: false } }, __RUN_MODE);
+      const quiet = __isQuietStart();
+      if (quiet) {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+      } else {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+      }
+      require('./logger.js').log('info', 'window', 'main.ready-to-show', { params: { action: quiet ? 'hide' : 'show', isLocked: !!isLocked, keepHidden: !!__shortcutKeepHidden, quiet } }, __RUN_MODE);
     } catch (_) {}
   });
+  // v2.4.1：10s 显示兜底（仅普通启动场景）——防 ready-to-show 未触发黑屏；
+  // 快捷方式/开机自启静默启动不兜底。
+  setTimeout(() => {
+    try {
+      if (!__isQuietStart() && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible() && !isLocked) mainWindow.show();
+    } catch (_) {}
+  }, 10000);
 
   // v1.29.2：主窗口主框架加载失败（隧道/内网抖动、-137 解析失败、连接重置等）自动重试，
   // 避免"登录后黑屏/错误页"。-3(中止，导航被替换)与本地连接页不重试；最多 4 次、退避。
@@ -8090,6 +8101,23 @@ ipcMain.handle('settings:get-autostart', async () => {
 // autoLaunch 字段实现同等效果（前置约定 1：兼容现有项目结构，不引入新依赖），映射见开发说明文档。
 // 开机启动后行为由需求 2.3 场景 B 保证：窗口加载完成即 win.hide()，只驻留托盘、不弹主页、
 // 不自动打开任何应用（开机命令本身不带应用 ID）。
+// v2.4.1（用户真机反馈）：启动类型判定——桌面快捷方式（--launch-app/--app/--open-app）
+// 或开机自启（--autostart）→ 静默启动（隐藏主窗口、只驻留托盘）；用户主动点击主程序
+// （无任何上述参数）→ 显示主窗口。函数声明提升，供 ready-to-show / 10s 兜底调用。
+function __isQuietStart() {
+  try {
+    for (const a of (process.argv || [])) {
+      const s = String(a || '');
+      if (s.indexOf('--launch-app') === 0 || s.indexOf('--app=') === 0 || s === '--app' ||
+          s.indexOf('--open-app') === 0 || s.indexOf('--autostart') === 0) return true;
+    }
+    if (typeof __pendingAppUrl !== 'undefined' && __pendingAppUrl) return true;
+    if (typeof __shortcutKeepHidden !== 'undefined' && __shortcutKeepHidden) return true;
+  } catch (_) {}
+  return false;
+}
+
+
 function __setAutoLaunchRegistry(enable) {
   return new Promise((resolve) => {
     try {
@@ -8097,8 +8125,11 @@ function __setAutoLaunchRegistry(enable) {
       const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
       const safeExe = String(exe).replace(/"/g, '');
       if (!safeExe) { resolve({ success: false, msg: '可执行文件路径为空' }); return; }
+      // v2.4.1（用户真机反馈）：Run 键值追加 --autostart 标记（不带应用 ID，合规需求 2.2）——
+      // 开机自启启动时 __isQuietStart() 命中 --autostart → 隐藏主窗口只驻留托盘；
+      // 与用户主动点击主程序（显示主窗口）区分。disable 分支不变。
       const cmd = enable
-        ? 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /t REG_SZ /d "' + safeExe + '" /f'
+        ? 'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /t REG_SZ /d "' + safeExe + ' --autostart" /f'
         : 'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS /f 2>nul';
       cp.exec(cmd, { timeout: 10000, windowsHide: true }, (err, stdout, stderr) => {
         if (err) {
@@ -10180,9 +10211,13 @@ function __handleSecondInstance(_e, commandLine) {
       return;
     }
   } catch (_) {}
-  // v2.4.0 核心铁律（需求 2.4-2 / 2.8）：无应用参数的 second-instance 不再自动弹出飞牛主页——
-  // 只有托盘【显示主界面】才展示主窗口；新进程侧由握手同步逻辑 app.exit(0) 退出（场景 A）。
-  try { require('./logger.js').log('info', 'window', 'second-instance.noop', { params: { reason: 'no_app_arg_or_no_window', keepHidden: true } }, __RUN_MODE); } catch (_) {}
+  // v2.4.1（用户真机反馈，覆盖 v2.4.0 无参 noop）：用户点击主程序启动（无应用参数的
+  // second-instance）= 显式查看主界面意图 → 显示并聚焦主窗口；带应用参数的快捷方式
+  // 唤起走上方分支（notify + createAppWindow + hideMainToBackground）隐藏主窗口。
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); try { mainWindow.focus(); } catch (_) {} }
+    require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);
+  } catch (_) {}
 }
 
 // v2.0.0: 命令行参数启动时跳过主界面

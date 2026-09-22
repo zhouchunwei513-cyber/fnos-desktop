@@ -88,8 +88,9 @@
 1. **"渲染进程路由跳转加载应用"的映射**：本项目渲染进程是 NAS Web 页面（无 SPA 路由能力），
    实际加载 FPK 应用由主进程以独立应用窗口（`createAppWindow`，webview partition 隔离）完成，
    渲染进程经 `open-fpk-app` 记录唤起指令并处理 found:false 弹窗。功能语义等价。
-2. **无应用参数的 second-instance 不再自动弹主页**（严格遵守核心铁律 2.4-2/2.8）。托盘图标**单击**
-   展示主界面的行为保留（人工动作，等效托盘【显示主界面】）。
+2. **second-instance 无应用参数时显示主窗口**（v2.4.1 用户反馈调整）：用户点击主程序启动
+   = 显式查看主界面意图 → show + focus；带应用参数的快捷方式唤起仍隐藏主窗口。托盘图标
+   **单击**展示主界面的行为保留（人工动作，等效托盘【显示主界面】）。
 3. **electron-store 未引入**：按前置约定 1 不引入新依赖，开关状态以既有 settings JSON
    （`saveSettings({ autoLaunch })`）持久化，语义等价。
 4. **切账号 partition destroy**（既有行为）保留：切换账号会销毁对应 webview 分区，
@@ -103,3 +104,9 @@
 
 - **fnos v2.4.0**（APP_VERSION + package.json）：本次 r14 全部 BUG 修复与新功能。
 - **fntb v2.18.7**（manifest + BUILTIN_VERSION）：日志弹窗删除"(不存在)"标记等 3 处文案。
+- **fnos v2.4.1**（真机反馈修复）：① `logger.js` 补入 electron-builder `build.files` 打包白名单
+  （根因：打包缺失导致 preload.js `require('./logger.js')` 抛 MODULE_NOT_FOUND 阻断
+  `exposeInMainWorld('fnos')` 与标题栏注入 → 登录报 window.fnos undefined、标题栏消失）；
+  ② preload.js logger require 加 try/catch 降级 stub（防御同类问题）；③ 主窗口显示策略按用户
+  要求条件化（见上"已知限制 7"）；④ 开机自启 Run 键值加 `--autostart` 标记；⑤ second-instance
+  无参 show。

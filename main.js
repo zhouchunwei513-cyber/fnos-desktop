@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.2.7';
+const APP_VERSION = '2.3.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4159,7 +4159,32 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 // v2.2.6: 任务栏图标以 FPK 图标管理器为准（用户要求"只能调用 FPK 对应应用图标"）。
                 // 判断该应用是否在 FPK 列表（区分"FPK 有它但请求失败"与"FPK 根本没有它"）。
                 __fpkInList = (__fpkApps || []).some((a) => a && a.name && String(a.name).toLowerCase() === String(__fpkName).toLowerCase());
-                const fpkBuf = await fetchFpkIcon(__fpkName, 256);
+                if (!__fpkInList) {
+                  // v2.3.0: 应用不在 FPK 列表 -> 任务栏保持默认图标，不 fallback 页面 favicon
+                  dlog && dlog('info', 'appwin.icon.fpk-skip', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120), reason: 'not-in-list', name: __fpkName });
+                  return;
+                }
+                // v2.3.0: 系统应用（FPK 标记 system 且无自定义图标）优先从 NAS 官方 webui 加载
+                // /static/app/icons/{app}/icon.png——fntb 未配置 nas_webui 时其 /api/icons 返回
+                // 占位图，官方图标更符合"任务栏图标=对应应用图标"。
+                let fpkBuf = null;
+                let __sysIconUsed = false;
+                const __fpkApp = (__fpkApps || []).find((a) => a && a.name && String(a.name).toLowerCase() === String(__fpkName).toLowerCase());
+                if (__fpkApp && __fpkApp.system && !__fpkApp.has_custom_icon) {
+                  try {
+                    const __o = (() => { try { return new URL(String(url || '')).origin; } catch (_) { return ''; } })();
+                    if (/^https?:\/\//i.test(__o || '')) {
+                      const __sysUrl = __o + '/static/app/icons/' + encodeURIComponent(__fpkName) + '/icon.png';
+                      const __sb = await __fetchBuf(__sysUrl);
+                      if (__sb && __sb.length > 0) {
+                        fpkBuf = __sb;
+                        __sysIconUsed = true;
+                        dlog && dlog('info', 'appwin.icon.system', { app: __appLabel, name: __fpkName, winId: win.id, bytes: __sb.length, url: __sysUrl });
+                      }
+                    }
+                  } catch (_) {}
+                }
+                if (!fpkBuf) fpkBuf = await fetchFpkIcon(__fpkName, 256);
                 if (fpkBuf && !win.isDestroyed()) {
                   const img = nativeImage.createFromBuffer(fpkBuf);
                   if (!img.isEmpty()) {
@@ -4176,8 +4201,14 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 if (__fpkInList) return;
               } else {
                 dlog && dlog('info', 'appwin.icon.fpk-skip', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120), reason: 'no-fpk-name' });
+                // v2.3.0: 解析不到 FPK 应用名 -> 保持默认图标，不 fallback 页面 favicon
+                return;
               }
-            } catch (_) {}
+            } catch (_) {
+              // v2.3.0: FPK 子系统异常（列表加载失败等）-> 保持默认图标，不 fallback 页面 favicon
+              dlog && dlog('warn', 'appwin.icon.fpk-skip', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120), reason: 'fpk-error' });
+              return;
+            }
             // v2.2.6: 已设置 FPK 图标后不再用 favicon 覆盖（任务栏图标以 FPK 为准）
             if (win.__appFpkIcon === true) return;
           __allIconCandidates().then((candidates) => {
@@ -6405,6 +6436,15 @@ function getFpkBaseUrl() {
     return base;
   } catch (_) { return null; }
 }
+// v2.3.0: 通用 URL 抓取为 Buffer（Electron 主进程 fetch 无 CORS 限制，跟随 302 重定向）
+async function __fetchBuf(url, opts) {
+  try {
+    const res = await fetch(url, Object.assign({ headers: { 'X-FNOS-Client': 'desktop' } }, opts || {}));
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch (_) { return null; }
+}
+
 async function fetchFpkIcon(appname, size = 256) {
   const base = getFpkBaseUrl();
   if (!base) {
@@ -9857,6 +9897,16 @@ app.on('second-instance', (_e, commandLine) => {
 // v2.0.0: 命令行参数启动时跳过主界面
 const subAppLaunched = launchSubAppFromArgs();
 app.whenReady().then(() => {
+  // v2.3.0: main process startup log (version / single-instance / argv)
+  try {
+    dlog('info', 'main.start', {
+      version: APP_VERSION,
+      gotSingleLock: __gotSingleLock,
+      argv: (process.argv || []).slice(1).map((x) => String(x).slice(0, 80)).filter((x) => x && x.indexOf('--type=') !== 0),
+      platform: process.platform,
+      userData: app.getPath('userData'),
+    });
+  } catch (_) {}
   // v1.72.0：解析 --open-app 参数（桌面快捷方式启动单个应用）
   try { parseOpenAppArg(); } catch (_) {}
   // 启动内置 MPV 的本地助手服务（在线字幕/本地字幕/画中画），仅 127.0.0.1。

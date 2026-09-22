@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.3.3';
+const APP_VERSION = '2.3.4';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -6426,21 +6426,31 @@ async function fetchFpkIcon(appname, size = 256) {
   // v2.2.4：加 cache-busting（t=时间戳 + v=应用版本）——fntb 此前返回 max-age=3600
   // 缓存头导致修改图标后客户端/浏览器仍命中旧缓存，强制刷新也不变。
   // 服务端对带 t/v 参数的请求返回 no-cache，保证最新图标；列表 5 分钟 TTL 不受影响。
+  // v2.3.4: 追加 nas_host 参数 + X-Forwarded-Host 头，让 fntb 在反代/容器场景下构造客户端可达的 302 目标（避免 127.0.0.1 回环）。
   const t = Date.now();
   const v = Math.floor(t / 60000); // 每分钟一档，缩短 URL 长度且足够新鲜
-  const url = `${base}/api/icons/${encodeURIComponent(appname)}/${size}?t=${t}&v=${v}`;
-  console.log('[FPK] icon fetch start', JSON.stringify({ appname, size, url }));
+  let nasHost = "";
   try {
-    const res = await fetch(url, { headers: { 'X-FNOS-Client': 'desktop', 'Cache-Control': 'no-cache' } });
-    console.log('[FPK] icon fetch response', JSON.stringify({ appname, status: res.status, ok: res.ok }));
+    const _s = loadSettings();
+    nasHost = (_s.fpkApi && _s.fpkApi.host) || "";
+    if (!nasHost && _s.origin) { try { nasHost = new URL(_s.origin).hostname; } catch (_) {} }
+  } catch (_) {}
+  let url = `${base}/api/icons/${encodeURIComponent(appname)}/${size}?t=${t}&v=${v}`;
+  if (nasHost) url += `&nas_host=${encodeURIComponent(nasHost)}`;
+  const headers = { "X-FNOS-Client": "desktop", "Cache-Control": "no-cache" };
+  if (nasHost) headers["X-Forwarded-Host"] = `${nasHost}:18080`;
+  console.log("[FPK] icon fetch start", JSON.stringify({ appname, size, url, nasHost }));
+  try {
+    const res = await fetch(url, { headers });
+    console.log("[FPK] icon fetch response", JSON.stringify({ appname, status: res.status, ok: res.ok }));
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
-    console.log('[FPK] icon fetch success', JSON.stringify({ appname, bytes: buf.length }));
+    console.log("[FPK] icon fetch success", JSON.stringify({ appname, bytes: buf.length }));
     // v2.1.19: 空 body 视为无图标，避免上层把空 buffer 当成功继续转 ICO
     if (!buf.length) return null;
     return buf;
   } catch (err) {
-    console.log('[FPK] icon fetch error', JSON.stringify({ appname, error: err.message }));
+    console.log("[FPK] icon fetch error", JSON.stringify({ appname, error: err.message }));
     return null;
   }
 }

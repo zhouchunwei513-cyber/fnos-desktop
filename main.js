@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.3.5';
+const APP_VERSION = '2.3.6';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -615,77 +615,107 @@ let isCompletelyHidden = false; // 一键隐藏：连托盘也隐藏
 //   异常：主进程卡死无响应（second-instance 不触发），本实例 2.6s 后弹窗提示重启飞牛。
 const __HANDSHAKE_FILE = () => path.join(app.getPath('userData'), 'shortcut-handshake.json');
 
-// 新实例侧：写握手文件，等待主进程标记 done（证明其响应）；超时则提示重启
-function __secondInstanceHandshake() {
+// 新实例侧（v2.3.6）：同步等待主进程标记 done（证明其响应）；超时则提示重启飞牛。
+// v2.3.5 异步 setInterval 握手存在两处缺陷（fnos-diag 日志实锤，3 次点击全部命中）：
+//   1) 竞态：v2.3.5 在申请单实例锁失败后才写握手文件，主进程 second-instance 事件先到、
+//      __markHandshakeDone 读文件扑空 -> 新实例 2.6s 超时误弹"是否重启飞牛"；
+//   2) 不退出：握手异步等待时主流程继续完整初始化（fpk.heartbeat/mpv.helper/创建窗口全跑），
+//      同一应用出现两个窗口（hot_start winId:4 与新实例 pending_app winId:2）。
+//   修复：握手文件在 requestSingleInstanceLock() 之前写好（见下文单实例锁区）+ 本函数同步
+//   阻塞直至 app.exit()，main.js 剩余顶层代码不会再执行。
+function __sleepSync(ms) {
   try {
-    const token = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-    const argv = (process.argv || []).slice(1);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch (_) {
+    const t = Date.now();
+    while (Date.now() - t < ms) {}
+  }
+}
+// v2.3.6: token 由调用方在写握手文件时生成（先写文件后申请锁，消除竞态）
+function __secondInstanceHandshakeSync(token) {
+  const argv = (process.argv || []).slice(1);
+  try { dlog && dlog('warn', 'shortcut.handshake.wait', { token, argv: argv.slice(0, 6) }); } catch (_) {}
+  const deadline = Date.now() + 2600;
+  let __done = false, __pid = 0;
+  while (Date.now() < deadline) {
+    __sleepSync(150);
     try {
-      fs.writeFileSync(__HANDSHAKE_FILE(), JSON.stringify({ token, argv, pending: true, ts: Date.now() }), 'utf-8');
+      const obj = JSON.parse(fs.readFileSync(__HANDSHAKE_FILE(), 'utf-8'));
+      // v2.3.6: 不校验 token——先写文件后申请锁已消除竞态，pending===false 即可退出
+      if (obj && obj.pending === false) { __done = true; __pid = obj.pid || 0; break; }
     } catch (_) {}
-    try { dlog && dlog('warn', 'shortcut.handshake.wait', { token, argv: argv.slice(0, 6) }); } catch (_) {}
-    const deadline = Date.now() + 2600;
-    const iv = setInterval(() => {
-      let done = false, pid = 0;
-      try {
-        const obj = JSON.parse(fs.readFileSync(__HANDSHAKE_FILE(), 'utf-8'));
-        if (obj && !obj.pending && obj.token === token) { done = true; pid = obj.pid || 0; }
-      } catch (_) {}
-      if (done) {
-        clearInterval(iv);
-        try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
-        app.quit();
-        return;
+  }
+  if (__done) {
+    try { dlog && dlog('info', 'shortcut.handshake.done', { pid: __pid }); } catch (_) {}
+    try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
+    app.exit(0);
+    return;
+  }
+  try { dlog && dlog('warn', 'shortcut.handshake.timeout', { token }); } catch (_) {}
+  // 需求 2.6.1：主进程疑似卡死 -> 弹窗「飞牛客户端进程异常，无法唤起应用，是否重启飞牛？」。
+  // dialog.showMessageBoxSync 需 app ready，此处用 PowerShell 系统弹窗保证 ready 前也可用。
+  let __rc = 1;
+  try {
+    const cp = require('child_process');
+    const psPath = path.join(app.getPath('userData'), 'handshake-dlg.ps1');
+    const psBody = [
+      'Add-Type -AssemblyName System.Windows.Forms',
+      "$r = [System.Windows.Forms.MessageBox]::Show('飞牛客户端进程异常，无法唤起应用，是否重启飞牛？重启后请再次点击桌面快捷方式。', '飞牛客户端', 'YesNo', 'Warning')",
+      "if ($r -eq 'Yes') { exit 0 } else { exit 1 }",
+    ].join('\r\n');
+    fs.writeFileSync(psPath, psBody, 'utf-8');
+    try { cp.execSync('powershell -NoProfile -STA -ExecutionPolicy Bypass -File "' + psPath + '"', { stdio: 'ignore' }); __rc = 0; } catch (_) { __rc = 1; }
+    try { fs.unlinkSync(psPath); } catch (_) {}
+  } catch (_) {}
+  try { dlog && dlog('info', 'shortcut.handshake.restart', { rc: __rc }); } catch (_) {}
+  if (__rc === 0) {
+    try {
+      const o = JSON.parse(fs.readFileSync(__HANDSHAKE_FILE(), 'utf-8'));
+      const pid = o && o.pid;
+      if (pid && pid !== process.pid) {
+        try { require('child_process').execSync('taskkill /F /PID ' + pid + ' /T', { stdio: 'ignore' }); } catch (_) {}
       }
-      if (Date.now() >= deadline) {
-        clearInterval(iv);
-        try { dlog && dlog('warn', 'shortcut.handshake.timeout', { pid }); } catch (_) {}
-        app.whenReady().then(() => {
-          const rc = dialog.showMessageBoxSync({
-            type: 'warning',
-            title: APP_NAME || '飞牛客户端',
-            message: '飞牛客户端进程异常，无法唤起应用，是否重启飞牛？',
-            detail: '主程序可能已无响应。重启后请再次点击桌面快捷方式。',
-            buttons: ['重启飞牛', '取消'],
-            defaultId: 0,
-            cancelId: 1,
-          });
-          if (rc === 0) {
-            try {
-              if (pid) { require('child_process').execSync('taskkill /F /PID ' + pid + ' /T', { stdio: 'ignore' }); }
-            } catch (_) {}
-            try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
-            try {
-              const cp = require('child_process');
-              cp.spawn(process.execPath, argv, { detached: true, stdio: 'ignore' }).unref();
-            } catch (_) {}
-          } else {
-            try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
-          }
-          app.quit();
-        });
-      }
-    }, 150);
-  } catch (_) { app.quit(); }
+    } catch (_) {}
+    try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
+    try {
+      const cp2 = require('child_process');
+      cp2.spawn(process.execPath, argv, { detached: true, stdio: 'ignore' }).unref();
+    } catch (_) {}
+  }
+  app.exit(0);
 }
 
-// 主进程侧：second-instance 收到启动参数后立即标记 done（写 pid），告知新实例本进程已响应
+// 主进程侧：second-instance 收到启动参数后立即标记 done（写 pid），告知新实例本进程已响应。
+// v2.3.6: 文件缺失也写 done 文件（防御时序异常/历史残留），新实例只要看到 pending===false 即退出。
 function __markHandshakeDone() {
   try {
     const hf = __HANDSHAKE_FILE();
-    if (!fs.existsSync(hf)) return;
-    const obj = JSON.parse(fs.readFileSync(hf, 'utf-8'));
-    if (obj && obj.pending) {
-      fs.writeFileSync(hf, JSON.stringify({ token: obj.token, argv: obj.argv || [], pending: false, pid: process.pid, ts: Date.now() }), 'utf-8');
-    }
+    let obj = {};
+    try {
+      if (fs.existsSync(hf)) obj = JSON.parse(fs.readFileSync(hf, 'utf-8')) || {};
+      else { try { dlog && dlog('warn', 'shortcut.handshake.done.no-file'); } catch (_) {} }
+    } catch (_) {}
+    obj.pending = false;
+    obj.pid = process.pid;
+    obj.done_ts = Date.now();
+    fs.writeFileSync(hf, JSON.stringify(obj), 'utf-8');
   } catch (_) {}
 }
 
 let __gotSingleLock = false;
+// v2.3.6（需求 2.6.1 竞态修复）：先写握手文件再申请锁——主进程 second-instance 事件
+// 一定在 requestSingleInstanceLock() 之后到达，此时文件必已存在，__markHandshakeDone 不再扑空。
+const __hsToken = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+let __hsWritten = false;
+try {
+  fs.writeFileSync(__HANDSHAKE_FILE(), JSON.stringify({ token: __hsToken, argv: (process.argv || []).slice(1), pending: true, ts: Date.now() }), 'utf-8');
+  __hsWritten = true;
+} catch (_) {}
 if (app.requestSingleInstanceLock()) {
   __gotSingleLock = true;
+  if (__hsWritten) { try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {} }
 } else {
-  __secondInstanceHandshake();
+  __secondInstanceHandshakeSync(__hsToken); // 同步等待握手，内部 app.exit()，主流程不会继续
 }
 
 
@@ -4255,9 +4285,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 }
                 // v2.2.5: FPK 图标获取失败日志（便于排查任务栏图标缺失）
                 dlog && dlog('warn', 'appwin.icon.fpk-empty', { app: __appLabel, name: __fpkName, winId: win.id, bufLen: fpkBuf ? fpkBuf.length : 0, inList: __fpkInList });
-                // v2.2.6: FPK 列表已命中该应用但请求失败 → 不 fallback 页面 favicon，
-                // 保持缓存图标/空白（任务栏以 FPK 为准，页面 favicon 是 fnOS 默认图标会覆盖 FPK 语义）
-                if (__fpkInList) return;
+                // v2.3.6（用户要求"任务栏图标只能调用 FPK 图标管理器的对应应用图标"）：
+                // FPK 图标获取失败时彻底禁用页面 favicon 降级（favicon 是 fnOS 默认图标，
+                // 会覆盖 FPK 语义）；保持缓存图标/默认图标，由 1.5s/4s 重试再取 FPK 图标。
+                dlog && dlog('warn', 'appwin.icon.fpk-miss', { app: __appLabel, name: __fpkName, winId: win.id, inList: __fpkInList });
+                return;
               } else {
                 dlog && dlog('info', 'appwin.icon.fpk-skip', { app: __appLabel, winId: win.id, url: String(url || '').slice(0, 120), reason: 'no-fpk-name' });
                 // v2.3.0: 解析不到 FPK 应用名 -> 保持默认图标，不 fallback 页面 favicon
@@ -7446,6 +7478,20 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     // 拼 appview URL 必须带 http://，否则 Electron loadURL 当文件路径 -> chrome-error
     let __nasBase = String(nasAddress || '').trim().replace(/\/+$/, '');
     if (__nasBase && !/^https?:/i.test(__nasBase)) __nasBase = 'http://' + __nasBase;
+    // v2.3.6: nasAddress 可能丢端口（旧设置页传裸 host），按 settings.origin 补正端口，
+    // 否则快捷方式参数 --nas=host 启动后 appview 打到 80 端口（行为怪异/误判 external-app）
+    try {
+      const __stP = loadSettings();
+      const __origP = String((__stP && __stP.origin) || '').trim();
+      if (__origP && __nasBase) {
+        const __oP = new URL(/^https?:/i.test(__origP) ? __origP : 'http://' + __origP);
+        const __bP = new URL(__nasBase);
+        if (__oP.hostname === __bP.hostname && __oP.port) {
+          __nasBase = __oP.protocol + '//' + __oP.host;
+          try { fnosLog('info', 'shortcut', 'shortcut.url.port-fixed', { from: String(nasAddress), to: __nasBase }); } catch (_) {}
+        }
+      }
+    } catch (_) {}
 
     const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
     // v2.2.5：优先从 FPK 列表解析 launchUrl（设置页应用列表现以 FPK 为唯一数据源，
@@ -7625,8 +7671,8 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     try { __launchName = appId && /^https?:/i.test(appId) ? fpkAppNameFromUrl(appId) : String(appId || ''); } catch (_) {}
     const __isSysApp = /^trim\./i.test(__launchName);
     const args = __isSysApp && __launchName
-      ? `--launch-app=${encodeURIComponent(__launchName)} --nas=${encodeURIComponent(nasAddress || '')}`
-      : `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(nasAddress || '')}`;
+      ? `--launch-app=${encodeURIComponent(__launchName)} --nas=${encodeURIComponent(__nasBase || nasAddress || '')}`
+      : `--app=${encodeURIComponent(launchUrl)} --nas=${encodeURIComponent(__nasBase || nasAddress || '')}`;
     // v2.2.6：桌面路径用 app.getPath('desktop')——os.homedir()/Desktop 在 OneDrive
     // 桌面重定向、非英文系统或权限受限时可能不存在/不可写，导致快捷方式创建失败。
     let desktop = '';
@@ -7878,7 +7924,22 @@ function __resolveLaunchUrl(raw, nasAddr) {
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
   if (!appName) return '';
   // 1) 已是完整 URL（旧快捷方式 --app=http://...），直接用
-  if (/^https?:\/\//i.test(appName)) return appName;
+  // 1) 已是完整 URL（旧快捷方式 --app=http://...）；v2.3.6: 丢端口时按 settings.origin 补正
+  if (/^https?:\/\//i.test(appName)) {
+    try {
+      const __stR = loadSettings();
+      const __origR = String((__stR && __stR.origin) || '').trim();
+      if (__origR) {
+        const __oR = new URL(/^https?:/i.test(__origR) ? __origR : 'http://' + __origR);
+        const __bR = new URL(appName);
+        if (__oR.hostname === __bR.hostname && !__bR.port && __oR.port) {
+          appName = __oR.protocol + '//' + __oR.host + (__bR.pathname || '/') + (__bR.search || '') + (__bR.hash || '');
+          try { dlog && dlog('info', 'shortcut.url.port-fixed', { to: appName.slice(0, 140) }); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return appName;
+  }
   // 2) appId/appname 命中 manifest entry
   try {
     const mf = readManifest();
@@ -7889,6 +7950,20 @@ function __resolveLaunchUrl(raw, nasAddr) {
   let base = String(nasAddr || '').trim().replace(/\/+$/, '');
   if (base) {
     if (!/^https?:/i.test(base)) base = 'http://' + base;
+    // v2.3.6: 旧快捷方式 --nas=host 丢端口（创建时 nasAddress 未带端口），appview 会打到
+    // 80 端口被 preauth 误判 external-app。按 settings 里连接过的完整 origin（含端口）补正。
+    try {
+      const st = loadSettings();
+      const orig = String((st && st.origin) || '').trim();
+      if (orig) {
+        const o = new URL(/^https?:/i.test(orig) ? orig : 'http://' + orig);
+        const b = new URL(base);
+        if (o.hostname === b.hostname && !b.port && o.port) {
+          base = o.protocol + '//' + o.host;
+          try { dlog && dlog('info', 'shortcut.url.port-fixed', { from: String(nasAddr), to: base }); } catch (_) {}
+        }
+      }
+    } catch (_) {}
     return base + '/appview?anchor=' + encodeURIComponent(appName);
   }
   return appName;

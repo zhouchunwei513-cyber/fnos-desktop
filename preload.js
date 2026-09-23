@@ -21,6 +21,113 @@ const __rl = (() => {
     };
   }
 })();
+// ---------------------- v2.4.3 程序内启动（全网调研定论实现） ----------------------
+// 调研结论（fnos-fpk-dev 技档 / VanJay FPK 实录 / MiBee NVR iframe 嵌入实录）：飞牛桌面
+// 应用入口是 iframe 窗口模式（ui config type:"iframe"）——桌面前端（SPA 路由/窗口管理器）
+// 点图标后在桌面内以"桌面窗口"（iframe 窗口容器，可拖动缩放）打开 /appview?anchor={appName}；
+// type:"url" 才是新标签页/独立网页。桌面图标 DOM 形态（analysis.md 桌面扫描函数同款）：
+// <a href> 内 <img src="{origin}/icons/{appName}/...">。因此"程序内启动应用"的正确实现是
+// 在渲染进程找到桌面图标并派发 click，交由飞牛桌面前端自己开窗——完全等价于主页点击图标。
+// 禁止顶层 location.assign 整页跳 /appview（丢桌面壳，v2.4.2 被用户否定）、
+// 禁止新建 OS 窗口（v2.4.1 被用户否定）。
+function __fnosTryClickDesktopIcon(anchor) {
+  try {
+    if (!anchor) return false;
+    var i, el, img, cur, d, s, h;
+    // 路 1：a[href] 内 img src/data-src 含 /icons/{anchor}/，或 a href 含 appview?anchor={anchor}
+    var links = document.querySelectorAll('a[href]');
+    for (i = 0; i < links.length; i++) {
+      el = links[i];
+      img = el.querySelector('img');
+      s = img ? String(img.getAttribute('data-src') || img.currentSrc || img.src || '') : '';
+      h = String(el.getAttribute('href') || '');
+      if ((s && s.indexOf('/icons/' + anchor) !== -1) ||
+          (h && h.indexOf('appview') !== -1 && h.indexOf(anchor) !== -1)) {
+        el.click();
+        return true;
+      }
+    }
+    // 路 2：img[src*=/icons/{anchor}/] 向上 8 层找 <a>，否则直接点图标（点击事件可能
+    // 绑定在图标容器，MouseEvent 冒泡可触发；合成点击不触发 <a> 之外的默认跳转）
+    var imgs = document.querySelectorAll('img');
+    for (i = 0; i < imgs.length; i++) {
+      s = String(imgs[i].getAttribute('data-src') || imgs[i].currentSrc || imgs[i].src || '');
+      if (s && s.indexOf('/icons/' + anchor) !== -1) {
+        cur = imgs[i];
+        for (d = 0; d < 8 && cur; d++) {
+          if (cur.tagName === 'A') { cur.click(); return true; }
+          cur = cur.parentElement;
+        }
+        imgs[i].click();
+        return true;
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+function __fnosLaunchInDesktop(appId, url, fromRetry) {
+  try {
+    // anchor 优先取 url 的 anchor 参数（__resolveLaunchUrl 产物形如
+    // /appview?anchor=trim.photos），appId 兜底（可能为应用名或旧格式 URL）
+    var anchor = '';
+    try {
+      var m = /[?&]anchor=([^&#]+)/i.exec(String(url || ''));
+      if (m) anchor = decodeURIComponent(m[1]);
+    } catch (_) {}
+    if (!anchor) {
+      anchor = String(appId || '');
+      try { anchor = decodeURIComponent(anchor); } catch (_) {}
+      anchor = anchor.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    }
+    var pathNow = String((window.location && window.location.pathname) || '');
+    var onDesk = (pathNow === '/' || pathNow === '');
+    if (!onDesk && !fromRetry) {
+      // 不在飞牛桌面页（如 /login、旧版残留的 /appview 顶层页）：先记锚点回桌面根路由，
+      // 页面重载后由下方续点逻辑完成点击（桌面图标只存在于桌面 DOM）
+      try { window.sessionStorage.setItem('__fnosLaunchAnchor', anchor); } catch (_) {}
+      __rl.log('info', 'ipc', 'open-fpk-app goto-desk-first', { params: { anchor: anchor, from: pathNow } });
+      try { window.location.assign(String(window.location.origin || '') + '/'); } catch (_) {}
+      return;
+    }
+    var doClick = function (attempt) {
+      if (__fnosTryClickDesktopIcon(anchor)) {
+        __rl.log('info', 'ipc', 'open-fpk-app icon-clicked', { params: { anchor: anchor, attempt: attempt, path: pathNow } });
+        return true;
+      }
+      return false;
+    };
+    if (doClick(0)) return;
+    // 图标异步渲染（桌面/应用列表懒加载）：200ms × 30 = 6s 轮询等待后兜底
+    var n = 0;
+    var timer = setInterval(function () {
+      n++;
+      if (doClick(n)) { try { clearInterval(timer); } catch (_) {} return; }
+      if (n >= 30) {
+        try { clearInterval(timer); } catch (_) {}
+        // 兜底（应用未上桌面等）：退回同窗导航保底可用，日志记 icon-not-found 供下轮诊断
+        __rl.log('warn', 'ipc', 'open-fpk-app icon-not-found fallback-assign', { params: { anchor: anchor, url: String(url).slice(0, 140) } });
+        try { window.location.assign(String(url)); } catch (navErr) {
+          try { __rl.log('error', 'ipc', 'open-fpk-app fallback error', { err: navErr }); } catch (_) {}
+        }
+      }
+    }, 200);
+  } catch (err) {
+    try { __rl.log('error', 'ipc', 'open-fpk-app launch error', { err: err }); } catch (_) {}
+  }
+}
+// v2.4.3：续点——goto-desk-first 导航到桌面后（preload 随页面重载重新执行）自动完成
+// 图标点击；fromRetry=true 时不再回桌面（防止未登录被弹回 /login 时 setItem/assign 死循环，
+// 只轮询一次 + 兜底一次）。
+try {
+  var __fnosPendAnchor = '';
+  try { __fnosPendAnchor = String(window.sessionStorage.getItem('__fnosLaunchAnchor') || ''); } catch (_) {}
+  if (__fnosPendAnchor) {
+    try { window.sessionStorage.removeItem('__fnosLaunchAnchor'); } catch (_) {}
+    setTimeout(function () {
+      __fnosLaunchInDesktop(__fnosPendAnchor, String(window.location.origin || '') + '/appview?anchor=' + encodeURIComponent(__fnosPendAnchor), true);
+    }, 800);
+  }
+} catch (_) {}
 // v2.4.0（需求 2.5-1）：Main → Renderer：open-fpk-app，携带参数 appId。
 // found:true  = 唤起成功，渲染进程在主窗口内同窗导航到应用页面——程序内启动
 //               （v2.4.2 用户反馈：不新建独立应用窗口，≡主页点击应用图标）；
@@ -32,10 +139,11 @@ ipcRenderer.on('open-fpk-app', (e, p) => {
       // 需求 2.6-2：appId 对应的 FPK 应用已删除 → 弹出提示（文案按需求固定）
       alert('找不到该应用，请重新创建快捷方式。');
     } else if (p && p.found && p.url && /^https?:/i.test(String(p.url))) {
-      // v2.4.2（用户反馈）：程序内启动——主窗口同窗导航到应用页面，不新建窗口
-      __rl.log('info', 'ipc', 'open-fpk-app navigate-in-main', { params: { url: p.url, appId: p.appId } });
-      try { window.location.assign(String(p.url)); } catch (navErr) {
-        try { __rl.log('error', 'ipc', 'open-fpk-app navigate error', { err: navErr }); } catch (_) {}
+      // v2.4.3（用户反馈 + 全网调研）：程序内启动——模拟点击飞牛桌面应用图标，由飞牛
+      // 桌面前端在桌面内以 iframe 窗口容器（fnOS 桌面窗口）打开应用（≡主页点击图标）
+      __rl.log('info', 'ipc', 'open-fpk-app launch-in-desktop', { params: { url: p.url, appId: p.appId } });
+      try { __fnosLaunchInDesktop(p.appId, p.url, false); } catch (navErr) {
+        try { __rl.log('error', 'ipc', 'open-fpk-app launch error', { err: navErr }); } catch (_) {}
       }
     }
     try { window.__fnosLastOpenApp = p; } catch (_) {}

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.2';
+const APP_VERSION = '2.4.3';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -5385,13 +5385,12 @@ function tryOpenPendingApp() {
     if (u) {
       try { require('./logger.js').log('info', 'app', 'pending_app.opening', { params: { url: String(u).slice(0, 160), elapsedMs: elapsed, fromShortcut: __pendingFromShortcut, appId: String(__pendingAppId || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
       // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——
-      // v2.4.2（用户反馈）：程序内启动——渲染进程在主窗口内同窗打开应用页面，
-      // 不新建独立应用窗口。应用页主导航完成（did-navigate）后显示主窗口，避免主页闪现；
-      // 2s 兜底防跳转未发起导致窗口不可见。
-      try {
-        mainWindow.webContents.once('did-navigate', () => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} });
-      } catch (_) {}
+      // v2.4.3（用户反馈 + 全网调研）：程序内启动 = 渲染进程模拟点击飞牛桌面应用图标，
+      // 由飞牛桌面前端在桌面内以 iframe 窗口容器（"fnOS 桌面窗口"）打开应用——
+      // 不新建 OS 窗口、不顶层整页跳转（appview 顶层页丢桌面壳）。桌面窗口容器开在
+      // 主窗口内部 → 通知前即 show+focus；2s 兜底防图标未渲染导致窗口不可见。
       __notifyOpenFpkApp(__pendingAppId, true, u);
+      try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {};
       setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
@@ -10190,14 +10189,12 @@ function __handleSecondInstance(_e, commandLine) {
         try { require('./logger.js').log('info', 'app', 'shortcut.hot_start', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) } }, __RUN_MODE); } catch (_) {}
         if (loggedIn) {
           // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——
-          // v2.4.2（用户反馈）：程序内启动——渲染进程在主窗口内同窗打开应用页面，
-          // 不新建独立应用窗口、不隐藏主窗口（主窗口内容即应用，≡主页点击图标）。
-          // 应用页主导航完成（did-navigate）后显示主窗口，避免主页闪现；2s 兜底防跳转未发起。
-          try {
-            mainWindow.webContents.once('did-navigate', () => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} });
-          } catch (_) {}
+          // v2.4.3（用户反馈 + 全网调研）：程序内启动 = 渲染进程模拟点击飞牛桌面应用图标，
+          // 飞牛桌面前端在桌面内以 iframe 窗口容器打开应用（≡主页点击图标效果），
+          // 不新建 OS 窗口、不顶层整页跳转。桌面窗口容器在主窗口内部 → 通知前即 show+focus。
           __notifyOpenFpkApp(rawAppId, true, u);
           try { require('./logger.js').log('info', 'app', 'shortcut.app_open_in_main', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+          try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {};
           setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
@@ -10213,8 +10210,9 @@ function __handleSecondInstance(_e, commandLine) {
       } catch (err) {
         try { require('./logger.js').log('error', 'app', 'shortcut.hot_start error', { err }, __RUN_MODE); } catch (_) {}
         try {
-          // v2.4.2（用户反馈）：程序内启动——不新建窗口，渲染进程在主窗口内同窗打开应用
+          // v2.4.3（用户反馈）：程序内启动——渲染进程模拟点击桌面图标，在桌面窗口容器打开
           __notifyOpenFpkApp(rawAppId, true, u);
+          try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {};
           setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
         } catch (_) {}
       }

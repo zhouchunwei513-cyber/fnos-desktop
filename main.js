@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.3';
+const APP_VERSION = '2.4.4';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -7920,8 +7920,13 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2、边界用例 7），
 //               渲染进程弹窗提示"找不到该应用，请重新创建快捷方式。"
 let __pendingAppId = ''; // 原始应用唯一 ID（--launch-app 值），open-fpk-app 携带字段 appId
+// v2.4.4：快捷方式启动流程期（8s）——期内 web-contents-created 全局开窗兜底把 http(s)
+// 应用开窗转入主窗口桌面窗口容器（fnos-deskwin-open），禁止 createAppWindow 新建 OS 窗口。
+let __fnosDeskWinUntil = 0;
 function __notifyOpenFpkApp(appId, found, url) {
   try {
+    // v2.4.4：每次唤起续期 8s 流程期标志（主窗口未就绪的重试发送场景同样续期）
+    try { __fnosDeskWinUntil = Date.now() + 8000; } catch (_) {}
     const payload = {
       appId: String(appId || (url ? (fpkAppNameFromUrl(url) || '') : '') || '').slice(0, 200),
       found: !!found,
@@ -9614,6 +9619,19 @@ try {
                       }
                     } catch (_) {}
                   });
+                  return { action: 'deny' };
+                }
+              } catch (_) {}
+              // v2.4.4：快捷方式启动流程期内的 http(s) 开窗（含容器 iframe 内 appview 的
+              // openAppFromAnchor / window.open）一律转入主窗口"桌面窗口容器"=程序内启动，
+              // 禁止 createAppWindow 新建 OS 窗口（用户反馈 4 否定的就是新窗口启动）。
+              try {
+                if (Date.now() < __fnosDeskWinUntil && mainWindow && !mainWindow.isDestroyed()) {
+                  const __dwUrl = u;
+                  setImmediate(() => {
+                    try { mainWindow.webContents.send('fnos-deskwin-open', { url: __dwUrl, title: '' }); } catch (_) {}
+                  });
+                  dlog('info', 'appwin.open.to-deskwin', { url: u.slice(0, 120) });
                   return { action: 'deny' };
                 }
               } catch (_) {}

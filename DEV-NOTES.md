@@ -85,15 +85,18 @@
 
 ## 4. 已知限制与映射说明
 
-1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.3 调研定论实现）**：`open-fpk-app` found:true
-   时渲染进程**模拟点击飞牛桌面应用图标**（`<a href>` / img src `/icons/{appName}/`，DOM 形态
-   同 analysis.md 桌面扫描函数），由飞牛桌面前端（SPA 路由/窗口管理器）在桌面内以 **iframe
-   窗口容器**（"fnOS 桌面窗口"，ui config `type:"iframe"` 窗口模式）打开应用——完全等价于主页
-   点击应用图标。不新建 OS 窗口（v2.4.1 被用户否定）、不顶层整页跳 `/appview`（v2.4.2 被用户
-   否定，丢桌面壳）；不在桌面页先回桌面根路由再续点（sessionStorage 锚点 + fromRetry 防登录页
-   死循环）；6s 找不到图标才退回同窗 `location.assign` 兜底（日志记 `icon-not-found` 供诊断）。
+1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.4 桌面窗口容器，真机日志定案）**：`open-fpk-app`
+   found:true 时渲染进程在主窗口内注入**桌面窗口容器**（标题栏 + 可拖动 + 可缩放 + iframe，
+   ≡"fnOS 桌面窗口"形态），同源 iframe 加载 `/appview?anchor={appId}` 或解析后应用 URL——
+   程序内启动、桌面壳保留。先尝试模拟点击桌面图标（2s；图标 DOM 真相 = div 容器 +
+   `img.semi-image-img`，fnnas 官方论坛油猴脚本实证；dispatchEvent 合成 MouseEvent 触发
+   Vue @click 但 isTrusted=false 不触发 `<a>` 默认跳转），未命中即确定性开容器。不新建 OS 窗口
+   （v2.4.1 否定）、不顶层整页跳 `/appview`（v2.4.2 否定）、不做 `location.assign` 兜底（v2.4.3
+   因图标 DOM 假设错误恒 `icon-not-found` 退化为 v2.4.2 行为，反馈 4 否定）。快捷方式启动流程期
+   （8s）内全局 `setWindowOpenHandler` 把一切 http(s) 开窗转入本容器（`fnos-deskwin-open`），
+   杜绝中途弹新 OS 窗口。同源 iframe 不受 X-Frame-Options 限制（其只管跨源）。
    调研来源：fnos-fpk-dev 技档、VanJay FPK 实录（iframe 窗口模式配置）、MiBee NVR 发布文
-   （飞牛桌面以 iframe 嵌入应用，`X-Frame-Options: DENY` 会挡住桌面嵌入）。
+   （飞牛桌面以 iframe 嵌入应用）、fnnas 官方论坛油猴脚本（桌面图标 DOM 实证）。
 2. **second-instance 无应用参数时显示主窗口**（v2.4.1 用户反馈调整）：用户点击主程序启动
    = 显式查看主界面意图 → show + focus；带应用参数的快捷方式唤起仍隐藏主窗口。托盘图标
    **单击**展示主界面的行为保留（人工动作，等效托盘【显示主界面】）。
@@ -105,9 +108,9 @@
    新生成快捷方式统一 `--launch-app={应用唯一 ID}`。
 6. **未登录状态**：快捷方式唤起时主进程未登录则入队 `__pendingAppUrl`，登录完成后自动打开
    应用；登录页（/login）显示属登录流程必要展示，非主页弹出。
-7. **主窗口显示策略（v2.4.3，用户反馈演进）**：点击启动飞牛主程（无应用参数）显示主窗口
+7. **主窗口显示策略（v2.4.4，用户反馈演进）**：点击启动飞牛主程（无应用参数）显示主窗口
    （主页，含 10s 黑屏兜底）；桌面快捷方式（`--launch-app`/`--app`/`--open-app`）**显示**主
-   窗口并在飞牛桌面内以 iframe 窗口容器打开应用（程序内启动——桌面窗口容器开在主窗口内部，
+   窗口并以桌面窗口容器（iframe）在主窗口内打开应用（程序内启动——容器开在主窗口内部，
    必须可见，通知前即 show+focus + 2s 兜底；v2.4.0/v2.4.1"快捷方式隐藏主窗口"仅适用于独立
    应用窗口时代，随"程序内启动"要求作废）；开机自启（Run 键命令带 `--autostart` 标记、
    不带应用 ID）隐藏主窗口只驻留托盘（需求 2.2 不变）。
@@ -132,3 +135,9 @@
   快捷方式改为通知前 show 主窗口（桌面窗口容器在其内部）；续点机制（不在桌面先回桌面根路由，
   页面重载后自动续点，fromRetry 防登录页死循环）；6s 无图标退回同窗导航兜底（日志
   `icon-not-found` 供下轮诊断）。
+- **fnos v2.4.4**（反馈 4 + 桌面图标 DOM 实证）：程序内启动改为**桌面窗口容器**（iframe）
+  确定性实现——主窗口内注入窗口容器（标题栏/拖动/缩放/iframe 加载 appview 或应用 URL）；
+  修正图标点击匹配（真实 DOM = div + `img.semi-image-img`，dispatchEvent 防 `<a>` 默认跳转，
+  2s 未命中即开容器）；移除 v2.4.3 `location.assign` 兜底（真机日志定案其因图标 DOM 假设错误
+  恒 `icon-not-found` 而退化为被否定的 v2.4.2 行为）；快捷方式启动流程期（8s）内全局
+  `setWindowOpenHandler` 将一切 http(s) 开窗转入容器（`fnos-deskwin-open`），全程无新 OS 窗口。

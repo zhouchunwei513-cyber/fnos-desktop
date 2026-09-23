@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.14';
+const APP_VERSION = '2.4.15';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -8214,11 +8214,15 @@ function __openAppByWindowType(appId, appName, appUrl, windowType) {
     if (windowType === 'embed') {
       createAppWindow(appUrl, { embedStyle: true, appId: nm });
       try { require('./logger.js').log('info', 'wintype', 'open.embed-shell', { params: { app: nm, url: String(appUrl || '').slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+      // v2.4.15 r15b：快捷方式启动 → 飞牛主页面隐藏到托盘（桌面只呈现应用窗）
+      try { hideMainToBackground(); } catch (_) {}
       return true;
     }
     if (windowType === 'popout') {
       createAppWindow(appUrl, { appId: nm });
       try { require('./logger.js').log('info', 'wintype', 'open.popout', { params: { app: nm, url: String(appUrl || '').slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+      // v2.4.15 r15b：快捷方式启动 → 飞牛主页面隐藏到托盘（桌面只呈现应用窗）
+      try { hideMainToBackground(); } catch (_) {}
       return true;
     }
   } catch (_) {}

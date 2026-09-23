@@ -85,18 +85,10 @@
 
 ## 4. 已知限制与映射说明
 
-1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.5 复用式应用窗，用户反馈模型定案）**：
-   `open-fpk-app` found:true 的"程序内启动" = **复用式应用窗** `__openAppInClientWindow`
-   （≡客户端主页点击图标效果——主窗口 `setWindowOpenHandler` → `createAppWindow` 链路）：
-   单例 `__appLaunchWindow` 已存在则 `loadURL` 同窗切应用 + 聚焦（毫秒级，微信/QQ/VS Code
-   单实例模型），不存在才创建一次（`closed` 置空）。快捷方式流程**永不 show 主界面窗口**。
-   快捷方式启动流程期（8s）内全局开窗兜底（`to-reuse`）把 http(s) 开窗转入复用式应用窗。
-   此前方案否定链：v2.4.1 每次 `createAppWindow` 新建窗口（反馈"还是新建窗口启动"）、v2.4.2
-   顶层整页跳 `/appview`（丢壳）、v2.4.3 模拟点击图标（DOM 假设错误退化）、v2.4.4 主窗口内
-   桌面窗口容器（须 show 主界面，与"没有主界面"模型冲突）。渲染进程只记 `handled-by-main`
-   观察日志（需求 2.5-1 事件流保留）。调研来源：Electron Deep Links 官方教程
-   （单实例锁 + second-instance argv）、Electron app 文档 `requestSingleInstanceLock`、
-   掘金 Electron 企业级实战（Windows 协议唤起范式）。
+1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.6 复用式应用窗，用户模型定案）**：`open-fpk-app` IPC 事件流保留（需求 2.5-1 不破坏）；主进程 `__openAppInClientWindow` 复用式应用窗（单例 `__appLaunchWindow`）= **≡飞牛主页点击图标效果**（主窗口 `setWindowOpenHandler` → `createAppWindow` 链路实锤）：同应用只聚焦不重载（毫秒级秒开），不同应用同窗导航，**复用同一扇窗**（用户 2026-09-23 选择题确认形态）。快捷方式流程主界面永不 show（场景 2/3"隐藏主界面/没有主界面"）；partition 走 `currentPartition` = 与主窗同源 session。
+  - **否定链（勿回头）**：v2.4.1 每次新建窗"还是新建窗口启动"；v2.4.2 整页跳丢壳；v2.4.3 图标 DOM 假设错（真 DOM 是 div+img.semi-image-img 非 a[href]，[飞牛论坛油猴脚本](https://club.fnnas.com/topic/3893/)实证）退化；v2.4.4 主窗内容器须 show 主界面（与"没有主界面"冲突）；v2.4.5 方向对但 SHARED_PARTITION 与主窗登录态不同源 → 弹窗出登录页（真机日志定案 `/login?redirect_uri=`，用户二次登录 53s）。
+  - **机制调研**：Electron 单实例官方范式 = `app.requestSingleInstanceLock()` + `app.on("second-instance", (event, argv, …))` + 锁失败方 quit（微信/QQ/VS Code 同款）：[Electron app 文档](https://www.electronjs.org/zh/docs/latest/api/app)、[Deep Links 教程](https://www.electronjs.org/zh/docs/latest/tutorial/launch-app-from-url-in-another-app/)、[掘金企业级实战](https://juejin.cn/post/7164985606463258638)。
+
 2. **second-instance 无应用参数时显示主窗口**（v2.4.1 用户反馈调整）：用户点击主程序启动
    = 显式查看主界面意图 → show + focus；带应用参数的快捷方式唤起仍隐藏主窗口。托盘图标
    **单击**展示主界面的行为保留（人工动作，等效托盘【显示主界面】）。
@@ -149,3 +141,4 @@
   open-fpk-app 事件流）；流程期全局开窗兜底改转复用窗（`to-reuse`）；`createAppWindow`
   透传窗口引用。三场景：①实例在跑=IPC 复用窗秒开；②冷启动=主界面隐藏驻托盘+应用窗加载
   应用；③--autostart 常驻后=IPC 唤起毫秒级、没有主界面。
+- **v2.4.6**（2026-09-23，反馈 5"没改过来还是老样子"）：真机日志定案两 bug——①弹窗出登录页（SHARED_PARTITION 与主窗 session 不同源，appview 重定向 `/login`）→ partition 走 currentPartition 同源秒进应用；②关窗后复用链路断、观感"每次弹新窗"→ 同应用秒开聚焦（`__fnosLaunchAppId`）+ `appwin.reuse-closed` 埋点。用户选择题定案形态=独立应用窗复用同一扇。11 项验证 PASS。

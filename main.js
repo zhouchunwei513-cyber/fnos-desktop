@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.5';
+const APP_VERSION = '2.4.6';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3943,23 +3943,37 @@ function __openAppInClientWindow(u, opts = {}) {
     if (!u || !/^https?:/i.test(String(u))) return null;
     // 复用：同 URL 只聚焦不重载；不同 URL 同窗导航（秒开关键，杜绝每点一次新建窗口）
     if (__appLaunchWindow && !__appLaunchWindow.isDestroyed()) {
-      try {
-        const cur = String(__appLaunchWindow.webContents.getURL() || '');
-        if (cur !== String(u)) __appLaunchWindow.loadURL(String(u));
-      } catch (_) {}
+      // v2.4.6（真机日志定案）：同一应用只聚焦不重载 = 毫秒级秒开（用户模型场景 3）；
+      // 不同应用才同窗导航（复用同一扇窗，杜绝"每点一次弹一个新窗"的观感）
+      const wantApp = String(opts.appId || '');
+      const sameApp = !!wantApp && !!__appLaunchWindow.__fnosLaunchAppId && wantApp === __appLaunchWindow.__fnosLaunchAppId;
+      if (!sameApp) {
+        try {
+          const cur = String(__appLaunchWindow.webContents.getURL() || '');
+          if (cur !== String(u)) __appLaunchWindow.loadURL(String(u));
+        } catch (_) {}
+        try { __appLaunchWindow.__fnosLaunchAppId = wantApp; } catch (_) {}
+      }
       try {
         if (__appLaunchWindow.isMinimized()) __appLaunchWindow.restore();
         __appLaunchWindow.show();
         __appLaunchWindow.focus();
       } catch (_) {}
-      dlog && dlog('info', 'appwin.reuse', { url: String(u).slice(0, 140), title: String(opts.title || '') });
+      dlog && dlog('info', 'appwin.reuse', { url: String(u).slice(0, 140), title: String(opts.title || ''), appId: wantApp, sameApp: !!sameApp });
       return __appLaunchWindow;
     }
-    const win = createAppWindow(String(u), Object.assign({ partition: SHARED_PARTITION, title: APP_NAME }, opts || {}));
+    // v2.4.6（真机日志定案）：partition 不传 → createAppWindowInner 取 currentPartition
+    // =与主窗同源 session。v2.4.5 传 SHARED_PARTITION 与主窗登录态不同源，appview 判未登录
+    // 重定向 /login?redirect_uri=…（弹窗出登录页，用户被迫二次登录 53s 才进应用，毁掉秒开）。
+    const win = createAppWindow(String(u), Object.assign({ title: APP_NAME }, opts || {}));
     __appLaunchWindow = win || null;
     try {
       if (__appLaunchWindow) {
-        __appLaunchWindow.once('closed', () => { try { __appLaunchWindow = null; } catch (_) {} });
+        try { __appLaunchWindow.__fnosLaunchAppId = String(opts.appId || ''); } catch (_) {}
+        __appLaunchWindow.once('closed', () => {
+          try { dlog && dlog('info', 'appwin.reuse-closed', { appId: String((__appLaunchWindow && __appLaunchWindow.__fnosLaunchAppId) || '') }); } catch (_) {}
+          try { __appLaunchWindow = null; } catch (_) {}
+        });
         // 新窗自身加载完成即呈现（createAppWindowInner show:false 的既有显示链之外的秒显兜底）
         __appLaunchWindow.webContents.once('did-finish-load', () => {
           try {

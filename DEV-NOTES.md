@@ -85,18 +85,18 @@
 
 ## 4. 已知限制与映射说明
 
-1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.4 桌面窗口容器，真机日志定案）**：`open-fpk-app`
-   found:true 时渲染进程在主窗口内注入**桌面窗口容器**（标题栏 + 可拖动 + 可缩放 + iframe，
-   ≡"fnOS 桌面窗口"形态），同源 iframe 加载 `/appview?anchor={appId}` 或解析后应用 URL——
-   程序内启动、桌面壳保留。先尝试模拟点击桌面图标（2s；图标 DOM 真相 = div 容器 +
-   `img.semi-image-img`，fnnas 官方论坛油猴脚本实证；dispatchEvent 合成 MouseEvent 触发
-   Vue @click 但 isTrusted=false 不触发 `<a>` 默认跳转），未命中即确定性开容器。不新建 OS 窗口
-   （v2.4.1 否定）、不顶层整页跳 `/appview`（v2.4.2 否定）、不做 `location.assign` 兜底（v2.4.3
-   因图标 DOM 假设错误恒 `icon-not-found` 退化为 v2.4.2 行为，反馈 4 否定）。快捷方式启动流程期
-   （8s）内全局 `setWindowOpenHandler` 把一切 http(s) 开窗转入本容器（`fnos-deskwin-open`），
-   杜绝中途弹新 OS 窗口。同源 iframe 不受 X-Frame-Options 限制（其只管跨源）。
-   调研来源：fnos-fpk-dev 技档、VanJay FPK 实录（iframe 窗口模式配置）、MiBee NVR 发布文
-   （飞牛桌面以 iframe 嵌入应用）、fnnas 官方论坛油猴脚本（桌面图标 DOM 实证）。
+1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.5 复用式应用窗，用户反馈模型定案）**：
+   `open-fpk-app` found:true 的"程序内启动" = **复用式应用窗** `__openAppInClientWindow`
+   （≡客户端主页点击图标效果——主窗口 `setWindowOpenHandler` → `createAppWindow` 链路）：
+   单例 `__appLaunchWindow` 已存在则 `loadURL` 同窗切应用 + 聚焦（毫秒级，微信/QQ/VS Code
+   单实例模型），不存在才创建一次（`closed` 置空）。快捷方式流程**永不 show 主界面窗口**。
+   快捷方式启动流程期（8s）内全局开窗兜底（`to-reuse`）把 http(s) 开窗转入复用式应用窗。
+   此前方案否定链：v2.4.1 每次 `createAppWindow` 新建窗口（反馈"还是新建窗口启动"）、v2.4.2
+   顶层整页跳 `/appview`（丢壳）、v2.4.3 模拟点击图标（DOM 假设错误退化）、v2.4.4 主窗口内
+   桌面窗口容器（须 show 主界面，与"没有主界面"模型冲突）。渲染进程只记 `handled-by-main`
+   观察日志（需求 2.5-1 事件流保留）。调研来源：Electron Deep Links 官方教程
+   （单实例锁 + second-instance argv）、Electron app 文档 `requestSingleInstanceLock`、
+   掘金 Electron 企业级实战（Windows 协议唤起范式）。
 2. **second-instance 无应用参数时显示主窗口**（v2.4.1 用户反馈调整）：用户点击主程序启动
    = 显式查看主界面意图 → show + focus；带应用参数的快捷方式唤起仍隐藏主窗口。托盘图标
    **单击**展示主界面的行为保留（人工动作，等效托盘【显示主界面】）。
@@ -108,12 +108,12 @@
    新生成快捷方式统一 `--launch-app={应用唯一 ID}`。
 6. **未登录状态**：快捷方式唤起时主进程未登录则入队 `__pendingAppUrl`，登录完成后自动打开
    应用；登录页（/login）显示属登录流程必要展示，非主页弹出。
-7. **主窗口显示策略（v2.4.4，用户反馈演进）**：点击启动飞牛主程（无应用参数）显示主窗口
-   （主页，含 10s 黑屏兜底）；桌面快捷方式（`--launch-app`/`--app`/`--open-app`）**显示**主
-   窗口并以桌面窗口容器（iframe）在主窗口内打开应用（程序内启动——容器开在主窗口内部，
-   必须可见，通知前即 show+focus + 2s 兜底；v2.4.0/v2.4.1"快捷方式隐藏主窗口"仅适用于独立
-   应用窗口时代，随"程序内启动"要求作废）；开机自启（Run 键命令带 `--autostart` 标记、
-   不带应用 ID）隐藏主窗口只驻留托盘（需求 2.2 不变）。
+7. **主窗口显示策略（v2.4.5，用户反馈模型定案）**：点击启动飞牛主程（无应用参数）显示主
+   窗口（主页，含 10s 黑屏兜底）；桌面快捷方式（`--launch-app`/`--app`/`--open-app`）
+   **不显示主界面**（用户模型：场景 1"不新开主窗口"、场景 2"启动完成后隐藏主界面，只驻留
+   托盘"、场景 3"没有主界面"）——程序内启动以复用式应用窗呈现应用（≡主页点击图标效果）；
+   开机自启（Run 键命令带 `--autostart` 标记、不带应用 ID）隐藏主窗口只驻留托盘（需求 2.2
+   不变）。
 
 ## 5. 版本记录
 
@@ -141,3 +141,11 @@
   2s 未命中即开容器）；移除 v2.4.3 `location.assign` 兜底（真机日志定案其因图标 DOM 假设错误
   恒 `icon-not-found` 而退化为被否定的 v2.4.2 行为）；快捷方式启动流程期（8s）内全局
   `setWindowOpenHandler` 将一切 http(s) 开窗转入容器（`fnos-deskwin-open`），全程无新 OS 窗口。
+- **fnos v2.4.5**（用户反馈模型定案：快捷方式=触发器）：程序内启动重构为**复用式应用窗**
+  `__openAppInClientWindow`（单例 `__appLaunchWindow`：已存在则 `loadURL` 同窗切应用 + 聚焦=
+  毫秒级秒开，不存在才建一次；≡主页点击图标效果）；主进程 `__notifyOpenFpkApp` 链路直开
+  复用窗（最短路径）；快捷方式流程主界面永不 show（删 v2.4.4 全部 SHOW+2s 兜底）；
+  preload 删 v2.4.4 桌面窗口容器/图标点击/整页跳/2s 轮询（`handled-by-main` 观察日志保留
+  open-fpk-app 事件流）；流程期全局开窗兜底改转复用窗（`to-reuse`）；`createAppWindow`
+  透传窗口引用。三场景：①实例在跑=IPC 复用窗秒开；②冷启动=主界面隐藏驻托盘+应用窗加载
+  应用；③--autostart 常驻后=IPC 唤起毫秒级、没有主界面。

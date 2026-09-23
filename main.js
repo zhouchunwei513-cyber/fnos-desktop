@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.4';
+const APP_VERSION = '2.4.5';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3930,6 +3930,55 @@ const APP_UI_INJECT_CSS = [
 ].join('\n');
 
 
+// v2.4.5（用户反馈模型：快捷方式=触发器，单实例 + second-instance IPC 秒开）：
+// "程序内启动应用" = 复用式应用窗（≡客户端主页点击图标效果——主窗口 setWindowOpenHandler
+// → createAppWindow 链路）。此前 v2.4.1 每次 createAppWindow 新建窗口（用户反馈"还是新建
+// 窗口启动"）、v2.4.2/2.4.3 顶层整页跳 /appview（丢壳全屏页）、v2.4.4 主窗口内容器
+// （须 show 主界面）均被否定。v2.4.5 定案：单例应用窗 __appLaunchWindow——已存在则
+// loadURL 换应用 + 聚焦（毫秒级，微信/QQ/VS Code 模型），不存在才创建一次；
+// 快捷方式流程永不 show 主界面窗口（场景 2/3："隐藏主界面，只驻留托盘""没有主界面"）。
+let __appLaunchWindow = null;
+function __openAppInClientWindow(u, opts = {}) {
+  try {
+    if (!u || !/^https?:/i.test(String(u))) return null;
+    // 复用：同 URL 只聚焦不重载；不同 URL 同窗导航（秒开关键，杜绝每点一次新建窗口）
+    if (__appLaunchWindow && !__appLaunchWindow.isDestroyed()) {
+      try {
+        const cur = String(__appLaunchWindow.webContents.getURL() || '');
+        if (cur !== String(u)) __appLaunchWindow.loadURL(String(u));
+      } catch (_) {}
+      try {
+        if (__appLaunchWindow.isMinimized()) __appLaunchWindow.restore();
+        __appLaunchWindow.show();
+        __appLaunchWindow.focus();
+      } catch (_) {}
+      dlog && dlog('info', 'appwin.reuse', { url: String(u).slice(0, 140), title: String(opts.title || '') });
+      return __appLaunchWindow;
+    }
+    const win = createAppWindow(String(u), Object.assign({ partition: SHARED_PARTITION, title: APP_NAME }, opts || {}));
+    __appLaunchWindow = win || null;
+    try {
+      if (__appLaunchWindow) {
+        __appLaunchWindow.once('closed', () => { try { __appLaunchWindow = null; } catch (_) {} });
+        // 新窗自身加载完成即呈现（createAppWindowInner show:false 的既有显示链之外的秒显兜底）
+        __appLaunchWindow.webContents.once('did-finish-load', () => {
+          try {
+            if (__appLaunchWindow && !__appLaunchWindow.isDestroyed()) {
+              __appLaunchWindow.show();
+              __appLaunchWindow.focus();
+            }
+          } catch (_) {}
+        });
+      }
+    } catch (_) {}
+    dlog && dlog('info', 'appwin.reuse-create', { url: String(u).slice(0, 140), hasWin: !!__appLaunchWindow });
+    return __appLaunchWindow;
+  } catch (e) {
+    try { dlog && dlog('error', 'appwin.reuse error', { err: e }); } catch (_) {}
+    return null;
+  }
+}
+
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
   // v2.2.4：崩溃风暴抑制——若最近 30 秒内渲染进程崩溃 >=4 次（应用窗口连崩），
@@ -3947,10 +3996,11 @@ function createAppWindow(url, opts = {}) {
       setTimeout(() => {
         try { createAppWindowInner(url, opts, __cw_t0); } catch (_) {}
       }, __stormWait);
-      return;
+      return null;
     }
-    createAppWindowInner(url, opts, __cw_t0);
-  } catch (_) { try { createAppWindowInner(url, opts, __cw_t0); } catch (_) {} }
+    // v2.4.5：透传窗口引用（__openAppInClientWindow 单例复用需持窗句柄）
+    return createAppWindowInner(url, opts, __cw_t0);
+  } catch (_) { try { return createAppWindowInner(url, opts, __cw_t0); } catch (_) {} }
 }
 
 function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
@@ -5385,13 +5435,11 @@ function tryOpenPendingApp() {
     if (u) {
       try { require('./logger.js').log('info', 'app', 'pending_app.opening', { params: { url: String(u).slice(0, 160), elapsedMs: elapsed, fromShortcut: __pendingFromShortcut, appId: String(__pendingAppId || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
       // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——
-      // v2.4.3（用户反馈 + 全网调研）：程序内启动 = 渲染进程模拟点击飞牛桌面应用图标，
-      // 由飞牛桌面前端在桌面内以 iframe 窗口容器（"fnOS 桌面窗口"）打开应用——
-      // 不新建 OS 窗口、不顶层整页跳转（appview 顶层页丢桌面壳）。桌面窗口容器开在
-      // 主窗口内部 → 通知前即 show+focus；2s 兜底防图标未渲染导致窗口不可见。
+      // v2.4.5（用户反馈模型）：程序内启动 = 复用式应用窗 __openAppInClientWindow
+      // （≡主页点击图标效果）。场景 2（主程序未运行被拉起）：主界面隐藏只驻留托盘，
+      // 应用窗直接呈现应用——不 show 主界面（用户模型："启动完成后隐藏主界面，只驻留托盘"）。
       __notifyOpenFpkApp(__pendingAppId, true, u);
-      try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {};
-      setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
+      __openAppInClientWindow(u, { title: APP_NAME, appId: __pendingAppId });
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
         __pendingAppId = '';
@@ -7920,8 +7968,8 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2、边界用例 7），
 //               渲染进程弹窗提示"找不到该应用，请重新创建快捷方式。"
 let __pendingAppId = ''; // 原始应用唯一 ID（--launch-app 值），open-fpk-app 携带字段 appId
-// v2.4.4：快捷方式启动流程期（8s）——期内 web-contents-created 全局开窗兜底把 http(s)
-// 应用开窗转入主窗口桌面窗口容器（fnos-deskwin-open），禁止 createAppWindow 新建 OS 窗口。
+// v2.4.5：快捷方式启动流程期（8s）——期内 web-contents-created 全局开窗兜底把 http(s)
+// 应用开窗转入复用式应用窗（__openAppInClientWindow），避免解析链中途各自新建窗口。
 let __fnosDeskWinUntil = 0;
 function __notifyOpenFpkApp(appId, found, url) {
   try {
@@ -9622,16 +9670,16 @@ try {
                   return { action: 'deny' };
                 }
               } catch (_) {}
-              // v2.4.4：快捷方式启动流程期内的 http(s) 开窗（含容器 iframe 内 appview 的
-              // openAppFromAnchor / window.open）一律转入主窗口"桌面窗口容器"=程序内启动，
-              // 禁止 createAppWindow 新建 OS 窗口（用户反馈 4 否定的就是新窗口启动）。
+              // v2.4.5：快捷方式启动流程期内的 http(s) 开窗（含 appview openAppFromAnchor /
+              // window.open 解析链）一律转入复用式应用窗（程序内启动秒开），不再各自
+              // createAppWindow 新建窗口（用户模型：不新开窗口，IPC 唤起既有应用载体）。
               try {
-                if (Date.now() < __fnosDeskWinUntil && mainWindow && !mainWindow.isDestroyed()) {
+                if (Date.now() < __fnosDeskWinUntil) {
                   const __dwUrl = u;
                   setImmediate(() => {
-                    try { mainWindow.webContents.send('fnos-deskwin-open', { url: __dwUrl, title: '' }); } catch (_) {}
+                    try { __openAppInClientWindow(__dwUrl, { title: APP_NAME }); } catch (_) {}
                   });
-                  dlog('info', 'appwin.open.to-deskwin', { url: u.slice(0, 120) });
+                  dlog('info', 'appwin.open.to-reuse', { url: u.slice(0, 120) });
                   return { action: 'deny' };
                 }
               } catch (_) {}
@@ -10206,14 +10254,12 @@ function __handleSecondInstance(_e, commandLine) {
         // v2.1.15：增强日志——记录快捷方式热启动路径（v2.4.0：统一走 logger.js 带参数落盘）
         try { require('./logger.js').log('info', 'app', 'shortcut.hot_start', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) } }, __RUN_MODE); } catch (_) {}
         if (loggedIn) {
-          // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——
-          // v2.4.3（用户反馈 + 全网调研）：程序内启动 = 渲染进程模拟点击飞牛桌面应用图标，
-          // 飞牛桌面前端在桌面内以 iframe 窗口容器打开应用（≡主页点击图标效果），
-          // 不新建 OS 窗口、不顶层整页跳转。桌面窗口容器在主窗口内部 → 通知前即 show+focus。
+          // v2.4.5（用户反馈模型：快捷方式=触发器，单实例 second-instance IPC 秒开）：
+          // 程序内启动 = 复用式应用窗 __openAppInClientWindow（≡主页点击图标效果），
+          // 不新开主窗口、主界面不露面；已存在应用窗则同窗切应用 + 聚焦（毫秒级）。
           __notifyOpenFpkApp(rawAppId, true, u);
           try { require('./logger.js').log('info', 'app', 'shortcut.app_open_in_main', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120) } }, __RUN_MODE); } catch (_) {}
-          try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {};
-          setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
+          __openAppInClientWindow(u, { title: APP_NAME, appId: rawAppId });
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
           __pendingFromShortcut = true;
@@ -10228,10 +10274,9 @@ function __handleSecondInstance(_e, commandLine) {
       } catch (err) {
         try { require('./logger.js').log('error', 'app', 'shortcut.hot_start error', { err }, __RUN_MODE); } catch (_) {}
         try {
-          // v2.4.3（用户反馈）：程序内启动——渲染进程模拟点击桌面图标，在桌面窗口容器打开
+          // v2.4.5（用户反馈）：程序内启动——复用式应用窗（主界面不露面）
           __notifyOpenFpkApp(rawAppId, true, u);
-          try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {};
-          setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); mainWindow.focus(); } } catch (_) {} }, 2000);
+          __openAppInClientWindow(u, { title: APP_NAME, appId: rawAppId });
         } catch (_) {}
       }
       return;

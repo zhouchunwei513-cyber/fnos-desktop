@@ -91,11 +91,12 @@ function __fnosLaunchByClick(appId, url) {
           document.querySelectorAll('iframe').forEach(f => { if (base && !base.has(f) && f && f.src) news.push(f); });
           if (news.length) {
             for (const f of news) {
-              // v2.4.8（用户反馈 7）：转跳出窗成功后清理主窗内嵌窗（实测 LUCKY 内嵌窗残留）。
-              // window.open 返回 null = setWindowOpenHandler 拒绝，此时不清理，防应用丢失。
-              let opened = null;
-              try { opened = window.open(String(f.src), '_blank'); } catch (_) {}
-              if (opened) {
+          // v2.4.9（用户反馈 8 两种窗口模式自动适配）：内嵌窗型不再转普通跳出窗，window.open
+          // 带 fnos-embed-style 标记让主进程以内嵌窗形态开宿主窗（↻↗ 内嵌窗样式标题栏）。
+          // 清理无条件执行（宿主窗由 handler 保证创建）——v2.4.8 按 window.open 返回值判断，
+          // deny 时恒为 null 永不清理（embed-removed 埋点从未出现=死代码），本版修正。
+          try { window.open(String(f.src), '_blank', 'fnos-embed-style'); } catch (_) {}
+          { // 清理主窗内嵌原件（沿用容器识别）
                 try {
                   let box = null;
                   let n = f.parentElement;

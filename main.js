@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.8';
+const APP_VERSION = '2.4.9';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3775,8 +3775,11 @@ function registerWindow(win, opts = {}) {
           return { action: 'deny' };
         }
       } catch (_) {}
-      // 普通 http(s) 链接：在独立窗口中打开（共享 partition 以保持登录态）
-      setImmediate(() => createAppWindow(url, { partition: entry.partition }));
+      // v2.4.9（用户反馈 8 两种窗口模式自动适配）：preload 内嵌窗监测发出的 window.open
+      // （features 带 fnos-embed-style 标记）→ 以内嵌窗形态开宿主应用窗（↻↗ 内嵌窗样式
+      // 标题栏）；前端自发 window.open（无标记，如飞牛音乐）→ 正常跳出窗。
+      const __embedStyle = /fnos-embed-style/.test(String(features || ''));
+      setImmediate(() => createAppWindow(url, { partition: entry.partition, embedStyle: __embedStyle }));
       return { action: 'deny' };
     }
     if (/^(mailto|tel|sms):/i.test(url)) {
@@ -4057,6 +4060,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       spellcheck: false,
       backgroundThrottling: false,
       partition,
+      // v2.4.9（反馈 8 两种窗口模式自动适配）：内嵌窗形态宿主窗标记——titlebar-inject 据此
+      // 渲染 fnOS 内嵌窗样式标题栏（logo+标题+↻↗—□✕），区别于普通跳出窗的 ☰+系统钮样式。
+      additionalArguments: opts.embedStyle ? ['--fnos-embed-style'] : [],
       enableBlinkFeatures: 'CSSBackdropFilter',
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
       // v1.76.0：应用窗口禁用硬件加速（软件渲染）。修复部分 Docker 应用

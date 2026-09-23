@@ -39,6 +39,11 @@ module.exports = function injectTitleBar(ctx) {
 
     const root = () => document.documentElement || document.body || document;
 
+    // v2.4.9（反馈 8 两种窗口模式自动适配）：内嵌窗形态宿主窗标记（主进程 additionalArguments
+    // 传入），命中时渲染 fnOS 内嵌窗样式标题栏（logo+标题+↻↗—□✕），而非跳出窗的 ☰+系统钮样式。
+    let EMBED = false;
+    try { EMBED = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv.indexOf('--fnos-embed-style') >= 0 : false; } catch (_) {}
+
     // 把 #RRGGBB + 不透明度(0~100) 转成 rgba()
     function hexToRgba(hex, a) {
       try {
@@ -308,6 +313,112 @@ module.exports = function injectTitleBar(ctx) {
       }
     }
 
+    // ============ v2.4.9 内嵌窗形态标题栏（用户反馈 8：桌面内嵌窗型自动适配） ============
+    // 样式基准：fnOS 桌面内嵌窗（Lucky iframe 窗口）——纯黑底 34px，左侧应用 logo+标题，
+    // 右侧 ↻ 刷新 / ↗ 跳出 / — 最小化 / □ 最大化 / ✕ 关闭 五钮，常驻不隐藏。
+    function buildEmbed() {
+      try {
+        if (document.getElementById('fnos-titlebar')) return;
+        const root2 = root();
+        // 顶部拖动热区（与普通标题栏同款）
+        const hot = document.createElement('div');
+        hot.id = 'fnos-titlebar-hotzone';
+        hot.setAttribute('aria-hidden', 'true');
+        hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;';
+        root2.appendChild(hot);
+        const bar = document.createElement('div');
+        bar.id = 'fnos-titlebar';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:#000;-webkit-app-region:drag;user-select:none;';
+        // 左：应用 logo + 标题
+        const left = document.createElement('div');
+        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:12px;overflow:hidden;';
+        const logo = document.createElement('img');
+        logo.id = 'fnos-embed-logo';
+        logo.style.cssText = 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;';
+        const titleEl = document.createElement('span');
+        titleEl.id = 'fnos-embed-title';
+        titleEl.style.cssText = 'color:rgba(255,255,255,0.95);font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;';
+        left.appendChild(logo);
+        left.appendChild(titleEl);
+        // 右：↻ ↗ — □ ✕ 五钮
+        const btns = document.createElement('div');
+        btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;';
+        const mkBtn = (id, titleTxt, svg, hoverBg) => {
+          const b = document.createElement('button');
+          b.id = id;
+          b.title = titleTxt;
+          b.style.cssText = 'width:40px;height:34px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;-webkit-app-region:no-drag;flex:0 0 auto;';
+          b.innerHTML = svg;
+          const svgEl = b.querySelector('svg');
+          if (svgEl) svgEl.style.cssText = 'display:block;pointer-events:none;flex-shrink:0;';
+          b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
+          b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+          return b;
+        };
+        const W = 'stroke="#fff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"';
+        const reloadBtn = mkBtn('fnos-tb-reload', '刷新', '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6" ' + W + '/><path d="M13 2.5V5h-2.5" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
+        const popBtn = mkBtn('fnos-tb-popout', '跳出为独立窗口', '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M6 3H3.5v9.5H13V10" ' + W + '/><path d="M9 3h4v4" ' + W + '/><path d="M13 3L7.5 8.5" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
+        const minBtn = mkBtn('fnos-tb-min', '最小化', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
+        const maxBtn = mkBtn('fnos-tb-max', '最大化/还原', '<svg width="12" height="12" viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
+        const closeBtn = mkBtn('fnos-tb-close', '关闭', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" ' + W + '/></svg>', '#E81123');
+        // 功能：↻ 刷新；↗ 跳出（无标记 window.open → 主进程 handler 开正常跳出窗）后关本窗；
+        // —/□/✕ 走现成 window-minimize/maximize/close IPC（零新增 IPC）
+        reloadBtn.addEventListener('click', () => { try { location.reload(); } catch (_) {} });
+        popBtn.addEventListener('click', () => {
+          try { window.open(location.href, '_blank'); } catch (_) {}
+          try { ipcRenderer.send('window-close'); } catch (_) {}
+        });
+        minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
+        maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
+        closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
+        btns.appendChild(reloadBtn); btns.appendChild(popBtn); btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
+        bar.appendChild(left);
+        bar.appendChild(btns);
+        root2.appendChild(bar);
+        // 原生拖拽兜底（与普通标题栏同款）
+        const startNativeDrag = (ev) => {
+          try {
+            if (ev.button !== 0) return;
+            const t = ev.target;
+            if (t && t.closest && t.closest('button')) return;
+            ipcRenderer.send('window-drag');
+          } catch (_) {}
+        };
+        hot.addEventListener('mousedown', startNativeDrag);
+        bar.addEventListener('mousedown', startNativeDrag);
+        // 标题/logo 同步：SPA 应用延迟设置 <title>/favicon，限量轮询自愈
+        const syncMeta = () => {
+          try {
+            const t0 = document.title || '';
+            if (t0 && t0 !== titleEl.textContent) titleEl.textContent = t0;
+            let icon = '';
+            try { const link = document.querySelector('link[rel*="icon"]'); if (link && link.href) icon = link.href; } catch (_) {}
+            if (icon && logo.getAttribute('src') !== icon) { logo.src = icon; logo.style.display = 'block'; }
+          } catch (_) {}
+        };
+        syncMeta();
+        try {
+          let __ticks = 0;
+          const __iv = setInterval(() => { try { syncMeta(); if (++__ticks > 400) clearInterval(__iv); } catch (_) {} }, 1500);
+        } catch (_) {}
+        // 防 SPA 重渲染清除：节点被移除则重注（与普通标题栏同款）
+        try {
+          const mo = new MutationObserver(() => {
+            try {
+              if (!document.getElementById('fnos-titlebar') || !document.getElementById('fnos-titlebar-hotzone')) {
+                mo.disconnect();
+                buildEmbed();
+              }
+            } catch (_) {}
+          });
+          mo.observe(document.documentElement || document, { childList: true, subtree: true });
+        } catch (_) {}
+        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.injected', style: 'embed', path: (location.pathname || '').slice(0, 50) }); } catch (_) {}
+      } catch (e) {
+        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.embed.ex', err: String((e && e.message) || e) }); } catch (_) {}
+      }
+    }
+
     // ============ v2.0.0 左侧悬浮账号切换面板 ============
     function buildAccountSwitcher() {
       try {
@@ -470,7 +581,7 @@ module.exports = function injectTitleBar(ctx) {
     }
 
     
-    const start = () => { try { build(); buildAccountSwitcher(); } catch (_) {} };
+    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

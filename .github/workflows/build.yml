@@ -119,3 +119,13 @@ jobs:
             if (-not $ok) { throw "资产 $($f.Name) 连续 4 次上传失败" }
           }
           Write-Host "Release $tag 资产就绪：$($files.Name -join ', ')"
+          # v2.4.11 发布后即刻回读自证：把资产清单写入 Release body，区分“gh 上传假成功”
+          # 与“平台侧移除”（v2.4.9/2.4.10 两种上传工具均绿但 assets 恒空的取证通道）。
+          Start-Sleep -Seconds 3
+          $view = gh release view $tag --json assets | ConvertFrom-Json
+          $names = @($view.assets | ForEach-Object { $_.name })
+          $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + 'Z'
+          $proof = "`n`n---`n`n**publish-proof** ${stamp} upload-then-read assets = [$($names -join ', ')]"
+          $body = (gh release view $tag --json body | ConvertFrom-Json).body
+          gh release edit $tag --notes ($body + $proof)
+          if ($names.Count -eq 0) { throw "上传后回读 assets 为空——gh upload 假成功或资产被平台移除，取证见 Release body publish-proof" }

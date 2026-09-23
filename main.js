@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.12';
+const APP_VERSION = '2.4.14';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3779,6 +3779,9 @@ function registerWindow(win, opts = {}) {
       // （features 带 fnos-embed-style 标记）→ 以内嵌窗形态开宿主应用窗（↻↗ 内嵌窗样式
       // 标题栏）；前端自发 window.open（无标记，如飞牛音乐）→ 正常跳出窗。
       const __embedStyle = /fnos-embed-style/.test(String(features || ''));
+      // v2.4.13 r15 行为探测兜底：观测实际打开行为回填窗口类型标记（带 fnos-embed-style=内嵌窗型 /
+      // 裸 window.open=跳出窗型）。元信息缺失时该标记即"网页实际加载行为探测"依据，下次启动直接命中分支。
+      try { __windowTypeObserve(url, __embedStyle ? 'embed' : 'popout'); } catch (_) {}
       setImmediate(() => createAppWindow(url, { partition: entry.partition, embedStyle: __embedStyle }));
       return { action: 'deny' };
     }
@@ -3940,6 +3943,18 @@ const APP_UI_INJECT_CSS = [
 // 窗口"（preload 监测内嵌 iframe 转 window.open）。主进程只走 open-fpk-app IPC 唤起渲染
 // 进程点击；快捷方式流程主界面永不 show（主程序藏托盘、跳出窗显示在桌面）。
 // 复用式直开方案（v2.4.5/2.4.6）被用户否定："跟你说的秒开完全是两码事"——等价点击优先。
+
+// v2.4.13 r15：应用窗口统一加载入口。硬规则：内嵌窗型（embedStyle）绝对禁止顶层裸
+// loadURL 应用 URL（=剥离 fnOS 框架转独立跳出窗、直接访问原始应用 URL）——以壳页面
+// iframe 元素渲染内嵌窗口（embed-shell.html，≡fnOS 桌面 iframe 窗搬家到桌面宿主窗）；
+// 跳出窗型保持顶层 loadURL 独立窗口。
+function __appLoadTarget(win, url, embedStyle) {
+  if (embedStyle) {
+    try { require('./logger.js').log('info', 'appwin', 'embed-shell.load', { params: { url: String(url || '').slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+    return win.loadFile(path.join(__dirname, 'embed-shell.html'), { query: { url: String(url) } });
+  }
+  return win.loadURL(url, { userAgent: getNasUA() });
+}
 
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
@@ -4738,7 +4753,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 totalFromEntryMs: Date.now() - __cw_t0,
               });
             } catch (_) {}
-            win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+            __appLoadTarget(win, url, opts.embedStyle).catch(() => {});
             // 延迟关闭隐藏窗口，确保 cookies 已完全写入（v2.1.17: 从 3s 优化到 1s）
             setTimeout(() => {
               try { if (!__preAuthWin.isDestroyed()) __preAuthWin.destroy(); } catch (_) {}
@@ -4765,11 +4780,11 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
         } catch (err) {
           try { dlog && dlog('error', 'appwin.preauth.error', { app: __appLabel, error: String(err).slice(0, 200) }); } catch (_) {}
           // 预认证出错，直接加载真实 URL（回退到原有行为）
-          win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+          __appLoadTarget(win, url, opts.embedStyle).catch(() => {});
         }
       } else {
         // appview 应用或本地 URL，直接加载（无需预认证）
-        win.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+        __appLoadTarget(win, url, opts.embedStyle).catch(() => {});
       }
     } else {
       win.loadFile(url).catch(() => {});
@@ -5403,7 +5418,11 @@ function tryOpenPendingApp() {
       // v2.4.7（用户定案）：程序内启动 = 渲染进程后台模拟点击桌面图标（跳出窗呈现）
       // （≡主页点击图标效果）。场景 2（主程序未运行被拉起）：主界面隐藏只驻留托盘，
       // 应用窗直接呈现应用——不 show 主界面（用户模型："启动完成后隐藏主界面，只驻留托盘"）。
-      __notifyOpenFpkApp(__pendingAppId, true, u);
+      // v2.4.13 r15 冷启动快捷方式同款分支：标记优先直开对应形态窗口；无标记行为兜底。
+      let __wt15c = '';
+      try { __wt15c = __windowTypeGet(__pendingAppId) || __windowTypeGet(fpkAppNameFromUrl(u) || '') || ''; } catch (_) {}
+      const __opened15c = __openAppByWindowType(__pendingAppId, __pendingAppId, u, __wt15c);
+      __notifyOpenFpkApp(__pendingAppId, true, u, __opened15c ? __wt15c : '');
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
         __pendingAppId = '';
@@ -6594,6 +6613,8 @@ async function refreshFpkApps(force) {
       __fpkApps = list;
       __fpkAppsAt = now;
       dlog && dlog('info', 'fpk.applist', { count: list.length, host: nasHost });
+      // v2.4.13 r15：登录后/列表刷新后自动探测应用窗口类型标记（元信息优先，缓存供快捷方式分支）
+      try { if (!refreshFpkApps.__wtProbedAt || (now - refreshFpkApps.__wtProbedAt > FPK_APPS_TTL)) { refreshFpkApps.__wtProbedAt = now; probeAppWindowTypes().catch(() => {}); } } catch (_) {}
     }
     return __fpkApps;
   } catch (_) { return __fpkApps; }
@@ -8049,12 +8070,13 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2、边界用例 7），
 //               渲染进程弹窗提示"找不到该应用，请重新创建快捷方式。"
 let __pendingAppId = ''; // 原始应用唯一 ID（--launch-app 值），open-fpk-app 携带字段 appId
-function __notifyOpenFpkApp(appId, found, url) {
+function __notifyOpenFpkApp(appId, found, url, windowType) {
   try {
     const payload = {
       appId: String(appId || (url ? (fpkAppNameFromUrl(url) || '') : '') || '').slice(0, 200),
       found: !!found,
       url: String(url || '').slice(0, 300),
+      windowType: String(windowType || ''),
       ts: Date.now(),
     };
     const __send = () => {
@@ -8076,6 +8098,133 @@ function __notifyOpenFpkApp(appId, found, url) {
     }, 500);
   } catch (_) {}
 }
+// ===== v2.4.13 需求 r15：应用窗口类型探测 + 特征标记持久缓存 + 快捷方式启动分支 =====
+// 探测（需求四-1）：优先从 FPK 应用元信息读取窗口类型（ui/config type=iframe|url，经
+// fntb /api/client/apps 与 NAS /app/list 渠道，字段多候选兼容）；元信息读取失败时通过网页
+// 实际加载行为探测兜底（setWindowOpenHandler 观测回填，见 __windowTypeObserve）。
+// 缓存（需求四-2）：apps-manifest.json 每应用持久 windowType 标记（embed=内嵌窗型 /
+// popout=跳出窗型）。分支（需求三）：快捷方式启动读取标记——内嵌型以壳 iframe 渲染到桌面
+// （硬规则：绝不剥离 fnOS 框架转独立跳出窗、禁止顶层直接访问原始应用 URL）；非内嵌型独立窗。
+const WINDOW_TYPE_META_KEYS = ['windowType', 'window_type', 'uiType', 'ui_type', 'ui_config', 'openMode', 'open_mode', 'windowMode', 'window_mode', 'type'];
+function __windowTypeNormalize(v) {
+  const s = String(v || '').toLowerCase().trim();
+  if (!s) return '';
+  if (s === 'iframe' || s === 'embed' || s === 'inner' || s === 'embedded' || s === 'inset') return 'embed';
+  if (s === 'url' || s === 'popout' || s === 'popup' || s === 'outer' || s === 'window' || s === 'standalone' || s === 'independent') return 'popout';
+  return '';
+}
+function __windowTypeCache(appName, type, src) {
+  try {
+    if (!appName || (type !== 'embed' && type !== 'popout')) return;
+    const mf = readManifest();
+    if (!mf || !Array.isArray(mf.apps)) return;
+    let e = mf.apps.find((a) => a && (a.appId === appName || a.name === appName));
+    if (!e) { e = { appId: String(appName), name: String(appName) }; mf.apps.push(e); }
+    if (e.windowType !== type || e.windowTypeSrc !== src) {
+      e.windowType = type;
+      e.windowTypeSrc = src;
+      e.windowTypeAt = Date.now();
+      writeManifest(mf);
+      try { require('./logger.js').log('info', 'wintype', 'cache.set', { params: { app: String(appName).slice(0, 120), type, src } }, __RUN_MODE); } catch (_) {}
+    }
+  } catch (_) {}
+}
+function __windowTypeGet(appName) {
+  try {
+    if (!appName) return '';
+    const mf = readManifest();
+    const e = mf && Array.isArray(mf.apps) ? mf.apps.find((a) => a && (a.appId === appName || a.name === appName)) : null;
+    return (e && e.windowType) ? String(e.windowType) : '';
+  } catch (_) { return ''; }
+}
+function __windowTypeObserve(url, type) {
+  try {
+    const name = fpkAppNameFromUrl(String(url || '')) || '';
+    if (name && (type === 'embed' || type === 'popout')) __windowTypeCache(name, type, 'behavior');
+  } catch (_) {}
+}
+// 元信息探测（需求四-1 主通道）：fntb /api/client/apps + NAS /app/list（token 鉴权），
+// 字段多候选兼容（不同 fnOS/fntb 版本的窗口类型字段名差异），ui_config 嵌套对象一并解析。
+async function probeAppWindowTypes() {
+  const results = { meta: 0, total: 0 };
+  try {
+    // 通道 1：fntb /api/client/apps（FPK 图标管理器同网服务）
+    try {
+      const list = await fetchFpkAppList('');
+      if (Array.isArray(list)) {
+        for (const it of list) {
+          if (!it) continue;
+          results.total++;
+          const name = String(it.name || it.appname || it.appId || '');
+          let tp = '';
+          for (const k of WINDOW_TYPE_META_KEYS) { if (k === 'ui_config') continue; tp = __windowTypeNormalize(it[k]); if (tp) break; }
+          if (!tp && it.ui_config && typeof it.ui_config === 'object') {
+            for (const k of WINDOW_TYPE_META_KEYS) { tp = __windowTypeNormalize(it.ui_config[k]); if (tp) break; }
+          }
+          if (tp && name) { __windowTypeCache(name, tp, 'meta'); results.meta++; }
+        }
+      }
+    } catch (_) {}
+    // 通道 2：NAS /app/list（fnOS 桌面应用清单 API，token=登录态）
+    try {
+      const st = loadSettings();
+      const origin = String((st && st.origin) || '').replace(/\/+$/, '');
+      if (origin) {
+        let token = '';
+        try {
+          const cookies = await session.defaultSession.cookies.get({ url: origin });
+          const c = (cookies || []).find((x) => x && (x.name === 'ost' || x.name === 'token' || x.name === 'sid'));
+          token = (c && c.value) || '';
+        } catch (_) {}
+        for (const auth of [
+          { headers: { 'X-FNOS-Client': 'desktop', 'Authorization': 'trim ' + token } },
+          { headers: { 'X-FNOS-Client': 'desktop', 'Cookie': 'ost=' + token } },
+          { headers: { 'X-FNOS-Client': 'desktop' } },
+        ]) {
+          try {
+            const r = await fetch(origin + '/app/list', auth);
+            if (!r.ok) continue;
+            const data = await r.json();
+            const arr = (data && (data.list || data.apps || data.data)) || [];
+            if (!Array.isArray(arr) || !arr.length) continue;
+            for (const it of arr) {
+              if (!it) continue;
+              const name = String(it.appId || it.app_id || it.name || it.appname || it.id || '');
+              let tp = '';
+              for (const k of WINDOW_TYPE_META_KEYS) { if (k === 'ui_config') continue; tp = __windowTypeNormalize(it[k]); if (tp) break; }
+              if (!tp && it.ui_config && typeof it.ui_config === 'object') {
+                for (const k of WINDOW_TYPE_META_KEYS) { tp = __windowTypeNormalize(it.ui_config[k]); if (tp) break; }
+              }
+              if (tp && name) { __windowTypeCache(name, tp, 'meta'); results.meta++; }
+            }
+            break;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  } catch (_) {}
+  try { require('./logger.js').log('info', 'wintype', 'probe.done', { params: results }, __RUN_MODE); } catch (_) {}
+  return results;
+}
+// 快捷方式启动分支（需求三 + 验收 1/2/3）：内嵌型→壳 iframe 宿主窗（embedStyle，内嵌窗口
+// 渲染到桌面、主程序藏托盘、主界面永不弹出）；非内嵌型→独立应用窗。返回 true=已按标记开窗。
+function __openAppByWindowType(appId, appName, appUrl, windowType) {
+  try {
+    const nm = String(appName || appId || '').slice(0, 200);
+    if (windowType === 'embed') {
+      createAppWindow(appUrl, { embedStyle: true, appId: nm });
+      try { require('./logger.js').log('info', 'wintype', 'open.embed-shell', { params: { app: nm, url: String(appUrl || '').slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+      return true;
+    }
+    if (windowType === 'popout') {
+      createAppWindow(appUrl, { appId: nm });
+      try { require('./logger.js').log('info', 'wintype', 'open.popout', { params: { app: nm, url: String(appUrl || '').slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
 // 同步查询 FPK 应用列表内存缓存（refreshFpkApps.__cache，5 分钟 TTL）：
 // __resolveLaunchUrl / second-instance 是同步链路不能 await，只读内存缓存兜底；
 // 缓存未就绪（冷启动）返回 null，回退 manifest → appview?anchor 解析。
@@ -10322,7 +10471,12 @@ function __handleSecondInstance(_e, commandLine) {
           // v2.4.5（用户反馈模型：快捷方式=触发器，单实例 second-instance IPC 秒开）：
           // 程序内启动 = 渲染进程后台模拟点击桌面图标（≡真实点击），
           // 不新开主窗口、主界面不露面；已存在应用窗则同窗切应用 + 聚焦（毫秒级）。
-          __notifyOpenFpkApp(rawAppId, true, u);
+          // v2.4.13 r15 快捷方式启动分支：窗口类型标记优先（元信息/行为回填），主进程直开对应形态
+          // 窗口；无标记走行为兜底（open-fpk-app → 模拟点击链自动适配，观测回填标记）。
+          let __wt15 = '';
+          try { __wt15 = __windowTypeGet(rawAppId) || __windowTypeGet(fpkAppNameFromUrl(u) || '') || ''; } catch (_) {}
+          const __opened15 = __openAppByWindowType(rawAppId, rawAppId, u, __wt15);
+          __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? __wt15 : '');
           try { require('./logger.js').log('info', 'app', 'shortcut.app_open_in_main', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120) } }, __RUN_MODE); } catch (_) {}
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
@@ -10339,7 +10493,12 @@ function __handleSecondInstance(_e, commandLine) {
         try { require('./logger.js').log('error', 'app', 'shortcut.hot_start error', { err }, __RUN_MODE); } catch (_) {}
         try {
           // v2.4.7（用户反馈）：程序内启动——渲染进程后台模拟点击图标（跳出窗呈现）
-          __notifyOpenFpkApp(rawAppId, true, u);
+          // v2.4.13 r15 快捷方式启动分支：窗口类型标记优先（元信息/行为回填），主进程直开对应形态
+          // 窗口；无标记走行为兜底（open-fpk-app → 模拟点击链自动适配，观测回填标记）。
+          let __wt15 = '';
+          try { __wt15 = __windowTypeGet(rawAppId) || __windowTypeGet(fpkAppNameFromUrl(u) || '') || ''; } catch (_) {}
+          const __opened15 = __openAppByWindowType(rawAppId, rawAppId, u, __wt15);
+          __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? __wt15 : '');
         } catch (_) {}
       }
       return;

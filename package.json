@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.4.12",
+  "version": "2.4.14",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -31,6 +31,7 @@
       "mpv-surface.js",
       "mpv-helper.js",
       "preload.js",
+      "embed-shell.html",
       "dialog-preload.js",
       "download-preload.js",
       "live-preload.js",
@@ -90,13 +91,11 @@
           ]
         }
       ],
-      "icon": "icon.ico"
+      "icon": "icon.ico",
+      "artifactName": "FNOS-${version}-win.${ext}"
     },
     "portable": {
       "artifactName": "FNOS-${version}-portable.exe"
-    },
-    "zip": {
-      "artifactName": "FNOS-${version}-win.zip"
     }
   },
   "dependencies": {

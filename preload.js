@@ -136,12 +136,15 @@ ipcRenderer.on('open-fpk-app', (e, p) => {
       // 需求 2.6-2：appId 对应的 FPK 应用已删除 → 弹出提示（文案按需求固定）
       alert('找不到该应用，请重新创建快捷方式。');
     } else if (p && p.found && p.url && /^https?:/i.test(String(p.url))) {
-      // v2.4.7（用户定案）：后台模拟点击桌面图标启动应用（唯一等价链路），跳出窗呈现
-      __rl.log('info', 'ipc', 'open-fpk-app launch-by-click', { params: { url: p.url, appId: p.appId } });
-      try { __fnosLaunchByClick(p.appId, p.url); } catch (navErr) {
-        try { __rl.log('error', 'ipc', 'open-fpk-app launch error', { err: navErr }); } catch (_) {}
+        // v2.4.13 r15：窗口类型分支已在主进程执行（windowType 带值=已按标记开对应形态窗口），
+        // 渲染进程不重复模拟点击；无 windowType（行为兜底路径）才走模拟点击自动适配（观测回填）。
+        if (!p.windowType) {
+          __rl.log('info', 'ipc', 'open-fpk-app launch-by-click', { params: { url: p.url, appId: p.appId } });
+          try { __fnosLaunchByClick(p.appId, p.url); } catch (navErr) {
+            try { __rl.log('error', 'ipc', 'open-fpk-app launch error', { err: navErr }); } catch (_) {}
+          }
+        }
       }
-    }
     try { window.__fnosLastOpenApp = p; } catch (_) {}
   } catch (err) {
     try { __rl.log('error', 'ipc', 'open-fpk-app handler error', { err }); } catch (_) {}

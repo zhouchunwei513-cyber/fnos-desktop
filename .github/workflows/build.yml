@@ -66,7 +66,7 @@ jobs:
           Get-ChildItem mpv | ForEach-Object { Write-Host "  mpv/$($_.Name) $([math]::Round($_.Length/1MB,1)) MB" }
 
       - name: Build Windows portable+zip
-        run: pnpm exec electron-builder --win portable,zip --x64 --publish never
+        run: pnpm exec electron-builder --x64 --publish never   # target 由 package.json win.target 驱动（portable+zip）
 
       - name: 校验内置 mpv 内核已打包（防止产出无内核安装包）
         shell: pwsh

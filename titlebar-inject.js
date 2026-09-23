@@ -315,7 +315,7 @@ module.exports = function injectTitleBar(ctx) {
 
     // ============ v2.4.9 内嵌窗形态标题栏（用户反馈 8：桌面内嵌窗型自动适配） ============
     // 样式基准：fnOS 桌面内嵌窗（Lucky iframe 窗口）——纯黑底 34px，左侧应用 logo+标题，
-    // 右侧 ↻ 刷新 / ↗ 跳出 / — 最小化 / □ 最大化 / ✕ 关闭 五钮，常驻不隐藏。
+    // 右侧 ↻ 刷新 / — 最小化 / □ 最大化 / ✕ 关闭 四钮，常驻不隐藏。（r15 硬规则：内嵌窗禁止剥离成跳出窗，移除 ↗）
     function buildEmbed() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
@@ -340,7 +340,7 @@ module.exports = function injectTitleBar(ctx) {
         titleEl.style.cssText = 'color:rgba(255,255,255,0.95);font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;';
         left.appendChild(logo);
         left.appendChild(titleEl);
-        // 右：↻ ↗ — □ ✕ 五钮
+        // 右：↻ — □ ✕ 四钮（r15 硬规则移除 ↗ 跳出：内嵌窗绝不剥离 fnOS 框架转独立跳出窗）
         const btns = document.createElement('div');
         btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;';
         const mkBtn = (id, titleTxt, svg, hoverBg) => {
@@ -357,21 +357,16 @@ module.exports = function injectTitleBar(ctx) {
         };
         const W = 'stroke="#fff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"';
         const reloadBtn = mkBtn('fnos-tb-reload', '刷新', '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6" ' + W + '/><path d="M13 2.5V5h-2.5" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
-        const popBtn = mkBtn('fnos-tb-popout', '跳出为独立窗口', '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M6 3H3.5v9.5H13V10" ' + W + '/><path d="M9 3h4v4" ' + W + '/><path d="M13 3L7.5 8.5" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
         const minBtn = mkBtn('fnos-tb-min', '最小化', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
         const maxBtn = mkBtn('fnos-tb-max', '最大化/还原', '<svg width="12" height="12" viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
         const closeBtn = mkBtn('fnos-tb-close', '关闭', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" ' + W + '/></svg>', '#E81123');
-        // 功能：↻ 刷新；↗ 跳出（无标记 window.open → 主进程 handler 开正常跳出窗）后关本窗；
+        // 功能：↻ 刷新；—/□/✕ 走现成 window-minimize/maximize/close IPC（零新增 IPC）。
         // —/□/✕ 走现成 window-minimize/maximize/close IPC（零新增 IPC）
         reloadBtn.addEventListener('click', () => { try { location.reload(); } catch (_) {} });
-        popBtn.addEventListener('click', () => {
-          try { window.open(location.href, '_blank'); } catch (_) {}
-          try { ipcRenderer.send('window-close'); } catch (_) {}
-        });
         minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
         maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
         closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
-        btns.appendChild(reloadBtn); btns.appendChild(popBtn); btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
+        btns.appendChild(reloadBtn); btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
         bar.appendChild(left);
         bar.appendChild(btns);
         root2.appendChild(bar);

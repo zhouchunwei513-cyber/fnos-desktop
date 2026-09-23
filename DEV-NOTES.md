@@ -150,3 +150,4 @@
 - **v2.4.9**（2026-09-23，反馈 8 两种窗口模式自动适配）：**内嵌窗型不再自动转跳出**——preload 带 fnos-embed-style 标记开宿主应用窗，titlebar-inject 渲染 fnOS 内嵌窗形态标题栏（logo+标题+↻↗—□✕），主窗内嵌原件无条件清理（修正 v2.4.8 window.open 返回值恒 null 的清理死代码）；跳出窗型（前端 window.open）正常跳出不变；主界面规则不变。零新增 IPC。28 项验证 PASS。
 - **v2.4.10**（2026-09-23，发布链修复）：v2.4.9 内容不变；v2.4.9 CI success 但 Release assets=0（softprops files glob 空匹配静默+上传软失败偶发，Upload artifact 同 glob 成功=产物完好）——Release 步改 gh CLI 显式流程：无产物拒绝发布空 Release、上传 4 次重试、--clobber 幂等可重跑、rc/beta 打 prerelease。
 - **v2.4.11**（2026-09-23，发布自证通道）：v2.4.10 换 gh CLI 后资产仍恒空（两种上传工具均绿但 assets=0）——排除发布工具问题，嫌疑收敛为资产被平台安全扫描移除或 gh 上传假成功；Release 步加**发布后即刻回读自证**（资产清单写入 Release body 供 API 取证，回读为空直接 throw）。应用内容=v2.4.9 不变。
+- **v2.4.12**（2026-09-23，隔离取证+zip 双产物）：v2.4.11 publish-proof 实锤上传成功后被平台侧动作（09:51:37Z auth 回读=[FNOS-2.4.11-portable.exe]，几分钟后公开视图消失）——疑 public 仓库恶意软件扫描误报（portable 自解压壳+进程注入/window.open 拦截行为特征）。本版：①Release 双视角回读（auth vs 匿名）钉死移除/隔离并写 publish-proof、隔离即报红；②新增 zip 产物（无 SFX 壳低误报）与 portable 双轨发布。

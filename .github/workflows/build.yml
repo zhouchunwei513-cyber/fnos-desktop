@@ -65,8 +65,8 @@ jobs:
           if ($d3d) { Copy-Item $d3d.FullName "mpv/d3dcompiler_43.dll" -Force }
           Get-ChildItem mpv | ForEach-Object { Write-Host "  mpv/$($_.Name) $([math]::Round($_.Length/1MB,1)) MB" }
 
-      - name: Build Windows portable
-        run: pnpm exec electron-builder --win portable --x64 --publish never
+      - name: Build Windows portable+zip
+        run: pnpm exec electron-builder --win portable,zip --x64 --publish never
 
       - name: 校验内置 mpv 内核已打包（防止产出无内核安装包）
         shell: pwsh
@@ -86,7 +86,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: FNOS-${{ github.ref_name }}
-          path: dist/FNOS-*-portable.exe
+          path: |
+            dist/FNOS-*.exe
+            dist/FNOS-*.zip
           if-no-files-found: error
 
       - name: Release
@@ -99,8 +101,8 @@ jobs:
           # 上传软失败偶发（v2.4.9 实录：step success 但 Release assets=0）。改为 gh CLI 显式
           # 流程：无产物直接失败（拒绝空 Release）、上传 4 次重试、--clobber 幂等可重跑。
           $tag = $env:GITHUB_REF_NAME
-          $files = Get-ChildItem dist -Filter 'FNOS-*-portable.exe' -ErrorAction SilentlyContinue
-          if (-not $files) { throw "dist/FNOS-*-portable.exe 无匹配产物，拒绝发布空 Release" }
+          $files = Get-ChildItem dist -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'FNOS-*.exe' -or $_.Name -like 'FNOS-*.zip' }
+          if (-not $files) { throw "dist 下 FNOS-*.exe / FNOS-*.zip 无匹配产物，拒绝发布空 Release" }
           gh release view $tag 2>$null | Out-Null
           if ($LASTEXITCODE -ne 0) {
             $extra = @()
@@ -124,8 +126,10 @@ jobs:
           Start-Sleep -Seconds 3
           $view = gh release view $tag --json assets | ConvertFrom-Json
           $names = @($view.assets | ForEach-Object { $_.name })
+          $anon = @((Invoke-RestMethod "https://api.github.com/repos/$($env:GITHUB_REPOSITORY)/releases/tags/$tag").assets | ForEach-Object { $_.name })
           $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + 'Z'
-          $proof = "`n`n---`n`n**publish-proof** ${stamp} upload-then-read assets = [$($names -join ', ')]"
+          $proof = "`n`n---`n`n**publish-proof** ${stamp} auth-read=[$($names -join ', ')] anon-read=[$($anon -join ', ')]"
           $body = (gh release view $tag --json body | ConvertFrom-Json).body
           gh release edit $tag --notes ($body + $proof)
-          if ($names.Count -eq 0) { throw "上传后回读 assets 为空——gh upload 假成功或资产被平台移除，取证见 Release body publish-proof" }
+          if ($names.Count -eq 0) { throw "上传后 auth 回读为空——gh upload 假成功或资产被移除，取证见 publish-proof" }
+          if ($anon.Count -eq 0) { throw "资产被平台隔离（auth 可见匿名不可见）——疑安全扫描误报，取证见 publish-proof" }

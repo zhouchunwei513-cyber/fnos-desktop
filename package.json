@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.4.11",
+  "version": "2.4.12",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -82,12 +82,21 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "icon.ico"
     },
     "portable": {
       "artifactName": "FNOS-${version}-portable.exe"
+    },
+    "zip": {
+      "artifactName": "FNOS-${version}-win.zip"
     }
   },
   "dependencies": {

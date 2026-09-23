@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.16';
+const APP_VERSION = '2.4.17';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -7831,7 +7831,14 @@ function __startLaunchServer() {
           try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {}
           const u = __resolveLaunchUrl(appId, nas);
           if (u && /^https?:/i.test(u)) {
-            __notifyOpenFpkApp(appId, true, u);
+            // v2.4.17 r15d：快捷方式 HTTP 入口统一收口——窗口类型标记直开对应形态窗
+            // （内嵌=壳 iframe 壳窗；跳出=独立应用窗），无标记回落模拟点击兜底（观测回填）；
+            // 无论分支与否主页面藏托盘/最小化（单窗口体验，快捷方式=触发器定案）。
+            let __wth = ''; let __wthUrl = '';
+            try { const __eh = __windowTypeGetEntry(appId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__eh) { __wth = __eh.type; __wthUrl = __eh.url; } } catch (_) {}
+            const __openedH = __openAppByWindowType(appId, appId, u, __wth, __wthUrl);
+            __notifyOpenFpkApp(appId, true, u, __openedH ? __wth : '');
+            try { hideMainToBackground(); } catch (_) {}
             try { require('./logger.js').log('info', 'launch', 'launch.http trigger', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
             try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
           } else {

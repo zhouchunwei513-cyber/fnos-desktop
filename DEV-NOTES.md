@@ -85,8 +85,9 @@
 
 ## 4. 已知限制与映射说明
 
-1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.6 复用式应用窗，用户模型定案）**：`open-fpk-app` IPC 事件流保留（需求 2.5-1 不破坏）；主进程 `__openAppInClientWindow` 复用式应用窗（单例 `__appLaunchWindow`）= **≡飞牛主页点击图标效果**（主窗口 `setWindowOpenHandler` → `createAppWindow` 链路实锤）：同应用只聚焦不重载（毫秒级秒开），不同应用同窗导航，**复用同一扇窗**（用户 2026-09-23 选择题确认形态）。快捷方式流程主界面永不 show（场景 2/3"隐藏主界面/没有主界面"）；partition 走 `currentPartition` = 与主窗同源 session。
-  - **否定链（勿回头）**：v2.4.1 每次新建窗"还是新建窗口启动"；v2.4.2 整页跳丢壳；v2.4.3 图标 DOM 假设错（真 DOM 是 div+img.semi-image-img 非 a[href]，[飞牛论坛油猴脚本](https://club.fnnas.com/topic/3893/)实证）退化；v2.4.4 主窗内容器须 show 主界面（与"没有主界面"冲突）；v2.4.5 方向对但 SHARED_PARTITION 与主窗登录态不同源 → 弹窗出登录页（真机日志定案 `/login?redirect_uri=`，用户二次登录 53s）。
+1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.7 后台模拟点击，用户定案）**：`open-fpk-app` IPC 事件流保留（需求 2.5-1）；渲染进程在隐藏主窗内**模拟点击飞牛桌面应用图标**启动应用（≡真实点击，参数/解析/登录链路全等价）。飞牛应用两种窗口模式：**A 独立跳出窗**（前端 `window.open` → setWindowOpenHandler → `createAppWindow`）/ **B 桌面内嵌窗**（iframe 窗口容器，↻↗ 标题栏）；快捷方式统一呈现"从主程序跳出的窗口"：点击后监测新增 iframe（模式 B）→ `window.open(src)` 转跳出窗。主程序藏托盘、跳出窗显示在桌面。
+  - **否定链（勿回头）**：v2.4.1 直开 createAppWindow="新建窗口启动"（≠程序内启动）；v2.4.2 整页跳丢壳；v2.4.3 模拟点击方向对但图标 DOM 假设错（真 DOM：div.cursor-pointer + img.semi-image-img，alt=显示名，[飞牛论坛油猴帖](https://club.fnnas.com/topic/3893/)实证）退化；v2.4.4 容器须 show 主界面；v2.4.5/2.4.6 `appview?anchor=` 直开**不等价点击**（Lucky 实测"应用 lucky 不存在或未安装"——anchor 是显示名，解析失败）。
+  - **图标匹配（v2.4.7）**：img.semi-image-img 两轮匹配（精确 alt=anchor → 模糊 alt/data-src 含 anchor，大小写不敏感 Lucky/lucky）；600ms×12 重试；兜底 `window.open(url)` → createAppWindow（不再整页跳/静默）。
   - **机制调研**：Electron 单实例官方范式 = `app.requestSingleInstanceLock()` + `app.on("second-instance", (event, argv, …))` + 锁失败方 quit（微信/QQ/VS Code 同款）：[Electron app 文档](https://www.electronjs.org/zh/docs/latest/api/app)、[Deep Links 教程](https://www.electronjs.org/zh/docs/latest/tutorial/launch-app-from-url-in-another-app/)、[掘金企业级实战](https://juejin.cn/post/7164985606463258638)。
 
 2. **second-instance 无应用参数时显示主窗口**（v2.4.1 用户反馈调整）：用户点击主程序启动
@@ -142,3 +143,4 @@
   透传窗口引用。三场景：①实例在跑=IPC 复用窗秒开；②冷启动=主界面隐藏驻托盘+应用窗加载
   应用；③--autostart 常驻后=IPC 唤起毫秒级、没有主界面。
 - **v2.4.6**（2026-09-23，反馈 5"没改过来还是老样子"）：真机日志定案两 bug——①弹窗出登录页（SHARED_PARTITION 与主窗 session 不同源，appview 重定向 `/login`）→ partition 走 currentPartition 同源秒进应用；②关窗后复用链路断、观感"每次弹新窗"→ 同应用秒开聚焦（`__fnosLaunchAppId`）+ `appwin.reuse-closed` 埋点。用户选择题定案形态=独立应用窗复用同一扇。11 项验证 PASS。
+- **v2.4.7**（2026-09-23，反馈 6"完全是两码事"+两种窗口模式截图定案）：程序内启动终极定案=**后台模拟点击桌面图标**（≡真实点击，唯一等价链路：参数/解析/登录全由飞牛前端处理）；`appview?anchor=` 直开不等价（Lucky"应用 lucky 不存在或未安装"实锤）。窗口呈现统一"跳出的窗口"（模式 B 内嵌 iframe 监测 → window.open 转跳出）；拆除 v2.4.5/2.4.6 复用窗直开与流程期拦截。15 项验证 PASS。

@@ -21,16 +21,91 @@ const __rl = (() => {
     };
   }
 })();
-// ---------------------- v2.4.5 程序内启动（复用式应用窗，主进程处理） ----------------------
-// 用户反馈模型（快捷方式=触发器，微信/QQ/VS Code 同款）：单实例锁 + second-instance IPC →
-// 主进程 __openAppInClientWindow 复用式应用窗（≡客户端主页点击图标效果——主窗口
-// setWindowOpenHandler → createAppWindow 链路）直接加载应用：不新建窗口、主界面不露面、
-// 毫秒级秒开（已存在应用窗同窗切应用 + 聚焦）。渲染进程不做 DOM 点击/容器注入/整页跳转
-// （v2.4.2 整页跳、v2.4.3 图标点击、v2.4.4 桌面窗口容器三代方案均被真机反馈否定）；
-// open-fpk-app IPC 事件保留（需求 2.5-1 事件流 + 日志观察点），found:true 仅记日志。
+// ---------------------- v2.4.7 程序内启动（后台模拟点击桌面图标，≡真实点击） ------------------
+// 用户定案（2026-09-23）：点击桌面快捷方式 = 在隐藏主窗内模拟点击飞牛桌面应用图标启动应用
+// （唯一等价链路：参数/解析/登录全由飞牛前端处理——appview?anchor 直开不等价，Lucky 实测
+// "应用 lucky 不存在或未安装"）。飞牛应用两种窗口模式：A 独立跳出窗（前端 window.open →
+// setWindowOpenHandler → createAppWindow）、B 桌面内嵌窗（iframe 窗口容器）；快捷方式统一
+// 呈现"从主程序跳出的窗口"：点击后监测新增 iframe（模式 B）→ window.open(src) 转跳出窗。
+// 图标 DOM 真相（fnnas 油猴帖实证）：div.cursor-pointer 容器 + img.semi-image-img（alt=显示名）。
+function __fnosFindIconNode(anchor) {
+  try {
+    if (!anchor) return null;
+    const key = String(anchor).toLowerCase().split(/[?#]/)[0].replace(/\/+$/, '');
+    const keys = [key];
+    try { const d = decodeURIComponent(key); if (d && d.toLowerCase() !== key) keys.push(d.toLowerCase()); } catch (_) {}
+    const imgs = document.querySelectorAll('img.semi-image-img, img[alt], img[data-src], img[src]');
+    // 两轮匹配：第 1 轮精确（alt 等于 anchor），第 2 轮模糊（alt/data-src 含 anchor）
+    for (let pass = 0; pass < 2; pass++) {
+      for (const img of imgs) {
+        let hit = false;
+        for (const k of keys) {
+          if (!k) continue;
+          const alt = String(img.getAttribute('alt') || img.getAttribute('title') || '').toLowerCase();
+          const ds = String(img.getAttribute('data-src') || img.getAttribute('src') || '').toLowerCase();
+          const ok = pass === 0 ? (alt === k) : ((alt && alt.indexOf(k) >= 0) || (ds && ds.indexOf(k) >= 0));
+          if (ok) { hit = true; break; }
+        }
+        if (!hit) continue;
+        let n = img;
+        for (let up = 0; up < 10 && n; up++) {
+          if (n.tagName === 'A' || n.tagName === 'BUTTON' || n.tagName === 'LI' ||
+              (n.classList && (n.classList.contains('cursor-pointer') || n.classList.contains('semi-image')))) return n;
+          n = n.parentElement;
+        }
+        return img;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+function __fnosLaunchByClick(appId, url) {
+  try {
+    const anchor = String(appId || '').split(/[?#]/)[0].replace(/\/+$/, '');
+    if (!anchor) return;
+    let tries = 0;
+    const attempt = () => {
+      tries++;
+      const node = __fnosFindIconNode(anchor);
+      if (!node) {
+        // 未命中（桌面未渲染/未登录）：600ms×12 重试；仍失败走 window.open 兜底
+        // （既有通道 → createAppWindow 跳出窗；不再整页跳/静默）
+        if (tries < 12) { setTimeout(attempt, 600); return; }
+        try { __rl.log('warn', 'launch', 'icon-not-found fallback-window-open', { params: { anchor: anchor } }); } catch (_) {}
+        try { if (url && /^https?:/i.test(String(url))) window.open(String(url), '_blank'); } catch (_) {}
+        return;
+      }
+      // 点击前记录 iframe 基线（模式 B 内嵌窗转跳出窗用）
+      let base = null;
+      try { base = new Set(); document.querySelectorAll('iframe').forEach(f => base.add(f)); } catch (_) {}
+      try {
+        node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      } catch (_) { try { node.click(); } catch (_) {} }
+      try { __rl.log('info', 'launch', 'icon-clicked', { params: { anchor: anchor, tries: tries } }); } catch (_) {}
+      // 监测新增 iframe（模式 B 桌面内嵌窗）→ window.open(src) 转"跳出的窗口"
+      let polls = 0;
+      const poll = () => {
+        polls++;
+        try {
+          const news = [];
+          document.querySelectorAll('iframe').forEach(f => { if (base && !base.has(f) && f && f.src) news.push(f); });
+          if (news.length) {
+            for (const f of news) { try { window.open(String(f.src), '_blank'); } catch (_) {} }
+            try { __rl.log('info', 'launch', 'embed-to-popup', { params: { count: news.length, src: String(news[0].src).slice(0, 140) } }); } catch (_) {}
+            return;
+          }
+        } catch (_) {}
+        if (polls < 40) setTimeout(poll, 80);
+      };
+      setTimeout(poll, 80);
+    };
+    attempt();
+  } catch (e) {
+    try { __rl.log('error', 'launch', 'launch-by-click error', { err: e }); } catch (_) {}
+  }
+}
 // v2.4.0（需求 2.5-1）：Main → Renderer：open-fpk-app，携带参数 appId。
-// found:true  = 唤起成功，渲染进程在主窗口内同窗导航到应用页面——程序内启动
-//               （v2.4.2 用户反馈：不新建独立应用窗口，≡主页点击应用图标）；
+// found:true  = 唤起成功，渲染进程后台模拟点击桌面图标启动应用（v2.4.7 用户定案，≡真实点击）；
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2），渲染进程弹窗提示（边界用例 7）。
 ipcRenderer.on('open-fpk-app', (e, p) => {
   try {
@@ -39,9 +114,11 @@ ipcRenderer.on('open-fpk-app', (e, p) => {
       // 需求 2.6-2：appId 对应的 FPK 应用已删除 → 弹出提示（文案按需求固定）
       alert('找不到该应用，请重新创建快捷方式。');
     } else if (p && p.found && p.url && /^https?:/i.test(String(p.url))) {
-      // v2.4.5：应用已由主进程 __openAppInClientWindow（复用式应用窗）直接打开——
-      // 渲染进程只记观察日志（需求 2.5-1 open-fpk-app 事件流保留），不做任何导航。
-      __rl.log('info', 'ipc', 'open-fpk-app handled-by-main', { params: { url: p.url, appId: p.appId } });
+      // v2.4.7（用户定案）：后台模拟点击桌面图标启动应用（唯一等价链路），跳出窗呈现
+      __rl.log('info', 'ipc', 'open-fpk-app launch-by-click', { params: { url: p.url, appId: p.appId } });
+      try { __fnosLaunchByClick(p.appId, p.url); } catch (navErr) {
+        try { __rl.log('error', 'ipc', 'open-fpk-app launch error', { err: navErr }); } catch (_) {}
+      }
     }
     try { window.__fnosLastOpenApp = p; } catch (_) {}
   } catch (err) {

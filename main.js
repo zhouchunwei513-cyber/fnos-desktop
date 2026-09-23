@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.6';
+const APP_VERSION = '2.4.7';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3930,68 +3930,13 @@ const APP_UI_INJECT_CSS = [
 ].join('\n');
 
 
-// v2.4.5（用户反馈模型：快捷方式=触发器，单实例 + second-instance IPC 秒开）：
-// "程序内启动应用" = 复用式应用窗（≡客户端主页点击图标效果——主窗口 setWindowOpenHandler
-// → createAppWindow 链路）。此前 v2.4.1 每次 createAppWindow 新建窗口（用户反馈"还是新建
-// 窗口启动"）、v2.4.2/2.4.3 顶层整页跳 /appview（丢壳全屏页）、v2.4.4 主窗口内容器
-// （须 show 主界面）均被否定。v2.4.5 定案：单例应用窗 __appLaunchWindow——已存在则
-// loadURL 换应用 + 聚焦（毫秒级，微信/QQ/VS Code 模型），不存在才创建一次；
-// 快捷方式流程永不 show 主界面窗口（场景 2/3："隐藏主界面，只驻留托盘""没有主界面"）。
-let __appLaunchWindow = null;
-function __openAppInClientWindow(u, opts = {}) {
-  try {
-    if (!u || !/^https?:/i.test(String(u))) return null;
-    // 复用：同 URL 只聚焦不重载；不同 URL 同窗导航（秒开关键，杜绝每点一次新建窗口）
-    if (__appLaunchWindow && !__appLaunchWindow.isDestroyed()) {
-      // v2.4.6（真机日志定案）：同一应用只聚焦不重载 = 毫秒级秒开（用户模型场景 3）；
-      // 不同应用才同窗导航（复用同一扇窗，杜绝"每点一次弹一个新窗"的观感）
-      const wantApp = String(opts.appId || '');
-      const sameApp = !!wantApp && !!__appLaunchWindow.__fnosLaunchAppId && wantApp === __appLaunchWindow.__fnosLaunchAppId;
-      if (!sameApp) {
-        try {
-          const cur = String(__appLaunchWindow.webContents.getURL() || '');
-          if (cur !== String(u)) __appLaunchWindow.loadURL(String(u));
-        } catch (_) {}
-        try { __appLaunchWindow.__fnosLaunchAppId = wantApp; } catch (_) {}
-      }
-      try {
-        if (__appLaunchWindow.isMinimized()) __appLaunchWindow.restore();
-        __appLaunchWindow.show();
-        __appLaunchWindow.focus();
-      } catch (_) {}
-      dlog && dlog('info', 'appwin.reuse', { url: String(u).slice(0, 140), title: String(opts.title || ''), appId: wantApp, sameApp: !!sameApp });
-      return __appLaunchWindow;
-    }
-    // v2.4.6（真机日志定案）：partition 不传 → createAppWindowInner 取 currentPartition
-    // =与主窗同源 session。v2.4.5 传 SHARED_PARTITION 与主窗登录态不同源，appview 判未登录
-    // 重定向 /login?redirect_uri=…（弹窗出登录页，用户被迫二次登录 53s 才进应用，毁掉秒开）。
-    const win = createAppWindow(String(u), Object.assign({ title: APP_NAME }, opts || {}));
-    __appLaunchWindow = win || null;
-    try {
-      if (__appLaunchWindow) {
-        try { __appLaunchWindow.__fnosLaunchAppId = String(opts.appId || ''); } catch (_) {}
-        __appLaunchWindow.once('closed', () => {
-          try { dlog && dlog('info', 'appwin.reuse-closed', { appId: String((__appLaunchWindow && __appLaunchWindow.__fnosLaunchAppId) || '') }); } catch (_) {}
-          try { __appLaunchWindow = null; } catch (_) {}
-        });
-        // 新窗自身加载完成即呈现（createAppWindowInner show:false 的既有显示链之外的秒显兜底）
-        __appLaunchWindow.webContents.once('did-finish-load', () => {
-          try {
-            if (__appLaunchWindow && !__appLaunchWindow.isDestroyed()) {
-              __appLaunchWindow.show();
-              __appLaunchWindow.focus();
-            }
-          } catch (_) {}
-        });
-      }
-    } catch (_) {}
-    dlog && dlog('info', 'appwin.reuse-create', { url: String(u).slice(0, 140), hasWin: !!__appLaunchWindow });
-    return __appLaunchWindow;
-  } catch (e) {
-    try { dlog && dlog('error', 'appwin.reuse error', { err: e }); } catch (_) {}
-    return null;
-  }
-}
+// v2.4.7（用户定案，2026-09-23）：程序内启动 = 渲染进程后台模拟点击飞牛桌面应用图标
+// （≡真实点击，参数/解析/登录链路全等价——appview?anchor 直开不等价：Lucky 实测
+// "应用 lucky 不存在或未安装"）。飞牛应用两种窗口模式（A 独立跳出窗 window.open →
+// createAppWindow；B 桌面内嵌窗 iframe 容器）由飞牛前端自决，呈现统一为"从主程序跳出的
+// 窗口"（preload 监测内嵌 iframe 转 window.open）。主进程只走 open-fpk-app IPC 唤起渲染
+// 进程点击；快捷方式流程主界面永不 show（主程序藏托盘、跳出窗显示在桌面）。
+// 复用式直开方案（v2.4.5/2.4.6）被用户否定："跟你说的秒开完全是两码事"——等价点击优先。
 
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
@@ -4012,7 +3957,7 @@ function createAppWindow(url, opts = {}) {
       }, __stormWait);
       return null;
     }
-    // v2.4.5：透传窗口引用（__openAppInClientWindow 单例复用需持窗句柄）
+    // v2.4.7：透传窗口引用（备用；原 v2.4.5/2.4.6 复用窗方案已拄除，现主链路为渲染进程模拟点击）
     return createAppWindowInner(url, opts, __cw_t0);
   } catch (_) { try { return createAppWindowInner(url, opts, __cw_t0); } catch (_) {} }
 }
@@ -5449,11 +5394,10 @@ function tryOpenPendingApp() {
     if (u) {
       try { require('./logger.js').log('info', 'app', 'pending_app.opening', { params: { url: String(u).slice(0, 160), elapsedMs: elapsed, fromShortcut: __pendingFromShortcut, appId: String(__pendingAppId || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
       // v2.4.0（需求 2.5-1）：Main → Renderer open-fpk-app（携带 appId）——
-      // v2.4.5（用户反馈模型）：程序内启动 = 复用式应用窗 __openAppInClientWindow
+      // v2.4.7（用户定案）：程序内启动 = 渲染进程后台模拟点击桌面图标（跳出窗呈现）
       // （≡主页点击图标效果）。场景 2（主程序未运行被拉起）：主界面隐藏只驻留托盘，
       // 应用窗直接呈现应用——不 show 主界面（用户模型："启动完成后隐藏主界面，只驻留托盘"）。
       __notifyOpenFpkApp(__pendingAppId, true, u);
-      __openAppInClientWindow(u, { title: APP_NAME, appId: __pendingAppId });
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
         __pendingAppId = '';
@@ -7982,13 +7926,8 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2、边界用例 7），
 //               渲染进程弹窗提示"找不到该应用，请重新创建快捷方式。"
 let __pendingAppId = ''; // 原始应用唯一 ID（--launch-app 值），open-fpk-app 携带字段 appId
-// v2.4.5：快捷方式启动流程期（8s）——期内 web-contents-created 全局开窗兜底把 http(s)
-// 应用开窗转入复用式应用窗（__openAppInClientWindow），避免解析链中途各自新建窗口。
-let __fnosDeskWinUntil = 0;
 function __notifyOpenFpkApp(appId, found, url) {
   try {
-    // v2.4.4：每次唤起续期 8s 流程期标志（主窗口未就绪的重试发送场景同样续期）
-    try { __fnosDeskWinUntil = Date.now() + 8000; } catch (_) {}
     const payload = {
       appId: String(appId || (url ? (fpkAppNameFromUrl(url) || '') : '') || '').slice(0, 200),
       found: !!found,
@@ -9684,19 +9623,8 @@ try {
                   return { action: 'deny' };
                 }
               } catch (_) {}
-              // v2.4.5：快捷方式启动流程期内的 http(s) 开窗（含 appview openAppFromAnchor /
-              // window.open 解析链）一律转入复用式应用窗（程序内启动秒开），不再各自
-              // createAppWindow 新建窗口（用户模型：不新开窗口，IPC 唤起既有应用载体）。
-              try {
-                if (Date.now() < __fnosDeskWinUntil) {
-                  const __dwUrl = u;
-                  setImmediate(() => {
-                    try { __openAppInClientWindow(__dwUrl, { title: APP_NAME }); } catch (_) {}
-                  });
-                  dlog('info', 'appwin.open.to-reuse', { url: u.slice(0, 120) });
-                  return { action: 'deny' };
-                }
-              } catch (_) {}
+              // v2.4.7：流程期拦截已随复用窗方案移除——模拟点击后前端 window.open 应正常
+              // 走 createAppWindow = 跳出窗（用户定案形态），拦截会破坏等价点击链路。
               setImmediate(() => {
                 try { createAppWindow(u, { partition: SHARED_PARTITION, title: APP_NAME }); } catch (_) {}
               });
@@ -10269,11 +10197,10 @@ function __handleSecondInstance(_e, commandLine) {
         try { require('./logger.js').log('info', 'app', 'shortcut.hot_start', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120), loggedIn, isLoading: wc.isLoading(), pageUrl: p.slice(0, 100) } }, __RUN_MODE); } catch (_) {}
         if (loggedIn) {
           // v2.4.5（用户反馈模型：快捷方式=触发器，单实例 second-instance IPC 秒开）：
-          // 程序内启动 = 复用式应用窗 __openAppInClientWindow（≡主页点击图标效果），
+          // 程序内启动 = 渲染进程后台模拟点击桌面图标（≡真实点击），
           // 不新开主窗口、主界面不露面；已存在应用窗则同窗切应用 + 聚焦（毫秒级）。
           __notifyOpenFpkApp(rawAppId, true, u);
           try { require('./logger.js').log('info', 'app', 'shortcut.app_open_in_main', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120) } }, __RUN_MODE); } catch (_) {}
-          __openAppInClientWindow(u, { title: APP_NAME, appId: rawAppId });
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
           __pendingFromShortcut = true;
@@ -10288,9 +10215,8 @@ function __handleSecondInstance(_e, commandLine) {
       } catch (err) {
         try { require('./logger.js').log('error', 'app', 'shortcut.hot_start error', { err }, __RUN_MODE); } catch (_) {}
         try {
-          // v2.4.5（用户反馈）：程序内启动——复用式应用窗（主界面不露面）
+          // v2.4.7（用户反馈）：程序内启动——渲染进程后台模拟点击图标（跳出窗呈现）
           __notifyOpenFpkApp(rawAppId, true, u);
-          __openAppInClientWindow(u, { title: APP_NAME, appId: rawAppId });
         } catch (_) {}
       }
       return;

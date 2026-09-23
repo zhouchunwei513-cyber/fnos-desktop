@@ -91,9 +91,31 @@ jobs:
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/FNOS-*-portable.exe
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # v2.4.10 发布链修复：softprops/action-gh-release 的 files glob 空匹配默认静默、
+          # 上传软失败偶发（v2.4.9 实录：step success 但 Release assets=0）。改为 gh CLI 显式
+          # 流程：无产物直接失败（拒绝空 Release）、上传 4 次重试、--clobber 幂等可重跑。
+          $tag = $env:GITHUB_REF_NAME
+          $files = Get-ChildItem dist -Filter 'FNOS-*-portable.exe' -ErrorAction SilentlyContinue
+          if (-not $files) { throw "dist/FNOS-*-portable.exe 无匹配产物，拒绝发布空 Release" }
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            $extra = @()
+            if ($tag -match '(-rc|-beta)') { $extra += '--prerelease' }
+            gh release create $tag --generate-notes @extra
+            if ($LASTEXITCODE -ne 0) { throw "gh release create $tag 失败" }
+          }
+          foreach ($f in $files) {
+            $ok = $false
+            for ($i = 1; $i -le 4; $i++) {
+              gh release upload $tag $f.FullName --clobber
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+              Write-Host "上传 $($f.Name) 第 $i 次失败，5s 后重试"
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ok) { throw "资产 $($f.Name) 连续 4 次上传失败" }
+          }
+          Write-Host "Release $tag 资产就绪：$($files.Name -join ', ')"

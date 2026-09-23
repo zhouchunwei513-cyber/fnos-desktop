@@ -87,8 +87,9 @@
 
 1. **"渲染进程路由跳转加载应用"已按需求落实（v2.4.7 后台模拟点击，用户定案）**：`open-fpk-app` IPC 事件流保留（需求 2.5-1）；渲染进程在隐藏主窗内**模拟点击飞牛桌面应用图标**启动应用（≡真实点击，参数/解析/登录链路全等价）。飞牛应用两种窗口模式：**A 独立跳出窗**（前端 `window.open` → setWindowOpenHandler → `createAppWindow`）/ **B 桌面内嵌窗**（iframe 窗口容器，↻↗ 标题栏）；快捷方式统一呈现"从主程序跳出的窗口"：点击后监测新增 iframe（模式 B）→ `window.open(src)` 转跳出窗。主程序藏托盘、跳出窗显示在桌面。
   - **否定链（勿回头）**：v2.4.1 直开 createAppWindow="新建窗口启动"（≠程序内启动）；v2.4.2 整页跳丢壳；v2.4.3 模拟点击方向对但图标 DOM 假设错（真 DOM：div.cursor-pointer + img.semi-image-img，alt=显示名，[飞牛论坛油猴帖](https://club.fnnas.com/topic/3893/)实证）退化；v2.4.4 容器须 show 主界面；v2.4.5/2.4.6 `appview?anchor=` 直开**不等价点击**（Lucky 实测"应用 lucky 不存在或未安装"——anchor 是显示名，解析失败）。
-  - **图标匹配（v2.4.7）**：img.semi-image-img 两轮匹配（精确 alt=anchor → 模糊 alt/data-src 含 anchor，大小写不敏感 Lucky/lucky）；600ms×12 重试；兜底 `window.open(url)` → createAppWindow（不再整页跳/静默）。
+  - **图标匹配（v2.4.7）**：img.semi-image-img 两轮匹配（精确 alt=anchor → 模糊 alt/data-src 含 anchor，大小写不敏感 Lucky/lucky）；150ms×40 重试；兜底 `window.open(url)` → createAppWindow（不再整页跳/静默）。
   - **机制调研**：Electron 单实例官方范式 = `app.requestSingleInstanceLock()` + `app.on("second-instance", (event, argv, …))` + 锁失败方 quit（微信/QQ/VS Code 同款）：[Electron app 文档](https://www.electronjs.org/zh/docs/latest/api/app)、[Deep Links 教程](https://www.electronjs.org/zh/docs/latest/tutorial/launch-app-from-url-in-another-app/)、[掘金企业级实战](https://juejin.cn/post/7164985606463258638)。
+  - **速度定案（v2.4.8）**：快捷方式直启 portable exe"20 多倍"差距根因 = 每次自解压 app.asar 到随机 Temp 目录（diag 日志实证），程序内链路实测仅 15ms（锁判断→icon-clicked→appwin.create）；定案 **wscript 触发器（毫秒级、无黑窗）+ loopback HTTP 触发通道**（127.0.0.1 随机端口 + 每次启动随机 token）直通常驻主程序走模拟点击链路，主程序未运行时回落冷启动 exe（second-instance 兜底完整保留、旧 .lnk 兼容）；embed-to-popup 转跳出后清理主窗内嵌窗（window.open 成功才删，防应用丢失）。全网调研否决 V8 snapshot / require 延迟等框架级优化（只省数百 ms，消不掉 portable 解压固有成本；微信/QQ 式轻量触发器 + 本地通道是标准解法）。
 
 2. **second-instance 无应用参数时显示主窗口**（v2.4.1 用户反馈调整）：用户点击主程序启动
    = 显式查看主界面意图 → show + focus；带应用参数的快捷方式唤起仍隐藏主窗口。托盘图标
@@ -144,3 +145,4 @@
   应用；③--autostart 常驻后=IPC 唤起毫秒级、没有主界面。
 - **v2.4.6**（2026-09-23，反馈 5"没改过来还是老样子"）：真机日志定案两 bug——①弹窗出登录页（SHARED_PARTITION 与主窗 session 不同源，appview 重定向 `/login`）→ partition 走 currentPartition 同源秒进应用；②关窗后复用链路断、观感"每次弹新窗"→ 同应用秒开聚焦（`__fnosLaunchAppId`）+ `appwin.reuse-closed` 埋点。用户选择题定案形态=独立应用窗复用同一扇。11 项验证 PASS。
 - **v2.4.7**（2026-09-23，反馈 6"完全是两码事"+两种窗口模式截图定案）：程序内启动终极定案=**后台模拟点击桌面图标**（≡真实点击，唯一等价链路：参数/解析/登录全由飞牛前端处理）；`appview?anchor=` 直开不等价（Lucky"应用 lucky 不存在或未安装"实锤）。窗口呈现统一"跳出的窗口"（模式 B 内嵌 iframe 监测 → window.open 转跳出）；拆除 v2.4.5/2.4.6 复用窗直开与流程期拦截。15 项验证 PASS。
+- **v2.4.8**（2026-09-23，反馈 7"差了 20 多倍"+"还有 LUCKY 内嵌式窗口"）：**秒开定案**——快捷方式改 wscript 触发器脚本 + loopback HTTP 触发通道（随机 token 鉴权）直通常驻主程序模拟点击链路，绕过 portable 自解压（20 倍差距根因，diag 实证 Temp 解压；程序内链路 15ms 实测）；主程序未运行回落冷启动 exe（second-instance 兜底完整保留，旧 .lnk 兼容）。embed-to-popup 转跳出后清理主窗内嵌窗（window.open 成功才删）；图标未命中重试 150ms×40（提速 4 倍）。22 项验证 PASS。

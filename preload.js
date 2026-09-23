@@ -68,9 +68,9 @@ function __fnosLaunchByClick(appId, url) {
       tries++;
       const node = __fnosFindIconNode(anchor);
       if (!node) {
-        // 未命中（桌面未渲染/未登录）：600ms×12 重试；仍失败走 window.open 兜底
+        // 未命中（桌面未渲染/未登录）：150ms×40 重试；仍失败走 window.open 兜底
         // （既有通道 → createAppWindow 跳出窗；不再整页跳/静默）
-        if (tries < 12) { setTimeout(attempt, 600); return; }
+        if (tries < 40) { setTimeout(attempt, 150); return; }
         try { __rl.log('warn', 'launch', 'icon-not-found fallback-window-open', { params: { anchor: anchor } }); } catch (_) {}
         try { if (url && /^https?:/i.test(String(url))) window.open(String(url), '_blank'); } catch (_) {}
         return;
@@ -90,7 +90,28 @@ function __fnosLaunchByClick(appId, url) {
           const news = [];
           document.querySelectorAll('iframe').forEach(f => { if (base && !base.has(f) && f && f.src) news.push(f); });
           if (news.length) {
-            for (const f of news) { try { window.open(String(f.src), '_blank'); } catch (_) {} }
+            for (const f of news) {
+              // v2.4.8（用户反馈 7）：转跳出窗成功后清理主窗内嵌窗（实测 LUCKY 内嵌窗残留）。
+              // window.open 返回 null = setWindowOpenHandler 拒绝，此时不清理，防应用丢失。
+              let opened = null;
+              try { opened = window.open(String(f.src), '_blank'); } catch (_) {}
+              if (opened) {
+                try {
+                  let box = null;
+                  let n = f.parentElement;
+                  for (let up = 0; up < 6 && n; up++) {
+                    try {
+                      const btns = n.querySelectorAll ? n.querySelectorAll('button, [class*="close"], [class*="titlebar"], [class*="title-bar"], [class*="win-ctrl"]').length : 0;
+                      if (btns >= 2) { box = n; break; }
+                    } catch (_) {}
+                    n = n.parentElement;
+                  }
+                  const victim = box || f;
+                  if (victim && victim.parentNode) victim.parentNode.removeChild(victim);
+                  try { __rl.log('info', 'launch', 'embed-removed', { params: { container: !!box } }); } catch (_) {}
+                } catch (_) {}
+              }
+            }
             try { __rl.log('info', 'launch', 'embed-to-popup', { params: { count: news.length, src: String(news[0].src).slice(0, 140) } }); } catch (_) {}
             return;
           }

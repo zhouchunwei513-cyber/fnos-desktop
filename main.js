@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.7';
+const APP_VERSION = '2.4.8';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -7669,13 +7669,20 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     const lnkPath = path.join(desktop, `${lnkBaseName}.lnk`);
     fnosLog('info', 'shortcut.path', 'shortcut creating', { desktop, lnkPath, appName, appId });
 
-    // PowerShell script to create shortcut
+    // v2.4.8（用户反馈 7 秒开定案）：快捷方式目标改为 wscript 触发器脚本（毫秒级启动、无
+    // 黑窗）——热路径直发 loopback HTTP 给常驻主程序走"模拟点击图标"链路（绕过 portable
+    // 解压），主程序未运行时触发器脚本回落冷启动 exe（second-instance 兜底）。旧版 .lnk
+    // （直指 exe）仍兼容走原链路。
+    const __vbsPath = __ensureLauncherVbs();
+    const __wscript = path.join(String(process.env.SystemRoot || 'C:\\Windows'), 'System32', 'wscript.exe');
+    const __lnkArgs = `//B //Nologo "${__vbsPath}" "${__launchName}" "${exePath}" "${__nasBase || nasAddress || ''}"`;
+    fnosLog('info', 'shortcut.path', 'shortcut.lnk-wscript', { vbsPath: __vbsPath, appId, launchName: __launchName });
     const iconPs = icoPath ? `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'` : '';
     const ps = `
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')
-$sc.TargetPath = '${exePath.replace(/'/g, "''")}'
-$sc.Arguments = '${args}'
+$sc.TargetPath = '${__wscript.replace(/'/g, "''")}'
+$sc.Arguments = '${__lnkArgs.replace(/'/g, "''")}'
 $sc.WorkingDirectory = '${path.dirname(exePath).replace(/'/g, "''")}'
 $sc.Description = 'FNOS 应用: ${appName}'
 ${iconPs}
@@ -7711,6 +7718,116 @@ $sc.Save()
     return { success: false, msg, data: null };
   }
 });
+
+// ---------------------- v2.4.8 秒开触发通道（loopback HTTP + wscript 触发器） ------------------
+// 用户反馈 7 定案（2026-09-23）：快捷方式直启 portable exe 需完整自解压 app.asar 到随机
+// Temp 目录（diag 日志实证），第二实例冷启动成为"比主程序内点击慢 20 多倍"的真正来源；
+// 程序内链路实测仅 15ms（锁判断 -> icon-clicked -> appwin.create 全程）。
+// 全网调研结论（Electron 官方 performance 文档 / Postman、Inkdrop 启动优化实践 / VS Code
+// 单实例实现）：V8 snapshot、require 延迟、代码打包等框架级优化只能省数百 ms，无法消除
+// portable 解压固有成本；主流桌面软件（微信/QQ）标准做法 = 轻量触发器 + 本地通道直通
+// 常驻主程序。方案：主进程 loopback HTTP 服务（仅 127.0.0.1，随机端口 + 每次启动随机
+// token 鉴权）；快捷方式 .lnk 指向 wscript.exe（毫秒级启动、无黑窗）执行触发器脚本 ->
+// POST 触发信号 -> 本块 -> __notifyOpenFpkApp -> 渲染进程模拟点击图标（真实点击等价
+// 链路不变）。兜底：端点文件缺失 / 发送失败（主程序未运行）-> 触发器脚本回落冷启动
+// exe --launch-app=（原 second-instance 链路完整保留，旧版 .lnk 亦兼容）。
+const __LAUNCH_ENDPOINT_FILE = () => path.join(app.getPath('userData'), 'fnos-launch-endpoint.txt');
+let __launchHttpServer = null;
+let __launchPort = 0;
+let __launchToken = '';
+// 写出触发器脚本（ASCII-only VBScript 避免 ANSI/UTF-8 编码歧义；入参：appId, exePath, nasBase）
+function __ensureLauncherVbs() {
+  try {
+    const vbsPath = path.join(app.getPath('userData'), 'fnos-launcher.vbs');
+    const vbs = [
+      "' FNOS fast launcher v2.4.8 (generated, do not edit)",
+      "Dim appId, exePath, nasBase, fso, base, ep, port, token, http, url, body, ok, sh, cmd, tf",
+      "If WScript.Arguments.Count < 1 Then WScript.Quit 1",
+      "appId = WScript.Arguments(0)",
+      "exePath = \"\": nasBase = \"\"",
+      "If WScript.Arguments.Count > 1 Then exePath = WScript.Arguments(1)",
+      "If WScript.Arguments.Count > 2 Then nasBase = WScript.Arguments(2)",
+      "ok = False",
+      "Set fso = CreateObject(\"Scripting.FileSystemObject\")",
+      "base = fso.GetParentFolderName(WScript.ScriptFullName)",
+      "ep = base & \"\\fnos-launch-endpoint.txt\"",
+      "If fso.FileExists(ep) Then",
+      "  On Error Resume Next",
+      "  Set tf = fso.OpenTextFile(ep, 1)",
+      "  If Err.Number = 0 Then",
+      "    port = Trim(tf.ReadLine): token = Trim(tf.ReadLine): tf.Close",
+      "    Set http = CreateObject(\"MSXML2.ServerXMLHTTP\")",
+      "    If Err.Number = 0 Then",
+      "      http.setTimeouts 300, 300, 1000, 1000",
+      "      url = \"http://127.0.0.1:\" & port & \"/launch\"",
+      "      body = \"app=\" & appId & \"&token=\" & token",
+      "      http.open \"POST\", url, False",
+      "      http.setRequestHeader \"Content-Type\", \"application/x-www-form-urlencoded\"",
+      "      http.send body",
+      "      If Err.Number = 0 Then If http.status = 200 Then ok = True",
+      "    End If",
+      "  End If",
+      "  On Error GoTo 0",
+      "End If",
+      "If ok Then WScript.Quit 0",
+      "If exePath = \"\" Then WScript.Quit 1",
+      "Set sh = CreateObject(\"WScript.Shell\")",
+      "cmd = \"\"\"\" & exePath & \"\"\" --launch-app=\" & appId",
+      "If nasBase <> \"\" Then cmd = cmd & \" --nas=\" & nasBase",
+      "sh.Run cmd, 1, False",
+      "WScript.Quit 0",
+      ""
+    ].join('\r\n');
+    fs.writeFileSync(vbsPath, vbs, 'ascii');
+    return vbsPath;
+  } catch (_) { return ''; }
+}
+function __startLaunchServer() {
+  try {
+    const __http = require('http');
+    __launchHttpServer = __http.createServer((req, res) => {
+      if (req.method !== 'POST' || String(req.url || '').split('?')[0] !== '/launch') { try { res.writeHead(404); res.end(); } catch (_) {} return; }
+      let body = '';
+      req.on('data', (c) => { body += String(c); if (body.length > 2048) { try { req.destroy(); } catch (_) {} } });
+      req.on('end', () => {
+        try {
+          const q = new URLSearchParams(body);
+          const token = String(q.get('token') || '');
+          const appId = String(q.get('app') || '').slice(0, 200);
+          if (!__launchToken || token !== __launchToken) {
+            try { require('./logger.js').log('warn', 'launch', 'launch.http auth-fail', { params: { appId: appId.slice(0, 80) } }, __RUN_MODE); } catch (_) {}
+            try { res.writeHead(403); res.end(); } catch (_) {}
+            return;
+          }
+          let nas = '';
+          try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {}
+          const u = __resolveLaunchUrl(appId, nas);
+          if (u && /^https?:/i.test(u)) {
+            __notifyOpenFpkApp(appId, true, u);
+            try { require('./logger.js').log('info', 'launch', 'launch.http trigger', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
+            try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
+          } else {
+            __notifyOpenFpkApp(appId, false);
+            try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('resolve-fail'); } catch (_) {}
+          }
+        } catch (e) {
+          try { res.writeHead(500); res.end(); } catch (_) {}
+        }
+      });
+    });
+    __launchHttpServer.on('error', () => {});
+    __launchHttpServer.listen(0, '127.0.0.1', () => {
+      try {
+        __launchPort = __launchHttpServer.address().port;
+        __launchToken = require('crypto').randomBytes(24).toString('hex');
+        fs.writeFileSync(__LAUNCH_ENDPOINT_FILE(), [String(__launchPort), String(__launchToken), String(process.execPath), String((loadSettings() && loadSettings().origin) || '')].join('\r\n'), 'utf-8');
+        require('./logger.js').log('info', 'launch', 'launch.http listen', { params: { port: __launchPort } }, __RUN_MODE);
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+if (__gotSingleLock) { try { app.whenReady().then(() => { setTimeout(__startLaunchServer, 0); }); } catch (_) {} }
+
 
 // v2.1.5: IPC handler for uninstalling a NAS app (remove from manifest + delete shortcut + delete icon)
 ipcMain.handle('uninstall-nas-app', async (_e, payload) => {

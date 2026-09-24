@@ -72,7 +72,7 @@ function __fnosLaunchByClick(appId, url) {
         // （既有通道 → createAppWindow 跳出窗；不再整页跳/静默）
         if (tries < 40) { setTimeout(attempt, 150); return; }
         try { __rl.log('warn', 'launch', 'icon-not-found fallback-window-open', { params: { anchor: anchor } }); } catch (_) {}
-        try { if (url && /^https?:/i.test(String(url))) window.open(String(url), '_blank'); } catch (_) {}
+        try { if (url && /^https?:/i.test(String(url))) window.open(String(url), '_blank', 'fnos-anchor=' + encodeURIComponent(anchor)); } catch (_) {}
         return;
       }
       // 点击前记录 iframe 基线（模式 B 内嵌窗转跳出窗用）
@@ -95,7 +95,7 @@ function __fnosLaunchByClick(appId, url) {
           // 带 fnos-embed-style 标记让主进程以内嵌窗形态开宿主窗（↻↗ 内嵌窗样式标题栏）。
           // 清理无条件执行（宿主窗由 handler 保证创建）——v2.4.8 按 window.open 返回值判断，
           // deny 时恒为 null 永不清理（embed-removed 埋点从未出现=死代码），本版修正。
-          try { window.open(String(f.src), '_blank', 'fnos-embed-style'); } catch (_) {}
+          try { window.open(String(f.src), '_blank', 'fnos-embed-style,fnos-anchor=' + encodeURIComponent(anchor)); } catch (_) {}
           { // 清理主窗内嵌原件（沿用容器识别）
                 try {
                   let box = null;

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.5.1';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3781,15 +3781,25 @@ function registerWindow(win, opts = {}) {
       const __embedStyle = /fnos-embed-style/.test(String(features || ''));
       // v2.4.13 r15 行为探测兜底：观测实际打开行为回填窗口类型标记（带 fnos-embed-style=内嵌窗型 /
       // 裸 window.open=跳出窗型）。元信息缺失时该标记即"网页实际加载行为探测"依据，下次启动直接命中分支。
+      // v2.5.1 r17：preload 透传 fnos-anchor（应用 ID）——统一走 appview 容器入口（PreAuth 完整，
+      // 直开真实 URL 丢登录态跳登录页/黑屏）。
+      let __anchorH = '';
+      try { const __mH = /fnos-anchor=([^,]+)/.exec(String(features || '')); if (__mH) { try { __anchorH = decodeURIComponent(__mH[1]); } catch (_) { __anchorH = __mH[1]; } } } catch (_) {}
       try { __windowTypeObserve(url, __embedStyle ? 'embed' : 'popout'); } catch (_) {}
       if (/\/appview(\?|$)/i.test(url)) { try { __appviewToPopout(url); } catch (_) {} return { action: 'deny' }; }
       setImmediate(() => {
-        // v2.5.0 r16：统一跳出窗（放弃壳 iframe）——内嵌/跳出窗型一律"从主程序跳出的窗口"；
-        // 主程序藏托盘保持单窗口；内嵌窗监测转换来的（fnos-embed-style）再静默关闭主窗内嵌视图。
-        createAppWindow(url, { partition: entry.partition });
+        // v2.5.1 r17：统一 appview 容器跳出窗；主程序藏托盘保持单窗口；内嵌监测转换来的
+        //（fnos-embed-style）静默关闭主窗内嵌视图（可见才动页面，隐藏置标记唤回时回桌面）。
+        const __okH = __anchorH ? __openAppByWindowType(__anchorH, __anchorH, url, __embedStyle ? 'embed' : 'popout', url) : false;
+        if (!__okH) { try { createAppWindow(url, { partition: entry.partition }); } catch (_) {} }
         try { hideMainToBackground(); } catch (_) {}
         if (__embedStyle) {
-          try { if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
+          try {
+            if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) {
+              if (mainWindow.isVisible() && !mainWindow.isMinimized()) mainWindow.webContents.loadURL(lastConnectHref);
+              else __pendingHomeReset = true;
+            }
+          } catch (_) {}
         }
       });
       return { action: 'deny' };
@@ -4818,6 +4828,9 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
             app: __appLabel, winId: win.id, errorCode, errorDesc,
             url: String(failUrl || '').slice(0, 120),
           });
+          // v2.5.1 r17：应用窗加载失败耗尽——原生弹窗提示（黑屏页上内嵌对话框不可见），
+          // 杜绝应用窗静默黑屏；可重试或关闭。
+          try { dialog.showMessageBox(win, { type: 'error', title: '应用加载失败', message: '应用页面加载失败：' + String(errorDesc || '未知错误') + '（' + String(errorCode) + '），请检查网络或稍后重试。', buttons: ['重试', '关闭'], cancelId: 1 }).then((r2) => { try { if (r2 && r2.response === 0 && !win.isDestroyed()) { _loadFailTries = 0; win.loadURL(url, { userAgent: getNasUA() }).catch(() => {}); } else if (!win.isDestroyed()) win.close(); } catch (_) {} }).catch(() => {}); } catch (_) {}
           return;
         }
         _loadFailTries++;
@@ -4836,6 +4849,8 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
     });
   } catch (_) {}
 
+  // v2.5.1 r17：同应用窗复用标记（__openAppByWindowType 防同应用双开叠加=双标题栏按钮）
+  try { win.__fnAppId = String(opts.appId || ''); } catch (_) {}
   win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch (_) {} });
   // 兜底：极端情况下 ready-to-show 未触发（如隧道握手卡住），6s 后也展示窗口，避免"看不见窗口"
   setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 6000);
@@ -4876,6 +4891,49 @@ function hideMainToBackground() {
   }
   ensureTray();
 }
+// v2.5.1 r17：主窗恢复=回桌面刷新。用户实测：主窗 hide 后渲染冻结，托盘唤回/双击主程序
+// 恢复后黑屏、桌面图标不渲染，须点菜单强制刷新才恢复——恢复统一 loadURL(lastConnectHref)
+// 回桌面重建渲染（唤回=看桌面即用户期望）。force=true 时可见也刷新（菜单/双击主程序=明确
+// 要完整主页面）；tray 且原可见时仅聚焦，不打断主窗当前操作。
+let __pendingHomeReset = false;
+const __launchDedupe = new Map();
+function __restoreMainHome(reason, force) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const wasVisible = mainWindow.isVisible() && !mainWindow.isMinimized();
+    try { if (mainWindow.isMinimized()) mainWindow.restore(); } catch (_) {}
+    try { mainWindow.show(); } catch (_) {}
+    try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
+    const needReload = !!force || !wasVisible || !!__pendingHomeReset || !/^https?:/i.test(String(mainWindow.webContents.getURL() || ''));
+    __pendingHomeReset = false;
+    if (needReload && lastConnectHref) {
+      try { mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
+    }
+    try { require('./logger.js').log('info', 'window', 'main.restore-home', { params: { reason: String(reason || ''), wasVisible, needReload } }, __RUN_MODE); } catch (_) {}
+    try { __syncThemeFromMain(); } catch (_) {}
+  } catch (_) {}
+}
+// v2.5.1 r17：昼夜主题跟随主程序——读主窗页面实际主题（body 背景亮度）设 nativeTheme
+// .themeSource，应用跳出窗/全部窗 prefers-color-scheme 与主程序昼夜模式一致。
+function __syncThemeFromMain() {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const __probe = '(function(){try{var c=getComputedStyle(document.body).backgroundColor||\"\";var i=c.indexOf(\"(\");var j=c.indexOf(\")\");var p=c.slice(i+1,j).split(\",\");if(p.length<3)return \"\";var y=(+p[0])*0.299+(+p[1])*0.587+(+p[2])*0.114;return y<128?\"dark\":\"light\";}catch(_){return \"\";}})()';
+    mainWindow.webContents.executeJavaScript(__probe).then((r) => {
+      if (r === 'dark' || r === 'light') {
+        try {
+          const nt = require('electron').nativeTheme;
+          if (nt && nt.themeSource !== r) {
+            nt.themeSource = r;
+            try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: r } }, __RUN_MODE); } catch (_) {}
+          }
+        } catch (_) {}
+      }
+    }).catch(() => {});
+  } catch (_) {}
+}
+try { setInterval(() => { try { __syncThemeFromMain(); } catch (_) {} }, 30000); } catch (_) {}
+
 // v2.1.10 旧名保留：仅隐藏到托盘（供其他内部调用）
 function hideMainToTray() { hideMainToBackground(); }
 
@@ -4904,17 +4962,9 @@ function ensureTray() {
       return;
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
-      // v2.1.11：minimize 模式下主窗口最小化到任务栏，点托盘也要能恢复
-      if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
-      if (mainWindow.isVisible()) mainWindow.focus();
-      else {
-        mainWindow.show();
-        // v2.1.13：修复从托盘恢复时黑屏——窗口 hide 后 Chromium 可能清除渲染缓存，
-        // show 后调用 invalidate 强制重绘；同时暂停后台节流确保渲染正常。
-        try { mainWindow.webContents.setBackgroundThrottling(false); } catch (_) {}
-        try { mainWindow.webContents.invalidate(); } catch (_) {}
-        try { mainWindow.webContents.setBackgroundThrottling(true); } catch (_) {}
-      }
+      // v2.5.1 r17：恢复主窗统一走 __restoreMainHome（回桌面刷新——hide 后渲染冻结黑屏/桌面
+      // 图标不渲染，实测须强制刷新页面才恢复）；原可见时仅聚焦不打断当前操作。
+      __restoreMainHome('tray', false);
     } else {
       // 主窗口已关，重建
       const s = loadSettings();
@@ -4936,13 +4986,8 @@ function ensureTray() {
       return;
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
-      if (!mainWindow.isVisible()) {
-        try { mainWindow.show(); } catch (_) {}
-        // v2.1.13：修复从托盘恢复时黑屏
-        try { mainWindow.webContents.invalidate(); } catch (_) {}
-      }
-      try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
+      // v2.5.1 r17：统一 __restoreMainHome（回桌面刷新，修 hide 后唤回黑屏/桌面图标不显示）
+      __restoreMainHome('tray-double', false);
     } else {
       // 主窗口已关，重建
       const s = loadSettings();
@@ -4979,9 +5024,9 @@ function rebuildTrayMenu() {
           if (!home.win.isVisible()) { try { home.win.show(); } catch (_) {} }
           try { home.win.focus(); home.win.moveTop(); } catch (_) {}
         } else if (mainWindow && !mainWindow.isDestroyed()) {
-          if (mainWindow.isMinimized()) { try { mainWindow.restore(); } catch (_) {} }
-          if (!mainWindow.isVisible()) { try { mainWindow.show(); } catch (_) {} }
-          try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
+          // v2.5.1 r17：菜单“显示主界面”=明确要完整主页面——强制回桌面刷新（用户实测唤回后
+          // 黑屏/桌面图标不渲染，须点菜单强制刷新才恢复，现自动完成）。
+          __restoreMainHome('menu', true);
         } else if (lastConnectHref) {
           connectTo(loadSettings().server || '');
         } else {
@@ -5146,6 +5191,8 @@ function createMainWindow(partition, loadTarget) {
   try {
     mainWindow.webContents.on('did-navigate', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
     mainWindow.webContents.on('did-navigate-in-page', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
+    // v2.5.1 r17：主窗加载完成即同步昼夜主题（应用跳出窗跟随主程序）
+    mainWindow.webContents.on('did-finish-load', () => { try { __syncThemeFromMain(); } catch (_) {} });
   } catch (_) {}
   try {
     mainWindow.webContents.on('dom-ready', () => {
@@ -5458,7 +5505,7 @@ function tryOpenPendingApp() {
       let __wt15c = ''; let __wt15cUrl = '';
       try { const __e15c = __windowTypeGetEntry(__pendingAppId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__e15c) { __wt15c = __e15c.type; __wt15cUrl = __e15c.url; } } catch (_) {}
       const __opened15c = __openAppByWindowType(__pendingAppId, __pendingAppId, u, __wt15c, __wt15cUrl);
-      __notifyOpenFpkApp(__pendingAppId, true, u, __opened15c ? __wt15c : '');
+      __notifyOpenFpkApp(__pendingAppId, true, u, __opened15c ? (__wt15c || 'popout') : '');
         try { hideMainToBackground(); } catch (_) {}
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
@@ -7884,6 +7931,17 @@ function __startLaunchServer() {
             try { res.writeHead(403); res.end(); } catch (_) {}
             return;
           }
+          // v2.5.1 r17：per-appId 3s 防抖——快捷方式重复触发（vbs 重发/用户连点）会双开同应用
+          // 窗叠加（标题栏两套最大化/关闭按钮实锤），重复 POST 直接应答忽略。
+          try {
+            const __nowL = Date.now();
+            if (__nowL - (__launchDedupe.get(appId) || 0) < 3000) {
+              try { require('./logger.js').log('warn', 'launch', 'launch.http dedupe-skip', { params: { appId: appId.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+              try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('dup'); } catch (_) {}
+              return;
+            }
+            __launchDedupe.set(appId, __nowL);
+          } catch (_) {}
           let nas = '';
           try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {}
           const u = __resolveLaunchUrl(appId, nas);
@@ -7894,7 +7952,7 @@ function __startLaunchServer() {
             let __wth = ''; let __wthUrl = '';
             try { const __eh = __windowTypeGetEntry(appId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__eh) { __wth = __eh.type; __wthUrl = __eh.url; } } catch (_) {}
             const __openedH = __openAppByWindowType(appId, appId, u, __wth, __wthUrl);
-            __notifyOpenFpkApp(appId, true, u, __openedH ? __wth : '');
+            __notifyOpenFpkApp(appId, true, u, __openedH ? (__wth || 'popout') : '');
             try { hideMainToBackground(); } catch (_) {}
             try { require('./logger.js').log('info', 'launch', 'launch.http trigger', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
             try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
@@ -8337,22 +8395,50 @@ async function probeAppWindowTypes() {
   try { require('./logger.js').log('info', 'wintype', 'probe.done', { params: results }, __RUN_MODE); } catch (_) {}
   return results;
 }
-// 快捷方式启动分支（v2.5.0 r16 用户定案）：统一"从主程序跳出的独立窗口"——放弃内嵌单窗
-// 壳方案，内嵌/跳出窗型一律独立跳出窗，全程单窗口（主程序藏托盘、禁止双窗）。返回 true=已开窗。
+// 快捷方式启动分支（v2.5.1 r17 用户定案）：统一"从主程序跳出的独立窗口"，首选 appview?anchor
+// 容器入口（服务端 PreAuth 完整、应用正常渲染）——v2.5.0 直开真实 URL 丢登录态：/v、/seek 等
+// 跳登录页，fn-ups-manager 型解析到根地址=黑屏/找不到地址（实测日志）。同应用窗复用防双开叠加
+//（=标题栏两套最大化/关闭按钮）。全程单窗口（主程序藏托盘）。返回 true=已开窗/已聚焦同应用窗。
 function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl) {
   try {
     const nm = String(appName || appId || '').slice(0, 200);
-    // v2.4.19 r15f：真实 URL 兜底链——标记缓存 URL 为空（preset 种子/元信息无 url）时回退
-    // fntb 应用清单缓存真实 URL（client_apps url 字段），直开不再回落模拟点击。
-    let ru = String(realUrl || '');
-    if (!/^https?:/i.test(ru)) {
-      try { const __fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (__fe && __fe.url && /^https?:/i.test(String(__fe.url))) ru = String(__fe.url); } catch (_) {}
+    let id = String(appId || '');
+    try { id = id.split('?')[0].split('#')[0]; } catch (_) {}
+    while (id.length > 1 && id.charAt(id.length - 1) === '/') id = id.slice(0, -1);
+    id = id.slice(0, 200);
+    let origin = '';
+    try { const st = loadSettings(); origin = String((st && st.origin) || '').replace(/\/+$/, ''); } catch (_) {}
+    if (!origin) { try { origin = new URL(String(appUrl || realUrl || '')).origin; } catch (_) { origin = ''; } }
+    let target = '';
+    if (id && /^https?:/i.test(origin)) {
+      // appview 容器入口（PreAuth 完整）——系统应用与第三方 FPK 统一适用
+      target = origin + '/appview?anchor=' + encodeURIComponent(id);
+    } else {
+      // 无 appId：真实 URL 直开（独立端口服务）；appview URL 与根 URL 不作直开目标
+      let cand = /^https?:/i.test(String(realUrl || '')) ? String(realUrl) : String(appUrl || '');
+      if (!/^https?:/i.test(cand)) {
+        try { const fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (fe && fe.url && /^https?:/i.test(String(fe.url))) cand = String(fe.url); } catch (_) {}
+      }
+      if (/^https?:/i.test(cand) && !/appview/i.test(cand)) {
+        try {
+          const pu = new URL(cand);
+          const pp = String(pu.pathname || '').replace(/\/+$/, '');
+          if ((pp !== '' && pp !== '/') || pu.port) target = cand;
+        } catch (_) {}
+      }
     }
-    const target = /^https?:/i.test(ru) ? ru : String(appUrl || '');
-    if (!/^https?:/i.test(target)) return false;
-    // appview?anchor 是 fnOS 桌面容器路由（跳出=递归桌面）——无真实 URL 时回落模拟点击
-    // （preload 监测内嵌 iframe 转 window.open 跳出，观测回填标记）。
-    if (/appview/i.test(target)) return false;
+    if (!/^https?:/i.test(target) || !nm) return false;
+    // v2.5.1 r17：同应用窗复用——已开同应用窗则聚焦前置不重复开窗（防同应用双窗叠加）
+    try {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (w && !w.isDestroyed() && w !== mainWindow && String(w.__fnAppId || '') === nm) {
+          try { if (w.isMinimized()) w.restore(); if (!w.isVisible()) w.show(); w.focus(); w.moveTop(); } catch (_) {}
+          try { require('./logger.js').log('info', 'wintype', 'open.reuse-popout', { params: { app: nm, winId: w.id } }, __RUN_MODE); } catch (_) {}
+          try { hideMainToBackground(); } catch (_) {}
+          return true;
+        }
+      }
+    } catch (_) {}
     createAppWindow(target, { appId: nm });
     try { require('./logger.js').log('info', 'wintype', 'open.unified-popout', { params: { app: nm, type: String(windowType || ''), url: target.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
     try { hideMainToBackground(); } catch (_) {}
@@ -8360,8 +8446,9 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl) {
   } catch (_) {}
   return false;
 }
-// v2.5.0 r16：appview 内嵌视图→跳出窗转换（per-anchor 2s 防抖）：取 fntb 清单真实 URL
-// 开独立跳出窗，主窗回桌面（藏托盘时不可见=静默关闭内嵌视图）并保持单窗口。
+// v2.5.1 r17：appview 内嵌视图→跳出窗转换（per-anchor 2s 防抖）：转出窗=appview 容器顶层加载
+//（PreAuth 完整）——直开真实 URL 丢登录态（/v、/seek 等跳登录页=黑屏根因）。主窗静默关闭内嵌
+// 视图：可见才动页面，隐藏置标记唤回时回桌面。全程单窗口。
 const __appviewConvAt = new Map();
 function __appviewToPopout(navUrl) {
   const s = String(navUrl || '');
@@ -8372,14 +8459,17 @@ function __appviewToPopout(navUrl) {
   const now = Date.now();
   if (now - (__appviewConvAt.get(anchor) || 0) < 2000) return;
   __appviewConvAt.set(anchor, now);
-  let realUrl = '';
-  try { const fe = __fpkLookupSync(anchor); if (fe && /^https?:/i.test(String(fe.url || ''))) realUrl = String(fe.url); } catch (_) {}
-  try { if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
-  try { hideMainToBackground(); } catch (_) {}
-  if (/^https?:/i.test(realUrl) && !/appview/i.test(realUrl)) {
-    setImmediate(() => { try { createAppWindow(realUrl, { appId: anchor }); } catch (_) {} });
-    try { require('./logger.js').log('info', 'wintype', 'appview.to-popout', { params: { app: anchor, url: realUrl.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
-  }
+  setImmediate(() => {
+    try { createAppWindow(s, { appId: anchor }); } catch (_) {}
+    try {
+      if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) {
+        if (mainWindow.isVisible() && !mainWindow.isMinimized()) mainWindow.webContents.loadURL(lastConnectHref);
+        else __pendingHomeReset = true;
+      }
+    } catch (_) {}
+    try { hideMainToBackground(); } catch (_) {}
+    try { require('./logger.js').log('info', 'wintype', 'appview.to-popout', { params: { app: anchor, url: s.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+  });
 }
 
 function __fpkLookupSync(name) {
@@ -10630,7 +10720,7 @@ function __handleSecondInstance(_e, commandLine) {
           let __wt15 = ''; let __wt15url = '';
           try { const __e15 = __windowTypeGetEntry(rawAppId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__e15) { __wt15 = __e15.type; __wt15url = __e15.url; } } catch (_) {}
           const __opened15 = __openAppByWindowType(rawAppId, rawAppId, u, __wt15, __wt15url);
-          __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? __wt15 : '');
+          __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? (__wt15 || 'popout') : '');
           try { hideMainToBackground(); } catch (_) {}
           try { require('./logger.js').log('info', 'app', 'shortcut.app_open_in_main', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120) } }, __RUN_MODE); } catch (_) {}
         } else {
@@ -10653,7 +10743,7 @@ function __handleSecondInstance(_e, commandLine) {
           let __wt15 = ''; let __wt15url = '';
           try { const __e15 = __windowTypeGetEntry(rawAppId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__e15) { __wt15 = __e15.type; __wt15url = __e15.url; } } catch (_) {}
           const __opened15 = __openAppByWindowType(rawAppId, rawAppId, u, __wt15, __wt15url);
-          __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? __wt15 : '');
+          __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? (__wt15 || 'popout') : '');
           try { hideMainToBackground(); } catch (_) {}
         } catch (_) {}
       }
@@ -10664,7 +10754,9 @@ function __handleSecondInstance(_e, commandLine) {
   // second-instance）= 显式查看主界面意图 → 显示并聚焦主窗口；带应用参数的快捷方式
   // 唤起走上方分支（程序内启动应用：主窗口同窗打开应用页面，v2.4.2）。
   try {
-    if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { mainWindow.show(); try { mainWindow.focus(); } catch (_) {} }
+    // v2.5.1 r17：双击主程序=查看主页面——统一 __restoreMainHome 强制回桌面刷新（用户实测：
+    // 双击恢复黑屏主页面后桌面图标仍不显示，须强制刷新页面才恢复）。
+    if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { __restoreMainHome('main-relaunch', true); }
     require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);
   } catch (_) {}
 }

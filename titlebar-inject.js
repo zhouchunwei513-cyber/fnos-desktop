@@ -20,12 +20,16 @@ module.exports = function injectTitleBar(ctx) {
     // 自带 iframe/子框架，window.top 判断已隔离），按"fixed 定位+屏幕边缘区域+形态"启发式隐藏
     // 壳残留（排除注入标题栏 #fnos-tb-bar）；容器页唯一应用 iframe 强制撑满视口（尺寸塌缩型
     // 黑屏）；采样状态埋点供诊断，被隐藏元素逐个留痕可回查。
+    // v2.5.4 r20：清理范围由主进程 chromeFix 决定（NAS 同源 appview/独立应用窗；主窗桌面不清
+    // 理防误杀），isAppview 初值=appview 路径，should-inject 后按 chromeFix 放开；setTimeout(0)
+    // 保证同步 should-inject 查询先行
+    let isAppview = /\/appview/i.test(String(location.pathname || ''));
     try {
-      if (/\/appview/i.test(String(location.pathname || ''))) {
+      const __chromeGo = function () { if (!isAppview) return;
         (function __appviewChromeFix() {
           const __log = (o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'appview.chrome-fix' }, o)); } catch (_) {} };
           const __hidden = [];
-          const __isOurs = (el) => !!(el && el.closest && el.closest('#fnos-tb-bar, [id^="fnos-tb-"]'));
+          const __isOurs = (el) => !!(el && el.closest && el.closest('#fnos-titlebar, #fnos-titlebar-hotzone, [data-fnos-tb], [id^="fnos-tb-"]'));
           const __apply = () => {
             try {
               const ifs = document.querySelectorAll('iframe');
@@ -54,17 +58,23 @@ module.exports = function injectTitleBar(ctx) {
                   if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
                   const r = el.getBoundingClientRect();
                   if (r.width <= 0 || r.height <= 0) continue;
-                  const cnt = el.querySelectorAll('button, [role="button"], [class*="btn" i], [class*="close" i], [class*="win-ctrl" i], [class*="titlebar" i], [class*="title-bar" i]').length;
+                  const cnt = el.querySelectorAll('button, [role="button"], [class*="btn" i], [class*="close" i], [class*="win-ctrl" i], [class*="titlebar" i], [class*="title-bar" i], svg, [class*="ctrl" i]').length;
                   // 形态 A：右上角假窗口按钮组（与注入标题栏叠成双标题栏）
-                  const fakeWinBtns = r.top <= 80 && (vw - r.right) <= 240 && r.width <= 420 && r.height <= 96 && cnt >= 2;
+                  // v2.5.4 r20：组判定放宽（回收站/Docker 假窗控组宽高超旧阈值=漏杀实锤）+无文本要求
+                  const fakeWinBtns = r.top <= 140 && (vw - r.right) <= 260 && r.width <= 520 && r.height <= 120 && cnt >= 2 && !(el.textContent || '').trim();
                   // 形态 B：左侧 dock 竖长条（黑块挤占内容区）
                   const dockRail = r.left <= 88 && r.width <= 132 && r.height >= vh * 0.3;
-                  // 形态 C：左/右下角头像悬浮小圆钮
-                  const cornerFab = r.width <= 170 && r.height <= 170 && (vh - r.bottom) <= 130 && (r.left <= 130 || (vw - r.right) <= 130);
-                  if (fakeWinBtns || dockRail || cornerFab) {
+                  // 形态 C：左/右下角头像悬浮小圆钮（≥20px 排除 1×1 角标 IMG 误杀——r19 hiddenCount:1 实锤）
+                  const cornerFab = r.width <= 170 && r.height <= 170 && r.width >= 20 && r.height >= 20 && (vh - r.bottom) <= 130 && (r.left <= 130 || (vw - r.right) <= 130);
+                  // 形态 D：右上角窗控形态单个小按钮兜底（组判定不满足时逐按钮清）——保守收窄：
+                  // 仅 48×48 内、贴右≤96、svg 图标、无文本、无 aria-label/title（真功能按钮都有）
+                  const fakeBtnOne = r.top <= 110 && (vw - r.right) <= 96 && r.width <= 48 && r.height <= 48 && r.width >= 14 && r.height >= 14
+                    && (el.querySelector && el.querySelector('svg')) && !(el.textContent || '').trim()
+                    && !el.getAttribute('aria-label') && !el.getAttribute('title');
+                  if (fakeWinBtns || dockRail || cornerFab || fakeBtnOne) {
                     el.style.setProperty('display', 'none', 'important');
                     __hidden.push(el);
-                    __log({ kind: fakeWinBtns ? 'fake-winbtns' : (dockRail ? 'dock-rail' : 'corner-fab'), tag: String(el.tagName || '').slice(0, 16), cls: String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 60), rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] });
+                    __log({ kind: fakeWinBtns ? 'fake-winbtns' : (dockRail ? 'dock-rail' : (fakeBtnOne ? 'fake-btn' : 'corner-fab')), tag: String(el.tagName || '').slice(0, 16), cls: String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 60), rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] });
                   }
                 } catch (_) {}
               }
@@ -91,18 +101,101 @@ module.exports = function injectTitleBar(ctx) {
             } catch (_) {}
           }, 5200);
         })();
-      }
+      };
+      setTimeout(__chromeGo, 0);
     } catch (_) {}
 
     // v2.2.4：查询主进程——XTE 等自带标题栏的应用跳过自定义标题栏注入，
     // 避免叠加错位（用户截图：XTE 启动界面左上汉堡菜单 + 右上窗口按钮重叠）。
     try {
       const __skipQuery = ipcRenderer.sendSync('titlebar:should-inject');
+      // v2.5.4 r20：chrome 清理放开到 NAS 独立应用窗（/iscsi/ 等非 appview 路径壳残件）+
+      // nasOrigin 供 __themeNormalize 范围判定
+      try { if (__skipQuery && __skipQuery.chromeFix) isAppview = true; } catch (_) {}
+      try { if (__skipQuery && __skipQuery.nasOrigin) window.__fnosNasOrigin = String(__skipQuery.nasOrigin); } catch (_) {}
       if (__skipQuery && __skipQuery.skip) {
         try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.skipped', reason: __skipQuery.reason, path: (location.pathname || '').slice(0, 60) }); } catch (_) {}
         return;
       }
     } catch (_) {}
+
+    // ---------------- v2.5.4 r20：全 NAS 页面日夜模式统一跟随系统（问题3根修） ----------------
+    // 特征值三层（实锤自 fnOS 前端 bundle）：系统=nativeTheme.shouldUseDarkColors（Windows 注册表
+    // AppsUseLightTheme）→matchMedia('(prefers-color-scheme: dark)')；fnOS 存储 localStorage
+    // ['os-theme-mode'|'fnos-theme-mode']（10=LIGHT/20=DARK/30=OS）；DOM=body[theme-dark]/
+    // body[theme-light]。混搭=壳（存储驱动）与 iframe 内容（media query/参数驱动）分叉。
+    // 修法（机制无关钉死渲染层）：body attribute 按系统值持续归一 + 存储归一 30 + 同源 iframe
+    // 递归 + 跨源 iframe src 主题参数覆盖 + postMessage 通知 + 系统切换实时跟随。
+    (function __themeNormalize() {
+      try {
+        if (!(window.__fnosNasOrigin && String(location.href).indexOf(window.__fnosNasOrigin) === 0)) return;
+      } catch (_) { return; }
+      const __log = (o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'theme.normalize' }, o)); } catch (_) {} };
+      const __isDark = () => { try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (_) { return false; } };
+      const __apply = (doc) => {
+        try {
+          if (!doc || !doc.body) return;
+          const dark = __isDark();
+          const want = dark ? 'theme-dark' : 'theme-light';
+          const drop = dark ? 'theme-light' : 'theme-dark';
+          if (doc.body.getAttribute(drop) !== null) doc.body.removeAttribute(drop);
+          if (doc.body.getAttribute(want) === null) doc.body.setAttribute(want, '');
+        } catch (_) {}
+      };
+      // 存储归一 30=OS（跟随系统）——fnOS 内建 OS 模式，双 key（生态映射）
+      try {
+        const keys = ['os-theme-mode', 'fnos-theme-mode'];
+        const before = keys.map((k) => k + '=' + String(localStorage.getItem(k)));
+        let changed = false;
+        keys.forEach((k) => { try { if (localStorage.getItem(k) !== '30') { localStorage.setItem(k, '30'); changed = true; } } catch (_) {} });
+        __log({ kind: 'store', before: before.join(','), dark: __isDark(), changed, href: String(location.href || '').slice(0, 120) });
+      } catch (e) { __log({ kind: 'store-err', err: String(e && e.message || e) }); }
+      __apply(document);
+      try {
+        const mo = new MutationObserver(() => { __apply(document); });
+        mo.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ['theme-dark', 'theme-light'] });
+      } catch (_) {}
+      const __frames = () => {
+        try {
+          const ifs = document.querySelectorAll('iframe');
+          ifs.forEach((f) => {
+            // 同源 iframe：递归钉死 body attribute
+            try { if (f.contentDocument) __apply(f.contentDocument); } catch (_) {}
+            try {
+              if (!f.src || !/^https?:/i.test(f.src)) return;
+              const u = new URL(f.src);
+              const keys2 = ['theme', 'dark', 'mode', 'color_scheme', 'colorScheme', 'theme_mode', 'themeMode'];
+              let changed = false;
+              keys2.forEach((k) => {
+                if (u.searchParams.has(k)) {
+                  const v = __isDark() ? 'dark' : 'light';
+                  if (u.searchParams.get(k) !== v) { u.searchParams.set(k, v); changed = true; }
+                }
+              });
+              if (changed) {
+                const old = String(f.src).slice(0, 140);
+                f.src = u.toString();
+                __log({ kind: 'iframe-src', old, to: u.toString().slice(0, 140) });
+              }
+              try { if (f.contentWindow) f.contentWindow.postMessage({ source: 'fnos-tb', theme: __isDark() ? 'dark' : 'light' }, '*'); } catch (_) {}
+            } catch (_) {}
+          });
+          // 状态埋点（R20-G）：iframe src 全量留痕
+          try {
+            __log({ kind: 'frames', n: ifs.length, srcs: Array.from(ifs).slice(0, 4).map((f) => String(f.src || '').slice(0, 120)) });
+          } catch (_) {}
+        } catch (_) {}
+      };
+      setTimeout(__frames, 800);
+      setTimeout(__frames, 2500);
+      try {
+        const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+        if (mq && mq.addEventListener) {
+          mq.addEventListener('change', () => { __apply(document); __frames(); __log({ kind: 'system-switch', dark: __isDark() }); });
+        }
+      } catch (_) {}
+      setInterval(() => { __apply(document); }, 5000);
+    })();
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
     const TB = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
@@ -256,8 +349,8 @@ module.exports = function injectTitleBar(ctx) {
 
         // ---- 标题栏 ----
         const bar = document.createElement('div');
-        bar.id = 'fnos-tb-bar'; // v2.5.2 r18：稳定标识（appview chrome 清理排除注入标题栏）
-        bar.id = 'fnos-titlebar';
+        bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（MutationObserver/build 检测依赖）
+        bar.setAttribute('data-fnos-tb', '1'); // v2.5.4 r20：清理排除标记（r18 的 fnos-tb-bar 双赋值被上一行覆盖，改用 data 属性）
         bar.style.cssText = [
           'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
           'z-index:2147483647', 'display:flex', 'align-items:center',

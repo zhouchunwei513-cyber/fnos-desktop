@@ -205,7 +205,7 @@
               iconPath: app.iconPath,
               nasAddress: app.nasAddress,
             });
-            if (res.success) { showToast('快捷方式已创建', true); }
+            if (res.success) { /* v2.5.4 r20：去掉创建成功提示框（用户要求） */ }
             else { showToast('创建失败: ' + res.msg, false); }
           } catch (e) { showToast('创建异常: ' + e.message, false); }
           loading.value = false;

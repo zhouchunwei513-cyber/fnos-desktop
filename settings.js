@@ -784,7 +784,7 @@
               btn.textContent = '✓ 已创建';
               btn.classList.add('success');
               if (appActionStatus) appActionStatus.textContent = '已创建快捷方式: ' + (appData.appName || appData.appId);
-              alert('桌面快捷方式已生成');
+              // v2.5.4 r20：去掉创建成功提示框（用户要求；按钮状态与状态栏反馈保留）
             } else {
               btn.textContent = '创建失败';
               if (appActionStatus) appActionStatus.textContent = '创建失败: ' + (result.msg || '未知错误');

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.3';
+const APP_VERSION = '2.5.4';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4293,6 +4293,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         try {
           if (win.isDestroyed()) return false;
           // v2.5.3 r19：签名校验——非白名单格式（GIF/WebP）setIcon 触发渲染崩溃，跳过留默认图标
+          // v2.5.4 r20：非白名单先 WIC 进程外转 PNG（静态保留/动态取首帧，只吃安全 PNG）
+          try { const __nB = __safeDecodeImageToPng(buf); if (__nB) buf = __nB; } catch (_) {}
           if (!__safeIconBuf(buf)) return false;
           const img = nativeImage.createFromBuffer(Buffer.from(buf));
           if (!img.isEmpty()) {
@@ -4562,7 +4564,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           await refreshFpkApps(false);
           const __f2 = __resolveAppName();
           if (__f2) {
-            const __b2 = await fetchFpkIcon(__f2, 256);
+            let __b2 = await fetchFpkIcon(__f2, 256);
+            try { const __nE = __b2 ? __safeDecodeImageToPng(__b2) : null; if (__nE) __b2 = __nE; } catch (_) {}
             if (__b2 && __b2.length > 100 && win && !win.isDestroyed() && __safeIconBuf(__b2)) {
               const __img2 = nativeImage.createFromBuffer(__b2);
               if (!__img2.isEmpty()) {
@@ -4895,10 +4898,11 @@ function hideMainToBackground() {
   }
   ensureTray();
 }
-// v2.5.1 r17：主窗恢复=回桌面刷新。用户实测：主窗 hide 后渲染冻结，托盘唤回/双击主程序
-// 恢复后黑屏、桌面图标不渲染，须点菜单强制刷新才恢复——恢复统一 loadURL(lastConnectHref)
-// 回桌面重建渲染（唤回=看桌面即用户期望）。force=true 时可见也刷新（菜单/双击主程序=明确
-// 要完整主页面）；tray 且原可见时仅聚焦，不打断主窗当前操作。
+// v2.5.4 r20：托盘唤回=不整页刷新（问题4根修，用户定案"从为什么会黑屏入手，不要每次都强制
+// 刷新"）。黑屏根因：mainWindow.hide() 后 Windows DWM 丢弃隐藏窗的合成表面，show 首帧无重绘
+// 信号=黑屏/桌面图标不渲染（r17 用整页 loadURL 规避=体验差）。现方案：show 后强制合成器重绘
+//（bounds 微抖动复位 + 强制 reflow + resize 事件），延时 capturePage 亮度方差黑屏检测——
+// 真黑屏才 reload 兜底；force=true（菜单"刷新主页"/双击主程序）仍完整刷新。
 let __pendingHomeReset = false;
 const __launchDedupe = new Map();
 function __restoreMainHome(reason, force) {
@@ -4907,33 +4911,75 @@ function __restoreMainHome(reason, force) {
     const wasVisible = mainWindow.isVisible() && !mainWindow.isMinimized();
     try { if (mainWindow.isMinimized()) mainWindow.restore(); } catch (_) {}
     try { mainWindow.show(); } catch (_) {}
+    // 防黑屏重绘组合拳：bounds 微抖动触发 DWM 合成器重建合成表面 + 页面强制 reflow + resize
+    try {
+      const b = mainWindow.getBounds();
+      mainWindow.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height });
+      setImmediate(() => { try { if (!mainWindow.isDestroyed()) mainWindow.setBounds(b); } catch (_) {} });
+    } catch (_) {}
+    try {
+      mainWindow.webContents.executeJavaScript('(function(){try{if(document.body){var d=document.body.style.display;document.body.style.display="none";void document.body.offsetHeight;document.body.style.display=d;}window.dispatchEvent(new Event("resize"));}catch(_){}})()').catch(() => {});
+    } catch (_) {}
     try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
-    const needReload = !!force || !wasVisible || !!__pendingHomeReset || !/^https?:/i.test(String(mainWindow.webContents.getURL() || ''));
+    const __cur = String(mainWindow.webContents.getURL() || '');
+    const needReload = !!force || !!__pendingHomeReset || !/^https?:/i.test(__cur);
     __pendingHomeReset = false;
     if (needReload && lastConnectHref) {
       try { mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
+      try { require('./logger.js').log('info', 'window', 'main.restore-home.reload', { params: { reason: String(reason || ''), wasVisible, force: !!force, urlOk: /^https?:/i.test(__cur) } }, __RUN_MODE); } catch (_) {}
+    } else {
+      try { require('./logger.js').log('info', 'window', 'main.restore-home', { params: { reason: String(reason || ''), wasVisible, needReload: false } }, __RUN_MODE); } catch (_) {}
+      // 黑屏检测兜底：800ms 后 capturePage 亮度方差（全黑=均值<8 且方差<25）才 reload
+      setTimeout(async () => {
+        try {
+          if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return;
+          const img = await mainWindow.webContents.capturePage();
+          const bmp = (img && !img.isEmpty()) ? img.getBitmap() : null;
+          let black = false;
+          if (bmp && bmp.length > 100) {
+            let sum = 0, sum2 = 0, n = 0;
+            for (let i = 0; i + 3 < bmp.length; i += 4 * 97) {
+              const y = bmp[i] * 0.299 + bmp[i + 1] * 0.587 + bmp[i + 2] * 0.114;
+              sum += y; sum2 += y * y; n++;
+            }
+            if (n > 10) {
+              const mean = sum / n;
+              const varr = sum2 / n - mean * mean;
+              black = mean < 8 && varr < 25;
+            }
+          }
+          try { require('./logger.js').log('info', 'window', 'main.restore-home.check', { params: { reason: String(reason || ''), black } }, __RUN_MODE); } catch (_) {}
+          if (black && lastConnectHref) {
+            try { mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
+            try { require('./logger.js').log('warn', 'window', 'main.restore-home.black-fallback-reload', { params: { reason: String(reason || '') } }, __RUN_MODE); } catch (_) {}
+          }
+        } catch (_) {}
+      }, 800);
     }
-    try { require('./logger.js').log('info', 'window', 'main.restore-home', { params: { reason: String(reason || ''), wasVisible, needReload } }, __RUN_MODE); } catch (_) {}
     try { __syncThemeFromMain(); } catch (_) {}
   } catch (_) {}
 }
-// v2.5.1 r17：昼夜主题跟随主程序——读主窗页面实际主题（body 背景亮度）设 nativeTheme
-// .themeSource，应用跳出窗/全部窗 prefers-color-scheme 与主程序昼夜模式一致。
+// v2.5.4 r20：日夜模式统一跟随系统（问题3根修）。系统日/夜特征值=nativeTheme.shouldUseDarkColors
+//（Electron 封装 Windows 注册表 HKCU\...\Themes\Personalize\AppsUseLightTheme）；fnOS 前端
+// 特征值：localStorage['os-theme-mode'|'fnos-theme-mode']（10=LIGHT/20=DARK/30=OS，实锤自前端
+// bundle KQ 枚举）+ body[theme-dark]/body[theme-light] 属性；iframe 内容跟 matchMedia。混搭
+// 根因：旧逻辑从主窗 body 背景亮度推断 themeSource——时序/透明/class 主题误判致 themeSource
+// 抖动，壳（fnOS 主题存储）与 iframe（media query）分叉。现 themeSource 恒 'system'，页面侧由
+// titlebar-inject __themeNormalize 钉死 body attribute+存储归一 30+iframe 主题参数归一，全窗统一。
+let __lastThemeSig = '';
 function __syncThemeFromMain() {
   try {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    const __probe = '(function(){try{var c=getComputedStyle(document.body).backgroundColor||\"\";var i=c.indexOf(\"(\");var j=c.indexOf(\")\");var p=c.slice(i+1,j).split(\",\");if(p.length<3)return \"\";var y=(+p[0])*0.299+(+p[1])*0.587+(+p[2])*0.114;return y<128?\"dark\":\"light\";}catch(_){return \"\";}})()';
-    mainWindow.webContents.executeJavaScript(__probe).then((r) => {
-      if (r === 'dark' || r === 'light') {
-        try {
-          const nt = require('electron').nativeTheme;
-          if (nt && nt.themeSource !== r) {
-            nt.themeSource = r;
-            try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: r } }, __RUN_MODE); } catch (_) {}
-          }
-        } catch (_) {}
-      }
-    }).catch(() => {});
+    const nt = require('electron').nativeTheme;
+    if (!nt) return;
+    if (nt.themeSource !== 'system') {
+      nt.themeSource = 'system';
+      try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: 'system', shouldUseDark: !!nt.shouldUseDarkColors } }, __RUN_MODE); } catch (_) {}
+    }
+    const __sig = (nt.shouldUseDarkColors ? 'dark' : 'light') + ':' + String(nt.themeSource);
+    if (__sig !== __lastThemeSig) {
+      __lastThemeSig = __sig;
+      try { require('./logger.js').log('info', 'window', 'theme.detect', { params: { shouldUseDark: !!nt.shouldUseDarkColors, themeSource: String(nt.themeSource), sig: __sig } }, __RUN_MODE); } catch (_) {}
+    }
   } catch (_) {}
 }
 try { setInterval(() => { try { __syncThemeFromMain(); } catch (_) {} }, 30000); } catch (_) {}
@@ -5553,6 +5599,8 @@ function doConnectTo(serverInput) {
     } catch (_) {}
   });
   setImmediate(() => { try { warmupXteBase(); } catch (_) {} });
+  // v2.5.4 r20：预热 app-center 启动地址缓存（__resolveLaunchUrl 根 URL fallback 数据源）
+  setImmediate(() => { try { scanAppCenterViaRest(); } catch (_) {} });
   // v2.4.19 r15f：切换服务器后立即重探测窗口类型（preset 重种+元信息重采）。
   // 旧逻辑 __wtProbedAt TTL 内不重跑，换服务器后首击全 miss 回落模拟点击。
   setImmediate(() => { try { refreshFpkApps.__wtProbedAt = 0; probeAppWindowTypes().catch(() => {}); } catch (_) {} });
@@ -6026,6 +6074,40 @@ function buildAppCenterUrl(origin, svc) {
   } catch (_) { return ''; }
 }
 
+// v2.5.4 r20（问题2）：app-center 官方启动地址缓存/live 查询。trim.docs 等应用 FPK url 是
+// 根地址（无独立 path），直接打开=入口错/页面不存在；/app-center/v1/app/installed 的
+// appServiceInfo.fullUrl/urls 才是真实启动地址（服务端权威）。缓存供 __resolveLaunchUrl 同步
+// 取用，live 查询供创建快捷方式/冷启动修正（async 链）。
+const __appCenterUrlCache = new Map();
+async function __fetchAppCenterUrlLive(appName) {
+  try {
+    if (!appName) return '';
+    const s = loadSettings();
+    const origin = String(s.origin || '').replace(/\/+$/, '');
+    if (!origin || !/^https?:/i.test(origin)) return '';
+    const ses = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) ? mainWindow.webContents.session : null;
+    if (!ses) return '';
+    const resp = await ses.fetch(origin + '/app-center/v1/app/installed?language=zh-CN', { credentials: 'include' });
+    if (!resp.ok) return '';
+    const json = await resp.json().catch(() => ({}));
+    const list = (json && json.data && json.data.list) || [];
+    for (const a of list) {
+      const nm = String(a.appName || '');
+      if (nm !== String(appName)) continue;
+      const u = buildAppCenterUrl(origin, a.appServiceInfo);
+      if (!u) continue;
+      try {
+        const pu = new URL(u); const pp = String(pu.pathname || '').replace(/\/+$/, '');
+        if ((pp === '' || pp === '/') && !pu.search && !pu.hash) continue; // 仍是根地址=无效入口
+      } catch (_) { continue; }
+      __appCenterUrlCache.set(nm, u);
+      fnosLog('info', 'shortcut.url', 'app-center live resolved', { name: nm, url: u.slice(0, 140) });
+      return u;
+    }
+  } catch (e) { fnosLog('warn', 'shortcut.url', 'app-center live failed', { name: String(appName).slice(0, 60), err: e.message }); }
+  return '';
+}
+
 async function scanAppCenterViaRest() {
   try {
     const s = loadSettings();
@@ -6068,6 +6150,10 @@ async function scanAppCenterViaRest() {
         type: 'appCenter',
       });
     }
+    // v2.5.4 r20：缓存官方启动地址（trim.docs 等根 URL 型应用的真实入口）
+    try {
+      for (const a of apps) { if (a && a.appName && a.url) __appCenterUrlCache.set(String(a.appName), String(a.url)); }
+    } catch (_) {}
     if (apps.length) processScannedApps(apps);
     else fnosLog('warn', 'appcenter.rest', 'empty app list', {});
   } catch (e) {
@@ -6510,6 +6596,60 @@ const __WS_SCANNER_JS = String.raw`
 `;
 
 
+// v2.5.4 r20：WIC 进程外图片解码（问题5根修）。用户定案："静态图标不应替换，任务只是动态图
+// 不支持"——任何格式静态图标都要保留原样，动态图（GIF/动画）取首帧静态化。r19 教训：GIF/坏图
+// 进 nativeImage 是 native 崩溃（0x80000003），JS catch 不住，故解码放 powershell 子进程
+// （WIC/PresentationCore BitmapDecoder 支持 WebP/GIF/PNG/JPG/BMP，取 frame 0=首帧）转 PNG，
+// 主进程只吃安全 PNG。转换失败（真损坏/矢量 SVG）才由调用方走 exe 兜底。
+const __wicCache = new Map();
+function __wicToPng(buf) {
+  try {
+    const os = require('os');
+    const __tag = Date.now() + '-' + Math.floor(Math.random() * 1e6);
+    const inP = path.join(os.tmpdir(), 'fnos-wic-' + __tag + '.img');
+    const outP = inP + '.png';
+    fs.writeFileSync(inP, Buffer.from(buf));
+    const ps = `
+Add-Type -AssemblyName PresentationCore,WindowsBase
+try {
+  $s = [System.IO.File]::OpenRead('${inP.replace(/'/g, "''")}')
+  $dec = [System.Windows.Media.Imaging.BitmapDecoder]::Create($s, [System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat, [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+  $f = $dec.Frames[0]
+  $enc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+  $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($f))
+  $o = [System.IO.File]::Create('${outP.replace(/'/g, "''")}')
+  $enc.Save($o); $o.Close(); $s.Close()
+  exit 0
+} catch { exit 1 }
+`;
+    const r = cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 8000, windowsHide: true });
+    let out = null;
+    if (r && r.status === 0 && fs.existsSync(outP)) {
+      const b = fs.readFileSync(outP);
+      if (b.length > 100) out = b;
+    }
+    try { fs.unlinkSync(inP); } catch (_) {}
+    try { fs.unlinkSync(outP); } catch (_) {}
+    return out;
+  } catch (_) { return null; }
+}
+function __safeDecodeImageToPng(buf) {
+  try {
+    if (!buf || buf.length < 20) return null;
+    if (__safeIconBuf(buf) === 'png') return Buffer.from(buf);
+    const key = Buffer.from(buf.slice(0, 12)).toString('hex') + ':' + buf.length;
+    if (__wicCache.has(key)) return __wicCache.get(key);
+    const png = __wicToPng(buf);
+    if (png && __safeIconBuf(png) === 'png') {
+      __wicCache.set(key, png);
+      try { fnosLog('info', 'icon.decode', 'wic converted to png', { from: __safeIconBuf(buf) || 'unknown', size: buf.length, pngSize: png.length }); } catch (_) {}
+      return png;
+    }
+    try { fnosLog('warn', 'icon.decode', 'wic convert failed', { size: buf.length }); } catch (_) {}
+    return null;
+  } catch (_) { return null; }
+}
+
 // v2.5.3 r19：图标 buffer 签名校验——GIF/WebP/损坏图进 nativeImage→win.setIcon 触发渲染进程
 // 崩溃（exitCode 0x80000003，实测全部应用窗 create 后 10-300ms render-gone → 黑屏根因）；
 // 返回 'png'/'jpg'/'ico'/'bmp' 或 ''（非白名单一律拒绝）。
@@ -6532,6 +6672,7 @@ function pngToIco(pngBuffer) {
   try {
     // v2.5.3 r19：PNG 签名校验——GIF/WebP 等非 PNG 输入经 resize/toPNG 产出坏条目、或 6534 兜底
     // 把原始字节塞进 ICO，坏 ICO 引用即 LNK 白纸图标。非 PNG 直接返回 null，调用方落 exe 兜底。
+    try { const __nIco = __safeDecodeImageToPng(pngBuffer); if (__nIco) pngBuffer = __nIco; } catch (_) {}
     if (__safeIconBuf(pngBuffer) !== 'png') return null;
     const src = nativeImage.createFromBuffer(Buffer.from(pngBuffer));
     if (src.isEmpty()) throw new Error('empty source image');
@@ -7394,8 +7535,19 @@ ipcMain.on('titlebar:should-inject', (e) => {
   try {
     const win = BrowserWindow.fromWebContents(e.sender);
     const skip = !!(win && win.__skipTitlebar);
-    e.returnValue = { skip, reason: skip ? 'app-has-own-titlebar' : '' };
-  } catch (_) { e.returnValue = { skip: false, reason: '' }; }
+    // v2.5.4 r20（问题1）：chrome 清理开关——NAS 同源且（appview 容器页 或 非主窗=独立应用窗）
+    // 才清理壳残件（假窗控组/头像浮钮），主窗桌面不清理（右上角是真页面功能区，防误杀）；
+    // nasOrigin 供渲染端判定 NAS 页面范围（__themeNormalize 全 NAS 页面统一日夜模式）
+    let nasOrigin = '';
+    try { nasOrigin = lastConnectHref ? new URL(lastConnectHref).origin : String(currentOrigin || ''); } catch (_) {}
+    let chromeFix = false;
+    try {
+      const u = String((e.sender && e.sender.getURL()) || '');
+      const isNas = !!nasOrigin && u.indexOf(nasOrigin) === 0;
+      chromeFix = isNas && (/\/appview/i.test(u) || (win && win !== mainWindow));
+    } catch (_) {}
+    e.returnValue = { skip, reason: skip ? 'app-has-own-titlebar' : '', nasOrigin, chromeFix };
+  } catch (_) { e.returnValue = { skip: false, reason: '', nasOrigin: '', chromeFix: false }; }
 });
 
 // v1.14：重启应用（用于玻璃标题栏等需要重建窗口才能生效的设置）
@@ -7665,6 +7817,11 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
             })(launchUrl);
             if (__isRootUrl) {
               let __fixedUrl = '';
+              // v2.5.4 r20：app-center 官方启动地址最优先（trim.docs 等真实入口）
+              try {
+                const __liveU = await __fetchAppCenterUrlLive(__entry.name);
+                if (__liveU) { __fixedUrl = __liveU; fnosLog('info', 'shortcut.url', 'root url app-center-live', { appId, name: __entry.name, to: __liveU.slice(0, 140) }); }
+              } catch (_) {}
               // 1) manifest 真实 URL（apps.scan 扫描得到 appview?anchor 或端口路径）
               try {
                 const __mf2 = readManifest();
@@ -7743,7 +7900,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
       const fpkBuf = await fetchFpkIcon(fpkAppName, 256);
       // v2.5.3 r19：FPK 图标 PNG 签名校验（fndesk GIF 374KB → pngToIco 产出坏 ICO → LNK 白纸实锤）；
       // 非 PNG 跳过 FPK 链落回退/exe 兜底。ico 文件名带内容 hash 头 6 位，绕开 Windows 图标缓存。
-      if (fpkBuf && fpkBuf.length > 0 && __safeIconBuf(fpkBuf) !== 'png') {
+      if (fpkBuf && fpkBuf.length > 0 && __safeIconBuf(__safeDecodeImageToPng(fpkBuf) || fpkBuf) !== 'png') {
         fnosLog('warn', 'icon.fpk', 'non-PNG FPK icon, fallback to exe', { appId, fpkAppName, size: fpkBuf.length });
         console.log('[FPK] shortcut icon: non-PNG source, skip', JSON.stringify({ appId, size: fpkBuf.length }));
       } else if (fpkBuf && fpkBuf.length > 0) {
@@ -7789,7 +7946,10 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
             icoPath = resolvedIconPath;
           } else {
             // Read the image file and convert to ICO
-            const imgBuf = fs.readFileSync(resolvedIconPath);
+            let imgBuf = fs.readFileSync(resolvedIconPath);
+            // v2.5.4 r20：静态图标（WebP/GIF 等）WIC 进程外解码归一 PNG——用户定案"静态图标
+            // 不应替换，只是动态图不支持"（动态图取首帧静态化）；真损坏才 exe 兜底
+            try { const __nC = __safeDecodeImageToPng(imgBuf); if (__nC) imgBuf = __nC; } catch (_) {}
             // Verify it's a valid PNG (starts with PNG signature)
             if (imgBuf.length > 8 && imgBuf[0] === 0x89 && imgBuf[1] === 0x50) {
               const icoBuf = pngToIco(imgBuf);
@@ -8534,6 +8694,22 @@ function __fpkLookupSync(name) {
     return cache.find((f) => f && String(f.name || f.appname || '') === String(name)) || null;
   } catch (_) { return null; }
 }
+// v2.5.4 r20：根地址型 URL 修正——命中 app-center 官方启动地址则替换，否则原样返回
+function __rootUrlFallback(u, name) {
+  try {
+    if (!u || !/^https?:/i.test(u)) return u;
+    const pu = new URL(u);
+    const pp = String(pu.pathname || '').replace(/\/+$/, '');
+    if ((pp === '' || pp === '/') && !pu.search && !pu.hash) {
+      const ac = __appCenterUrlCache.get(String(name || '')) || '';
+      if (ac && /^https?:/i.test(ac)) {
+        fnosLog('info', 'shortcut.url', 'root-url fallback app-center', { name: String(name || '').slice(0, 60), to: ac.slice(0, 140) });
+        return ac;
+      }
+    }
+  } catch (_) {}
+  return u;
+}
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
@@ -8553,7 +8729,7 @@ function __resolveLaunchUrl(raw, nasAddr) {
         }
       }
     } catch (_) {}
-    return appName;
+    return __rootUrlFallback(appName, fpkAppNameFromUrl(appName) || '');
   }
   // 2) v2.4.0（需求 2.1）：快捷方式统一传 --launch-app={应用唯一 ID} 后，FPK 第三方应用的
   //    真实打开地址（端口/路径）以 FPK 图标管理器 url 字段为准——先同步查 FPK 内存缓存
@@ -8561,15 +8737,16 @@ function __resolveLaunchUrl(raw, nasAddr) {
   try {
     const fe = __fpkLookupSync(appName);
     if (fe && fe.url && /^https?:\/\//i.test(fe.url)) {
-      try { dlog && dlog('info', 'shortcut.url.fpk-cache', { name: String(appName).slice(0, 80), url: String(fe.url).slice(0, 140) }); } catch (_) {}
-      return fe.url;
+      const __ru2 = __rootUrlFallback(fe.url, appName);
+      try { dlog && dlog('info', 'shortcut.url.fpk-cache', { name: String(appName).slice(0, 80), url: String(__ru2).slice(0, 140) }); } catch (_) {}
+      return __ru2;
     }
   } catch (_) {}
   // 3) appId/appname 命中 manifest entry
   try {
     const mf = readManifest();
     const entry = mf && Array.isArray(mf.apps) ? mf.apps.find(a => a && (a.appId === appName || a.name === appName || a.url === appName)) : null;
-    if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return entry.url;
+    if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return __rootUrlFallback(entry.url, appName);
   } catch (_) {}
   // 4) appname → appview?anchor（飞牛系统应用统一入口，服务端/客户端会补端口归一化）
   let base = String(nasAddr || '').trim().replace(/\/+$/, '');
@@ -8617,6 +8794,35 @@ function launchSubAppFromArgs() {
     queuePendingApp(appUrl);
     // v2.1.15：增强日志——记录 pending app 已入队
     fnosLog('info', 'launch', 'pending app queued', { appUrl: String(appUrl).slice(0, 160), nasAddr: String(url).slice(0, 80) });
+    // v2.5.4 r20：冷启动缓存未热时 resolve 可能给出根 URL/anchor 兜底地址；延迟用 app-center
+    // live 地址修正 pending/已开窗（trim.docs 类应用双击 LNK 直达真实入口）
+    try {
+      const __rawN = /^https?:/i.test(launchArgs.appId) ? (fpkAppNameFromUrl(launchArgs.appId) || '') : String(launchArgs.appId || '');
+      setTimeout(() => {
+        (async () => {
+          try {
+            const __live2 = await __fetchAppCenterUrlLive(__rawN);
+            if (!__live2) return;
+            if (String(__pendingAppUrl || '') === String(appUrl)) {
+              __pendingAppUrl = __live2;
+              fnosLog('info', 'launch', 'pending app url fixed by app-center', { name: __rawN, from: String(appUrl).slice(0, 100), to: __live2.slice(0, 140) });
+            } else {
+              // 已被 tryOpenPendingApp 打开（快登录场景）——兜底错误地址窗重载正确地址
+              try {
+                for (const w of require('electron').BrowserWindow.getAllWindows()) {
+                  try {
+                    if (w && !w.isDestroyed() && String((w.webContents && w.webContents.getURL()) || '') === String(appUrl)) {
+                      w.loadURL(__live2);
+                      fnosLog('info', 'launch', 'opened app url fixed by app-center', { name: __rawN, to: __live2.slice(0, 140) });
+                    }
+                  } catch (_) {}
+                }
+              } catch (_) {}
+            }
+          } catch (_) {}
+        })();
+      }, 2500);
+    } catch (_) {}
   }
   __pendingFromShortcut = true;
   return true;

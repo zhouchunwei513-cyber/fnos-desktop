@@ -49,7 +49,18 @@ module.exports = function injectTitleBar(ctx) {
                 }
               }
               const vw = window.innerWidth, vh = window.innerHeight;
-              const nodes = document.body ? document.body.querySelectorAll('*') : [];
+              // v2.5.6 r22（问题1）：扫描面扩到同源 iframe 文档——appview 应用中心的"—▣✕"
+              // 假窗控在 iframe 子框架内=主文档扫描够不到（r22 candidate-dump 空转实锤）
+              let nodes = Array.from(document.body ? document.body.querySelectorAll('*') : []);
+              try {
+                const __ifs22 = document.querySelectorAll('iframe');
+                for (let __fi22 = 0; __fi22 < __ifs22.length && nodes.length < 4000; __fi22++) {
+                  try {
+                    const __d22 = __ifs22[__fi22].contentDocument;
+                    if (__d22 && __d22.body) nodes = nodes.concat(Array.from(__d22.body.querySelectorAll('*')));
+                  } catch (_) {}
+                }
+              } catch (_) {}
               for (let i = 0; i < nodes.length; i++) {
                 const el = nodes[i];
                 try {
@@ -59,12 +70,19 @@ module.exports = function injectTitleBar(ctx) {
                   const r = el.getBoundingClientRect();
                   if (r.width <= 0 || r.height <= 0) continue;
                   const cnt = el.querySelectorAll('button, [role="button"], [class*="btn" i], [class*="close" i], [class*="win-ctrl" i], [class*="titlebar" i], [class*="title-bar" i], svg, [class*="ctrl" i]').length;
+                  // v2.5.6 r22（问题1）：窗控符号文本判定——"—▣✕"文本字符假窗控被 !text 条件
+                  // 排除=漏杀真凶（r22 截图 1 黄框实锤）；窗控符号集（横线/方框/叉号 unicode）
+                  // 视为无文本；文本=窗控符号序列直接命中形态 A3。
+                  const __txtRaw = (el.textContent || '').trim();
+                  const __winctlOnly = __txtRaw.length > 0 && __txtRaw.length <= 16 && /^[\u002D\u002E\u00B7\u2013\u2014\u2015\u2500\u2501\u2581\u2588\u25A0\u25A1\u25A2\u25A3\u25B2\u25BC\u2715\u2716\u2717\u2718\u00D7\u2212\u2312\u25CB\u25CF\u2726\u274C\u274E\u2750\u0041\s]+$/.test(__txtRaw) && /[\u002D\u2013\u2014\u2500\u25A0\u25A1\u25A2\u25A3\u2715\u2716\u2717\u00D7\u274C]/.test(__txtRaw);
+                  const __noTxt = !__txtRaw || __winctlOnly;
                   // 形态 A：右上角假窗口按钮组（与注入标题栏叠成双标题栏）
                   // v2.5.4 r20：组判定放宽（回收站/Docker 假窗控组宽高超旧阈值=漏杀实锤）+无文本要求
                   // v2.5.5 r21：再放宽（top 140→180/贴右 260→320/宽 520→720/高 120→160）+新增
                   // 形态 A2 通栏假标题栏（宽≥半屏、高≤56、≥3 控件）——r21 复验仍有残留实锤
-                  const fakeWinBtns = (r.top <= 180 && (vw - r.right) <= 320 && r.width <= 720 && r.height <= 160 && cnt >= 2 && !(el.textContent || '').trim())
-                    || (r.top <= 8 && r.height <= 56 && r.width >= vw * 0.5 && cnt >= 3 && !(el.textContent || '').trim());
+                  const fakeWinBtns = (r.top <= 180 && (vw - r.right) <= 320 && r.width <= 720 && r.height <= 160 && cnt >= 2 && __noTxt)
+                    || (r.top <= 8 && r.height <= 56 && r.width >= vw * 0.5 && cnt >= 3 && __noTxt)
+                    || (r.top <= 120 && (vw - r.right) <= 260 && r.width <= 560 && r.height <= 90 && __winctlOnly);
                   // 形态 B：左侧 dock 竖长条（黑块挤占内容区）
                   const dockRail = r.left <= 88 && r.width <= 132 && r.height >= vh * 0.3;
                   // 形态 C：左/右下角头像悬浮小圆钮（≥20px 排除 1×1 角标 IMG 误杀——r19 hiddenCount:1 实锤）
@@ -72,7 +90,7 @@ module.exports = function injectTitleBar(ctx) {
                   // 形态 D：右上角窗控形态单个小按钮兜底（组判定不满足时逐按钮清）——保守收窄：
                   // 仅 48×48 内、贴右≤96、svg 图标、无文本、无 aria-label/title（真功能按钮都有）
                   const fakeBtnOne = r.top <= 140 && (vw - r.right) <= 120 && r.width <= 48 && r.height <= 48 && r.width >= 14 && r.height >= 14
-                    && (el.querySelector && el.querySelector('svg')) && !(el.textContent || '').trim()
+                    && (el.querySelector && el.querySelector('svg')) && __noTxt
                     && !el.getAttribute('aria-label') && !el.getAttribute('title');
                   if (fakeWinBtns || dockRail || cornerFab || fakeBtnOne) {
                     el.style.setProperty('display', 'none', 'important');
@@ -104,13 +122,20 @@ module.exports = function injectTitleBar(ctx) {
               // v2.5.5 r21（问题7）：右上角残留候选 dump——未被隐藏规则命中的 fixed 元素留痕
               try {
                 const __vw = window.innerWidth, __cand = [];
-                const __nodes = document.body ? document.body.querySelectorAll('*') : [];
-                for (let i = 0; i < __nodes.length && __cand.length < 12; i++) {
+                // v2.5.6 r22：dump 面扩到同源 iframe 文档（假窗控在 iframe 内=主文档 dump 空转实锤）
+                let __nodes = Array.from(document.body ? document.body.querySelectorAll('*') : []);
+                try {
+                  const __ifs22b = document.querySelectorAll('iframe');
+                  for (let __fi22b = 0; __fi22b < __ifs22b.length && __nodes.length < 4000; __fi22b++) {
+                    try { const __d22b = __ifs22b[__fi22b].contentDocument; if (__d22b && __d22b.body) __nodes = __nodes.concat(Array.from(__d22b.body.querySelectorAll('*'))); } catch (_) {}
+                  }
+                } catch (_) {}
+                for (let i = 0; i < __nodes.length && __cand.length < 16; i++) {
                   const el = __nodes[i];
                   try {
                     if (__isOurs(el) || __hidden.indexOf(el) >= 0) continue;
                     const cs = getComputedStyle(el);
-                    if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+                    if ((cs.position !== 'fixed' && cs.position !== 'absolute') || cs.display === 'none' || cs.visibility === 'hidden') continue;
                     const r2 = el.getBoundingClientRect();
                     if (r2.width <= 0 || r2.height <= 0) continue;
                     if (r2.top <= 200 && (__vw - r2.right) <= 340) {
@@ -158,8 +183,17 @@ module.exports = function injectTitleBar(ctx) {
       let __sysDark = false;
       let __origMQ = null;
       try { __origMQ = window.matchMedia ? window.matchMedia.bind(window) : null; } catch (_) {}
-      const __refreshDark = () => { try { __sysDark = !!(__origMQ && __origMQ('(prefers-color-scheme: dark)').matches); } catch (_) {} };
+      // v2.5.6 r22：真值改从主进程 nativeTheme 取（themeSource 显式化后 CSS @media 与
+      // matchMedia 桥同源=混搭根修）；IPC 不可用回退原生 matchMedia 真值。30s 跟随系统切换。
+      const __refreshDark = () => {
+        try {
+          const v = ipcRenderer.sendSync('theme:sys-dark');
+          if (typeof v === 'boolean') { __sysDark = v; return; }
+        } catch (_) {}
+        try { __sysDark = !!(__origMQ && __origMQ('(prefers-color-scheme: dark)').matches); } catch (_) {}
+      };
       __refreshDark();
+      try { setInterval(__refreshDark, 30000); } catch (_) {}
       try {
         if (__origMQ) {
           window.matchMedia = function (q) {
@@ -237,9 +271,15 @@ module.exports = function injectTitleBar(ctx) {
               } catch (_) {}
             } catch (_) {}
           });
-          // 状态埋点（R20-G）：iframe src 全量留痕
+          // 状态埋点（R20-G）：iframe src 留痕——v2.5.6 r22 降噪（问题7）：frames n:0 空转
+          // 刷屏 2188 条实锤；仅 n>0 且签名变化时记（保跟踪能力去刷屏）
           try {
-            __log({ kind: 'frames', n: ifs.length, srcs: Array.from(ifs).slice(0, 4).map((f) => String(f.src || '').slice(0, 120)) });
+            const __srcs22 = Array.from(ifs).slice(0, 4).map((f) => String(f.src || '').slice(0, 120));
+            const __sigF22 = ifs.length + ':' + __srcs22.join('|');
+            if (ifs.length > 0 && __sigF22 !== (globalThis.__fnFramesSig || '')) {
+              globalThis.__fnFramesSig = __sigF22;
+              __log({ kind: 'frames', n: ifs.length, srcs: __srcs22 });
+            }
           } catch (_) {}
         } catch (_) {}
       };

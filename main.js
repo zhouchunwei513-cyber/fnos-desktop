@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.18';
+const APP_VERSION = '2.4.19';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -5093,7 +5093,14 @@ function createMainWindow(partition, loadTarget) {
         }
         // v2.0.0：记录到网络健康监控
         const isJitter = NetworkHealth.recordFailure('mainwindow', `${errorCode} ${errorDesc}`);
-        if (_mainFailTries >= 4) return;
+        if (_mainFailTries >= 4) {
+          // v2.4.19 r15f：重试耗尽（输错服务器地址/服务器不可达）——原生弹窗报错并回到
+          // 连接页重新输入地址。旧逻辑直接 return 黑屏卡死（异步 did-fail-load 无回退 UI）。
+          dlog && dlog('warn', 'main.fail-load.giveup', { errorCode, errorDesc, url: String(failUrl).slice(0, 120) });
+          try { dialog.showMessageBox(mainWindow, { type: 'error', title: '连接失败', message: '无法连接服务器，将返回连接页，请检查地址后重新输入。', buttons: ['确定'] }); } catch (_) {}
+          setTimeout(() => { try { showConnectPage(); } catch (_) {} }, 300);
+          return;
+        }
         _mainFailTries++;
         // v2.0.0：指数退避 + 抖动
         const retryDelay = Math.min(8000, 1000 * Math.pow(2, _mainFailTries - 1) + Math.random() * 500);
@@ -5282,8 +5289,18 @@ function showConnectPage() {
         dlog && dlog('warn', 'login.loadFile.fail', { err: String(e && e.message || e), code: e && e.code });
       } catch (_) {}
       if (triedUrl) {
-        // 两种方式都失败，显示错误对话框
-        glassErrorBox('加载失败', `无法打开连接页：${e.message}`);
+        // v2.4.19 r15f：两种加载方式都失败——原生弹窗（黑屏上玻璃对话框不可见）+周期
+        // 自动重试 loadFile（便携版解压锁临时释放后自愈），永不黑屏卡死。
+        dlog && dlog('error', 'login.load.giveup', { err: String(e && e.message || e) });
+        try { dialog.showMessageBox(mainWindow, { type: 'error', title: '加载失败', message: '无法打开连接页，3 秒后将自动重试。', buttons: ['确定'] }); } catch (_) {}
+        let __rtN = 0;
+        const __rtTimer = setInterval(() => {
+          try {
+            __rtN++;
+            if (!mainWindow || mainWindow.isDestroyed()) { clearInterval(__rtTimer); return; }
+            mainWindow.loadFile(LOGIN_PAGE).then(() => clearInterval(__rtTimer)).catch(() => { if (__rtN >= 5) clearInterval(__rtTimer); });
+          } catch (_) { if (__rtN >= 5) clearInterval(__rtTimer); }
+        }, 3000);
         return;
       }
       triedUrl = true;
@@ -5293,10 +5310,18 @@ function showConnectPage() {
         dlog && dlog('info', 'login.loadFile.retryWithURL', { url: fileUrl.slice(0, 80) });
         mainWindow.loadURL(fileUrl).catch((e2) => {
           try { dlog && dlog('warn', 'login.loadURL.fail', { err: String(e2 && e2.message || e2) }); } catch (_) {}
-          glassErrorBox('加载失败', `无法打开连接页：${e2.message}`);
+          // v2.4.19 r15f：原生弹窗（黑屏上玻璃对话框不可见）+自动重试，永不黑屏卡死。
+          dlog && dlog('error', 'login.load.giveup2', { err: String(e2 && e2.message || e2) });
+          try { dialog.showMessageBox(mainWindow, { type: 'error', title: '加载失败', message: '无法打开连接页，3 秒后将自动重试。', buttons: ['确定'] }); } catch (_) {}
+          const __rtT2 = setInterval(() => { try { if (!mainWindow || mainWindow.isDestroyed()) { clearInterval(__rtT2); return; } mainWindow.loadFile(LOGIN_PAGE).then(() => clearInterval(__rtT2)).catch(() => {}); } catch (_) {} }, 3000);
+          setTimeout(() => { try { clearInterval(__rtT2); } catch (_) {} }, 20000);
         });
       } catch (e3) {
-        glassErrorBox('加载失败', `无法打开连接页：${e3.message}`);
+        // v2.4.19 r15f：原生弹窗+自动重试（同上兜底）。
+        dlog && dlog('error', 'login.load.giveup3', { err: String(e3 && e3.message || e3) });
+        try { dialog.showMessageBox(mainWindow, { type: 'error', title: '加载失败', message: '无法打开连接页，3 秒后将自动重试。', buttons: ['确定'] }); } catch (_) {}
+        const __rtT3 = setInterval(() => { try { if (!mainWindow || mainWindow.isDestroyed()) { clearInterval(__rtT3); return; } mainWindow.loadFile(LOGIN_PAGE).then(() => clearInterval(__rtT3)).catch(() => {}); } catch (_) {} }, 3000);
+        setTimeout(() => { try { clearInterval(__rtT3); } catch (_) {} }, 20000);
       }
     });
   }
@@ -5466,6 +5491,9 @@ function doConnectTo(serverInput) {
     } catch (_) {}
   });
   setImmediate(() => { try { warmupXteBase(); } catch (_) {} });
+  // v2.4.19 r15f：切换服务器后立即重探测窗口类型（preset 重种+元信息重采）。
+  // 旧逻辑 __wtProbedAt TTL 内不重跑，换服务器后首击全 miss 回落模拟点击。
+  setImmediate(() => { try { refreshFpkApps.__wtProbedAt = 0; probeAppWindowTypes().catch(() => {}); } catch (_) {} });
   // v1.67.0：登录成功后尽快注入页面级 WS/长连接保活，避免 FRP 空闲超时被回收导致"已断开"
   setTimeout(() => { try { bumpAuthHeartbeat(); } catch (_) {} }, 3000);
   // v2.0.0：启动网络健康探测（每30s检测NAS连通性，区分抖动/真断连）
@@ -5892,6 +5920,24 @@ async function processScannedApps(apps) {
       }
 
       writeManifest({ apps: Array.from(existingByUrl.values()) });
+      // v2.4.19 r15f：列表刷新合并保留窗口类型标记——旧逻辑整体替换 apps 丢 windowType
+      // （换服务器/扫描重建后缓存全失效回落模拟点击）。按归一键把旧标记并回新条目。
+      try {
+        const __oldMf = readManifest();
+        const __oldWt = new Map();
+        if (__oldMf && Array.isArray(__oldMf.apps)) {
+          for (const __oa of __oldMf.apps) { if (__oa && __oa.windowType) __oldWt.set(__wtKeyNorm(__oa.appId || __oa.name || __oa.url || ''), __oa); }
+        }
+        for (const __na of existingByUrl.values()) {
+          const __oe = __oldWt.get(__wtKeyNorm(__na.appId || __na.name || __na.url || ''));
+          if (__oe && __oe.windowType && !__na.windowType) {
+            __na.windowType = __oe.windowType;
+            __na.windowTypeSrc = __oe.windowTypeSrc || 'behavior';
+            __na.windowTypeUrl = __oe.windowTypeUrl || '';
+            __na.windowTypeAt = __oe.windowTypeAt || Date.now();
+          }
+        }
+      } catch (_) {}
     } catch (_) {}
     // v1.75.0：日志带上具体应用名，便于排障
     dlog && dlog('info', 'apps.scanned', { count: merged.length, fresh: fresh.length, apps: merged.map((a) => a.name + '|' + a.url).slice(0, 12) });
@@ -8181,10 +8227,14 @@ async function probeAppWindowTypes() {
   // v2.4.18 r15e：预探测基准种子（8 样本实例实测分类固化）——元信息/行为观测未覆盖的
   // 应用首击即命中分支，不再回落模拟点击（首击单窗口保障）。已有标记不覆盖（meta/观测优先）。
   try {
-    const __PRESET_EMBED = ['trim.media', 'Lucky', 'trim.docker', 'baidu.netdisk'];
-    const __PRESET_POPOUT = ['trim.music', 'trim.photos', 'com.fntb.iconmgr', 'qBittorrent'];
-    for (const nm of __PRESET_EMBED) { if (!__windowTypeGet(nm)) __windowTypeCache(nm, 'embed', 'preset'); }
-    for (const nm of __PRESET_POPOUT) { if (!__windowTypeGet(nm)) __windowTypeCache(nm, 'popout', 'preset'); }
+    // v2.4.19 r15f：preset 带实测真实 URL（origin 相对路径拼接）——旧版 url 为空，
+    // embed 直开拿不到 URL 回落模拟点击（首击 2 窗中间态根因）。相对路径随 origin 迁移。
+    const __PRESET_EMBED = [['trim.media', '/v'], ['Lucky', '/app/Lucky/'], ['trim.docker', '/apps/docker/'], ['baidu.netdisk', '']];
+    const __PRESET_POPOUT = [['trim.music', ''], ['trim.photos', '/p'], ['com.fntb.iconmgr', ''], ['qBittorrent', '']];
+    let __pOrigin = '';
+    try { const __pst = loadSettings(); __pOrigin = String((__pst && __pst.origin) || '').replace(/\/+$/, ''); } catch (_) {}
+    for (const __pe of __PRESET_EMBED) { if (!__windowTypeGet(__pe[0])) __windowTypeCache(__pe[0], 'embed', 'preset', __pe[1] && __pOrigin ? __pOrigin + __pe[1] : ''); }
+    for (const __pe of __PRESET_POPOUT) { if (!__windowTypeGet(__pe[0])) __windowTypeCache(__pe[0], 'popout', 'preset', __pe[1] && __pOrigin ? __pOrigin + __pe[1] : ''); }
   } catch (_) {}
   try {
     // 通道 1：fntb /api/client/apps（FPK 图标管理器同网服务）
@@ -8200,7 +8250,7 @@ async function probeAppWindowTypes() {
           if (!tp && it.ui_config && typeof it.ui_config === 'object') {
             for (const k of WINDOW_TYPE_META_KEYS) { tp = __windowTypeNormalize(it.ui_config[k]); if (tp) break; }
           }
-          if (tp && name) { __windowTypeCache(name, tp, 'meta'); results.meta++; }
+          if (tp && name) { __windowTypeCache(name, tp, 'meta', String(it.url || it.appurl || '')); results.meta++; }
         }
       }
     } catch (_) {}
@@ -8234,7 +8284,7 @@ async function probeAppWindowTypes() {
               if (!tp && it.ui_config && typeof it.ui_config === 'object') {
                 for (const k of WINDOW_TYPE_META_KEYS) { tp = __windowTypeNormalize(it.ui_config[k]); if (tp) break; }
               }
-              if (tp && name) { __windowTypeCache(name, tp, 'meta'); results.meta++; }
+              if (tp && name) { __windowTypeCache(name, tp, 'meta', String(it.url || it.appurl || '')); results.meta++; }
             }
             break;
           } catch (_) {}
@@ -8265,9 +8315,9 @@ async function probeAppWindowTypes() {
               if (!r3.ok) continue;
               const cfg3 = await r3.json();
               const ents3 = cfg3 && cfg3['.url'] && typeof cfg3['.url'] === 'object' ? Object.values(cfg3['.url']) : [];
-              let tp3 = '';
-              for (const e3 of ents3) { if (e3 && typeof e3 === 'object') { tp3 = __windowTypeNormalize(e3.type); if (tp3) break; } }
-              if (tp3) { __windowTypeCache(nm3, tp3, 'meta'); results.meta++; }
+              let tp3 = ''; let u3 = '';
+              for (const e3 of ents3) { if (e3 && typeof e3 === 'object') { tp3 = __windowTypeNormalize(e3.type); if (tp3) { u3 = String(e3.url || ''); break; } } }
+              if (tp3) { __windowTypeCache(nm3, tp3, 'meta', u3); results.meta++; }
             } catch (_) {}
           }
         }
@@ -8281,7 +8331,12 @@ async function probeAppWindowTypes() {
 function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl) {
   try {
     const nm = String(appName || appId || '').slice(0, 200);
-    const ru = String(realUrl || '');
+    // v2.4.19 r15f：真实 URL 兜底链——标记缓存 URL 为空（preset 种子/元信息无 url）时回退
+    // fntb 应用清单缓存真实 URL（client_apps url 字段），embed 直开不再回落模拟点击。
+    let ru = String(realUrl || '');
+    if (!/^https?:/i.test(ru)) {
+      try { const __fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (__fe && __fe.url && /^https?:/i.test(String(__fe.url))) ru = String(__fe.url); } catch (_) {}
+    }
     const target = /^https?:/i.test(ru) ? ru : String(appUrl || '');
     if (!/^https?:/i.test(target)) return false;
     if (windowType === 'embed') {

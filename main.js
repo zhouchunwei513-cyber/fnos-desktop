@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.19';
+const APP_VERSION = '2.5.0';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3782,7 +3782,16 @@ function registerWindow(win, opts = {}) {
       // v2.4.13 r15 行为探测兜底：观测实际打开行为回填窗口类型标记（带 fnos-embed-style=内嵌窗型 /
       // 裸 window.open=跳出窗型）。元信息缺失时该标记即"网页实际加载行为探测"依据，下次启动直接命中分支。
       try { __windowTypeObserve(url, __embedStyle ? 'embed' : 'popout'); } catch (_) {}
-      setImmediate(() => createAppWindow(url, { partition: entry.partition, embedStyle: __embedStyle }));
+      if (/\/appview(\?|$)/i.test(url)) { try { __appviewToPopout(url); } catch (_) {} return { action: 'deny' }; }
+      setImmediate(() => {
+        // v2.5.0 r16：统一跳出窗（放弃壳 iframe）——内嵌/跳出窗型一律"从主程序跳出的窗口"；
+        // 主程序藏托盘保持单窗口；内嵌窗监测转换来的（fnos-embed-style）再静默关闭主窗内嵌视图。
+        createAppWindow(url, { partition: entry.partition });
+        try { hideMainToBackground(); } catch (_) {}
+        if (__embedStyle) {
+          try { if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
+        }
+      });
       return { action: 'deny' };
     }
     if (/^(mailto|tel|sms):/i.test(url)) {
@@ -3944,15 +3953,11 @@ const APP_UI_INJECT_CSS = [
 // 进程点击；快捷方式流程主界面永不 show（主程序藏托盘、跳出窗显示在桌面）。
 // 复用式直开方案（v2.4.5/2.4.6）被用户否定："跟你说的秒开完全是两码事"——等价点击优先。
 
-// v2.4.13 r15：应用窗口统一加载入口。硬规则：内嵌窗型（embedStyle）绝对禁止顶层裸
-// loadURL 应用 URL（=剥离 fnOS 框架转独立跳出窗、直接访问原始应用 URL）——以壳页面
-// iframe 元素渲染内嵌窗口（embed-shell.html，≡fnOS 桌面 iframe 窗搬家到桌面宿主窗）；
-// 跳出窗型保持顶层 loadURL 独立窗口。
+// v2.5.0 r16：应用窗口统一加载入口——用户定案"放弃内嵌单窗方案，统一从主程序跳出的
+// 独立窗口、全程单窗口"。embedStyle 仅保留参数兼容与日志语义，壳 iframe 停用；
+// 内嵌/跳出窗型一律顶层 loadURL 独立跳出窗。
 function __appLoadTarget(win, url, embedStyle) {
-  if (embedStyle) {
-    try { require('./logger.js').log('info', 'appwin', 'embed-shell.load', { params: { url: String(url || '').slice(0, 140) } }, __RUN_MODE); } catch (_) {}
-    return win.loadFile(path.join(__dirname, 'embed-shell.html'), { query: { url: String(url) } });
-  }
+  try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle } }, __RUN_MODE); } catch (_) {}
   return win.loadURL(url, { userAgent: getNasUA() });
 }
 
@@ -5136,6 +5141,12 @@ function createMainWindow(partition, loadTarget) {
   // 主页未登录(/login)时扫描自动跳过；用户登录跳回主页后立即扫描并打开 pending 应用。
   // v2.1.11：新增 did-finish-load 触发——只有页面完全加载（cookie/session 就绪）后才
   // 打开 pending 应用，避免冷启动时应用窗口过早请求拿到 401 跳登录页。
+  // v2.5.0 r16：appview 内嵌视图监测转跳出窗（preload iframe 监测覆盖 FPK iframe 型，
+  // 本监测覆盖系统应用 appview 路由型）——转跳出并静默关闭主窗内嵌视图，全程单窗口。
+  try {
+    mainWindow.webContents.on('did-navigate', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
+    mainWindow.webContents.on('did-navigate-in-page', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
+  } catch (_) {}
   try {
     mainWindow.webContents.on('dom-ready', () => {
       try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_) {}
@@ -8326,38 +8337,51 @@ async function probeAppWindowTypes() {
   try { require('./logger.js').log('info', 'wintype', 'probe.done', { params: results }, __RUN_MODE); } catch (_) {}
   return results;
 }
-// 快捷方式启动分支（需求三 + 验收 1/2/3）：内嵌型→壳 iframe 宿主窗（embedStyle，内嵌窗口
-// 渲染到桌面、主程序藏托盘、主界面永不弹出）；非内嵌型→独立应用窗。返回 true=已按标记开窗。
+// 快捷方式启动分支（v2.5.0 r16 用户定案）：统一"从主程序跳出的独立窗口"——放弃内嵌单窗
+// 壳方案，内嵌/跳出窗型一律独立跳出窗，全程单窗口（主程序藏托盘、禁止双窗）。返回 true=已开窗。
 function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl) {
   try {
     const nm = String(appName || appId || '').slice(0, 200);
     // v2.4.19 r15f：真实 URL 兜底链——标记缓存 URL 为空（preset 种子/元信息无 url）时回退
-    // fntb 应用清单缓存真实 URL（client_apps url 字段），embed 直开不再回落模拟点击。
+    // fntb 应用清单缓存真实 URL（client_apps url 字段），直开不再回落模拟点击。
     let ru = String(realUrl || '');
     if (!/^https?:/i.test(ru)) {
       try { const __fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (__fe && __fe.url && /^https?:/i.test(String(__fe.url))) ru = String(__fe.url); } catch (_) {}
     }
     const target = /^https?:/i.test(ru) ? ru : String(appUrl || '');
     if (!/^https?:/i.test(target)) return false;
-    if (windowType === 'embed') {
-      // 硬规则：内嵌窗型以壳 iframe 渲染（embed-shell.html）；禁止顶层裸 loadURL 应用 URL。
-      // appview?anchor 是 fnOS 桌面路由，入壳 iframe 会递归整个桌面——无缓存真实 URL 时
-      // 返回 false 回落行为兜底链（模拟点击观测拿到真实 URL 再入壳）。
-      if (/appview/i.test(target)) return false;
-      createAppWindow(target, { embedStyle: true, appId: nm });
-      try { require('./logger.js').log('info', 'wintype', 'open.embed-shell', { params: { app: nm, url: target.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
-      try { hideMainToBackground(); } catch (_) {}
-      return true;
-    }
-    if (windowType === 'popout') {
-      createAppWindow(target, { appId: nm });
-      try { require('./logger.js').log('info', 'wintype', 'open.popout', { params: { app: nm, url: target.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
-      try { hideMainToBackground(); } catch (_) {}
-      return true;
-    }
+    // appview?anchor 是 fnOS 桌面容器路由（跳出=递归桌面）——无真实 URL 时回落模拟点击
+    // （preload 监测内嵌 iframe 转 window.open 跳出，观测回填标记）。
+    if (/appview/i.test(target)) return false;
+    createAppWindow(target, { appId: nm });
+    try { require('./logger.js').log('info', 'wintype', 'open.unified-popout', { params: { app: nm, type: String(windowType || ''), url: target.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+    try { hideMainToBackground(); } catch (_) {}
+    return true;
   } catch (_) {}
   return false;
 }
+// v2.5.0 r16：appview 内嵌视图→跳出窗转换（per-anchor 2s 防抖）：取 fntb 清单真实 URL
+// 开独立跳出窗，主窗回桌面（藏托盘时不可见=静默关闭内嵌视图）并保持单窗口。
+const __appviewConvAt = new Map();
+function __appviewToPopout(navUrl) {
+  const s = String(navUrl || '');
+  if (!/\/appview/i.test(s)) return;
+  let anchor = '';
+  try { anchor = new URL(s).searchParams.get('anchor') || ''; } catch (_) {}
+  if (!anchor) return;
+  const now = Date.now();
+  if (now - (__appviewConvAt.get(anchor) || 0) < 2000) return;
+  __appviewConvAt.set(anchor, now);
+  let realUrl = '';
+  try { const fe = __fpkLookupSync(anchor); if (fe && /^https?:/i.test(String(fe.url || ''))) realUrl = String(fe.url); } catch (_) {}
+  try { if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
+  try { hideMainToBackground(); } catch (_) {}
+  if (/^https?:/i.test(realUrl) && !/appview/i.test(realUrl)) {
+    setImmediate(() => { try { createAppWindow(realUrl, { appId: anchor }); } catch (_) {} });
+    try { require('./logger.js').log('info', 'wintype', 'appview.to-popout', { params: { app: anchor, url: realUrl.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+  }
+}
+
 function __fpkLookupSync(name) {
   try {
     if (!name) return null;

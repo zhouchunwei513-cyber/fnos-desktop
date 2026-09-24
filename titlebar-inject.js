@@ -13,6 +13,87 @@ module.exports = function injectTitleBar(ctx) {
     if (typeof window === 'undefined') return;
     if (window.top !== window) return; // 仅顶层框架
 
+    // ---------------- v2.5.2 r18：appview 容器页 chrome 清理 + 布局修复 + 状态埋点 ----------------
+    // r18 实测（图2/5/7）：appview?anchor= 顶层独立窗里 fnOS 前端把桌面壳残留全部渲染：右上角
+    // 模拟窗口按钮（与本注入标题栏叠成两套最大化/关闭=双标题栏问题）、左侧 dock 黑块（挤占内容
+    // 区致布局错位）、左下角头像浮钮（图5/6/7）。本段仅作用于 /appview 顶层页面（应用内容在其
+    // 自带 iframe/子框架，window.top 判断已隔离），按"fixed 定位+屏幕边缘区域+形态"启发式隐藏
+    // 壳残留（排除注入标题栏 #fnos-tb-bar）；容器页唯一应用 iframe 强制撑满视口（尺寸塌缩型
+    // 黑屏）；采样状态埋点供诊断，被隐藏元素逐个留痕可回查。
+    try {
+      if (/\/appview/i.test(String(location.pathname || ''))) {
+        (function __appviewChromeFix() {
+          const __log = (o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'appview.chrome-fix' }, o)); } catch (_) {} };
+          const __hidden = [];
+          const __isOurs = (el) => !!(el && el.closest && el.closest('#fnos-tb-bar, [id^="fnos-tb-"]'));
+          const __apply = () => {
+            try {
+              const ifs = document.querySelectorAll('iframe');
+              if (ifs.length === 1) {
+                const f = ifs[0];
+                if (!f.__fnFixFull) {
+                  f.__fnFixFull = true;
+                  f.style.setProperty('position', 'fixed', 'important');
+                  f.style.setProperty('inset', '0', 'important');
+                  f.style.setProperty('width', '100vw', 'important');
+                  f.style.setProperty('height', '100vh', 'important');
+                  f.style.setProperty('border', '0', 'important');
+                  f.style.setProperty('margin', '0', 'important');
+                  f.style.setProperty('padding', '0', 'important');
+                  f.style.setProperty('z-index', '2147483000', 'important');
+                  __log({ kind: 'iframe-fullsize' });
+                }
+              }
+              const vw = window.innerWidth, vh = window.innerHeight;
+              const nodes = document.body ? document.body.querySelectorAll('*') : [];
+              for (let i = 0; i < nodes.length; i++) {
+                const el = nodes[i];
+                try {
+                  if (__isOurs(el) || __hidden.indexOf(el) >= 0) continue;
+                  const cs = getComputedStyle(el);
+                  if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+                  const r = el.getBoundingClientRect();
+                  if (r.width <= 0 || r.height <= 0) continue;
+                  const cnt = el.querySelectorAll('button, [role="button"], [class*="btn" i], [class*="close" i], [class*="win-ctrl" i], [class*="titlebar" i], [class*="title-bar" i]').length;
+                  // 形态 A：右上角假窗口按钮组（与注入标题栏叠成双标题栏）
+                  const fakeWinBtns = r.top <= 80 && (vw - r.right) <= 240 && r.width <= 420 && r.height <= 96 && cnt >= 2;
+                  // 形态 B：左侧 dock 竖长条（黑块挤占内容区）
+                  const dockRail = r.left <= 88 && r.width <= 132 && r.height >= vh * 0.3;
+                  // 形态 C：左/右下角头像悬浮小圆钮
+                  const cornerFab = r.width <= 170 && r.height <= 170 && (vh - r.bottom) <= 130 && (r.left <= 130 || (vw - r.right) <= 130);
+                  if (fakeWinBtns || dockRail || cornerFab) {
+                    el.style.setProperty('display', 'none', 'important');
+                    __hidden.push(el);
+                    __log({ kind: fakeWinBtns ? 'fake-winbtns' : (dockRail ? 'dock-rail' : 'corner-fab'), tag: String(el.tagName || '').slice(0, 16), cls: String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 60), rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] });
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+          };
+          __apply();
+          setTimeout(__apply, 800);
+          setTimeout(__apply, 2000);
+          setTimeout(__apply, 4500);
+          try {
+            let __tick = false;
+            const mo = new MutationObserver(() => {
+              try {
+                if (!__tick) { __tick = true; setTimeout(() => { __tick = false; __apply(); }, 400); }
+              } catch (_) {}
+            });
+            mo.observe(document.documentElement, { childList: true, subtree: true });
+          } catch (_) {}
+          setTimeout(() => {
+            try {
+              const ifs = document.querySelectorAll('iframe');
+              const f = ifs[0];
+              __log({ kind: 'state', iframes: ifs.length, ifSize: f ? [f.clientWidth | 0, f.clientHeight | 0] : null, hiddenCount: __hidden.length, doc: [document.body ? document.body.clientWidth | 0 : 0, document.body ? document.body.clientHeight | 0 : 0], href: String(location.href || '').slice(0, 120) });
+            } catch (_) {}
+          }, 5200);
+        })();
+      }
+    } catch (_) {}
+
     // v2.2.4：查询主进程——XTE 等自带标题栏的应用跳过自定义标题栏注入，
     // 避免叠加错位（用户截图：XTE 启动界面左上汉堡菜单 + 右上窗口按钮重叠）。
     try {
@@ -175,6 +256,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // ---- 标题栏 ----
         const bar = document.createElement('div');
+        bar.id = 'fnos-tb-bar'; // v2.5.2 r18：稳定标识（appview chrome 清理排除注入标题栏）
         bar.id = 'fnos-titlebar';
         bar.style.cssText = [
           'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
@@ -327,6 +409,7 @@ module.exports = function injectTitleBar(ctx) {
         hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;';
         root2.appendChild(hot);
         const bar = document.createElement('div');
+        bar.id = 'fnos-tb-bar'; // v2.5.2 r18：稳定标识（appview chrome 清理排除注入标题栏）
         bar.id = 'fnos-titlebar';
         bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:#000;-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题

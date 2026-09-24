@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.1';
+const APP_VERSION = '2.5.2';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -7767,13 +7767,15 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
               fs.writeFileSync(icoPath, icoBuf);
               fnosLog('info', 'icon.convert', `PNG → ICO: ${path.basename(resolvedIconPath)}`, { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
             } else {
-              // Not a PNG, use as-is (Windows might still display it)
-              icoPath = resolvedIconPath;
+              // v2.5.2 r18：GIF/WebP/SVG 等动态/非位图图标 Windows LNK 无法引用（白纸图标
+              // 根因），不再 as-is 交给 IconLocation——置空走 exe 兜底。
+              fnosLog('warn', 'icon.convert', 'non-PNG icon unsupported, fallback to exe icon', { iconPath: resolvedIconPath });
             }
           }
         } catch (e) {
           fnosLog('warn', 'icon.convert', 'icon convert error', { err: e.message, stack: e.stack, iconPath: resolvedIconPath });
-          icoPath = resolvedIconPath;
+          // v2.5.2 r18：转换失败不再把源文件塞给 IconLocation（白纸图标），走 exe 兜底
+          icoPath = '';
         }
       }
     }
@@ -7809,7 +7811,13 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     const __wscript = path.join(String(process.env.SystemRoot || 'C:\\Windows'), 'System32', 'wscript.exe');
     const __lnkArgs = `//B //Nologo "${__vbsPath}" "${__launchName}" "${exePath}" "${__nasBase || nasAddress || ''}"`;
     fnosLog('info', 'shortcut.path', 'shortcut.lnk-wscript', { vbsPath: __vbsPath, appId, launchName: __launchName });
-    const iconPs = icoPath ? `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'` : '';
+    // v2.5.2 r18：图标全链失败兜底 exe 自带图标（动态 GIF/WebP 图标转换失败 → LNK 白纸
+    // 根因），绝不留空 IconLocation；icoPath 仅在文件真实存在时引用。
+    let iconPs = '';
+    try {
+      if (icoPath && fs.existsSync(icoPath)) iconPs = `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'`;
+      else iconPs = `$sc.IconLocation = '${exePath.replace(/'/g, "''")}',0`;
+    } catch (_) { iconPs = `$sc.IconLocation = '${exePath.replace(/'/g, "''")}',0`; }
     const ps = `
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')
@@ -8410,23 +8418,25 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl) {
     try { const st = loadSettings(); origin = String((st && st.origin) || '').replace(/\/+$/, ''); } catch (_) {}
     if (!origin) { try { origin = new URL(String(appUrl || realUrl || '')).origin; } catch (_) { origin = ''; } }
     let target = '';
-    if (id && /^https?:/i.test(origin)) {
-      // appview 容器入口（PreAuth 完整）——系统应用与第三方 FPK 统一适用
-      target = origin + '/appview?anchor=' + encodeURIComponent(id);
-    } else {
-      // 无 appId：真实 URL 直开（独立端口服务）；appview URL 与根 URL 不作直开目标
-      let cand = /^https?:/i.test(String(realUrl || '')) ? String(realUrl) : String(appUrl || '');
-      if (!/^https?:/i.test(cand)) {
-        try { const fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (fe && fe.url && /^https?:/i.test(String(fe.url))) cand = String(fe.url); } catch (_) {}
-      }
-      if (/^https?:/i.test(cand) && !/appview/i.test(cand)) {
-        try {
-          const pu = new URL(cand);
-          const pp = String(pu.pathname || '').replace(/\/+$/, '');
-          if ((pp !== '' && pp !== '/') || pu.port) target = cand;
-        } catch (_) {}
-      }
+    // v2.5.2 r18：入口分流修正（r18 实测：v2.5.1 无条件构造 appview?anchor 覆盖清单/探测真实
+    // URL，Fndesk=/app/fndesk、FNTB=host:18080、OpenList=独立服务、Lucky=/app/Lucky/ 等被统一
+    // 打到 appview 容器 → 服务端报"应用不存在或未安装"）。改为：解析/清单 URL 优先直开
+    // （__resolveLaunchUrl 输出即最佳入口：系统应用=清单 appview?anchor 值 PreAuth 完整、独立
+    // 应用=真实 URL）；仅当 URL 无效（根 URL/非 http/空）才构造 appview?anchor 兜底。
+    const __validEntry = (s) => {
+      if (!/^https?:/i.test(String(s || ''))) return false;
+      try {
+        const pu = new URL(String(s));
+        const pp = String(pu.pathname || '').replace(/\/+$/, '');
+        return !!((pp !== '' && pp !== '/') || pu.search || pu.port);
+      } catch (_) { return false; }
+    };
+    let cand = __validEntry(appUrl) ? String(appUrl) : (__validEntry(realUrl) ? String(realUrl) : '');
+    if (!cand) {
+      try { const fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (fe && __validEntry(fe.url)) cand = String(fe.url); } catch (_) {}
     }
+    if (cand) target = cand;
+    else if (id && /^https?:/i.test(origin)) target = origin + '/appview?anchor=' + encodeURIComponent(id);
     if (!/^https?:/i.test(target) || !nm) return false;
     // v2.5.1 r17：同应用窗复用——已开同应用窗则聚焦前置不重复开窗（防同应用双窗叠加）
     try {
@@ -10756,7 +10766,13 @@ function __handleSecondInstance(_e, commandLine) {
   try {
     // v2.5.1 r17：双击主程序=查看主页面——统一 __restoreMainHome 强制回桌面刷新（用户实测：
     // 双击恢复黑屏主页面后桌面图标仍不显示，须强制刷新页面才恢复）。
-    if (mainWindow && !mainWindow.isDestroyed() && !isLocked) { __restoreMainHome('main-relaunch', true); }
+    // v2.5.2 r18（用户需求：点主程序图标/其快捷方式=已在托盘/任务栏运行时弹出主页面到桌面）：
+    // 锁定态也前置显示（显示锁定页），未锁定走 __restoreMainHome 强制回桌面刷新；托盘、任务栏
+    // 两种运行形态均经 second-instance 同链覆盖。
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!isLocked) { __restoreMainHome('main-relaunch', true); }
+      else { try { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); mainWindow.moveTop(); } catch (_) {} }
+    }
     require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);
   } catch (_) {}
 }

@@ -126,7 +126,14 @@ jobs:
           Start-Sleep -Seconds 3
           $view = gh release view $tag --json assets | ConvertFrom-Json
           $names = @($view.assets | ForEach-Object { $_.name })
-          $anon = @((Invoke-RestMethod "https://api.github.com/repos/$($env:GITHUB_REPOSITORY)/releases/tags/$tag").assets | ForEach-Object { $_.name })
+          try {
+            $anon = @((Invoke-RestMethod "https://api.github.com/repos/$($env:GITHUB_REPOSITORY)/releases/tags/$tag").assets | ForEach-Object { $_.name })
+          } catch {
+            # v2.4.17 实录：runner 共享 IP 撞 GitHub 匿名限流会让整条 Release step 假红（资产上传已成功）。
+            # 匿名回读只是可见性取证辅助，限流时跳过校验而不是挂掉发布。
+            Write-Host "匿名回读失败（疑似 GitHub 匿名限流），跳过匿名可见性校验: $($_.Exception.Message)"
+            $anon = @('ANON_READ_SKIPPED_RATE_LIMIT')
+          }
           $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + 'Z'
           $proof = "`n`n---`n`n**publish-proof** ${stamp} auth-read=[$($names -join ', ')] anon-read=[$($anon -join ', ')]"
           $body = (gh release view $tag --json body | ConvertFrom-Json).body

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.2';
+const APP_VERSION = '2.5.3';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -3790,9 +3790,9 @@ function registerWindow(win, opts = {}) {
       setImmediate(() => {
         // v2.5.1 r17：统一 appview 容器跳出窗；主程序藏托盘保持单窗口；内嵌监测转换来的
         //（fnos-embed-style）静默关闭主窗内嵌视图（可见才动页面，隐藏置标记唤回时回桌面）。
-        const __okH = __anchorH ? __openAppByWindowType(__anchorH, __anchorH, url, __embedStyle ? 'embed' : 'popout', url) : false;
+        const __okH = __anchorH ? __openAppByWindowType(__anchorH, __anchorH, url, __embedStyle ? 'embed' : 'popout', url, { keepMain: true }) : false;
         if (!__okH) { try { createAppWindow(url, { partition: entry.partition }); } catch (_) {} }
-        try { hideMainToBackground(); } catch (_) {}
+        // v2.5.3 r19：从主页面打开应用 → 主页面不隐藏到托盘（快捷方式链保持藏托盘单窗体验）
         if (__embedStyle) {
           try {
             if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) {
@@ -4292,6 +4292,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       const __trySetIconFromBuffer = (buf, url) => {
         try {
           if (win.isDestroyed()) return false;
+          // v2.5.3 r19：签名校验——非白名单格式（GIF/WebP）setIcon 触发渲染崩溃，跳过留默认图标
+          if (!__safeIconBuf(buf)) return false;
           const img = nativeImage.createFromBuffer(Buffer.from(buf));
           if (!img.isEmpty()) {
             win.setIcon(img);
@@ -4561,7 +4563,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           const __f2 = __resolveAppName();
           if (__f2) {
             const __b2 = await fetchFpkIcon(__f2, 256);
-            if (__b2 && __b2.length > 100 && win && !win.isDestroyed()) {
+            if (__b2 && __b2.length > 100 && win && !win.isDestroyed() && __safeIconBuf(__b2)) {
               const __img2 = nativeImage.createFromBuffer(__b2);
               if (!__img2.isEmpty()) {
                 win.setIcon(__img2);
@@ -4569,6 +4571,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 win.__appFpkIcon = true;
                 dlog && dlog('info', 'appwin.icon.fpk-early', { app: __appLabel, name: __f2, winId: win.id, size: __b2.length });
               }
+            } else if (__b2 && __b2.length > 100) {
+              dlog && dlog('warn', 'appwin.icon.fpk-skip', { app: __appLabel, name: __f2, winId: win.id, reason: 'unsupported-format', size: __b2.length });
             }
           }
         } catch (_) {}
@@ -6506,11 +6510,29 @@ const __WS_SCANNER_JS = String.raw`
 `;
 
 
+// v2.5.3 r19：图标 buffer 签名校验——GIF/WebP/损坏图进 nativeImage→win.setIcon 触发渲染进程
+// 崩溃（exitCode 0x80000003，实测全部应用窗 create 后 10-300ms render-gone → 黑屏根因）；
+// 返回 'png'/'jpg'/'ico'/'bmp' 或 ''（非白名单一律拒绝）。
+function __safeIconBuf(buf) {
+  try {
+    if (!buf || buf.length < 8) return '';
+    const b = Buffer.from(buf);
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'png';
+    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg';
+    if (b[0] === 0x00 && b[1] === 0x00 && b[2] === 0x01 && b[3] === 0x00) return 'ico';
+    if (b[0] === 0x42 && b[1] === 0x4d) return 'bmp';
+    return '';
+  } catch (_) { return ''; }
+}
+
 // v2.1.5: PNG to ICO converter for Windows shortcuts
 // v2.2.4: 多尺寸 ICO（16/24/32/48/64/128/256）——此前单尺寸 256 在 Windows 缩放
 // 后毛刺/方角/质量差；多尺寸让资源管理器按目标尺寸取最近源，小尺寸也清晰。
 function pngToIco(pngBuffer) {
   try {
+    // v2.5.3 r19：PNG 签名校验——GIF/WebP 等非 PNG 输入经 resize/toPNG 产出坏条目、或 6534 兜底
+    // 把原始字节塞进 ICO，坏 ICO 引用即 LNK 白纸图标。非 PNG 直接返回 null，调用方落 exe 兜底。
+    if (__safeIconBuf(pngBuffer) !== 'png') return null;
     const src = nativeImage.createFromBuffer(Buffer.from(pngBuffer));
     if (src.isEmpty()) throw new Error('empty source image');
     // 统一源尺寸：先缩放到 256（高清源），再向下取各档
@@ -7719,11 +7741,19 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     try { await refreshFpkApps(true); } catch (_) {}
     if (fpkAppName) {
       const fpkBuf = await fetchFpkIcon(fpkAppName, 256);
-      if (fpkBuf && fpkBuf.length > 0) {
+      // v2.5.3 r19：FPK 图标 PNG 签名校验（fndesk GIF 374KB → pngToIco 产出坏 ICO → LNK 白纸实锤）；
+      // 非 PNG 跳过 FPK 链落回退/exe 兜底。ico 文件名带内容 hash 头 6 位，绕开 Windows 图标缓存。
+      if (fpkBuf && fpkBuf.length > 0 && __safeIconBuf(fpkBuf) !== 'png') {
+        fnosLog('warn', 'icon.fpk', 'non-PNG FPK icon, fallback to exe', { appId, fpkAppName, size: fpkBuf.length });
+        console.log('[FPK] shortcut icon: non-PNG source, skip', JSON.stringify({ appId, size: fpkBuf.length }));
+      } else if (fpkBuf && fpkBuf.length > 0) {
         try {
           const safeName = Buffer.from(String(appId)).toString('base64url').slice(0, 32);
-          const fpkIconPath = path.join(ASSETS_DIR, `fpk_${safeName}.ico`);
+          let __h6 = '';
+          try { __h6 = require('crypto').createHash('md5').update(fpkBuf).digest('hex').slice(0, 6); } catch (_) {}
+          const fpkIconPath = path.join(ASSETS_DIR, `fpk_${safeName}${__h6 ? '_' + __h6 : ''}.ico`);
           const icoBuf = pngToIco(fpkBuf);
+          if (!icoBuf || !icoBuf.length) throw new Error('pngToIco empty output');
           fs.writeFileSync(fpkIconPath, icoBuf);
           icoPath = fpkIconPath;
           fnosLog('info', 'icon.fpk', `FPK icon saved for ${appId}`, { appId, fpkAppName, icoPath, size: icoBuf.length });
@@ -7944,9 +7974,21 @@ function __startLaunchServer() {
           try {
             const __nowL = Date.now();
             if (__nowL - (__launchDedupe.get(appId) || 0) < 3000) {
-              try { require('./logger.js').log('warn', 'launch', 'launch.http dedupe-skip', { params: { appId: appId.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
-              try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('dup'); } catch (_) {}
-              return;
+              // v2.5.3 r19：防抖命中不再无响应——同应用窗已存在则聚焦前置（"点了没反应/不秒开"根因
+              // 之一）；窗不存在（上次打开失败/崩溃）放行继续开，不误杀。
+              let __dupWin = null;
+              try {
+                for (const w of BrowserWindow.getAllWindows()) {
+                  if (w && !w.isDestroyed() && w !== mainWindow && String(w.__fnAppId || '') === appId) { __dupWin = w; break; }
+                }
+              } catch (_) {}
+              if (__dupWin) {
+                try { if (__dupWin.isMinimized()) __dupWin.restore(); if (!__dupWin.isVisible()) __dupWin.show(); __dupWin.focus(); __dupWin.moveTop(); } catch (_) {}
+                try { require('./logger.js').log('info', 'launch', 'launch.http dedupe.focus-existing', { params: { appId: appId.slice(0, 120), winId: __dupWin.id } }, __RUN_MODE); } catch (_) {}
+                try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('dup'); } catch (_) {}
+                return;
+              }
+              try { require('./logger.js').log('warn', 'launch', 'launch.http dedupe-reopen', { params: { appId: appId.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
             }
             __launchDedupe.set(appId, __nowL);
           } catch (_) {}
@@ -8407,7 +8449,8 @@ async function probeAppWindowTypes() {
 // 容器入口（服务端 PreAuth 完整、应用正常渲染）——v2.5.0 直开真实 URL 丢登录态：/v、/seek 等
 // 跳登录页，fn-ups-manager 型解析到根地址=黑屏/找不到地址（实测日志）。同应用窗复用防双开叠加
 //（=标题栏两套最大化/关闭按钮）。全程单窗口（主程序藏托盘）。返回 true=已开窗/已聚焦同应用窗。
-function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl) {
+function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts) {
+  const __keepMain = !!(opts && opts.keepMain); // v2.5.3 r19：主页面打开应用 → 主页面不藏托盘
   try {
     const nm = String(appName || appId || '').slice(0, 200);
     let id = String(appId || '');
@@ -8444,14 +8487,15 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl) {
         if (w && !w.isDestroyed() && w !== mainWindow && String(w.__fnAppId || '') === nm) {
           try { if (w.isMinimized()) w.restore(); if (!w.isVisible()) w.show(); w.focus(); w.moveTop(); } catch (_) {}
           try { require('./logger.js').log('info', 'wintype', 'open.reuse-popout', { params: { app: nm, winId: w.id } }, __RUN_MODE); } catch (_) {}
-          try { hideMainToBackground(); } catch (_) {}
+          if (!__keepMain) { try { hideMainToBackground(); } catch (_) {} }
           return true;
         }
       }
     } catch (_) {}
     createAppWindow(target, { appId: nm });
     try { require('./logger.js').log('info', 'wintype', 'open.unified-popout', { params: { app: nm, type: String(windowType || ''), url: target.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
-    try { hideMainToBackground(); } catch (_) {}
+    // 快捷方式链 keepMain=false 才藏托盘；主页面链（keepMain）主页面保留显示
+    if (!__keepMain) { try { hideMainToBackground(); } catch (_) {} }
     return true;
   } catch (_) {}
   return false;
@@ -8477,7 +8521,7 @@ function __appviewToPopout(navUrl) {
         else __pendingHomeReset = true;
       }
     } catch (_) {}
-    try { hideMainToBackground(); } catch (_) {}
+    // v2.5.3 r19：从主页面打开应用 → 主页面不藏托盘（appview 内嵌转出同属主页面打开链）
     try { require('./logger.js').log('info', 'wintype', 'appview.to-popout', { params: { app: anchor, url: s.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
   });
 }

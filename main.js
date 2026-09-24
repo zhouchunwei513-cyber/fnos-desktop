@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.4.17';
+const APP_VERSION = '2.4.18';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -8178,6 +8178,14 @@ function __windowTypeObserve(url, type) {
 // 字段多候选兼容（不同 fnOS/fntb 版本的窗口类型字段名差异），ui_config 嵌套对象一并解析。
 async function probeAppWindowTypes() {
   const results = { meta: 0, total: 0 };
+  // v2.4.18 r15e：预探测基准种子（8 样本实例实测分类固化）——元信息/行为观测未覆盖的
+  // 应用首击即命中分支，不再回落模拟点击（首击单窗口保障）。已有标记不覆盖（meta/观测优先）。
+  try {
+    const __PRESET_EMBED = ['trim.media', 'Lucky', 'trim.docker', 'baidu.netdisk'];
+    const __PRESET_POPOUT = ['trim.music', 'trim.photos', 'com.fntb.iconmgr', 'qBittorrent'];
+    for (const nm of __PRESET_EMBED) { if (!__windowTypeGet(nm)) __windowTypeCache(nm, 'embed', 'preset'); }
+    for (const nm of __PRESET_POPOUT) { if (!__windowTypeGet(nm)) __windowTypeCache(nm, 'popout', 'preset'); }
+  } catch (_) {}
   try {
     // 通道 1：fntb /api/client/apps（FPK 图标管理器同网服务）
     try {
@@ -8234,6 +8242,37 @@ async function probeAppWindowTypes() {
       }
     } catch (_) {}
   } catch (_) {}
+    // 通道 3（v2.4.18 r15e）：FPK ui/config 入口配置直读——官方窗口类型定义即 entry.type
+    // （iframe=内嵌窗型 / url=跳出窗型，FPK 打包规范 ui/config）。fntb /api/client/apps
+    // v2.18.8+ 已透传 type 字段（通道 1 WINDOW_TYPE_META_KEYS 自动命中）；本通道从
+    // app-center 静态服务逐应用多路径拉 ui/config（带登录 cookie），兼容 fntb 旧版。
+    try {
+      const st3 = loadSettings();
+      const origin3 = String((st3 && st3.origin) || '').replace(/\/+$/, '');
+      if (origin3) {
+        let cookieHdr = '';
+        try {
+          const cks = await session.defaultSession.cookies.get({ url: origin3 });
+          cookieHdr = (cks || []).map((c) => c.name + '=' + c.value).join('; ');
+        } catch (_) {}
+        let names3 = [];
+        try { const l3 = await fetchFpkAppList(''); if (Array.isArray(l3)) names3 = l3.map((it3) => String((it3 && (it3.name || it3.appId || '')) || '')).filter(Boolean); } catch (_) {}
+        for (const pb3 of ['/app-center-static/serviceicon/', '/app-center-static/']) {
+          for (const nm3 of names3) {
+            if (__windowTypeGet(nm3)) continue;
+            try {
+              const r3 = await fetch(origin3 + pb3 + encodeURIComponent(nm3) + '/ui/config', { headers: cookieHdr ? { Cookie: cookieHdr } : {} });
+              if (!r3.ok) continue;
+              const cfg3 = await r3.json();
+              const ents3 = cfg3 && cfg3['.url'] && typeof cfg3['.url'] === 'object' ? Object.values(cfg3['.url']) : [];
+              let tp3 = '';
+              for (const e3 of ents3) { if (e3 && typeof e3 === 'object') { tp3 = __windowTypeNormalize(e3.type); if (tp3) break; } }
+              if (tp3) { __windowTypeCache(nm3, tp3, 'meta'); results.meta++; }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
   try { require('./logger.js').log('info', 'wintype', 'probe.done', { params: results }, __RUN_MODE); } catch (_) {}
   return results;
 }

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.4';
+const APP_VERSION = '2.5.5';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4011,6 +4011,25 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       opts: { title: opts.title || '', name: opts.name || '', appId: opts.appId || '' },
     });
   } catch (_) {}
+  // v2.5.5 r21（问题2）：错误页自动换候选入口——appview?anchor 与网关路由 /app/{name} 互为备份，
+  // 页面报"不存在或未安装"时按序换下一候选（did-finish-load 检测），trim.docs 类 anchor 不被
+  // registry 识别的应用直达网关真实入口。
+  const __urlCandidates = [];
+  try {
+    const __origR21 = (() => { try { return String(loadSettings().origin || '').replace(/\/+$/, ''); } catch (_) { return ''; } })();
+    const __mAnchor21 = /\/appview\?anchor=([^&#]+)/i.exec(String(url || ''));
+    const __mRoute21 = /\/app\/([^/?#]+)/i.exec(String(url || ''));
+    if (__origR21 && /^https?:/i.test(__origR21)) {
+      if (__mAnchor21) {
+        const __nmA21 = decodeURIComponent(__mAnchor21[1]);
+        __urlCandidates.push(__origR21 + '/app/' + String(__nmA21).replace(/\./g, '-'));
+        if (String(__nmA21).indexOf('.') >= 0) __urlCandidates.push(__origR21 + '/app/' + encodeURIComponent(__nmA21));
+      } else if (__mRoute21) {
+        const __nmG21 = decodeURIComponent(__mRoute21[1]);
+        __urlCandidates.push(__origR21 + '/appview?anchor=' + encodeURIComponent(__nmG21));
+      }
+    }
+  } catch (_) {}
 
   // v1.70.0：应用窗口打开前主动应用 URL 重写（外网端口/域名映射）。
   // 飞牛主页点击 Docker 应用时生成的地址常为"外网IP+内网端口"（如
@@ -4236,6 +4255,28 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         win.__appResPending = false;
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
+      // v2.5.5 r21（问题2）："应用不存在或未安装"错误页检测→自动换下一候选入口（每窗逐候选一次）
+      try {
+        if (__urlCandidates.length && !win.__fnEntryCheck) {
+          win.__fnEntryCheck = true;
+          setTimeout(() => {
+            try {
+              if (win.isDestroyed()) return;
+              win.webContents.executeJavaScript("(function(){try{var t=(document.body?document.body.innerText:'')||'';return t.indexOf('\u4e0d\u5b58\u5728\u6216\u672a\u5b89\u88c5')>=0}catch(_){return false}})()")
+                .then((bad) => {
+                  try { win.__fnEntryCheck = false; } catch (_) {}
+                  try {
+                    if (!bad || win.isDestroyed()) return;
+                    const __next = __urlCandidates.shift();
+                    if (!__next) return;
+                    dlog && dlog('warn', 'appwin.entry-fallback', { app: __appLabel, winId: win.id, from: String(win.webContents.getURL() || '').slice(0, 140), to: String(__next).slice(0, 140) });
+                    win.loadURL(__next);
+                  } catch (_) {}
+                }).catch(() => { try { win.__fnEntryCheck = false; } catch (_) {} });
+            } catch (_) {}
+          }, 1500);
+        }
+      } catch (_) {}
       // v2.0.7：注入 CSS 隐藏 NAS 页面的「连接已断开」弹窗（外网抖动时避免打扰用户）
       try {
         win.webContents.insertCSS(`
@@ -4294,8 +4335,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           if (win.isDestroyed()) return false;
           // v2.5.3 r19：签名校验——非白名单格式（GIF/WebP）setIcon 触发渲染崩溃，跳过留默认图标
           // v2.5.4 r20：非白名单先 WIC 进程外转 PNG（静态保留/动态取首帧，只吃安全 PNG）
+          // v2.5.5 r21：仅 WIC 验证过的 PNG 放行进 nativeImage（r21 日志实锤：jpg/gif/坏图进
+          // nativeImage→win.setIcon 触发渲染进程崩溃 0x80000003=黑屏风暴根因）；崩溃风暴期暂停 setIcon
           try { const __nB = __safeDecodeImageToPng(buf); if (__nB) buf = __nB; } catch (_) {}
-          if (!__safeIconBuf(buf)) return false;
+          if (__safeIconBuf(buf) !== 'png') return false;
+          try { if ((global.__appCrashSeriesCount || 0) >= 5) return false; } catch (_) {}
           const img = nativeImage.createFromBuffer(Buffer.from(buf));
           if (!img.isEmpty()) {
             win.setIcon(img);
@@ -4372,8 +4416,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                       const __fpkName = __resolveAppName();
                       if (__fpkName) {
                         const fpkBuf = await fetchFpkIcon(__fpkName, 256);
-                        if (fpkBuf && !win.isDestroyed()) {
-                          const img = nativeImage.createFromBuffer(fpkBuf);
+                        // v2.5.5 r21：FPK 图标同样只放行 WIC 验证 PNG 进 nativeImage（防渲染崩溃）
+                        let __fpkSafe = null;
+                        try { __fpkSafe = fpkBuf ? (__safeDecodeImageToPng(fpkBuf) || null) : null; } catch (_) {}
+                        if (__fpkSafe && __safeIconBuf(__fpkSafe) === 'png' && !win.isDestroyed()) {
+                          const img = nativeImage.createFromBuffer(__fpkSafe);
                           if (!img.isEmpty()) {
                             win.setIcon(img);
                             dlog && dlog('info', 'appwin.favicon.fpk', { app: __appLabel, winId: win.id });
@@ -4493,6 +4540,40 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           } else {
             // v2.2.3：恢复耗尽或崩溃风暴——记录最终放弃，避免窗口黑屏悬挂无日志
             dlog && dlog('error', 'appwin.render-gone.giveup', { app: __appLabel, winId: win.id, try: tries, reason, exitCode, crashStorm });
+            // v2.5.5 r21（问题8）：giveup 后黑屏自愈——8s 周期 capturePage 亮度检测，全黑才
+            // reload 重试（GPU/渲染资源恢复后自动复活）；页面正常或 8 轮耗尽即停，全程留痕
+            try {
+              let __healTries21 = 0; let __healStop21 = false;
+              const __heal21 = () => {
+                try {
+                  if (__healStop21 || !win || win.isDestroyed()) return;
+                  __healTries21++;
+                  if (__healTries21 > 8) { __healStop21 = true; dlog && dlog('error', 'appwin.black-heal.giveup', { app: __appLabel, winId: win.id, tries: __healTries21 }); return; }
+                  win.webContents.capturePage().then((img) => {
+                    try {
+                      const bmp = (img && !img.isEmpty()) ? img.getBitmap() : null;
+                      let black = false;
+                      if (bmp && bmp.length > 100) {
+                        let sum = 0, sum2 = 0, n = 0;
+                        for (let i = 0; i + 3 < bmp.length; i += 4 * 97) { const y = bmp[i] * 0.299 + bmp[i + 1] * 0.587 + bmp[i + 2] * 0.114; sum += y; sum2 += y * y; n++; }
+                        if (n > 10) { const mean = sum / n; black = mean < 8 && (sum2 / n - mean * mean) < 25; }
+                      }
+                      if (black) {
+                        dlog && dlog('warn', 'appwin.black-heal', { app: __appLabel, winId: win.id, try: __healTries21 });
+                        const cur = (() => { try { return win.webContents.getURL(); } catch (_) { return ''; } })();
+                        if (cur && /^https?:/i.test(cur)) win.loadURL(cur, { userAgent: getNasUA() }).catch(() => {});
+                        else win.reloadIgnoringCache();
+                      } else {
+                        __healStop21 = true;
+                        dlog && dlog('info', 'appwin.black-heal.ok', { app: __appLabel, winId: win.id, try: __healTries21 });
+                      }
+                    } catch (_) {}
+                  }).catch(() => {});
+                } catch (_) {}
+              };
+              setTimeout(__heal21, 8000);
+              const __healIv21 = setInterval(() => { try { if (__healStop21 || !win || win.isDestroyed()) { clearInterval(__healIv21); return; } __heal21(); } catch (_) {} }, 8000);
+            } catch (_) {}
           }
         }
       } catch (_) {}
@@ -4566,7 +4647,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           if (__f2) {
             let __b2 = await fetchFpkIcon(__f2, 256);
             try { const __nE = __b2 ? __safeDecodeImageToPng(__b2) : null; if (__nE) __b2 = __nE; } catch (_) {}
-            if (__b2 && __b2.length > 100 && win && !win.isDestroyed() && __safeIconBuf(__b2)) {
+            // v2.5.5 r21：仅 WIC 验证 PNG 进 nativeImage + 崩溃风暴期暂停 setIcon（0x80000003 防崩）
+            if (__b2 && __b2.length > 100 && win && !win.isDestroyed() && __safeIconBuf(__b2) === 'png' && (global.__appCrashSeriesCount || 0) < 5) {
               const __img2 = nativeImage.createFromBuffer(__b2);
               if (!__img2.isEmpty()) {
                 win.setIcon(__img2);
@@ -4575,7 +4657,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 dlog && dlog('info', 'appwin.icon.fpk-early', { app: __appLabel, name: __f2, winId: win.id, size: __b2.length });
               }
             } else if (__b2 && __b2.length > 100) {
-              dlog && dlog('warn', 'appwin.icon.fpk-skip', { app: __appLabel, name: __f2, winId: win.id, reason: 'unsupported-format', size: __b2.length });
+              dlog && dlog('warn', 'appwin.icon.fpk-skip', { app: __appLabel, name: __f2, winId: win.id, reason: 'unsafe-format-or-storm', size: __b2.length, kind: __safeIconBuf(__b2) || 'unknown' });
             }
           }
         } catch (_) {}
@@ -6095,11 +6177,11 @@ async function __fetchAppCenterUrlLive(appName) {
       const nm = String(a.appName || '');
       if (nm !== String(appName)) continue;
       const u = buildAppCenterUrl(origin, a.appServiceInfo);
-      if (!u) continue;
+      if (!u) { try { fnosLog('info', 'shortcut.url', 'app-center live matched-no-url', { name: nm }); } catch (_) {} continue; }
       try {
         const pu = new URL(u); const pp = String(pu.pathname || '').replace(/\/+$/, '');
-        if ((pp === '' || pp === '/') && !pu.search && !pu.hash) continue; // 仍是根地址=无效入口
-      } catch (_) { continue; }
+        if ((pp === '' || pp === '/') && !pu.search && !pu.hash) { try { fnosLog('info', 'shortcut.url', 'app-center live matched-root-url', { name: nm, url: String(u).slice(0, 100) }); } catch (_) {} continue; } // 仍是根地址=无效入口
+      } catch (_) { try { fnosLog('info', 'shortcut.url', 'app-center live matched-bad-url', { name: nm, url: String(u).slice(0, 100) }); } catch (_) {} continue; }
       __appCenterUrlCache.set(nm, u);
       fnosLog('info', 'shortcut.url', 'app-center live resolved', { name: nm, url: u.slice(0, 140) });
       return u;
@@ -6622,12 +6704,13 @@ try {
   exit 0
 } catch { exit 1 }
 `;
-    const r = cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 8000, windowsHide: true });
+    // v2.5.5 r21：超时 8s→15s（550KB 大图 8s 超时实锤）+失败重试一次+错误详情留痕（问题7）
+    let r = cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
     let out = null;
-    if (r && r.status === 0 && fs.existsSync(outP)) {
-      const b = fs.readFileSync(outP);
-      if (b.length > 100) out = b;
-    }
+    const __take = () => { try { if (fs.existsSync(outP)) { const b = fs.readFileSync(outP); if (b.length > 100) return b; } } catch (_) {} return null; };
+    if (r && r.status === 0) out = __take();
+    if (!out) { try { r = cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true }); if (r && r.status === 0) out = __take(); } catch (_) {} }
+    if (!out) { try { fnosLog('warn', 'icon.decode', 'wic run failed', { status: r ? r.status : null, signal: r ? String(r.signal || '') : '', err: String((r && r.stderr) || '').slice(0, 160) }); } catch (_) {} }
     try { fs.unlinkSync(inP); } catch (_) {}
     try { fs.unlinkSync(outP); } catch (_) {}
     return out;
@@ -6645,7 +6728,7 @@ function __safeDecodeImageToPng(buf) {
       try { fnosLog('info', 'icon.decode', 'wic converted to png', { from: __safeIconBuf(buf) || 'unknown', size: buf.length, pngSize: png.length }); } catch (_) {}
       return png;
     }
-    try { fnosLog('warn', 'icon.decode', 'wic convert failed', { size: buf.length }); } catch (_) {}
+    try { fnosLog('warn', 'icon.decode', 'wic convert failed', { size: buf.length, kind: __safeIconBuf(buf) || 'unknown', magic: Buffer.from(buf.slice(0, 8)).toString('hex') }); } catch (_) {}
     return null;
   } catch (_) { return null; }
 }
@@ -6661,6 +6744,10 @@ function __safeIconBuf(buf) {
     if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg';
     if (b[0] === 0x00 && b[1] === 0x00 && b[2] === 0x01 && b[3] === 0x00) return 'ico';
     if (b[0] === 0x42 && b[1] === 0x4d) return 'bmp';
+    // v2.5.5 r21：显式识别非白名单格式（日志分类用），一律不放行进 nativeImage
+    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'gif';
+    if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45) return 'webp';
+    if (b[0] === 0x3c) return 'svg';
     return '';
   } catch (_) { return ''; }
 }
@@ -7901,8 +7988,10 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
       // v2.5.3 r19：FPK 图标 PNG 签名校验（fndesk GIF 374KB → pngToIco 产出坏 ICO → LNK 白纸实锤）；
       // 非 PNG 跳过 FPK 链落回退/exe 兜底。ico 文件名带内容 hash 头 6 位，绕开 Windows 图标缓存。
       if (fpkBuf && fpkBuf.length > 0 && __safeIconBuf(__safeDecodeImageToPng(fpkBuf) || fpkBuf) !== 'png') {
-        fnosLog('warn', 'icon.fpk', 'non-PNG FPK icon, fallback to exe', { appId, fpkAppName, size: fpkBuf.length });
-        console.log('[FPK] shortcut icon: non-PNG source, skip', JSON.stringify({ appId, size: fpkBuf.length }));
+        // v2.5.5 r21（问题5）：FNTB 产出图标是最终静态图标，禁止替换——非 PNG 不再 fallback exe，
+        // 走下方回退链保留原图文件引用（Windows LNK IconLocation 可直接引用 png/jpg）
+        fnosLog('warn', 'icon.fpk', 'non-PNG FPK icon, keep source file', { appId, fpkAppName, size: fpkBuf.length, kind: __safeIconBuf(fpkBuf) || 'unknown', magic: Buffer.from(fpkBuf.slice(0, 8)).toString('hex') });
+        console.log('[FPK] shortcut icon: non-PNG source, keep source file', JSON.stringify({ appId, size: fpkBuf.length }));
       } else if (fpkBuf && fpkBuf.length > 0) {
         try {
           const safeName = Buffer.from(String(appId)).toString('base64url').slice(0, 32);
@@ -7957,15 +8046,17 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
               fs.writeFileSync(icoPath, icoBuf);
               fnosLog('info', 'icon.convert', `PNG → ICO: ${path.basename(resolvedIconPath)}`, { from: resolvedIconPath, to: icoPath, size: icoBuf.length });
             } else {
-              // v2.5.2 r18：GIF/WebP/SVG 等动态/非位图图标 Windows LNK 无法引用（白纸图标
-              // 根因），不再 as-is 交给 IconLocation——置空走 exe 兜底。
-              fnosLog('warn', 'icon.convert', 'non-PNG icon unsupported, fallback to exe icon', { iconPath: resolvedIconPath });
+              // v2.5.5 r21（问题5）：FNTB 静态图标禁止替换——非 PNG 保留原图文件直接引用
+              // （Windows LNK IconLocation 可引用 png/jpg 文件），不再置空走 exe 兜底
+              // （exe 兜底=FNTB 图标被替换，用户明确禁止）。
+              icoPath = resolvedIconPath;
+              fnosLog('warn', 'icon.convert', 'non-PNG icon kept as-is (no replace)', { iconPath: resolvedIconPath, kind: __safeIconBuf(imgBuf) || 'unknown' });
             }
           }
         } catch (e) {
           fnosLog('warn', 'icon.convert', 'icon convert error', { err: e.message, stack: e.stack, iconPath: resolvedIconPath });
-          // v2.5.2 r18：转换失败不再把源文件塞给 IconLocation（白纸图标），走 exe 兜底
-          icoPath = '';
+          // v2.5.5 r21（问题5）：转换失败同样保留原图引用（禁止 exe 替换 FNTB 图标）
+          icoPath = resolvedIconPath;
         }
       }
     }
@@ -11020,7 +11111,9 @@ function __handleSecondInstance(_e, commandLine) {
     // 锁定态也前置显示（显示锁定页），未锁定走 __restoreMainHome 强制回桌面刷新；托盘、任务栏
     // 两种运行形态均经 second-instance 同链覆盖。
     if (mainWindow && !mainWindow.isDestroyed()) {
-      if (!isLocked) { __restoreMainHome('main-relaunch', true); }
+      // v2.5.5 r21（问题8）：二次点击主程序=唤起主页面，不强制 reload（渲染崩溃风暴期 force
+      // reload 加剧黑屏；show+重绘+黑屏检测自愈已覆盖 DWM 合成表面丢失场景）
+      if (!isLocked) { __restoreMainHome('main-relaunch', false); }
       else { try { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); mainWindow.moveTop(); } catch (_) {} }
     }
     require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);

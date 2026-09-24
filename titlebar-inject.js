@@ -61,14 +61,17 @@ module.exports = function injectTitleBar(ctx) {
                   const cnt = el.querySelectorAll('button, [role="button"], [class*="btn" i], [class*="close" i], [class*="win-ctrl" i], [class*="titlebar" i], [class*="title-bar" i], svg, [class*="ctrl" i]').length;
                   // 形态 A：右上角假窗口按钮组（与注入标题栏叠成双标题栏）
                   // v2.5.4 r20：组判定放宽（回收站/Docker 假窗控组宽高超旧阈值=漏杀实锤）+无文本要求
-                  const fakeWinBtns = r.top <= 140 && (vw - r.right) <= 260 && r.width <= 520 && r.height <= 120 && cnt >= 2 && !(el.textContent || '').trim();
+                  // v2.5.5 r21：再放宽（top 140→180/贴右 260→320/宽 520→720/高 120→160）+新增
+                  // 形态 A2 通栏假标题栏（宽≥半屏、高≤56、≥3 控件）——r21 复验仍有残留实锤
+                  const fakeWinBtns = (r.top <= 180 && (vw - r.right) <= 320 && r.width <= 720 && r.height <= 160 && cnt >= 2 && !(el.textContent || '').trim())
+                    || (r.top <= 8 && r.height <= 56 && r.width >= vw * 0.5 && cnt >= 3 && !(el.textContent || '').trim());
                   // 形态 B：左侧 dock 竖长条（黑块挤占内容区）
                   const dockRail = r.left <= 88 && r.width <= 132 && r.height >= vh * 0.3;
                   // 形态 C：左/右下角头像悬浮小圆钮（≥20px 排除 1×1 角标 IMG 误杀——r19 hiddenCount:1 实锤）
                   const cornerFab = r.width <= 170 && r.height <= 170 && r.width >= 20 && r.height >= 20 && (vh - r.bottom) <= 130 && (r.left <= 130 || (vw - r.right) <= 130);
                   // 形态 D：右上角窗控形态单个小按钮兜底（组判定不满足时逐按钮清）——保守收窄：
                   // 仅 48×48 内、贴右≤96、svg 图标、无文本、无 aria-label/title（真功能按钮都有）
-                  const fakeBtnOne = r.top <= 110 && (vw - r.right) <= 96 && r.width <= 48 && r.height <= 48 && r.width >= 14 && r.height >= 14
+                  const fakeBtnOne = r.top <= 140 && (vw - r.right) <= 120 && r.width <= 48 && r.height <= 48 && r.width >= 14 && r.height >= 14
                     && (el.querySelector && el.querySelector('svg')) && !(el.textContent || '').trim()
                     && !el.getAttribute('aria-label') && !el.getAttribute('title');
                   if (fakeWinBtns || dockRail || cornerFab || fakeBtnOne) {
@@ -98,6 +101,25 @@ module.exports = function injectTitleBar(ctx) {
               const ifs = document.querySelectorAll('iframe');
               const f = ifs[0];
               __log({ kind: 'state', iframes: ifs.length, ifSize: f ? [f.clientWidth | 0, f.clientHeight | 0] : null, hiddenCount: __hidden.length, doc: [document.body ? document.body.clientWidth | 0 : 0, document.body ? document.body.clientHeight | 0 : 0], href: String(location.href || '').slice(0, 120) });
+              // v2.5.5 r21（问题7）：右上角残留候选 dump——未被隐藏规则命中的 fixed 元素留痕
+              try {
+                const __vw = window.innerWidth, __cand = [];
+                const __nodes = document.body ? document.body.querySelectorAll('*') : [];
+                for (let i = 0; i < __nodes.length && __cand.length < 12; i++) {
+                  const el = __nodes[i];
+                  try {
+                    if (__isOurs(el) || __hidden.indexOf(el) >= 0) continue;
+                    const cs = getComputedStyle(el);
+                    if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+                    const r2 = el.getBoundingClientRect();
+                    if (r2.width <= 0 || r2.height <= 0) continue;
+                    if (r2.top <= 200 && (__vw - r2.right) <= 340) {
+                      __cand.push({ tag: String(el.tagName || '').slice(0, 12), cls: String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 40), rect: [Math.round(r2.left), Math.round(r2.top), Math.round(r2.width), Math.round(r2.height)], txt: String(el.textContent || '').trim().slice(0, 12) });
+                    }
+                  } catch (_) {}
+                }
+                if (__cand.length) __log({ kind: 'candidate-dump', n: __cand.length, items: __cand });
+              } catch (_) {}
             } catch (_) {}
           }, 5200);
         })();
@@ -127,14 +149,40 @@ module.exports = function injectTitleBar(ctx) {
     // 修法（机制无关钉死渲染层）：body attribute 按系统值持续归一 + 存储归一 30 + 同源 iframe
     // 递归 + 跨源 iframe src 主题参数覆盖 + postMessage 通知 + 系统切换实时跟随。
     (function __themeNormalize() {
-      try {
-        if (!(window.__fnosNasOrigin && String(location.href).indexOf(window.__fnosNasOrigin) === 0)) return;
-      } catch (_) { return; }
+      // v2.5.5 r21（问题3 全窗统一）：系统日夜特征值——matchMedia('(prefers-color-scheme: dark)')
+      // （Electron 映射 Windows 注册表 HKCU\...\Themes\Personalize\AppsUseLightTheme，0=深色）。
+      // 快捷方式独立窗/外源页面同样归一（r21 实锤：快捷方式窗日夜混搭致字段不可见）：
+      // matchMedia 桥（组件库/iframe 读同一系统值）+ html colorScheme + body attr + fnOS 存储 30。
+      const __isNas = (() => { try { return !!(window.__fnosNasOrigin && String(location.href).indexOf(window.__fnosNasOrigin) === 0); } catch (_) { return false; } })();
       const __log = (o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'theme.normalize' }, o)); } catch (_) {} };
-      const __isDark = () => { try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (_) { return false; } };
+      let __sysDark = false;
+      let __origMQ = null;
+      try { __origMQ = window.matchMedia ? window.matchMedia.bind(window) : null; } catch (_) {}
+      const __refreshDark = () => { try { __sysDark = !!(__origMQ && __origMQ('(prefers-color-scheme: dark)').matches); } catch (_) {} };
+      __refreshDark();
+      try {
+        if (__origMQ) {
+          window.matchMedia = function (q) {
+            const res = __origMQ(q);
+            try {
+              const s = String(q || '').toLowerCase().replace(/\s/g, '');
+              if (s.indexOf('prefers-color-scheme:dark') >= 0) {
+                Object.defineProperty(res, 'matches', { get: () => __sysDark });
+              } else if (s.indexOf('prefers-color-scheme:light') >= 0) {
+                Object.defineProperty(res, 'matches', { get: () => !__sysDark });
+              }
+            } catch (_) {}
+            return res;
+          };
+          __log({ kind: 'mq-patched', dark: __sysDark, href: String(location.href || '').slice(0, 120) });
+        }
+      } catch (_) {}
+      const __isDark = () => __sysDark;
       const __apply = (doc) => {
         try {
-          if (!doc || !doc.body) return;
+          if (!doc || !doc.documentElement) return;
+          try { doc.documentElement.style.colorScheme = __isDark() ? 'dark' : 'light'; } catch (_) {}
+          if (!doc.body) return;
           const dark = __isDark();
           const want = dark ? 'theme-dark' : 'theme-light';
           const drop = dark ? 'theme-light' : 'theme-dark';
@@ -142,14 +190,16 @@ module.exports = function injectTitleBar(ctx) {
           if (doc.body.getAttribute(want) === null) doc.body.setAttribute(want, '');
         } catch (_) {}
       };
-      // 存储归一 30=OS（跟随系统）——fnOS 内建 OS 模式，双 key（生态映射）
-      try {
-        const keys = ['os-theme-mode', 'fnos-theme-mode'];
-        const before = keys.map((k) => k + '=' + String(localStorage.getItem(k)));
-        let changed = false;
-        keys.forEach((k) => { try { if (localStorage.getItem(k) !== '30') { localStorage.setItem(k, '30'); changed = true; } } catch (_) {} });
-        __log({ kind: 'store', before: before.join(','), dark: __isDark(), changed, href: String(location.href || '').slice(0, 120) });
-      } catch (e) { __log({ kind: 'store-err', err: String(e && e.message || e) }); }
+      // fnOS 存储归一 30=OS（跟随系统）——仅 NAS origin 写入，防污染外源页面存储
+      if (__isNas) {
+        try {
+          const keys = ['os-theme-mode', 'fnos-theme-mode'];
+          const before = keys.map((k) => k + '=' + String(localStorage.getItem(k)));
+          let changed = false;
+          keys.forEach((k) => { try { if (localStorage.getItem(k) !== '30') { localStorage.setItem(k, '30'); changed = true; } } catch (_) {} });
+          __log({ kind: 'store', before: before.join(','), dark: __isDark(), changed, href: String(location.href || '').slice(0, 120) });
+        } catch (e) { __log({ kind: 'store-err', err: String(e && e.message || e) }); }
+      }
       __apply(document);
       try {
         const mo = new MutationObserver(() => { __apply(document); });
@@ -159,7 +209,7 @@ module.exports = function injectTitleBar(ctx) {
         try {
           const ifs = document.querySelectorAll('iframe');
           ifs.forEach((f) => {
-            // 同源 iframe：递归钉死 body attribute
+            // 同源 iframe：递归钉死 body attribute + colorScheme
             try { if (f.contentDocument) __apply(f.contentDocument); } catch (_) {}
             try {
               if (!f.src || !/^https?:/i.test(f.src)) return;
@@ -178,6 +228,13 @@ module.exports = function injectTitleBar(ctx) {
                 __log({ kind: 'iframe-src', old, to: u.toString().slice(0, 140) });
               }
               try { if (f.contentWindow) f.contentWindow.postMessage({ source: 'fnos-tb', theme: __isDark() ? 'dark' : 'light' }, '*'); } catch (_) {}
+              // v2.5.5 r21：跨源 iframe load 后补发 postMessage（早发时子框架未就绪会丢）
+              try {
+                if (!f.__fnThemeHook) {
+                  f.__fnThemeHook = true;
+                  f.addEventListener('load', () => { try { if (f.contentWindow) f.contentWindow.postMessage({ source: 'fnos-tb', theme: __isDark() ? 'dark' : 'light' }, '*'); } catch (_) {} });
+                }
+              } catch (_) {}
             } catch (_) {}
           });
           // 状态埋点（R20-G）：iframe src 全量留痕
@@ -186,12 +243,18 @@ module.exports = function injectTitleBar(ctx) {
           } catch (_) {}
         } catch (_) {}
       };
+      // v2.5.5 r21：iframe 扫描持续化（SPA 晚挂 iframe 早扫漏掉=frames n:0 实锤）
       setTimeout(__frames, 800);
       setTimeout(__frames, 2500);
       try {
-        const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+        const mo2 = new MutationObserver(() => { try { __frames(); } catch (_) {} });
+        mo2.observe(document.documentElement || document, { childList: true, subtree: true });
+      } catch (_) {}
+      setInterval(() => { try { __frames(); } catch (_) {} }, 8000);
+      try {
+        const mq = __origMQ && __origMQ('(prefers-color-scheme: dark)');
         if (mq && mq.addEventListener) {
-          mq.addEventListener('change', () => { __apply(document); __frames(); __log({ kind: 'system-switch', dark: __isDark() }); });
+          mq.addEventListener('change', () => { __refreshDark(); __apply(document); __frames(); __log({ kind: 'system-switch', dark: __isDark() }); });
         }
       } catch (_) {}
       setInterval(() => { __apply(document); }, 5000);

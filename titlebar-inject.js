@@ -11,7 +11,11 @@ module.exports = function injectTitleBar(ctx) {
   if (!ipcRenderer) return;
   try {
     if (typeof window === 'undefined') return;
-    if (window.top !== window) return; // 仅顶层框架
+    // v2.5.7 r23（问题1/3 根修）：子帧（含跨源 iframe）不再整段跳过——appview 应用窗的假窗控
+    //（"—▣✕"）与日夜混搭都在 iframe 内容里（截图实锤：Docker 窗控挂 iframe 内标题区、黑栏=壳/
+    // 白区=iframe）。nodeIntegrationInSubFrames 开启后 preload 进每个 iframe：子帧只跑 chrome
+    // 清理+主题归一，不注入标题栏。
+    const __SUB = (window.top !== window);
 
     // ---------------- v2.5.2 r18：appview 容器页 chrome 清理 + 布局修复 + 状态埋点 ----------------
     // r18 实测（图2/5/7）：appview?anchor= 顶层独立窗里 fnOS 前端把桌面壳残留全部渲染：右上角
@@ -25,7 +29,7 @@ module.exports = function injectTitleBar(ctx) {
     // 保证同步 should-inject 查询先行
     let isAppview = /\/appview/i.test(String(location.pathname || ''));
     try {
-      const __chromeGo = function () { if (!isAppview) return;
+      const __chromeGo = function () { if (!isAppview && !__SUB) return;
         (function __appviewChromeFix() {
           const __log = (o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'appview.chrome-fix' }, o)); } catch (_) {} };
           const __hidden = [];
@@ -66,7 +70,10 @@ module.exports = function injectTitleBar(ctx) {
                 try {
                   if (__isOurs(el) || __hidden.indexOf(el) >= 0) continue;
                   const cs = getComputedStyle(el);
-                  if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+                  // v2.5.7 r23（问题1 根修）：不再限定 fixed——截图实锤假窗控为 static/absolute
+                  // flex 排版（r22 只认 fixed=漏杀根源）；误杀防线改由各形态的位置/图标/文本条件把关
+                  const __pos = cs.position;
+                  if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                   const r = el.getBoundingClientRect();
                   if (r.width <= 0 || r.height <= 0) continue;
                   const cnt = el.querySelectorAll('button, [role="button"], [class*="btn" i], [class*="close" i], [class*="win-ctrl" i], [class*="titlebar" i], [class*="title-bar" i], svg, [class*="ctrl" i]').length;
@@ -80,17 +87,53 @@ module.exports = function injectTitleBar(ctx) {
                   // v2.5.4 r20：组判定放宽（回收站/Docker 假窗控组宽高超旧阈值=漏杀实锤）+无文本要求
                   // v2.5.5 r21：再放宽（top 140→180/贴右 260→320/宽 520→720/高 120→160）+新增
                   // 形态 A2 通栏假标题栏（宽≥半屏、高≤56、≥3 控件）——r21 复验仍有残留实锤
-                  const fakeWinBtns = (r.top <= 180 && (vw - r.right) <= 320 && r.width <= 720 && r.height <= 160 && cnt >= 2 && __noTxt)
+                  // v2.5.7 r23：形态 A4 窗控图标特征组——svg 特征识别（最小化=单横线/最大化=
+                  // 方框/关闭=两条交叉斜线）≥1、组内 2+ 控件、紧贴右上（top≤110、贴右≤96、
+                  // 组≤320×72）、无文本，不依赖 position（static flex 排版窗控实锤）
+                  const __svgSig = (function () {
+                    let hit = 0;
+                    try {
+                      const svgs = el.querySelectorAll ? el.querySelectorAll('svg') : [];
+                      for (let si = 0; si < svgs.length && hit < 2; si++) {
+                        const sg = svgs[si];
+                        const lns = sg.querySelectorAll('line');
+                        let cross = 0, horiz = 0;
+                        for (let li = 0; li < lns.length; li++) {
+                          const a = lns[li];
+                          const x1 = a.getAttribute('x1'), x2 = a.getAttribute('x2'), y1 = a.getAttribute('y1'), y2 = a.getAttribute('y2');
+                          if (x1 !== x2 && y1 !== y2) cross++;
+                          if (y1 === y2 && x1 !== x2) horiz++;
+                        }
+                        if (cross >= 2) { hit = 2; continue; } // 关闭=交叉双斜线
+                        if (horiz >= 1) hit = Math.max(hit, 1); // 最小化=水平线
+                        const rcs = sg.querySelectorAll('rect');
+                        for (let ri = 0; ri < rcs.length; ri++) {
+                          const w = Number(rcs[ri].getAttribute('width') || 0);
+                          if (w >= 6 && w <= 40) { hit = Math.max(hit, 1); break; } // 最大化=小方框
+                        }
+                        const pts = sg.querySelectorAll('path');
+                        for (let pi = 0; pi < pts.length && hit < 2; pi++) {
+                          const d = String(pts[pi].getAttribute('d') || '');
+                          const nseg = (d.match(/[ML]/gi) || []).length;
+                          if (d.length > 0 && d.length <= 48 && nseg >= 2 && nseg <= 4) hit = Math.max(hit, 1);
+                        }
+                      }
+                    } catch (_) {}
+                    return hit;
+                  })();
+                  const __winGroup = r.top <= 110 && (vw - r.right) <= 96 && r.width <= 320 && r.height <= 72 && cnt >= 2 && __noTxt && __svgSig >= 1;
+                  const fakeWinBtns = (r.top <= 180 && (vw - r.right) <= 320 && r.width <= 720 && r.height <= 160 && cnt >= 2 && __noTxt && (__pos === 'fixed' || __pos === 'absolute'))
                     || (r.top <= 8 && r.height <= 56 && r.width >= vw * 0.5 && cnt >= 3 && __noTxt)
-                    || (r.top <= 120 && (vw - r.right) <= 260 && r.width <= 560 && r.height <= 90 && __winctlOnly);
+                    || (r.top <= 120 && (vw - r.right) <= 260 && r.width <= 560 && r.height <= 90 && __winctlOnly && (__pos === 'fixed' || __pos === 'absolute'))
+                    || __winGroup;
                   // 形态 B：左侧 dock 竖长条（黑块挤占内容区）
-                  const dockRail = r.left <= 88 && r.width <= 132 && r.height >= vh * 0.3;
+                  const dockRail = (__pos === 'fixed' || __pos === 'absolute') && r.left <= 88 && r.width <= 132 && r.height >= vh * 0.3;
                   // 形态 C：左/右下角头像悬浮小圆钮（≥20px 排除 1×1 角标 IMG 误杀——r19 hiddenCount:1 实锤）
-                  const cornerFab = r.width <= 170 && r.height <= 170 && r.width >= 20 && r.height >= 20 && (vh - r.bottom) <= 130 && (r.left <= 130 || (vw - r.right) <= 130);
+                  const cornerFab = (__pos === 'fixed' || __pos === 'absolute') && r.width <= 170 && r.height <= 170 && r.width >= 20 && r.height >= 20 && (vh - r.bottom) <= 130 && (r.left <= 130 || (vw - r.right) <= 130);
                   // 形态 D：右上角窗控形态单个小按钮兜底（组判定不满足时逐按钮清）——保守收窄：
                   // 仅 48×48 内、贴右≤96、svg 图标、无文本、无 aria-label/title（真功能按钮都有）
-                  const fakeBtnOne = r.top <= 140 && (vw - r.right) <= 120 && r.width <= 48 && r.height <= 48 && r.width >= 14 && r.height >= 14
-                    && (el.querySelector && el.querySelector('svg')) && __noTxt
+                  const fakeBtnOne = r.top <= 80 && (vw - r.right) <= 48 && r.width <= 48 && r.height <= 48 && r.width >= 14 && r.height >= 14
+                    && (el.querySelector && el.querySelector('svg')) && __noTxt && __svgSig >= 1
                     && !el.getAttribute('aria-label') && !el.getAttribute('title');
                   if (fakeWinBtns || dockRail || cornerFab || fakeBtnOne) {
                     el.style.setProperty('display', 'none', 'important');
@@ -299,6 +342,9 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
       setInterval(() => { __apply(document); }, 5000);
     })();
+
+    // v2.5.7 r23：子帧只做 chrome 清理+主题归一，不注入标题栏/拖动热区
+    if (__SUB) return;
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
     const TB = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };

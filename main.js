@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.6';
+const APP_VERSION = '2.5.7';
 // Windows 任务栏 / 通知分组所需的 AppUserModelID（必须与 package.json build.appId 一致）
 // 未设置时 Windows 会把 Electron 应用归到默认 Electron AUMID，导致任务栏图标显示为 Electron 默认图标
 if (process.platform === 'win32') {
@@ -4039,6 +4039,25 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         const __nmA21 = decodeURIComponent(__mAnchor21[1]);
         try { const ac22 = __appCenterUrlCache.get(__nmA21); if (ac22 && /^https?:/i.test(ac22)) __urlCandidates.push(ac22); } catch (_) {}
         __pushFpkUrl22(__nmA21);
+        // v2.5.7 r23（问题2）：候选再扩三层——①FPK ui/config 官方入口拼接 {protocol}://{host}:{port}
+        // {url}（FPK 打包文档实锤）；②fnOS 内置应用门户短名路由（trim.seek 真入口=/seek?ver= 实锤，
+        // trim.docs 同构候选 /docs、/docs?ver=）；③/app/{name}/login.html 形态（fndesk 日志
+        // bad:false 实锤真入口形态）。全部交 entry 预检过滤，不再裸跳连环 404。
+        try {
+          const fe23 = __fpkLookupSync(__nmA21);
+          if (fe23 && fe23.url && String(fe23.url).charAt(0) === '/' && fe23.port) {
+            const __p23 = String(fe23.protocol || 'http:').replace(/:+$/, ':');
+            let __h23 = String(fe23.host || '');
+            try { if (!__h23) __h23 = new URL(__origR21).hostname; } catch (_) {}
+            __urlCandidates.push(__p23 + '//' + __h23 + ':' + String(fe23.port) + String(fe23.url));
+          }
+        } catch (_) {}
+        try {
+          const __sh23 = String(__nmA21).split('.')[0] || '';
+          if (__sh23.length >= 2) { __urlCandidates.push(__origR21 + '/' + __sh23); __urlCandidates.push(__origR21 + '/' + __sh23 + '?ver='); }
+          __urlCandidates.push(__origR21 + '/app/' + String(__nmA21).replace(/\./g, '-') + '/login.html');
+          __urlCandidates.push(__origR21 + '/app/' + encodeURIComponent(__nmA21) + '/login.html');
+        } catch (_) {}
         __urlCandidates.push(__origR21 + '/app/' + String(__nmA21).replace(/\./g, '-'));
         if (String(__nmA21).indexOf('.') >= 0) __urlCandidates.push(__origR21 + '/app/' + encodeURIComponent(__nmA21));
         __urlCandidates.push(__origR21 + '/appview?anchor=' + encodeURIComponent(String(__nmA21).replace(/\./g, '-')));
@@ -4046,6 +4065,22 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         const __nmG21 = decodeURIComponent(__mRoute21[1]);
         try { const ac22 = __appCenterUrlCache.get(__nmG21); if (ac22 && /^https?:/i.test(ac22)) __urlCandidates.push(ac22); } catch (_) {}
         __pushFpkUrl22(__nmG21);
+        // v2.5.7 r23（问题2）：route 分支同扩——login.html 形态+门户短名+FPK port/url 拼接
+        try {
+          const fe23g = __fpkLookupSync(__nmG21);
+          if (fe23g && fe23g.url && String(fe23g.url).charAt(0) === '/' && fe23g.port) {
+            const __p23g = String(fe23g.protocol || 'http:').replace(/:+$/, ':');
+            let __h23g = String(fe23g.host || '');
+            try { if (!__h23g) __h23g = new URL(__origR21).hostname; } catch (_) {}
+            __urlCandidates.push(__p23g + '//' + __h23g + ':' + String(fe23g.port) + String(fe23g.url));
+          }
+        } catch (_) {}
+        try {
+          const __sh23g = String(__nmG21).split('.')[0] || '';
+          if (__sh23g.length >= 2) { __urlCandidates.push(__origR21 + '/' + __sh23g); __urlCandidates.push(__origR21 + '/' + __sh23g + '?ver='); }
+          __urlCandidates.push(__origR21 + '/app/' + String(__nmG21).replace(/\./g, '-') + '/login.html');
+          __urlCandidates.push(__origR21 + '/app/' + encodeURIComponent(__nmG21) + '/login.html');
+        } catch (_) {}
         __urlCandidates.push(__origR21 + '/appview?anchor=' + encodeURIComponent(__nmG21));
         __urlCandidates.push(__origR21 + '/app/' + String(__nmG21).replace(/\./g, '-'));
       }
@@ -4125,6 +4160,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱
+      // v2.5.7 r23（问题1/3）：同 mainWindow——preload 进每个子框架（含跨源 iframe），
+      // 假窗控清理+日夜主题归一覆盖 iframe 内容
+      nodeIntegrationInSubFrames: true,
       webSecurity: true,
       allowRunningInsecureContent: true,
       spellcheck: false,
@@ -4276,6 +4314,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         win.__appResPending = false;
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
+      try { __armBlackScan(win, 'app:' + String(__appLabel || '')); } catch (_) {}
       // v2.5.5 r21（问题2）："应用不存在或未安装"错误页检测→自动换下一候选入口（每窗逐候选一次）
       try {
         if (__urlCandidates.length && !win.__fnEntryCheck) {
@@ -4289,10 +4328,26 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                   try {
                     dlog && dlog('info', 'appwin.entry-check', { app: __appLabel, winId: win.id, bad: !!bad, left: __urlCandidates.length, url: String(win.webContents.getURL() || '').slice(0, 120) });
                     if (!bad || win.isDestroyed()) return;
-                    const __next = __urlCandidates.shift();
-                    if (!__next) return;
-                    dlog && dlog('warn', 'appwin.entry-fallback', { app: __appLabel, winId: win.id, from: String(win.webContents.getURL() || '').slice(0, 140), to: String(__next).slice(0, 140) });
-                    win.loadURL(__next);
+                    // v2.5.7 r23（问题2）：候选预检+耗尽友好错误页——r22 逐候选裸跳连环 404
+                    // "跳转了也不起作用"实锤。加载前 HTTP 预检过滤无效候选；全部耗尽后渲染本地
+                    // 错误页明确告知"NAS 上不存在或未安装"，不再无限跳。
+                    const __tryNext23 = async () => {
+                      while (!win.isDestroyed() && __urlCandidates.length) {
+                        const __nx = __urlCandidates.shift();
+                        if (!__nx) break;
+                        const __ok = await __preflightEntry23(__nx);
+                        dlog && dlog(__ok ? 'warn' : 'info', 'appwin.entry-preflight', { app: __appLabel, winId: win.id, url: String(__nx).slice(0, 120), ok: !!__ok });
+                        if (__ok) {
+                          dlog && dlog('warn', 'appwin.entry-fallback', { app: __appLabel, winId: win.id, from: String(win.webContents.getURL() || '').slice(0, 140), to: String(__nx).slice(0, 140) });
+                          win.loadURL(__nx);
+                          return;
+                        }
+                      }
+                      if (win.isDestroyed()) return;
+                      dlog && dlog('error', 'appwin.entry-exhausted', { app: __appLabel, winId: win.id, last: String(win.webContents.getURL() || '').slice(0, 120) });
+                      try { win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(__entryErrorPage23(__appLabel))); } catch (_) {}
+                    };
+                    __tryNext23();
                   } catch (_) {}
                 }).catch(() => { try { win.__fnEntryCheck = false; } catch (_) {} });
             } catch (_) {}
@@ -5007,6 +5062,80 @@ function hideMainToBackground() {
 // 信号=黑屏/桌面图标不渲染（r17 用整页 loadURL 规避=体验差）。现方案：show 后强制合成器重绘
 //（bounds 微抖动复位 + 强制 reflow + resize 事件），延时 capturePage 亮度方差黑屏检测——
 // 真黑屏才 reload 兜底；force=true（菜单"刷新主页"/双击主程序）仍完整刷新。
+// v2.5.7 r23（问题8）：应用窗独立黑屏巡检——black-heal 只在 render-gone 崩溃恢复耗尽后才启动
+// （r22 日志 black-heal:0 从未触发实锤），二次点击主程序后快捷方式应用黑屏=合成表面丢失无自愈。
+// did-finish-load 后 3/8/15s capturePage 亮度方差检测（全黑=均值<8 且方差<25）→防黑屏重绘组合
+// 拳+reload 自愈，全程埋点 black-scan.check/heal 可跟踪；每窗自愈上限 2 次防 reload 风暴。
+function __armBlackScan(win, tag) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    if (!win.__fnBlackHeals) win.__fnBlackHeals = 0;
+    const __shots = [3000, 8000, 15000];
+    for (const __ms of __shots) {
+      const __t = setTimeout(async () => {
+        try {
+          if (!win || win.isDestroyed() || !win.isVisible()) return;
+          const img = await win.webContents.capturePage();
+          const bmp = (img && !img.isEmpty()) ? img.getBitmap() : null;
+          let black = false;
+          if (bmp && bmp.length > 100) {
+            let sum = 0, sum2 = 0, n = 0;
+            for (let i = 0; i + 3 < bmp.length; i += 4 * 97) {
+              const y = bmp[i] * 0.299 + bmp[i + 1] * 0.587 + bmp[i + 2] * 0.114;
+              sum += y; sum2 += y * y; n++;
+            }
+            if (n > 10) { const mean = sum / n; const varr = sum2 / n - mean * mean; black = mean < 8 && varr < 25; }
+          }
+          try { require('./logger.js').log('info', 'window', 'black-scan.check', { params: { tag: String(tag || ''), ms: __ms, black, empty: !bmp, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
+          if (black && !win.isDestroyed() && win.__fnBlackHeals < 2) {
+            win.__fnBlackHeals++;
+            try {
+              const b = win.getBounds();
+              win.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height });
+              setImmediate(() => { try { if (!win.isDestroyed()) win.setBounds(b); } catch (_) {} });
+            } catch (_) {}
+            try { win.webContents.executeJavaScript('(function(){try{window.dispatchEvent(new Event("resize"));}catch(_){}})()').catch(() => {}); } catch (_) {}
+            try { win.webContents.reload(); } catch (_) {}
+            try { require('./logger.js').log('warn', 'window', 'black-scan.heal', { params: { tag: String(tag || ''), ms: __ms, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
+          }
+        } catch (_) {}
+      }, __ms);
+      if (__t && __t.unref) __t.unref();
+    }
+  } catch (_) {}
+}
+// v2.5.7 r23（问题2）：候选入口 HTTP 预检——加载前过滤 404/错误页，根修连环错误页跳转。
+// SPA 路由（appview?anchor）壳页恒 200 无法预检，放行交给页面级文本检测；预检本身出错/超时
+// 也放行（宁可试加载），只有确证无效（404/5xx/错误页正文）才拦。
+async function __preflightEntry23(u) {
+  try {
+    if (!u) return false;
+    if (/appview\?/i.test(u)) return true;
+    const ses = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) ? mainWindow.webContents.session : null;
+    if (!ses || typeof ses.fetch !== 'function') return true;
+    const resp = await Promise.race([
+      ses.fetch(u, { credentials: 'include' }),
+      new Promise((r) => setTimeout(() => r(null), 6000)),
+    ]);
+    if (!resp) return true;
+    if (resp.status === 404 || resp.status >= 500) return false;
+    const txt = (await resp.text().catch(() => '')) || '';
+    if (txt.length < 30000 && /不存在或未安装|页面不存在|无法找到|没有找到|Not Found|404|无法访问/i.test(txt)) return false;
+    return true;
+  } catch (_) { return true; }
+}
+// v2.5.7 r23（问题2）：候选全耗尽后的本地友好错误页（明确告知 NAS 上不存在或未安装）
+function __entryErrorPage23(name) {
+  const nm = String(name || '应用').replace(/[<>&"']/g, '');
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>应用 ' + nm + ' 不可用</title></head>'
+    + '<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#12141a;color:#e8eaef;font:14px/1.8 system-ui,sans-serif">'
+    + '<div style="text-align:center;max-width:520px;padding:24px">'
+    + '<div style="font-size:40px;line-height:1;margin-bottom:14px;opacity:.9">FNOS</div>'
+    + '<h2 style="margin:0 0 12px;font-size:18px">应用 ' + nm + ' 打不开</h2>'
+    + '<p style="opacity:.85;margin:0 0 6px">所有启动入口均返回&ldquo;不存在或未安装&rdquo;。</p>'
+    + '<p style="opacity:.85;margin:0">请确认 NAS 应用中心已安装该应用，或删除此快捷方式后重新创建。</p>'
+    + '</div></body></html>';
+}
 let __pendingHomeReset = false;
 const __launchDedupe = new Map();
 function __restoreMainHome(reason, force) {
@@ -5071,6 +5200,7 @@ function __restoreMainHome(reason, force) {
 // 抖动，壳（fnOS 主题存储）与 iframe（media query）分叉。现 themeSource 恒 'system'，页面侧由
 // titlebar-inject __themeNormalize 钉死 body attribute+存储归一 30+iframe 主题参数归一，全窗统一。
 let __lastThemeSig = '';
+let __FNOS_APP_DARK = false; // v2.5.7 r23（问题3）：应用主题真值（Windows AppsUseLightTheme），theme:sys-dark IPC 源
 // v2.5.6 r22（问题3 终极根修）：themeSource 显式锁定 dark/light——Electron 官方文档实锤：
 // 显式设置后 CSS prefers-color-scheme 全局跟随该值=CSS 层、JS matchMedia 层、UA 部件全
 // 统一，根修快捷方式窗日夜混搭（截图实锤：Docker 窗口侧栏暗+主内容亮致字段不可见）。
@@ -5080,26 +5210,30 @@ function __syncThemeFromMain() {
   try {
     const nt = require('electron').nativeTheme;
     if (!nt) return;
-    let __sysDark22 = false;
+    // v2.5.7 r23（问题3 根修）：特征值=【应用主题】（Windows AppsUseLightTheme=用户在设置里选的
+    // "浅色/深色模式"），非 r22 用的系统 UI 主题（SystemUsesLightTheme=任务栏/开始菜单）。Windows
+    // 常见配置=任务栏深色+应用浅色→r22 据系统 UI 锁 dark 与页面组件 light 分叉=日夜混搭实锤
+    //（截图：Docker 窗壳黑+iframe 内容白致字段不可见）。官方读法：themeSource='system' 时
+    // shouldUseDarkColors 即应用主题真值；读完按其显式锁定（Electron 官方：显式后
+    // prefers-color-scheme 全局跟随=CSS/@media/matchMedia 全层同源）。
+    let __appDark = false, __sysUiDark = false;
     try {
-      if (typeof nt.shouldUseDarkColorsForSystemIntegratedUI === 'boolean') __sysDark22 = !!nt.shouldUseDarkColorsForSystemIntegratedUI;
-      else __sysDark22 = !!nt.shouldUseDarkColors;
+      try { nt.themeSource = 'system'; } catch (_) {}
+      __appDark = !!nt.shouldUseDarkColors;
+      try { __sysUiDark = !!nt.shouldUseDarkColorsForSystemIntegratedUI; } catch (_) {}
+      try { nt.themeSource = __appDark ? 'dark' : 'light'; } catch (_) {}
     } catch (_) {}
-    const __want = __sysDark22 ? 'dark' : 'light';
-    if (nt.themeSource !== __want) {
-      nt.themeSource = __want;
-      try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: __want, sysDark: __sysDark22, themeSource: String(nt.themeSource) } }, __RUN_MODE); } catch (_) {}
-    }
-    const __sig = __want + ':' + String(nt.themeSource);
+    __FNOS_APP_DARK = __appDark;
+    const __sig = (__appDark ? 'dark' : 'light') + ':' + (__sysUiDark ? 'sysDark' : 'sysLight');
     if (__sig !== __lastThemeSig) {
       __lastThemeSig = __sig;
-      try { require('./logger.js').log('info', 'window', 'theme.detect', { params: { shouldUseDark: __sysDark22, themeSource: String(nt.themeSource), sig: __sig } }, __RUN_MODE); } catch (_) {}
+      try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: __appDark ? 'dark' : 'light', appDark: __appDark, sysUiDark: __sysUiDark, themeSource: String(nt.themeSource), fix: 'r23-app-theme' } }, __RUN_MODE); } catch (_) {}
     }
   } catch (_) {}
 }
 // v2.5.6 r22：渲染端主题真值同步 IPC（titlebar-inject matchMedia 桥与 CSS @media 同源=混搭根修）
 try {
-  require('electron').ipcMain.on('theme:sys-dark', (e) => { try { e.returnValue = !!require('electron').nativeTheme.shouldUseDarkColors; } catch (_) { e.returnValue = false; } });
+  require('electron').ipcMain.on('theme:sys-dark', (e) => { try { e.returnValue = !!__FNOS_APP_DARK; } catch (_) { e.returnValue = false; } });
 } catch (_) {}
 try { setInterval(() => { try { __syncThemeFromMain(); } catch (_) {} }, 30000); } catch (_) {}
 
@@ -5257,6 +5391,9 @@ function createMainWindow(partition, loadTarget) {
       contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱
+      // v2.5.7 r23（问题1/3）：preload 注入每个子框架（含跨源 iframe）——假窗控"—▣✕"与日夜
+      // 混搭都在 appview iframe 内容里（截图实锤），titlebar-inject 子帧模式清理+主题归一
+      nodeIntegrationInSubFrames: true,
       webSecurity: true,
       allowRunningInsecureContent: true,
       spellcheck: false,
@@ -6214,7 +6351,11 @@ async function __fetchAppCenterUrlLive(appName) {
       const nm = String(a.appName || '');
       if (nm !== String(appName)) continue;
       const u = buildAppCenterUrl(origin, a.appServiceInfo);
-      if (!u) { try { fnosLog('info', 'shortcut.url', 'app-center live matched-no-url', { name: nm }); } catch (_) {} continue; }
+      if (!u) {
+        // v2.5.7 r23（问题2）：dump完整条目（appServiceInfo/urls/entry 全字段）供真入口定论
+        try { fnosLog('info', 'shortcut.url', 'app-center live matched-no-url', { name: nm, entry: JSON.stringify(a).slice(0, 600) }); } catch (_) {}
+        continue;
+      }
       // v2.5.6 r22：根地址不再丢弃——com.fntb.iconmgr 实锤真入口=http://192.168.31.101:18080/
       // 根地址（r21 当"无效入口"丢弃→entry-fallback 连猜候选均错=trim.docs"跳转了也不起作用"实锤）。
       try {
@@ -6826,21 +6967,50 @@ function __iconConvCachePath(buf) {
   } catch (_) { return ''; }
 }
 async function __canvasDecodeToPng(buf) {
+  // v2.5.7 r23（问题5 根修）：r22 隐藏窗 sandbox+data:URL 链路静默全挂（日志实锤 canvas converted:0
+  // /wic run failed:3/all decode failed:2→fndesk webp 白板+pngToIco 空输出）。重写为临时文件
+  // file:// 方案（启动 argv 实测带 --allow-file-access-from-files）：img.src 走本地文件+webSecurity
+  // 关闭，彻底脱离 data:URL/sandbox 组合坑；分步埋点（icon.conv.canvas-*）+12s 超时+结果长度校验。
+  const __md5 = require('crypto').createHash('md5').update(buf).digest('hex').slice(0, 10);
+  const __dir = path.join(ASSETS_DIR, '.iconconv');
+  const __tmpSrc = path.join(__dir, 'tmp_' + __md5 + '.img');
+  const __tmpHtml = path.join(__dir, 'tmp_' + __md5 + '.html');
   let hiddenWin = null;
   try {
-    hiddenWin = new BrowserWindow({ show: false, width: 64, height: 64, webPreferences: { offscreen: true, sandbox: true } });
-    const dataUrl = 'data:application/octet-stream;base64,' + Buffer.from(buf).toString('base64');
-    await hiddenWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent('<!DOCTYPE html><html><body style="margin:0"><canvas id="c"></canvas></body></html>'));
-    const d = await hiddenWin.webContents.executeJavaScript(`(function(){return new Promise(function(res){try{var img=new Image();img.onload=function(){try{var c=document.getElementById('c');c.width=img.naturalWidth||img.width;c.height=img.naturalHeight||img.height;var x=c.getContext('2d');x.drawImage(img,0,0);res(c.toDataURL('image/png'));}catch(e){res('');}};img.onerror=function(){res('');};img.src=${JSON.stringify(dataUrl)};}catch(e){res('')}})()})()`, true);
-    try { hiddenWin.close(); } catch (_) {}
-    if (typeof d === 'string' && d.indexOf('data:image/png;base64,') === 0) {
-      const b = Buffer.from(d.slice('data:image/png;base64,'.length), 'base64');
-      if (b.length > 100 && __safeIconBuf(b) === 'png') return b;
+    try { fs.mkdirSync(__dir, { recursive: true }); } catch (_) {}
+    fs.writeFileSync(__tmpSrc, buf);
+    const __kind = __safeIconBuf(buf) || 'png';
+    const __srcUrl = require('url').pathToFileURL(__tmpSrc).href;
+    const html = '<!DOCTYPE html><html><body><script>function go(){try{var img=new Image();img.onload=function(){try{var c=document.createElement("canvas");c.width=img.naturalWidth||img.width;c.height=img.naturalHeight||img.height;if(!c.width||!c.height){window.__r="ERR:zero-size";window.__done=1;return;}var x=c.getContext("2d");x.drawImage(img,0,0);window.__r=c.toDataURL("image/png");}catch(e){window.__r="ERR:"+String(e&&e.message||e);}window.__done=1;};img.onerror=function(){window.__r="ERR:img.onerror";window.__done=1;};img.src=' + JSON.stringify(__srcUrl) + ';}catch(e){window.__r="ERR:"+String(e&&e.message||e);window.__done=1;}}<\/script></body></html>';
+    fs.writeFileSync(__tmpHtml, html);
+    hiddenWin = new BrowserWindow({ show: false, width: 256, height: 256, frame: false, skipTaskbar: true, webPreferences: { offscreen: true, sandbox: false, webSecurity: false, nodeIntegration: false, contextIsolation: true } });
+    await hiddenWin.loadFile(__tmpHtml);
+    try { require('./logger.js').log('info', 'window', 'icon.conv.canvas-step', { params: { step: 'loaded', kind: __kind, inLen: buf.length } }, __RUN_MODE); } catch (_) {}
+    await hiddenWin.webContents.executeJavaScript('go()', true).catch(() => {});
+    let d = '';
+    const __deadline = Date.now() + 12000;
+    while (Date.now() < __deadline) {
+      d = await hiddenWin.webContents.executeJavaScript('window.__done?(window.__r||""):""').catch(() => '');
+      if (d) break;
+      await new Promise((r) => setTimeout(r, 250));
     }
+    try { if (hiddenWin && !hiddenWin.isDestroyed()) { hiddenWin.close(); hiddenWin = null; } } catch (_) {}
+    if (typeof d === 'string' && d.indexOf('data:image/png;base64,') === 0) {
+      const out = Buffer.from(d.slice('data:image/png;base64,'.length), 'base64');
+      if (out.length > 100) {
+        try { require('./logger.js').log('info', 'window', 'icon.conv.canvas-ok', { params: { kind: __kind, inLen: buf.length, outLen: out.length } }, __RUN_MODE); } catch (_) {}
+        return out;
+      }
+    }
+    try { require('./logger.js').log('warn', 'window', 'icon.conv.canvas-fail', { params: { kind: __kind, result: String(d || '').slice(0, 100), inLen: buf.length } }, __RUN_MODE); } catch (_) {}
     return null;
   } catch (e) {
-    try { if (hiddenWin && !hiddenWin.isDestroyed()) hiddenWin.close(); } catch (_) {}
+    try { require('./logger.js').log('warn', 'window', 'icon.conv.canvas-err', { params: { err: String(e && e.message || e) } }, __RUN_MODE); } catch (_) {}
     return null;
+  } finally {
+    try { if (hiddenWin && !hiddenWin.isDestroyed()) hiddenWin.close(); } catch (_) {}
+    try { fs.unlinkSync(__tmpSrc); } catch (_) {}
+    try { fs.unlinkSync(__tmpHtml); } catch (_) {}
   }
 }
 async function __decodeToPngAny(buf) {
@@ -8145,7 +8315,15 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
           let __h6 = '';
           try { __h6 = require('crypto').createHash('md5').update(fpkBuf).digest('hex').slice(0, 6); } catch (_) {}
           const fpkIconPath = path.join(ASSETS_DIR, `fpk_${safeName}${__h6 ? '_' + __h6 : ''}.ico`);
-          const icoBuf = pngToIco(__fpkConv22 || fpkBuf);
+          let icoBuf = pngToIco(__fpkConv22 || fpkBuf);
+          // v2.5.7 r23（问题5）：webp 全链转换失败兜底——坏 ICO/白板实锤；改用客户端默认 PNG
+          // 生成标准 ICO（图标降级但绝不白板），埋点 icon.fallback-default 可回查。
+          if (!icoBuf || !icoBuf.length) {
+            try {
+              icoBuf = pngToIco(fs.readFileSync(ICON_PNG));
+              fnosLog('warn', 'icon.fpk', 'fpk icon fallback to default', { appId, srcKind: __safeIconBuf(fpkBuf) });
+            } catch (_) {}
+          }
           if (!icoBuf || !icoBuf.length) throw new Error('pngToIco empty output');
           fs.writeFileSync(fpkIconPath, icoBuf);
           icoPath = fpkIconPath;

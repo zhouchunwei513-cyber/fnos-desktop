@@ -120,7 +120,92 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.8';
+const APP_VERSION = '2.5.9';
+
+
+// ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
+// r24 帧注入 v1 误杀自绘标题栏三键（frame-inject hidden:3 全是 fnos-tb-min/max/close，绿框
+// 假窗控反而没杀掉）；v2：排除自有 DOM（[data-fnos-tb],[id^=fnos-],[class*=fnos-]），识别收紧
+// （右上区聚组：组>=2 且含窗控字符或>=3 全 svg 才隐藏，单个字符窗控也杀），触发强化
+// （did-frame-finish-load + 1/3/8/15/25s 多档），主题增强（classList+data-theme+防覆盖）。
+const __FNOS_FRAME_SCRIPT25 = [
+  '(function(){try{',
+  'var D=__DARK24__;var out={h:0,sub:(window.top!==window),href:String(location.href||"").slice(0,80)};',
+  'var KEEP="[data-fnos-tb],[id^=fnos-],[class*=fnos-]";',
+  'try{var r=document.documentElement;',
+  'r.setAttribute("data-fnos-theme",D?"dark":"light");r.setAttribute("data-theme",D?"dark":"light");',
+  'r.style.colorScheme=D?"dark":"light";',
+  'try{r.classList.remove(D?"light":"dark");r.classList.add(D?"dark":"light");}catch(_){}',
+  'try{if(document.body&&document.body.classList){document.body.classList.remove(D?"light":"dark");document.body.classList.add(D?"dark":"light");}}catch(_){}',
+  '}catch(_){}',
+  'try{var mq0=window.matchMedia;window.matchMedia=function(q){try{if(/prefers-color-scheme/.test(String(q))){return{matches:!!D,media:String(q),onchange:null,addEventListener:function(){},removeEventListener:function(){},addListener:function(){},removeListener:function(){},dispatchEvent:function(){return true}};}}catch(_){};return mq0.apply(window,arguments);};}catch(_){}',
+  'try{localStorage.setItem("os-theme-mode",D?"30":"20");}catch(_){}',
+  'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));window.dispatchEvent(new CustomEvent("theme-change",{detail:{dark:!!D}}));}catch(_){}',
+  'try{',
+  'var vw=window.innerWidth;var rows={};',
+  'var all=document.querySelectorAll("button,[role=button],a,span,i,div,svg");',
+  'var CH=/^[\\u2014_\\u229F\\u25A1\\u25FB\\u25A2\\u2922\\u2923\\u2715Xx\\u00D7\\u00B7.,\\-\\/\\\\| ]{1,4}$/;',
+  'for(var k=0;k<all.length;k++){var e=all[k];try{',
+  'if(!e.isConnected)continue;if(e.closest&&e.closest(KEEP))continue;',
+  'var rc=e.getBoundingClientRect();',
+  'if(rc.width<6||rc.width>170||rc.height<6||rc.height>72)continue;',
+  'if(rc.top<0||rc.top>140)continue;if(vw-rc.right>120||rc.right>vw+2)continue;',
+  'var t=(e.textContent||"").trim();',
+  'if(!(t===""||CH.test(t)))continue;',
+  'var hasSvg=!!e.querySelector&&!!e.querySelector("svg");',
+  'if(t===""&&!hasSvg)continue;',
+  'var rk=Math.round(rc.top/12);if(!rows[rk])rows[rk]=[];rows[rk].push({e:e,ch:t!==""});',
+  '}catch(_){}}',
+  'for(var rk2 in rows){try{var g=rows[rk2];var charHit=false;',
+  'for(var q=0;q<g.length;q++){if(g[q].ch){charHit=true;break;}}',
+  'var kill=(g.length>=2&&(charHit||g.length>=3))||(g.length===1&&g[0].ch);',
+  'if(kill){for(var z=0;z<g.length;z++){try{g[z].e.setAttribute("data-fnos-hide25","1");g[z].e.style.setProperty("display","none","important");out.h++;}catch(_){}}}',
+  '}catch(_){}}',
+  '}catch(_){}',
+  'return out;',
+  '}catch(e){return{err:String(e).slice(0,80)}}})()'
+].join('');
+function __frameSweep25(win, tag) {
+  try {
+    if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+    const mf = win.webContents.mainFrame;
+    if (!mf) return;
+    let frames = [];
+    try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
+    const __script = __FNOS_FRAME_SCRIPT25.replace('__DARK24__', (__FNOS_APP_DARK ? 'true' : 'false'));
+    let __done = 0; let __hidden = 0; let __sub = 0;
+    const __t0 = Date.now();
+    for (const f of frames) {
+      try {
+        if (!f || f.isDestroyed()) continue;
+        f.executeJavaScript(__script).then((r) => {
+          try {
+            __done++;
+            if (r && typeof r === 'object') { __hidden += (r.h | 0); if (r.sub) __sub++; }
+            if (__done >= frames.length) {
+              fnosLog('info', 'frame-inject25', { winId: win.id, tag: String(tag || ''), frames: frames.length, hidden: __hidden, sub: __sub, theme: __FNOS_APP_DARK ? 'dark' : 'light', ms: Date.now() - __t0 });
+            }
+          } catch (_) {}
+        }).catch(() => {
+          try { __done++; if (__done >= frames.length) fnosLog('warn', 'frame-inject25', { winId: win.id, tag: String(tag || ''), frames: frames.length, hidden: __hidden, partial: true }); } catch (_) {}
+        });
+      } catch (_) {}
+    }
+    if (!frames.length) { try { fnosLog('info', 'frame-inject25', { winId: win.id, tag: String(tag || ''), frames: 0 }); } catch (_) {} }
+  } catch (e) { try { fnosLog('warn', 'frame-inject25', { winId: win && win.id, err: String(e && e.message || e).slice(0, 120) }); } catch (_) {} }
+}
+function __armFrameInject25(win, tag) {
+  try {
+    if (!win || win.isDestroyed() || win.__fnFrameInj25) return;
+    win.__fnFrameInj25 = true;
+    const __sweep = () => { try { __frameSweep25(win, tag); } catch (_) {} };
+    try { win.webContents.on('did-finish-load', __sweep); } catch (_) {}
+    try { win.webContents.on('did-frame-finish-load', __sweep); } catch (_) {}
+    try { win.webContents.on('did-frame-navigate', __sweep); } catch (_) {}
+    try { [1200, 3200, 8000, 15000, 25000].forEach((ms) => setTimeout(__sweep, ms)); } catch (_) {}
+  } catch (_) {}
+}
+
 
 // ==================== v2.5.8 r24（问题1/3/8）帧注入与复用窗自愈 ====================
 // 问题1/3：假窗控与日夜混搭都在跨源 iframe 内（Docker svg 三键、LUN 字符三键实锤），
@@ -4081,11 +4166,34 @@ const APP_UI_INJECT_CSS = [
 // 内嵌/跳出窗型一律顶层 loadURL 独立跳出窗。
 function __appLoadTarget(win, url, embedStyle) {
   try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle } }, __RUN_MODE); } catch (_) {}
+  // v2.5.9 r25（问题8）：加载挂起自愈——popout.load 后 did-finish-load 迟迟不来
+  // （20:41:27 music 实锤：loadURL 后无 did-finish-load/失败事件=黑屏挂起），15s 未加载完
+  // 强制 reload，再 12s 仍未加载完走复用窗黑屏自愈。
+  try {
+    if (!win.__fnLoadStall25) {
+      win.__fnLoadStall25 = true;
+      const __lsT0 = Date.now();
+      win.__fnStallTimer25 = setTimeout(() => {
+        try {
+          if (win.isDestroyed() || win.webContents.isDestroyed() || win.__fnLoaded25) return;
+          require('./logger.js').log('warn', 'appwin', 'appwin.load-stall', { params: { winId: win.id, url: String(url || '').slice(0, 120), ms: Date.now() - __lsT0 } }, __RUN_MODE);
+          try { win.webContents.reload(); } catch (_) {}
+          setTimeout(() => {
+            try { if (!win.isDestroyed() && !win.__fnLoaded25) { require('./logger.js').log('warn', 'appwin', 'appwin.load-stall2', { params: { winId: win.id } }, __RUN_MODE); __healReuseWin24(win, 'load-stall2'); } } catch (_) {}
+          }, 12000);
+        } catch (_) {}
+      }, 15000);
+      try {
+        win.webContents.on('did-finish-load', () => { try { win.__fnLoaded25 = true; clearTimeout(win.__fnStallTimer25); } catch (_) {} });
+      } catch (_) {}
+    }
+  } catch (_) {}
   return win.loadURL(url, { userAgent: getNasUA() });
 }
 
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
+  try { global.__fnClickOpened25 = true; } catch (_) {}
   // v2.2.4：崩溃风暴抑制——若最近 30 秒内渲染进程崩溃 >=4 次（应用窗口连崩），
   // 新窗口创建延迟 2.5s，等 GPU/渲染资源稳定再建，避免"创建即崩→连锁崩"。
   // 日志证据：02:47:39/02:49:48 34500 创建即崩、主窗口 02:47:07-10 连崩 4 次。
@@ -4423,7 +4531,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
       try { __armBlackScan(win, 'app:' + String(__appLabel || '')); } catch (_) {}
-      try { __armFrameInject24(win, 'app:' + String(__appLabel || '')); } catch (_) {}
+      try { __armFrameInject25(win, 'app:' + String(__appLabel || '')); } catch (_) {}
       // v2.5.5 r21（问题2）："应用不存在或未安装"错误页检测→自动换下一候选入口（每窗逐候选一次）
       try {
         // v2.5.8 r24（问题2）：候选耗尽后不再短路检测——r23 __urlCandidates.length 短路导致
@@ -4458,6 +4566,30 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                         }
                       }
                       if (win.isDestroyed()) return;
+                      // v2.5.9 r25（问题2）：anchor 候选全灭 ≠ 应用不存在——appview?anchor 直开
+                      // 不等价真实点击（Lucky/trim.docs 实测报"不存在或未安装"）。耗尽先走模拟点击
+                      // 等价链路（windowType 空→渲染进程后台点击桌面图标=真实解析链路），
+                      // 3.2s 内无新窗才显示友好页。
+                      if (!win.__fnClickFallback25) {
+                        win.__fnClickFallback25 = true;
+                        let __clickApp25 = '';
+                        try { __clickApp25 = fpkAppNameFromUrl(String(win.webContents.getURL() || '')) || String(__appLabel || ''); } catch (_) { __clickApp25 = String(__appLabel || ''); }
+                        try { global.__fnClickOpened25 = false; } catch (_) {}
+                        try { require('./logger.js').log('info', 'appwin', 'appwin.entry-click-fallback', { params: { winId: win.id, app: String(__clickApp25).slice(0, 80), last: String(win.webContents.getURL() || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+                        try { __notifyOpenFpkApp(__clickApp25, true, String(win.webContents.getURL() || ''), ''); } catch (_) {}
+                        setTimeout(() => {
+                          try {
+                            if (win.isDestroyed()) return;
+                            if (global.__fnClickOpened25) {
+                              try { require('./logger.js').log('info', 'appwin', 'appwin.entry-click-opened', { params: { winId: win.id } }, __RUN_MODE); } catch (_) {}
+                              return;
+                            }
+                            try { win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(__entryErrorPage23(__appLabel))); } catch (_) {}
+                            dlog && dlog('error', 'appwin.entry-exhausted', { app: __appLabel, winId: win.id, last: 'click-fallback-no-window' });
+                          } catch (_) {}
+                        }, 3200);
+                        return;
+                      }
                       dlog && dlog('error', 'appwin.entry-exhausted', { app: __appLabel, winId: win.id, last: String(win.webContents.getURL() || '').slice(0, 120) });
                       try { win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(__entryErrorPage23(__appLabel))); } catch (_) {}
                     };
@@ -11556,7 +11688,7 @@ function __handleSecondInstance(_e, commandLine) {
       if (!isLocked) { __restoreMainHome('main-relaunch', false); }
       else { try { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); mainWindow.moveTop(); } catch (_) {} }
       // v2.5.8 r24（问题8）：second-instance 唤醒后对主窗补挂黑屏巡检+帧注入
-      try { if (mainWindow && !mainWindow.isDestroyed()) { __armBlackScan(mainWindow, 'main'); __armFrameInject24(mainWindow, 'main'); } } catch (_) {}
+      try { if (mainWindow && !mainWindow.isDestroyed()) { __armBlackScan(mainWindow, 'main'); __armFrameInject25(mainWindow, 'main'); } } catch (_) {}
     }
     require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);
   } catch (_) {}

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.6.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4373,19 +4373,6 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     const __mAnchor21 = /\/appview\?anchor=([^&#]+)/i.exec(String(url || ''));
     const __mRoute21 = /\/app\/([^/?#]+)/i.exec(String(url || ''));
     if (__origR21 && /^https?:/i.test(__origR21)) {
-      // v2.7.0 r27（问题②④）：NAS 真入口注册表候选一律置顶——isDisplay=false 文件关联应用
-      // （trim.docs/text-editor/preview）桌面无图标，一切猜测候选均不可靠；真入口=origin+path 直拼。
-      try {
-        const __nmT27 = __mAnchor21 ? decodeURIComponent(__mAnchor21[1]) : (__mRoute21 ? decodeURIComponent(__mRoute21[1]) : '');
-        const __trT27 = __entryTruth27(__nmT27) || __entryTruth27(String((opts && (opts.name || opts.appId)) || ''));
-        if (__trT27) {
-          const __uT27 = __trT27.port
-            ? (String(__trT27.protocol || 'http:') + '//' + (new URL(__origR21).hostname) + ':' + __trT27.port + __trT27.path)
-            : (String(__origR21).replace(/\/+$/, '') + __trT27.path);
-          __urlCandidates.push(__uT27);
-          try { dlog && dlog('info', 'appwin.entry-truth27', { name: __trT27.name, url: String(__uT27).slice(0, 120) }); } catch (_) {}
-        }
-      } catch (_) {}
       // v2.5.6 r22：候选扩展——FPK 图标管理器真入口 url 字段+app-center live URL 优先
       // （trim.iscsi→/iscsi/、fndesk→/app/fndesk、FNTB→:18080 各 app 真入口形态完全不同，
       // appview?anchor 与 /app/{kebab} 都是猜的=trim.docs"跳转了也不起作用"实锤），再按
@@ -4406,18 +4393,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         // bad:false 实锤真入口形态）。全部交 entry 预检过滤，不再裸跳连环 404。
         try {
           const fe23 = __fpkLookupSync(__nmA21);
-          if (fe23 && fe23.url && String(fe23.url).charAt(0) === '/') {
-            if (fe23.port) {
-              const __p23 = String(fe23.protocol || 'http:').replace(/:+$/, ':');
-              let __h23 = String(fe23.host || '');
-              try { if (!__h23) __h23 = new URL(__origR21).hostname; } catch (_) {}
-              __urlCandidates.push(__p23 + '//' + __h23 + ':' + String(fe23.port) + String(fe23.url));
-            } else {
-              // v2.7.0 r27：port 空（native/CGI/主站路由型）真入口=origin+path 主站同源直拼
-              // （trim-cli 实测 text-editor CGI/trim.docs /docs/preview 全 200/403=服务在监听，
-              // ERR_CONNECTION_REFUSED 根因=旧条件 fe23.port 把这些应用排挤进猜测候选）
-              __urlCandidates.push(String(__origR21).replace(/\/+$/, '') + String(fe23.url));
-            }
+          if (fe23 && fe23.url && String(fe23.url).charAt(0) === '/' && fe23.port) {
+            const __p23 = String(fe23.protocol || 'http:').replace(/:+$/, ':');
+            let __h23 = String(fe23.host || '');
+            try { if (!__h23) __h23 = new URL(__origR21).hostname; } catch (_) {}
+            __urlCandidates.push(__p23 + '//' + __h23 + ':' + String(fe23.port) + String(fe23.url));
           }
         } catch (_) {}
         try {
@@ -4436,16 +4416,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         // v2.5.7 r23（问题2）：route 分支同扩——login.html 形态+门户短名+FPK port/url 拼接
         try {
           const fe23g = __fpkLookupSync(__nmG21);
-          if (fe23g && fe23g.url && String(fe23g.url).charAt(0) === '/') {
-            if (fe23g.port) {
-              const __p23g = String(fe23g.protocol || 'http:').replace(/:+$/, ':');
-              let __h23g = String(fe23g.host || '');
-              try { if (!__h23g) __h23g = new URL(__origR21).hostname; } catch (_) {}
-              __urlCandidates.push(__p23g + '//' + __h23g + ':' + String(fe23g.port) + String(fe23g.url));
-            } else {
-              // v2.7.0 r27：route 分支同——port 空真入口=origin+path 主站同源直拼
-              __urlCandidates.push(String(__origR21).replace(/\/+$/, '') + String(fe23g.url));
-            }
+          if (fe23g && fe23g.url && String(fe23g.url).charAt(0) === '/' && fe23g.port) {
+            const __p23g = String(fe23g.protocol || 'http:').replace(/:+$/, ':');
+            let __h23g = String(fe23g.host || '');
+            try { if (!__h23g) __h23g = new URL(__origR21).hostname; } catch (_) {}
+            __urlCandidates.push(__p23g + '//' + __h23g + ':' + String(fe23g.port) + String(fe23g.url));
           }
         } catch (_) {}
         try {
@@ -5541,18 +5516,13 @@ async function __preflightEntry23(u) {
 }
 // v2.5.7 r23（问题2）：候选全耗尽后的本地友好错误页（明确告知 NAS 上不存在或未安装）
 function __entryErrorPage23(name) {
-  // v2.7.0 r27：显示名映射（trim.docs→Office文档、fn-ups-manager→UPS 电源管理——旧文案
-  // 错报"应用 trim docs 不存在"实锤）+ UPS 专属引导（真入口在系统设置面板，非桌面应用）
-  const __trE27 = __entryTruth27(name);
-  const nm = ((__trE27 && __trE27.name) || String(name || '应用')).replace(/[<>&"']/g, '');
-  const __hint27 = (/ups/i.test(String(name || '')) || (__trE27 && __trE27.hint === 'settings'))
-    ? '<p style="opacity:.85;margin:8px 0 0">提示：UPS 电源管理的入口在【系统设置 &rarr; UPS】，请从系统设置打开。</p>' : '';
+  const nm = String(name || '应用').replace(/[<>&"']/g, '');
   return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>应用 ' + nm + ' 不可用</title></head>'
     + '<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#12141a;color:#e8eaef;font:14px/1.8 system-ui,sans-serif">'
     + '<div style="text-align:center;max-width:520px;padding:24px">'
     + '<div style="font-size:40px;line-height:1;margin-bottom:14px;opacity:.9">FNOS</div>'
     + '<h2 style="margin:0 0 12px;font-size:18px">应用 ' + nm + ' 打不开</h2>'
-    + '<p style="opacity:.85;margin:0 0 6px">所有启动入口均返回&ldquo;不存在或未安装&rdquo;。</p>' + __hint27
+    + '<p style="opacity:.85;margin:0 0 6px">所有启动入口均返回&ldquo;不存在或未安装&rdquo;。</p>'
     + '<p style="opacity:.85;margin:0">请确认 NAS 应用中心已安装该应用，或删除此快捷方式后重新创建。</p>'
     + '</div></body></html>';
 }
@@ -9475,15 +9445,6 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
     if (!cand) {
       try { const fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (fe && __validEntry(fe.url)) cand = String(fe.url); } catch (_) {}
     }
-    // v2.7.0 r27：清单/解析全灭 → NAS 真入口注册表兜底（origin+path 直拼；isDisplay=false
-    // 文件关联应用与 fn-ups-manager 类无 entry 应用的唯一活路，替代 appview?anchor 猜词）
-    if (!cand) {
-      try {
-        const __trR27 = __entryTruth27(nm) || __entryTruth27(String(appId || ''));
-        if (__trR27 && /^https?:/i.test(String(origin || ''))) cand = String(origin).replace(/\/+$/, '') + __trR27.path;
-        if (cand) { try { dlog && dlog('info', 'resolve.truth27', { name: __trR27.name, url: String(cand).slice(0, 120) }); } catch (_) {} }
-      } catch (_) {}
-    }
     if (cand) target = cand;
     else if (id && /^https?:/i.test(origin)) target = origin + '/appview?anchor=' + encodeURIComponent(id);
     if (!/^https?:/i.test(target) || !nm) return false;
@@ -9533,34 +9494,6 @@ function __appviewToPopout(navUrl) {
   });
 }
 
-// v2.7.0 r27（问题②④根治数据）：NAS 真入口注册表——trim-cli `app entry list` 实测 2026-09-26。
-// trim.docs 真入口 entryName=trim.docs.preview（type=url，/docs/preview，isDisplay=false 65 种
-// fileTypes 文件关联，桌面无图标）；fn-ups-manager 无 entry 无 service 仅 CGI；text-editor=CGI path。
-// URL 铁则：port 非空 {proto}://{host}:{port}{path}；port 空={origin}{path} 主站同源直拼（实测全 200）。
-const __FNOS_ENTRY_TRUTH27 = [
-  { keys: ['trim.docs', 'trim-docs', 'trim.docs.preview', 'trim-docs-preview', 'office文档'], name: 'Office文档', path: '/docs/preview', port: '', protocol: '', displayable: false },
-  { keys: ['fn-ups-manager', 'fnupsmanager', 'ups电源管理'], name: 'UPS 电源管理', path: '/cgi/ThirdParty/fn-ups-manager/index.cgi/', port: '', protocol: '', displayable: false, hint: 'settings' },
-  { keys: ['trim.text-editor', 'trim-text-editor', 'trim.texteditor', '文本编辑器'], name: '文本编辑器', path: '/cgi/ThirdParty/trim.text-editor/index.cgi/', port: '', protocol: '', displayable: false },
-  { keys: ['trim.preview', 'trim-preview'], name: '预览', path: '/app/trim-preview/', port: '', protocol: '', displayable: false },
-  { keys: ['trim.iscsi', 'trim-iscsi'], name: 'iSCSI', path: '/iscsi/', port: '', protocol: '', displayable: true },
-];
-function __entryNorm27(s) {
-  try { return String(s || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, ''); } catch (_) { return ''; }
-}
-function __entryTruth27(q) {
-  try {
-    const nq = __entryNorm27(q);
-    if (!nq) return null;
-    for (const t of __FNOS_ENTRY_TRUTH27) {
-      for (const k of t.keys) {
-        const nk = __entryNorm27(k);
-        if (!nk) continue;
-        if (nq === nk || (nq.length >= 3 && (nq.indexOf(nk) >= 0 || nk.indexOf(nq) >= 0))) return t;
-      }
-    }
-    return null;
-  } catch (_) { return null; }
-}
 function __fpkLookupSync(name) {
   try {
     if (!name) return null;

@@ -28,34 +28,6 @@ const __rl = (() => {
 // setWindowOpenHandler → createAppWindow）、B 桌面内嵌窗（iframe 窗口容器）；快捷方式统一
 // 呈现"从主程序跳出的窗口"：点击后监测新增 iframe（模式 B）→ window.open(src) 转跳出窗。
 // 图标 DOM 真相（fnnas 油猴帖实证）：div.cursor-pointer 容器 + img.semi-image-img（alt=显示名）。
-// v2.7.0 r27：NAS 真入口注册表（preload 侧精简版，与 main __FNOS_ENTRY_TRUTH27 同源：
-// trim-cli app entry list 实测）。d=0 表示 isDisplay=false 桌面无图标（文件关联/无 entry 应用），
-// 模拟点击必 icon-not-found——命中即直开真入口，不再 150ms×40 盲等 6 秒。
-const __FNOS_TRUTH27P = [
-  { k: ['trim.docs', 'trim-docs', 'trim.docs.preview', 'trim-docs-preview', 'office文档'], p: '/docs/preview', d: 0 },
-  { k: ['fn-ups-manager', 'fnupsmanager', 'ups电源管理'], p: '/cgi/ThirdParty/fn-ups-manager/index.cgi/', d: 0 },
-  { k: ['trim.text-editor', 'trim-text-editor', 'trim.texteditor', '文本编辑器'], p: '/cgi/ThirdParty/trim.text-editor/index.cgi/', d: 0 },
-  { k: ['trim.preview', 'trim-preview'], p: '/app/trim-preview/', d: 0 },
-  { k: ['trim.iscsi', 'trim-iscsi'], p: '/iscsi/', d: 1 },
-];
-function __entryNorm27P(s) {
-  try { return String(s || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, ''); } catch (_) { return ''; }
-}
-function __entryTruth27P(anchor, labels) {
-  try {
-    const nq = __entryNorm27P(anchor);
-    const ls = Array.isArray(labels) ? labels.map(__entryNorm27P) : [];
-    for (const t of __FNOS_TRUTH27P) {
-      for (const k of t.k) {
-        const nk = __entryNorm27P(k);
-        if (!nk) continue;
-        if (nq && nq.length >= 3 && (nq === nk || nq.indexOf(nk) >= 0 || nk.indexOf(nq) >= 0)) return t;
-        for (const l of ls) { if (l && l.length >= 3 && (l === nk || l.indexOf(nk) >= 0 || nk.indexOf(l) >= 0)) return t; }
-      }
-    }
-    return null;
-  } catch (_) { return null; }
-}
 function __fnosFindIconNode(anchor, labels) {
   try {
     if (!anchor) return null;
@@ -98,18 +70,6 @@ function __fnosLaunchByClick(appId, url, labels) {
       tries++;
       const node = __fnosFindIconNode(anchor, labels);
       if (!node) {
-        // v2.7.0 r27（问题②根治）：isDisplay=false 文件关联应用（trim.docs/text-editor/preview）
-        // 桌面根本没有图标（NAS entry 实测），盲等 6s 轮询必败——真值表命中且无桌面图标
-        // （d=0）立即直开真入口（window.open→createAppWindow 跳出窗，≡r16 统一跳出呈现）。
-        try {
-          const __trP27 = __entryTruth27P(anchor, labels);
-          if (__trP27 && !__trP27.d) {
-            const __uP27 = String(location.origin || '').replace(/\/+$/, '') + __trP27.p;
-            try { __rl.log('warn', 'launch', 'truth27-direct-open', { params: { anchor: anchor, url: String(__uP27).slice(0, 120) } }); } catch (_) {}
-            try { window.open(String(__uP27), '_blank', 'fnos-anchor=' + encodeURIComponent(anchor)); } catch (_) {}
-            return;
-          }
-        } catch (_) {}
         // 未命中（桌面未渲染/未登录）：150ms×40 重试；仍失败走 window.open 兜底
         // （既有通道 → createAppWindow 跳出窗；不再整页跳/静默）
         if (tries < 40) { setTimeout(attempt, 150); return; }

@@ -216,6 +216,43 @@ module.exports = function injectTitleBar(ctx) {
     // body[theme-light]。混搭=壳（存储驱动）与 iframe 内容（media query/参数驱动）分叉。
     // 修法（机制无关钉死渲染层）：body attribute 按系统值持续归一 + 存储归一 30 + 同源 iframe
     // 递归 + 跨源 iframe src 主题参数覆盖 + postMessage 通知 + 系统切换实时跟随。
+    // v2.8.0 r28（问题⑤增强日志）：页面 fetch/XHR 失败埋点 app.api-error——iSCSI LUN 列表 API 挂起
+    // 等网络层问题此前无痕（仅顶层 nav-error），现在日志可直接跟踪失败请求（via/status/err）。
+    try {
+      (function __apiErrHook28() {
+        try {
+          const __send = (o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'app.api-error' }, o)); } catch (_) {} };
+          try {
+            const __of = window.fetch;
+            if (__of) {
+              window.fetch = function () {
+                const __u = String((arguments[0] && arguments[0].url) || arguments[0] || '').slice(0, 160);
+                try {
+                  return __of.apply(this, arguments).then((r) => {
+                    try { if (!r || !r.ok) __send({ via: 'fetch', url: __u, status: r && r.status }); } catch (_) {}
+                    return r;
+                  }).catch((e) => { try { __send({ via: 'fetch', url: __u, err: String(e && e.message || e).slice(0, 80) }); } catch (_) {} throw e; });
+                } catch (_) { return __of.apply(this, arguments); }
+              };
+            }
+          } catch (_) {}
+          try {
+            const __xo = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function (m, u) {
+              try { this.__fnApiU28 = String(u || '').slice(0, 160); this.__fnApiM28 = String(m || ''); } catch (_) {}
+              return __xo.apply(this, arguments);
+            };
+            ['error', 'timeout', 'abort'].forEach((ev) => {
+              try {
+                XMLHttpRequest.prototype.addEventListener(ev, function () {
+                  try { __send({ via: 'xhr-' + ev, method: this.__fnApiM28, url: this.__fnApiU28, status: this.status }); } catch (_) {}
+                });
+              } catch (_) {}
+            });
+          } catch (_) {}
+        } catch (_) {}
+      })();
+    } catch (_) {}
     (function __themeNormalize() {
       // v2.5.5 r21（问题3 全窗统一）：系统日夜特征值——matchMedia('(prefers-color-scheme: dark)')
       // （Electron 映射 Windows 注册表 HKCU\...\Themes\Personalize\AppsUseLightTheme，0=深色）。

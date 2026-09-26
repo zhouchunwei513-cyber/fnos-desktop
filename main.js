@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.8.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -138,8 +138,8 @@ const __FNOS_FRAME_SCRIPT25 = [
   'try{r.classList.remove(D?"light":"dark");r.classList.add(D?"dark":"light");}catch(_){}',
   'try{if(document.body&&document.body.classList){document.body.classList.remove(D?"light":"dark");document.body.classList.add(D?"dark":"light");}}catch(_){}',
   '}catch(_){}',
-  'try{var mq0=window.matchMedia;window.matchMedia=function(q){try{if(/prefers-color-scheme/.test(String(q))){return{matches:!!D,media:String(q),onchange:null,addEventListener:function(){},removeEventListener:function(){},addListener:function(){},removeListener:function(){},dispatchEvent:function(){return true}};}}catch(_){};return mq0.apply(window,arguments);};}catch(_){}',
-  'try{localStorage.setItem("os-theme-mode",D?"30":"20");}catch(_){}',
+  'try{/* v2.8.0 r28（问题③）：mq 假对象 patch 移除——钉死 matches 与 CSS 实时值分裂=混搭根源；themeSource=system 下原生 matchMedia 即系统实时值 */}catch(_){}',
+  'try{localStorage.setItem("os-theme-mode","30");}catch(_){}',
   'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));window.dispatchEvent(new CustomEvent("theme-change",{detail:{dark:!!D}}));}catch(_){}',
   'try{',
   'var vw=window.innerWidth;var rows={};',
@@ -165,6 +165,11 @@ const __FNOS_FRAME_SCRIPT25 = [
   'return out;',
   '}catch(e){return{err:String(e).slice(0,80)}}})()'
 ].join('');
+// v2.8.0 r28（问题③）：D 动态化——注入时刻读页面原生 matchMedia 真值（themeSource='system' 下
+// 即系统实时值），替代 __FNOS_APP_DARK 窗口创建时快照（快照与 CSS 实时值错位=混搭根源）。
+function __darkExpr28() {
+  return '(function(){try{if(window.matchMedia){var m=window.matchMedia("(prefers-color-scheme:dark)");if(m&&typeof m.matches==="boolean")return m.matches;}}catch(_){}return ' + (__FNOS_APP_DARK ? 'true' : 'false') + ';})()';
+}
 function __frameSweep25(win, tag) {
   try {
     if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
@@ -172,7 +177,7 @@ function __frameSweep25(win, tag) {
     if (!mf) return;
     let frames = [];
     try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
-    const __script = __FNOS_FRAME_SCRIPT25.replace('__DARK24__', (__FNOS_APP_DARK ? 'true' : 'false'));
+    const __script = __FNOS_FRAME_SCRIPT25.split('__DARK24__').join(__darkExpr28());
     let __done = 0; let __hidden = 0; let __sub = 0;
     const __t0 = Date.now();
     for (const f of frames) {
@@ -227,8 +232,8 @@ const __FNOS_FRAME_SCRIPT26 = [
   'try{document.body.style.setProperty("background-color","#12141a","important");}catch(_){}',
   'try{document.documentElement.style.setProperty("background-color","#12141a","important");}catch(_){}',
   'out.bg=1;}}}catch(_){}',
-  'try{var mq0=window.matchMedia;window.matchMedia=function(q){try{if(/prefers-color-scheme/.test(String(q))){return{matches:!!D,media:String(q),onchange:null,addEventListener:function(){},removeEventListener:function(){},addListener:function(){},removeListener:function(){},dispatchEvent:function(){return true}};}}catch(_){};return mq0.apply(window,arguments);};}catch(_){}',
-  'try{localStorage.setItem("os-theme-mode",D?"30":"20");}catch(_){}',
+  'try{/* v2.8.0 r28（问题③）：mq 假对象 patch 移除——钉死 matches 与 CSS 实时值分裂=混搭根源；themeSource=system 下原生 matchMedia 即系统实时值 */}catch(_){}',
+  'try{localStorage.setItem("os-theme-mode","30");}catch(_){}',
   'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));window.dispatchEvent(new CustomEvent("theme-change",{detail:{dark:!!D}}));}catch(_){}',
   'try{',
   'var vw=window.innerWidth;var rows={};',
@@ -263,7 +268,7 @@ function __frameSweep26(win, tag) {
     if (!mf) return;
     let frames = [];
     try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
-    const __script = __FNOS_FRAME_SCRIPT26.replace('__DARK24__', (__FNOS_APP_DARK ? 'true' : 'false'));
+    const __script = __FNOS_FRAME_SCRIPT26.split('__DARK24__').join(__darkExpr28());
     let __done = 0; let __hidden = 0; let __sub = 0; let __bg = 0;
     const __t0 = Date.now();
     for (const f of frames) {
@@ -327,8 +332,8 @@ const __FNOS_FRAME_SCRIPT24 = [
   '(function(){try{',
   'var D=__DARK24__;var out={h:0,sub:(window.top!==window),href:String(location.href||"").slice(0,80)};',
   'try{var r=document.documentElement;r.setAttribute("data-fnos-theme",D?"dark":"light");r.style.colorScheme=D?"dark":"light";}catch(_){}',
-  'try{var mq0=window.matchMedia;window.matchMedia=function(q){try{if(/prefers-color-scheme/.test(String(q))){return{matches:!!D,media:String(q),onchange:null,addEventListener:function(){},removeEventListener:function(){},addListener:function(){},removeListener:function(){},dispatchEvent:function(){return true}};}}catch(_){};return mq0.apply(window,arguments);};}catch(_){}',
-  'try{localStorage.setItem("os-theme-mode",D?"30":"20");}catch(_){}',
+  'try{/* v2.8.0 r28（问题③）：mq 假对象 patch 移除——钉死 matches 与 CSS 实时值分裂=混搭根源；themeSource=system 下原生 matchMedia 即系统实时值 */}catch(_){}',
+  'try{localStorage.setItem("os-theme-mode","30");}catch(_){}',
   'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));}catch(_){}',
   'try{',
   'var vw=window.innerWidth;var rows={};',
@@ -360,7 +365,7 @@ function __frameSweep24(win, tag) {
     if (!mf) return;
     let frames = [];
     try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
-    const __script = __FNOS_FRAME_SCRIPT24.split('__DARK24__').join(__FNOS_APP_DARK ? 'true' : 'false');
+    const __script = __FNOS_FRAME_SCRIPT24.split('__DARK24__').join(__darkExpr28());
     let __done = 0; let __hidden = 0; let __sub = 0;
     const __t0 = Date.now();
     for (const f of frames) {
@@ -4320,6 +4325,16 @@ function __appLoadTarget(win, url, embedStyle) {
       } catch (_) {}
     }
   } catch (_) {}
+  // v2.8.0 r28（问题①根治）：truth 真入口命中时初始 URL 直接改写——appview?anchor 页会先行加载
+  // 并弹"应用不存在或未安装"toast（r27 仅把真入口置顶为候选，切换发生在错误页检测之后）。
+  // 原 URL 降级为末位候选作备份。
+  try {
+    const __uT28 = __truthRewrite28(url, String((opts && (opts.name || opts.appId)) || ''));
+    if (__uT28 && __uT28 !== String(url)) {
+      try { __urlCandidates.push(String(url)); } catch (_) {}
+      url = __uT28;
+    }
+  } catch (_) {}
   return win.loadURL(url, { userAgent: getNasUA() });
 }
 
@@ -5485,7 +5500,7 @@ function __armBlackScan(win, tag) {
   try {
     if (!win || win.isDestroyed()) return;
     if (!win.__fnBlackHeals) win.__fnBlackHeals = 0;
-    const __shots = [3000, 8000, 15000];
+    const __shots = [1200, 3000, 8000, 15000, 25000]; // v2.8.0 r28（问题⑧）：1.2s 起五档快检
     for (const __ms of __shots) {
       const __t = setTimeout(async () => {
         try {
@@ -5502,7 +5517,7 @@ function __armBlackScan(win, tag) {
             if (n > 10) { const mean = sum / n; const varr = sum2 / n - mean * mean; black = mean < 8 && varr < 25; }
           }
           try { require('./logger.js').log('info', 'window', 'black-scan.check', { params: { tag: String(tag || ''), ms: __ms, black, empty: !bmp, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
-          if (black && !win.isDestroyed() && win.__fnBlackHeals < 2) {
+          if (black && !win.isDestroyed() && win.__fnBlackHeals < 3) { // v2.8.0 r28（问题⑧）：自愈上限 2→3
             win.__fnBlackHeals++;
             try {
               const b = win.getBounds();
@@ -5641,7 +5656,9 @@ function __syncThemeFromMain() {
       try { nt.themeSource = 'system'; } catch (_) {}
       __appDark = !!nt.shouldUseDarkColors;
       try { __sysUiDark = !!nt.shouldUseDarkColorsForSystemIntegratedUI; } catch (_) {}
-      try { nt.themeSource = __appDark ? 'dark' : 'light'; } catch (_) {}
+      // v2.8.0 r28（问题③根修）：themeSource 恒 'system'，不再显式锁定 dark/light——r22/r23 锁定后
+      // 系统切换 30s 轮询内 CSS 锁旧值，与 FRAME/titlebar 各层快照错位=亮暗混搭实锤（iSCSI 字段
+      // 不可见）。themeSource='system' 时 CSS @media prefers-color-scheme=系统实时值，全层单一真值。
     } catch (_) {}
     __FNOS_APP_DARK = __appDark;
     const __sig = (__appDark ? 'dark' : 'light') + ':' + (__sysUiDark ? 'sysDark' : 'sysLight');
@@ -5653,9 +5670,18 @@ function __syncThemeFromMain() {
 }
 // v2.5.6 r22：渲染端主题真值同步 IPC（titlebar-inject matchMedia 桥与 CSS @media 同源=混搭根修）
 try {
-  require('electron').ipcMain.on('theme:sys-dark', (e) => { try { e.returnValue = !!__FNOS_APP_DARK; } catch (_) { e.returnValue = false; } });
+  require('electron').ipcMain.on('theme:sys-dark', (e) => {
+    try {
+      // v2.8.0 r28（问题③）：实时读 nativeTheme——原 __FNOS_APP_DARK 为 30s 轮询快照，与系统切换
+      // 错位即混搭；themeSource='system' 时 shouldUseDarkColors=系统实时值，渲染端桥同源。
+      e.returnValue = !!require('electron').nativeTheme.shouldUseDarkColors;
+    } catch (_) { try { e.returnValue = !!__FNOS_APP_DARK; } catch (__) { e.returnValue = false; } }
+  });
 } catch (_) {}
+try { __syncThemeFromMain(); } catch (_) {}
 try { setInterval(() => { try { __syncThemeFromMain(); } catch (_) {} }, 30000); } catch (_) {}
+// v2.8.0 r28（问题③）：系统主题切换实时跟随——nativeTheme 'updated' 即同步+广播，不再等 30s 轮询
+try { require('electron').nativeTheme.on('updated', () => { try { __syncThemeFromMain(); } catch (_) {} }); } catch (_) {}
 
 // v2.1.10 旧名保留：仅隐藏到托盘（供其他内部调用）
 function hideMainToTray() { hideMainToBackground(); }
@@ -8679,6 +8705,16 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
           } catch (_) {}
         }
       }
+      // v2.8.0 r28（问题①）：launchUrl 终值 truth 改写——新建快捷方式直接写真入口 URL，
+      // 双击不再经 appview?anchor 中转页（toast 根源）。
+      try {
+        const __nmG28 = (__entry && __entry.name) ? String(__entry.name) : ((!/^https?:/i.test(String(appId || '')) && appId) ? String(appId) : '');
+        const __uG28 = __truthRewrite28(launchUrl, __nmG28);
+        if (__uG28 && __uG28 !== String(launchUrl)) {
+          fnosLog('info', 'shortcut.url', 'truth28-rewrite', { appId: String(appId || '').slice(0, 80), name: __nmG28.slice(0, 60), from: String(launchUrl).slice(0, 100), to: __uG28.slice(0, 140) });
+          launchUrl = __uG28;
+        }
+      } catch (_) {}
     } catch (_) {}
     if (!launchUrl || launchUrl === appId) {
     try {
@@ -9561,6 +9597,31 @@ function __entryTruth27(q) {
     return null;
   } catch (_) { return null; }
 }
+// v2.8.0 r28（问题①根治）：通用真入口改写——appview?anchor=X / /app/X / 根 URL+name 一律改写为
+// NAS 真入口（truth 表 origin+path 直拼），appview 错误页（弹"应用不存在或未安装"toast）不再被加载。
+function __truthRewrite28(u, name) {
+  try {
+    const sU = String(u || '');
+    if (!/^https?:/i.test(sU)) return sU;
+    let nm = String(name || '');
+    let base = '';
+    try { base = new URL(sU).origin; } catch (_) { return sU; }
+    const mA = /\/appview\?anchor=([^&#]+)/i.exec(sU);
+    if (mA && !nm) { try { nm = decodeURIComponent(mA[1]); } catch (_) { nm = mA[1]; } }
+    const mR = /\/app\/([^/?#]+)/i.exec(sU);
+    if (!nm && mR) { try { nm = decodeURIComponent(mR[1]); } catch (_) { nm = mR[1]; } }
+    const t = __entryTruth27(nm);
+    if (!t) return sU;
+    let out;
+    if (t.port) {
+      try { out = (String(t.protocol || 'http:')) + '//' + (new URL(base).hostname) + ':' + t.port + t.path; } catch (_) { return sU; }
+    } else {
+      out = base.replace(/\/+$/, '') + t.path;
+    }
+    if (out && out !== sU) { try { fnosLog('info', 'truth28', 'url-rewrite', { name: t.name, from: sU.slice(0, 120), to: String(out).slice(0, 140) }); } catch (_) {} }
+    return out || sU;
+  } catch (_) { return String(u || ''); }
+}
 function __fpkLookupSync(name) {
   try {
     if (!name) return null;
@@ -9604,7 +9665,7 @@ function __resolveLaunchUrl(raw, nasAddr) {
         }
       }
     } catch (_) {}
-    return __rootUrlFallback(appName, fpkAppNameFromUrl(appName) || '');
+    return __rootUrlFallback(__truthRewrite28(appName, ''), fpkAppNameFromUrl(appName) || '');
   }
   // 2) v2.4.0（需求 2.1）：快捷方式统一传 --launch-app={应用唯一 ID} 后，FPK 第三方应用的
   //    真实打开地址（端口/路径）以 FPK 图标管理器 url 字段为准——先同步查 FPK 内存缓存
@@ -9638,6 +9699,23 @@ function __resolveLaunchUrl(raw, nasAddr) {
         if (o.hostname === b.hostname && !b.port && o.port) {
           base = o.protocol + '//' + o.host;
           try { dlog && dlog('info', 'shortcut.url.port-fixed', { from: String(nasAddr), to: base }); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    // v2.8.0 r28（问题①）：truth 真入口直达——快捷方式/second-instance 链不再落 appview?anchor
+    // 兜底（该页弹"应用不存在或未安装"toast，r27 仅候选置顶无法阻止首屏加载）。
+    try {
+      const __trR28 = __entryTruth27(appName);
+      if (__trR28) {
+        let __uR28 = '';
+        if (__trR28.port) {
+          try { __uR28 = (String(__trR28.protocol || 'http:')) + '//' + (new URL(base).hostname) + ':' + __trR28.port + __trR28.path; } catch (_) {}
+        } else {
+          __uR28 = base.replace(/\/+$/, '') + __trR28.path;
+        }
+        if (__uR28) {
+          fnosLog('info', 'launch', 'resolve.truth28', { name: __trR28.name, url: String(__uR28).slice(0, 140) });
+          return __uR28;
         }
       }
     } catch (_) {}
@@ -11900,7 +11978,15 @@ function __handleSecondInstance(_e, commandLine) {
       if (!isLocked) { __restoreMainHome('main-relaunch', false); }
       else { try { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); mainWindow.moveTop(); } catch (_) {} }
       // v2.5.8 r24（问题8）：second-instance 唤醒后对主窗补挂黑屏巡检+帧注入
-      try { if (mainWindow && !mainWindow.isDestroyed()) { __armBlackScan(mainWindow, 'main'); __armFrameInject26(mainWindow, 'main'); } } catch (_) {}
+      // v2.8.0 r28（问题⑧）：全窗巡检——二次点击主程序后快捷方式/主页面开的应用窗黑屏实锤，
+      // 仅主窗自愈不覆盖应用窗；BrowserWindow 全量挂 black-scan+帧注入，1.2s 起五档快检自愈。
+      try {
+        const __allW28 = require('electron').BrowserWindow.getAllWindows();
+        for (const __w28 of __allW28) {
+          try { if (__w28 && !__w28.isDestroyed()) { __armBlackScan(__w28, 'si28'); __armFrameInject26(__w28, 'si28'); } } catch (_) {}
+        }
+        try { require('./logger.js').log('info', 'window', 'second-instance.black-scan28', { params: { wins: __allW28.length } }, __RUN_MODE); } catch (_) {}
+      } catch (_) {}
     }
     require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);
   } catch (_) {}

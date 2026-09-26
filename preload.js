@@ -28,12 +28,14 @@ const __rl = (() => {
 // setWindowOpenHandler → createAppWindow）、B 桌面内嵌窗（iframe 窗口容器）；快捷方式统一
 // 呈现"从主程序跳出的窗口"：点击后监测新增 iframe（模式 B）→ window.open(src) 转跳出窗。
 // 图标 DOM 真相（fnnas 油猴帖实证）：div.cursor-pointer 容器 + img.semi-image-img（alt=显示名）。
-function __fnosFindIconNode(anchor) {
+function __fnosFindIconNode(anchor, labels) {
   try {
     if (!anchor) return null;
     const key = String(anchor).toLowerCase().split(/[?#]/)[0].replace(/\/+$/, '');
     const keys = [key];
     try { const d = decodeURIComponent(key); if (d && d.toLowerCase() !== key) keys.push(d.toLowerCase()); } catch (_) {}
+    // v2.6.0 r26（问题2）：keys 增加显示名（桌面图标 alt=显示名，如 "Office文档"/"UPS电源管理"）
+    try { if (Array.isArray(labels)) { for (var __li = 0; __li < labels.length; __li++) { var __lt = String(labels[__li] || '').trim(); if (__lt) keys.push(__lt.toLowerCase()); } } } catch (_) {}
     const imgs = document.querySelectorAll('img.semi-image-img, img[alt], img[data-src], img[src]');
     // 两轮匹配：第 1 轮精确（alt 等于 anchor），第 2 轮模糊（alt/data-src 含 anchor）
     for (let pass = 0; pass < 2; pass++) {
@@ -59,14 +61,14 @@ function __fnosFindIconNode(anchor) {
   } catch (_) {}
   return null;
 }
-function __fnosLaunchByClick(appId, url) {
+function __fnosLaunchByClick(appId, url, labels) {
   try {
     const anchor = String(appId || '').split(/[?#]/)[0].replace(/\/+$/, '');
     if (!anchor) return;
     let tries = 0;
     const attempt = () => {
       tries++;
-      const node = __fnosFindIconNode(anchor);
+      const node = __fnosFindIconNode(anchor, labels);
       if (!node) {
         // 未命中（桌面未渲染/未登录）：150ms×40 重试；仍失败走 window.open 兜底
         // （既有通道 → createAppWindow 跳出窗；不再整页跳/静默）
@@ -126,6 +128,73 @@ function __fnosLaunchByClick(appId, url) {
     try { __rl.log('error', 'launch', 'launch-by-click error', { err: e }); } catch (_) {}
   }
 }
+// v2.6.0 r26（问题1）：假窗控无感清除——document_start 即装聚组观察器，元素一进 DOM 即隐藏
+// （首帧绘制前），彻底消除"能看到杀掉过程"的闪烁；聚组识别与主进程 frame-inject26 一致。
+(function __fnosInstantHide26() {
+  try {
+    if (window.__fnosInstant26) return;
+    window.__fnosInstant26 = 1;
+    var KEEP = '[data-fnos-tb],[id^=fnos-],[class*=fnos-]';
+    var CH = /^[\u2014_\u229F\u25A1\u25FB\u25A2\u2922\u2923\u2715Xx\u00D7\u00B7.,\-\/\\| ]{1,4}$/;
+    var sweep = function () {
+      try {
+        var vw = window.innerWidth;
+        var rows = {};
+        var all = document.querySelectorAll('button,[role=button],a,span,i,div,svg');
+        for (var k = 0; k < all.length; k++) {
+          var e = all[k];
+          try {
+            if (!e.isConnected) continue;
+            if (e.closest && e.closest(KEEP)) continue;
+            if (e.getAttribute && e.getAttribute('data-fnos-killed26')) continue;
+            var rc = e.getBoundingClientRect();
+            if (rc.width < 6 || rc.width > 170 || rc.height < 6 || rc.height > 72) continue;
+            if (rc.top < 0 || rc.top > 140) continue;
+            if (vw - rc.right > 120 || rc.right > vw + 2) continue;
+            var t = (e.textContent || '').trim();
+            if (!(t === '' || CH.test(t))) continue;
+            var hasSvg = !!(e.querySelector && e.querySelector('svg'));
+            if (t === '' && !hasSvg) continue;
+            var rk = Math.round(rc.top / 12);
+            if (!rows[rk]) rows[rk] = [];
+            rows[rk].push({ e: e, ch: t !== '' });
+          } catch (_) {}
+        }
+        for (var rk2 in rows) {
+          try {
+            var g = rows[rk2];
+            var charHit = false;
+            for (var q = 0; q < g.length; q++) { if (g[q].ch) { charHit = true; break; } }
+            var kill = (g.length >= 2 && (charHit || g.length >= 3)) || (g.length === 1 && g[0].ch);
+            if (kill) {
+              for (var z = 0; z < g.length; z++) {
+                try {
+                  var ez = g[z].e;
+                  if (ez.getAttribute && ez.getAttribute('data-fnos-killed26')) continue;
+                  ez.setAttribute('data-fnos-killed26', '1');
+                  ez.style.setProperty('display', 'none', 'important');
+                } catch (_) {}
+              }
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    };
+    sweep();
+    try {
+      var pend = false;
+      var mo = new MutationObserver(function () {
+        if (pend) return;
+        pend = true;
+        requestAnimationFrame(function () { pend = false; sweep(); });
+      });
+      mo.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    } catch (_) {}
+    try { document.addEventListener('DOMContentLoaded', sweep); window.addEventListener('load', sweep); } catch (_) {}
+    try { setInterval(sweep, 2500); } catch (_) {}
+  } catch (_) {}
+})();
+
 // v2.4.0（需求 2.5-1）：Main → Renderer：open-fpk-app，携带参数 appId。
 // found:true  = 唤起成功，渲染进程后台模拟点击桌面图标启动应用（v2.4.7 用户定案，≡真实点击）；
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2），渲染进程弹窗提示（边界用例 7）。
@@ -140,7 +209,7 @@ ipcRenderer.on('open-fpk-app', (e, p) => {
         // 渲染进程不重复模拟点击；无 windowType（行为兜底路径）才走模拟点击自动适配（观测回填）。
         if (!p.windowType) {
           __rl.log('info', 'ipc', 'open-fpk-app launch-by-click', { params: { url: p.url, appId: p.appId } });
-          try { __fnosLaunchByClick(p.appId, p.url); } catch (navErr) {
+          try { __fnosLaunchByClick(p.appId, p.url, p.labels); } catch (navErr) {
             try { __rl.log('error', 'ipc', 'open-fpk-app launch error', { err: navErr }); } catch (_) {}
           }
         }

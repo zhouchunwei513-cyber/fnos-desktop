@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.5.9';
+const APP_VERSION = '2.6.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -204,6 +204,117 @@ function __armFrameInject25(win, tag) {
     try { win.webContents.on('did-frame-navigate', __sweep); } catch (_) {}
     try { [1200, 3200, 8000, 15000, 25000].forEach((ms) => setTimeout(__sweep, ms)); } catch (_) {}
   } catch (_) {}
+}
+
+// ==================== v2.6.0 r26（问题1/3/4）：无感假窗控清除 + 白底统一 + 早触发 ==========
+// r25 误杀修正版聚组识别（KEEP 排除自有 DOM）+ 三处升级：
+// ① 已处理元素 data-fnos-killed26 跳过（不再重复显示/隐藏→消除"杀的过程可见"）；
+// ② 夜间模式下白底（rgb 全通道>230）统一改 #12141a（混搭白屏字段看不见的直接根因）；
+// ③ 触发提前到 did-dom-ready + 100ms（配合 preload document_start 即时扫描实现首帧前无感）。
+const __FNOS_FRAME_SCRIPT26 = [
+  '(function(){try{',
+  'var D=__DARK24__;var out={h:0,bg:0,sub:(window.top!==window),href:String(location.href||"").slice(0,80)};',
+  'var KEEP="[data-fnos-tb],[id^=fnos-],[class*=fnos-]";',
+  'try{var r=document.documentElement;',
+  'r.setAttribute("data-fnos-theme",D?"dark":"light");r.setAttribute("data-theme",D?"dark":"light");',
+  'r.style.colorScheme=D?"dark":"light";',
+  'try{r.classList.remove(D?"light":"dark");r.classList.add(D?"dark":"light");}catch(_){}',
+  'try{if(document.body&&document.body.classList){document.body.classList.remove(D?"light":"dark");document.body.classList.add(D?"dark":"light");}}catch(_){}',
+  '}catch(_){}',
+  'try{if(D){var bg="";try{bg=(document.body&&getComputedStyle(document.body).backgroundColor)||"";}catch(_){}',
+  'var m=/rgba?\\((\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/.exec(bg);',
+  'if(m&&+m[1]>230&&+m[2]>230&&+m[3]>230){',
+  'try{document.body.style.setProperty("background-color","#12141a","important");}catch(_){}',
+  'try{document.documentElement.style.setProperty("background-color","#12141a","important");}catch(_){}',
+  'out.bg=1;}}}catch(_){}',
+  'try{var mq0=window.matchMedia;window.matchMedia=function(q){try{if(/prefers-color-scheme/.test(String(q))){return{matches:!!D,media:String(q),onchange:null,addEventListener:function(){},removeEventListener:function(){},addListener:function(){},removeListener:function(){},dispatchEvent:function(){return true}};}}catch(_){};return mq0.apply(window,arguments);};}catch(_){}',
+  'try{localStorage.setItem("os-theme-mode",D?"30":"20");}catch(_){}',
+  'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));window.dispatchEvent(new CustomEvent("theme-change",{detail:{dark:!!D}}));}catch(_){}',
+  'try{',
+  'var vw=window.innerWidth;var rows={};',
+  'var all=document.querySelectorAll("button,[role=button],a,span,i,div,svg");',
+  'var CH=/^[\\u2014_\\u229F\\u25A1\\u25FB\\u25A2\\u2922\\u2923\\u2715Xx\\u00D7\\u00B7.,\\-\\/\\\\| ]{1,4}$/;',
+  'for(var k=0;k<all.length;k++){var e=all[k];try{',
+  'if(!e.isConnected)continue;if(e.closest&&e.closest(KEEP))continue;',
+  'if(e.getAttribute&&e.getAttribute("data-fnos-killed26"))continue;',
+  'var rc=e.getBoundingClientRect();',
+  'if(rc.width<6||rc.width>170||rc.height<6||rc.height>72)continue;',
+  'if(rc.top<0||rc.top>140)continue;if(vw-rc.right>120||rc.right>vw+2)continue;',
+  'var t=(e.textContent||"").trim();',
+  'if(!(t===""||CH.test(t)))continue;',
+  'var hasSvg=!!e.querySelector&&!!e.querySelector("svg");',
+  'if(t===""&&!hasSvg)continue;',
+  'var rk=Math.round(rc.top/12);if(!rows[rk])rows[rk]=[];rows[rk].push({e:e,ch:t!==""});',
+  '}catch(_){}}',
+  'for(var rk2 in rows){try{var g=rows[rk2];var charHit=false;',
+  'for(var q=0;q<g.length;q++){if(g[q].ch){charHit=true;break;}}',
+  'var kill=(g.length>=2&&(charHit||g.length>=3))||(g.length===1&&g[0].ch);',
+  'if(kill){for(var z=0;z<g.length;z++){try{var ez=g[z].e;if(ez.getAttribute&&ez.getAttribute("data-fnos-killed26"))continue;',
+  'ez.setAttribute("data-fnos-killed26","1");ez.style.setProperty("display","none","important");out.h++;}catch(_){}}}',
+  '}catch(_){}}',
+  '}catch(_){}',
+  'return out;',
+  '}catch(e){return{err:String(e).slice(0,80)}}})()'
+].join('');
+function __frameSweep26(win, tag) {
+  try {
+    if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+    const mf = win.webContents.mainFrame;
+    if (!mf) return;
+    let frames = [];
+    try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
+    const __script = __FNOS_FRAME_SCRIPT26.replace('__DARK24__', (__FNOS_APP_DARK ? 'true' : 'false'));
+    let __done = 0; let __hidden = 0; let __sub = 0; let __bg = 0;
+    const __t0 = Date.now();
+    for (const f of frames) {
+      try {
+        if (!f || f.isDestroyed()) continue;
+        f.executeJavaScript(__script).then((r) => {
+          try {
+            __done++;
+            if (r && typeof r === 'object') { __hidden += (r.h | 0); if (r.sub) __sub++; __bg += (r.bg | 0); }
+            if (__done >= frames.length) {
+              fnosLog('info', 'frame-inject26', { winId: win.id, tag: String(tag || ''), frames: frames.length, hidden: __hidden, sub: __sub, bgFixed: __bg, theme: __FNOS_APP_DARK ? 'dark' : 'light', ms: Date.now() - __t0 });
+            }
+          } catch (_) {}
+        }).catch(() => {
+          try { __done++; if (__done >= frames.length) fnosLog('warn', 'frame-inject26', { winId: win.id, tag: String(tag || ''), frames: frames.length, hidden: __hidden, partial: true }); } catch (_) {}
+        });
+      } catch (_) {}
+    }
+    if (!frames.length) { try { fnosLog('info', 'frame-inject26', { winId: win.id, tag: String(tag || ''), frames: 0 }); } catch (_) {} }
+  } catch (e) { try { fnosLog('warn', 'frame-inject26', { winId: win && win.id, err: String(e && e.message || e).slice(0, 120) }); } catch (_) {} }
+}
+function __armFrameInject26(win, tag) {
+  try {
+    if (!win || win.isDestroyed() || win.__fnFrameInj26) return;
+    win.__fnFrameInj26 = true;
+    const __sweep = () => { try { __frameSweep26(win, tag); } catch (_) {} };
+    try { win.webContents.on('did-dom-ready', __sweep); } catch (_) {}
+    try { win.webContents.on('did-finish-load', __sweep); } catch (_) {}
+    try { win.webContents.on('did-frame-finish-load', __sweep); } catch (_) {}
+    try { win.webContents.on('did-frame-navigate', __sweep); } catch (_) {}
+    try { [100, 1200, 3200, 8000, 15000, 25000].forEach((ms) => setTimeout(__sweep, ms)); } catch (_) {}
+  } catch (_) {}
+}
+// v2.6.0 r26（问题2）：manifest 归一查询——URL 候选把 trim.docs 污染成 trim-docs、
+// 桌面图标按 alt=显示名匹配，点击兜底必须用 manifest 原始 appId+显示名双键查找。
+function __fnosManifestLookup26(q) {
+  try {
+    const qq = String(q || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+    if (!qq) return null;
+    let mf = null;
+    try { mf = readManifest(); } catch (_) {}
+    const apps = (mf && mf.apps) || [];
+    for (const a of apps) {
+      if (!a) continue;
+      for (const f of ['appId', 'appName', 'name', 'url']) {
+        const v = String(a[f] || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+        if (v && v === qq) return { appId: String(a.appId || a.appName || q), label: String(a.appName || a.name || '') };
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 
 
@@ -4185,6 +4296,27 @@ function __appLoadTarget(win, url, embedStyle) {
       }, 15000);
       try {
         win.webContents.on('did-finish-load', () => { try { win.__fnLoaded25 = true; clearTimeout(win.__fnStallTimer25); } catch (_) {} });
+        // v2.6.0 r26（问题4）：页面加载完成≠应用就绪——LUN/文本编辑器/预览实测 did-finish-load 后
+        // 内容区 loading 转圈不止（应用内 API 挂起）。12s 后仍见可见 spinner → 埋点+单次 reload 自愈。
+        win.webContents.on('did-finish-load', () => {
+          setTimeout(() => {
+            try {
+              if (win.isDestroyed() || win.webContents.isDestroyed()) return;
+              win.webContents.executeJavaScript('(function(){try{var s=document.querySelectorAll(".semi-spin,.ant-spin,[class*=\"loading\" i],[class*=\"spinner\" i],[class*=\"skeleton\" i]");for(var i=0;i<s.length;i++){var r=s[i].getBoundingClientRect();if(r.width>24&&r.height>24&&r.top<window.innerHeight){return 1}}return 0}catch(_){return 0}})()').then((st) => {
+                try {
+                  if (!st) return;
+                  if (!win.__fnInnerStall26) {
+                    win.__fnInnerStall26 = true;
+                    require('./logger.js').log('warn', 'appwin', 'appwin.inner-stall', { params: { winId: win.id, url: String(win.webContents.getURL() || '').slice(0, 120), action: 'reload-once' } }, __RUN_MODE);
+                    try { win.webContents.reload(); } catch (_) {}
+                  } else {
+                    require('./logger.js').log('warn', 'appwin', 'appwin.inner-stall2', { params: { winId: win.id, url: String(win.webContents.getURL() || '').slice(0, 120) } }, __RUN_MODE);
+                  }
+                } catch (_) {}
+              }).catch(() => {});
+            } catch (_) {}
+          }, 12000);
+        });
       } catch (_) {}
     }
   } catch (_) {}
@@ -4531,7 +4663,13 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         dlog && dlog('info', 'appwin.load.done', { app: __appLabel, winId: win.id, totalMs: Date.now() - __t0, ms: Date.now() - (win.__appNavStart || __t0) });
       } catch (_) {}
       try { __armBlackScan(win, 'app:' + String(__appLabel || '')); } catch (_) {}
-      try { __armFrameInject25(win, 'app:' + String(__appLabel || '')); } catch (_) {}
+      try { __armFrameInject26(win, 'app:' + String(__appLabel || '')); } catch (_) {}
+      // v2.6.0 r26（问题5 日志）：导航失败全程埋点（-102 连接拒绝等根因直击加载挂起）
+      try {
+        win.webContents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+          try { require('./logger.js').log('warn', 'appwin', 'appwin.nav-error', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 80), url: String(url || '').slice(0, 120), main: !!isMainFrame } }, __RUN_MODE); } catch (_) {}
+        });
+      } catch (_) {}
       // v2.5.5 r21（问题2）："应用不存在或未安装"错误页检测→自动换下一候选入口（每窗逐候选一次）
       try {
         // v2.5.8 r24（问题2）：候选耗尽后不再短路检测——r23 __urlCandidates.length 短路导致
@@ -4574,9 +4712,15 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                         win.__fnClickFallback25 = true;
                         let __clickApp25 = '';
                         try { __clickApp25 = fpkAppNameFromUrl(String(win.webContents.getURL() || '')) || String(__appLabel || ''); } catch (_) { __clickApp25 = String(__appLabel || ''); }
+                        // v2.6.0 r26（问题2）：appId 归一回 manifest 原始 ID + 显示名——URL 候选把
+                        // trim.docs 污染成 trim-docs、桌面图标按 alt=显示名匹配，双偏差导致 icon-not-found
+                        // 后又开 appview 错误页（死循环）。归一后走原始 ID + 显示名双键点击。
+                        let __clickMeta26 = null;
+                        try { __clickMeta26 = __fnosManifestLookup26(__clickApp25) || __fnosManifestLookup26(__appLabel); } catch (_) {}
+                        if (__clickMeta26 && __clickMeta26.appId) { try { __clickApp25 = __clickMeta26.appId; } catch (_) {} }
                         try { global.__fnClickOpened25 = false; } catch (_) {}
                         try { require('./logger.js').log('info', 'appwin', 'appwin.entry-click-fallback', { params: { winId: win.id, app: String(__clickApp25).slice(0, 80), last: String(win.webContents.getURL() || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
-                        try { __notifyOpenFpkApp(__clickApp25, true, String(win.webContents.getURL() || ''), ''); } catch (_) {}
+                        try { __notifyOpenFpkApp(__clickApp25, true, String(win.webContents.getURL() || ''), '', (__clickMeta26 && __clickMeta26.label) ? [__clickMeta26.label] : []); } catch (_) {}
                         setTimeout(() => {
                           try {
                             if (win.isDestroyed()) return;
@@ -5401,7 +5545,7 @@ function __restoreMainHome(reason, force) {
     } catch (_) {}
     try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
     const __cur = String(mainWindow.webContents.getURL() || '');
-    const needReload = !!force || !!__pendingHomeReset || !/^https?:/i.test(__cur);
+    const needReload = !!force || !/^https?:/i.test(__cur);
     __pendingHomeReset = false;
     if (needReload && lastConnectHref) {
       try { mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
@@ -9065,13 +9209,14 @@ ipcMain.handle('app:convert-svg-icon', async (_e, payload) => {
 // found:false = appId 对应 FPK 应用已删除/无法定位（需求 2.6-2、边界用例 7），
 //               渲染进程弹窗提示"找不到该应用，请重新创建快捷方式。"
 let __pendingAppId = ''; // 原始应用唯一 ID（--launch-app 值），open-fpk-app 携带字段 appId
-function __notifyOpenFpkApp(appId, found, url, windowType) {
+function __notifyOpenFpkApp(appId, found, url, windowType, labels) {
   try {
     const payload = {
       appId: String(appId || (url ? (fpkAppNameFromUrl(url) || '') : '') || '').slice(0, 200),
       found: !!found,
       url: String(url || '').slice(0, 300),
       windowType: String(windowType || ''),
+      labels: Array.isArray(labels) ? labels.slice(0, 4) : [],
       ts: Date.now(),
     };
     const __send = () => {
@@ -11688,7 +11833,7 @@ function __handleSecondInstance(_e, commandLine) {
       if (!isLocked) { __restoreMainHome('main-relaunch', false); }
       else { try { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); mainWindow.moveTop(); } catch (_) {} }
       // v2.5.8 r24（问题8）：second-instance 唤醒后对主窗补挂黑屏巡检+帧注入
-      try { if (mainWindow && !mainWindow.isDestroyed()) { __armBlackScan(mainWindow, 'main'); __armFrameInject25(mainWindow, 'main'); } } catch (_) {}
+      try { if (mainWindow && !mainWindow.isDestroyed()) { __armBlackScan(mainWindow, 'main'); __armFrameInject26(mainWindow, 'main'); } } catch (_) {}
     }
     require('./logger.js').log('info', 'window', 'second-instance.show', { params: { reason: 'user_launch_main', visible: true } }, __RUN_MODE);
   } catch (_) {}

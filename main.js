@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.8.0';
+const APP_VERSION = '2.9.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -139,7 +139,7 @@ const __FNOS_FRAME_SCRIPT25 = [
   'try{if(document.body&&document.body.classList){document.body.classList.remove(D?"light":"dark");document.body.classList.add(D?"dark":"light");}}catch(_){}',
   '}catch(_){}',
   'try{/* v2.8.0 r28（问题③）：mq 假对象 patch 移除——钉死 matches 与 CSS 实时值分裂=混搭根源；themeSource=system 下原生 matchMedia 即系统实时值 */}catch(_){}',
-  'try{localStorage.setItem("os-theme-mode","30");}catch(_){}',
+  'try{/*v2.9.0 r29（问题③）：不再改写用户主题设置——os-theme-mode 三态（10/20/30）为真值*/}catch(_){}',
   'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));window.dispatchEvent(new CustomEvent("theme-change",{detail:{dark:!!D}}));}catch(_){}',
   'try{',
   'var vw=window.innerWidth;var rows={};',
@@ -168,7 +168,9 @@ const __FNOS_FRAME_SCRIPT25 = [
 // v2.8.0 r28（问题③）：D 动态化——注入时刻读页面原生 matchMedia 真值（themeSource='system' 下
 // 即系统实时值），替代 __FNOS_APP_DARK 窗口创建时快照（快照与 CSS 实时值错位=混搭根源）。
 function __darkExpr28() {
-  return '(function(){try{if(window.matchMedia){var m=window.matchMedia("(prefers-color-scheme:dark)");if(m&&typeof m.matches==="boolean")return m.matches;}}catch(_){}return ' + (__FNOS_APP_DARK ? 'true' : 'false') + ';})()';
+  // v2.9.0 r29（问题③根修）：注入脚本 D=程序内三态解析（os-theme-mode 10/20/30；30 跟随 mq）
+  // ——与主进程 __resolveTheme29 同一解析逻辑；页面 store 变更即时生效（不等 IPC 轮询）。
+  return '(function(){try{var s="";try{s=localStorage.getItem("os-theme-mode")||localStorage.getItem("fnos-theme-mode")||"";}catch(_){}if(s==="20")return true;if(s==="10")return false;if(window.matchMedia){var m=window.matchMedia("(prefers-color-scheme:dark)");if(m&&typeof m.matches==="boolean")return m.matches;}}catch(_){}return ' + (__FNOS_APP_DARK ? 'true' : 'false') + ';})()';
 }
 function __frameSweep25(win, tag) {
   try {
@@ -233,7 +235,7 @@ const __FNOS_FRAME_SCRIPT26 = [
   'try{document.documentElement.style.setProperty("background-color","#12141a","important");}catch(_){}',
   'out.bg=1;}}}catch(_){}',
   'try{/* v2.8.0 r28（问题③）：mq 假对象 patch 移除——钉死 matches 与 CSS 实时值分裂=混搭根源；themeSource=system 下原生 matchMedia 即系统实时值 */}catch(_){}',
-  'try{localStorage.setItem("os-theme-mode","30");}catch(_){}',
+  'try{/*v2.9.0 r29（问题③）：不再改写用户主题设置——os-theme-mode 三态（10/20/30）为真值*/}catch(_){}',
   'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));window.dispatchEvent(new CustomEvent("theme-change",{detail:{dark:!!D}}));}catch(_){}',
   'try{',
   'var vw=window.innerWidth;var rows={};',
@@ -333,7 +335,7 @@ const __FNOS_FRAME_SCRIPT24 = [
   'var D=__DARK24__;var out={h:0,sub:(window.top!==window),href:String(location.href||"").slice(0,80)};',
   'try{var r=document.documentElement;r.setAttribute("data-fnos-theme",D?"dark":"light");r.style.colorScheme=D?"dark":"light";}catch(_){}',
   'try{/* v2.8.0 r28（问题③）：mq 假对象 patch 移除——钉死 matches 与 CSS 实时值分裂=混搭根源；themeSource=system 下原生 matchMedia 即系统实时值 */}catch(_){}',
-  'try{localStorage.setItem("os-theme-mode","30");}catch(_){}',
+  'try{/*v2.9.0 r29（问题③）：不再改写用户主题设置——os-theme-mode 三态（10/20/30）为真值*/}catch(_){}',
   'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));}catch(_){}',
   'try{',
   'var vw=window.innerWidth;var rows={};',
@@ -5093,6 +5095,17 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
         try {
           if (level >= 3) {
+            // v2.9.0 r29（问题④）：脚本语法错误自愈——NAS 网络抖动（5666 ECONNREFUSED 实锤）
+            // 截断懒加载 chunk 致页面 SyntaxError 瘫痪转圈（iSCSI LUN 实锤）；首次捕获后延时
+            // reload 一次（每窗 guard 一次防循环），埋点 appwin.script-heal 可回查。
+            const __msgS = String(message || '');
+            if (/SyntaxError|Unexpected token/i.test(__msgS) && !win.__fnSynHeal29) {
+              win.__fnSynHeal29 = true;
+              try { dlog && dlog('warn', 'appwin.script-heal', { app: __appLabel, winId: win.id, msg: __msgS.slice(0, 160), url: String(win.webContents.getURL() || '').slice(0, 160) }); } catch (_) {}
+              setTimeout(() => {
+                try { if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.reload(); } catch (_) {}
+              }, 2500);
+            }
             const now = Date.now();
             if (!win.__appConsoleErrTs || now - win.__appConsoleErrTs > 10000) {
               win.__appConsoleErrTs = now;
@@ -5641,6 +5654,27 @@ let __FNOS_APP_DARK = false; // v2.5.7 r23（问题3）：应用主题真值（W
 // 统一，根修快捷方式窗日夜混搭（截图实锤：Docker 窗口侧栏暗+主内容亮致字段不可见）。
 // 显式模式下 shouldUseDarkColorsForSystemIntegratedUI 仍返回真实系统值
 // （Windows SystemUsesLightTheme）=轮询源，系统切换 30s 内跟随；渲染端经 IPC 取同源真值。
+// v2.9.0 r29（问题③根修·程序内设置为唯一真值）：fnOS 主题三态解析——os-theme-mode/
+// fnos-theme-mode（10=亮 20=暗 30=跟随系统；实锤自前端 bundle KQ 枚举+用户截图三态设置）。
+// 用户明确："亮模式和暗模式和 Windows 没关系，只是程序内的设置！"——r28 曾把主题钉到
+// Windows+强写 store=30（覆盖用户"暗模式(20)"选择）=亮暗混搭根源，本版彻底纠正：
+// 真值=程序内三态设置（renderer titlebar-inject 经 theme:mode 上报），30 才读系统。
+function __themeStoreMode() {
+  try {
+    const v = global.__FNOS_THEME_STORE_MODE29;
+    if (v === '10' || v === '20' || v === '30') return v;
+  } catch (_) {}
+  return '30';
+}
+function __resolveTheme29() {
+  try {
+    const mode = __themeStoreMode();
+    if (mode === '20') return true;   // 暗模式
+    if (mode === '10') return false;  // 亮模式
+    // 30=跟随系统：读系统应用主题（Windows AppsUseLightTheme）
+    return !!require('electron').nativeTheme.shouldUseDarkColors;
+  } catch (_) { return !!__FNOS_APP_DARK; }
+}
 function __syncThemeFromMain() {
   try {
     const nt = require('electron').nativeTheme;
@@ -5653,18 +5687,18 @@ function __syncThemeFromMain() {
     // prefers-color-scheme 全局跟随=CSS/@media/matchMedia 全层同源）。
     let __appDark = false, __sysUiDark = false;
     try {
-      try { nt.themeSource = 'system'; } catch (_) {}
-      __appDark = !!nt.shouldUseDarkColors;
+      // v2.9.0 r29（问题③根修）：真值=程序内三态（os-theme-mode 10/20/30），30 才读系统。
+      __appDark = __resolveTheme29();
       try { __sysUiDark = !!nt.shouldUseDarkColorsForSystemIntegratedUI; } catch (_) {}
-      // v2.8.0 r28（问题③根修）：themeSource 恒 'system'，不再显式锁定 dark/light——r22/r23 锁定后
-      // 系统切换 30s 轮询内 CSS 锁旧值，与 FRAME/titlebar 各层快照错位=亮暗混搭实锤（iSCSI 字段
-      // 不可见）。themeSource='system' 时 CSS @media prefers-color-scheme=系统实时值，全层单一真值。
+      // themeSource 按解析值显式锁定——Electron 官方：显式设置后 CSS prefers-color-scheme 全局
+      // 跟随该值=CSS @media / matchMedia / body attr / 窗口底色 全层同源=亮暗混搭根除。
+      try { nt.themeSource = __appDark ? 'dark' : 'light'; } catch (_) {}
     } catch (_) {}
     __FNOS_APP_DARK = __appDark;
     const __sig = (__appDark ? 'dark' : 'light') + ':' + (__sysUiDark ? 'sysDark' : 'sysLight');
     if (__sig !== __lastThemeSig) {
       __lastThemeSig = __sig;
-      try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: __appDark ? 'dark' : 'light', appDark: __appDark, sysUiDark: __sysUiDark, themeSource: String(nt.themeSource), fix: 'r23-app-theme' } }, __RUN_MODE); } catch (_) {}
+      try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: __appDark ? 'dark' : 'light', storeMode: __themeStoreMode(), appDark: __appDark, sysUiDark: __sysUiDark, themeSource: String(nt.themeSource), fix: 'r29-store-truth' } }, __RUN_MODE); } catch (_) {}
     }
   } catch (_) {}
 }
@@ -5672,16 +5706,37 @@ function __syncThemeFromMain() {
 try {
   require('electron').ipcMain.on('theme:sys-dark', (e) => {
     try {
-      // v2.8.0 r28（问题③）：实时读 nativeTheme——原 __FNOS_APP_DARK 为 30s 轮询快照，与系统切换
-      // 错位即混搭；themeSource='system' 时 shouldUseDarkColors=系统实时值，渲染端桥同源。
-      e.returnValue = !!require('electron').nativeTheme.shouldUseDarkColors;
+      // v2.9.0 r29（问题③根修）：返回程序内三态解析值（os-theme-mode 10/20/30；30 才读系统）
+      // ——渲染端 mq 桥 / body attr / CSS @media 与主进程同源。r28 直读系统值=覆盖用户设置。
+      e.returnValue = __resolveTheme29();
     } catch (_) { try { e.returnValue = !!__FNOS_APP_DARK; } catch (__) { e.returnValue = false; } }
+  });
+} catch (_) {}
+// v2.9.0 r29（问题③）：程序内主题三态上报（titlebar-inject 读页面 store 经此同步）——
+// 10=亮 20=暗 30=跟随系统；全局唯一真值。变化时立即重算并广播（不等 30s 轮询）。
+try {
+  require('electron').ipcMain.on('theme:mode', (e, m) => {
+    try {
+      const v = String(m || '');
+      const norm = (v === '10' || v === '20' || v === '30') ? v : '';
+      const prev = global.__FNOS_THEME_STORE_MODE29 || '';
+      if (norm !== prev) {
+        global.__FNOS_THEME_STORE_MODE29 = norm;
+        try { require('./logger.js').log('info', 'window', 'theme.resolve29', { params: { storeMode: norm || '(未设置->30跟随系统)', prev: prev || '(空)', ts: Date.now() } }, __RUN_MODE); } catch (_) {}
+        try { __syncThemeFromMain(); } catch (_) {}
+      }
+      e.returnValue = true;
+    } catch (_) { e.returnValue = false; }
   });
 } catch (_) {}
 try { __syncThemeFromMain(); } catch (_) {}
 try { setInterval(() => { try { __syncThemeFromMain(); } catch (_) {} }, 30000); } catch (_) {}
 // v2.8.0 r28（问题③）：系统主题切换实时跟随——nativeTheme 'updated' 即同步+广播，不再等 30s 轮询
 try { require('electron').nativeTheme.on('updated', () => { try { __syncThemeFromMain(); } catch (_) {} }); } catch (_) {}
+// v2.9.0 r29（问题①④）：app-center 真入口预热——启动 6s 后拉一次 /app-center/v1/app/installed
+// 全列表进 __appCenterUrlCache（__truthRewrite28 动态真值数据源），docker/Lucky/OpenList/
+// qBittorrent 等第三方应用直达真入口（不弹 toast）+加载提速（少一跳中转+候选轮换）。
+try { setTimeout(() => { try { scanAppCenterViaRest(); fnosLog('info', 'appcenter', 'truth-warm29 scheduled', {}); } catch (_) {} }, 6000); } catch (_) {}
 
 // v2.1.10 旧名保留：仅隐藏到托盘（供其他内部调用）
 function hideMainToTray() { hideMainToBackground(); }
@@ -8705,14 +8760,17 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
           } catch (_) {}
         }
       }
-      // v2.8.0 r28（问题①）：launchUrl 终值 truth 改写——新建快捷方式直接写真入口 URL，
-      // 双击不再经 appview?anchor 中转页（toast 根源）。
+      // v2.9.0 r29（问题①）：launchUrl 终值 truth 改写——新建快捷方式直接写真入口 URL，
+      // 双击不再经 appview?anchor 中转页（toast 根源）。r28 此块引用块外 __entry（let 声明在
+      // if(__fpkL) 块内）抛 ReferenceError 被 catch 吞=改写从未生效（快捷方式仍写 appview
+      // 实锤）；本版只用作用域安全的 appId/appName 推名，log 移到赋值后（log 抛不再跳过改写）。
       try {
-        const __nmG28 = (__entry && __entry.name) ? String(__entry.name) : ((!/^https?:/i.test(String(appId || '')) && appId) ? String(appId) : '');
-        const __uG28 = __truthRewrite28(launchUrl, __nmG28);
-        if (__uG28 && __uG28 !== String(launchUrl)) {
-          fnosLog('info', 'shortcut.url', 'truth28-rewrite', { appId: String(appId || '').slice(0, 80), name: __nmG28.slice(0, 60), from: String(launchUrl).slice(0, 100), to: __uG28.slice(0, 140) });
-          launchUrl = __uG28;
+        const __aG29 = String(appId || '');
+        const __nmG29 = (__aG29 && !/^https?:/i.test(__aG29)) ? __aG29 : String(appName || '');
+        const __uG29 = __truthRewrite28(launchUrl, __nmG29);
+        if (__uG29 && __uG29 !== String(launchUrl)) {
+          launchUrl = __uG29;
+          try { fnosLog('info', 'shortcut.url', 'truth29-rewrite', { appId: __aG29.slice(0, 80), name: __nmG29.slice(0, 60), to: String(launchUrl).slice(0, 140) }); } catch (_) {}
         }
       } catch (_) {}
     } catch (_) {}
@@ -9610,8 +9668,20 @@ function __truthRewrite28(u, name) {
     if (mA && !nm) { try { nm = decodeURIComponent(mA[1]); } catch (_) { nm = mA[1]; } }
     const mR = /\/app\/([^/?#]+)/i.exec(sU);
     if (!nm && mR) { try { nm = decodeURIComponent(mR[1]); } catch (_) { nm = mR[1]; } }
-    const t = __entryTruth27(nm);
-    if (!t) return sU;
+    let t = __entryTruth27(nm);
+    if (!t) {
+      // v2.9.0 r29（问题①④）：静态真值表 miss 时查 app-center 动态缓存（预热/scanAppCenterViaRest
+      // 实时拉取的官方真入口）——docker/Lucky/OpenList/qBittorrent 等第三方应用直达真入口，
+      // 不再经 appview?anchor 中转页（toast 根源）+加载提速（少一跳+不走候选轮换）。
+      try {
+        const acU = __appCenterUrlCache.get(String(nm || '')) || '';
+        if (acU && /^https?:/i.test(acU) && !/\/appview\?anchor=/i.test(acU)) {
+          try { fnosLog('info', 'truth29', 'url-rewrite-ac', { name: String(nm || '').slice(0, 60), from: sU.slice(0, 120), to: acU.slice(0, 140) }); } catch (_) {}
+          return acU;
+        }
+      } catch (_) {}
+      return sU;
+    }
     let out;
     if (t.port) {
       try { out = (String(t.protocol || 'http:')) + '//' + (new URL(base).hostname) + ':' + t.port + t.path; } catch (_) { return sU; }

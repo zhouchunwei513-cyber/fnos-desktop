@@ -304,14 +304,18 @@ module.exports = function injectTitleBar(ctx) {
           if (doc.body.getAttribute(want) === null) doc.body.setAttribute(want, '');
         } catch (_) {}
       };
-      // fnOS 存储归一 30=OS（跟随系统）——仅 NAS origin 写入，防污染外源页面存储
+      // v2.9.0 r29（问题③根修）：不再改写用户主题设置——os-theme-mode/fnos-theme-mode 三态
+      //（10=亮 20=暗 30=跟随系统）是唯一真值（与 Windows 无关，用户实锤："亮暗和 Windows 没
+      // 关系，只是程序内的设置"）。r28 强写 30=覆盖用户"暗模式(20)"选择=亮暗混搭根源。
+      // 现改为向主进程上报三态真值（theme:mode），全层解析同源。
       if (__isNas) {
         try {
           const keys = ['os-theme-mode', 'fnos-theme-mode'];
           const before = keys.map((k) => k + '=' + String(localStorage.getItem(k)));
-          let changed = false;
-          keys.forEach((k) => { try { if (localStorage.getItem(k) !== '30') { localStorage.setItem(k, '30'); changed = true; } } catch (_) {} });
-          __log({ kind: 'store', before: before.join(','), dark: __isDark(), changed, href: String(location.href || '').slice(0, 120) });
+          let __mode = '';
+          for (const k of keys) { try { const v = localStorage.getItem(k); if (v) { __mode = String(v); break; } } catch (_) {} }
+          try { ipcRenderer.sendSync('theme:mode', __mode); } catch (_) {}
+          __log({ kind: 'store-respect29', before: before.join(','), mode: __mode || '(未设置)', dark: __isDark(), href: String(location.href || '').slice(0, 120) });
         } catch (e) { __log({ kind: 'store-err', err: String(e && e.message || e) }); }
       }
       __apply(document);

@@ -9,7 +9,8 @@
     "start": "electron .",
     "dev": "electron .",
     "dist": "electron-builder --win portable --x64",
-    "build": "electron-builder --win portable --x64"
+    "build": "electron-builder --win portable --x64",
+    "dist:setup": "electron-builder --win nsis --x64 --publish never"
   },
   "devDependencies": {
     "electron": "^44.3.0",
@@ -90,6 +91,12 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "icon.ico",
@@ -97,6 +104,16 @@
     },
     "portable": {
       "artifactName": "FNOS-${version}-portable.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FNOS",
+      "runAfterFinish": true,
+      "artifactName": "FNOS-${version}-setup.${ext}"
     }
   },
   "dependencies": {

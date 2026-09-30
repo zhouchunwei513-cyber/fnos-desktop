@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.12.0';
+const APP_VERSION = '2.13.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2215,10 +2215,82 @@ function normalizeServer(input) {
     const href = `https://fnos.net/${encodeURIComponent(fnId)}`;
     return { origin: 'https://fnos.net', href, baseHref: href, isFnId: true, fnId };
   }
+  // v2.13.0 r33（论坛反馈 nginx 400 "plain HTTP request was sent to HTTPS port"）：
+  // 裸地址带 443/8443 这类 TLS 端口时按 https 解析——此前一律强制 http://，
+  // 明文 HTTP 打到 HTTPS 端口被 nginx 直接 400 拒绝（"不支持 HTTPS"错觉根源）。
+  const tlsHint = /:(?:443|8443)(?:$|\/)/.test(raw);
   let u;
-  try { u = new URL(`http://${raw}`); } catch (_) { throw new Error('服务器地址格式不正确'); }
-  if (!u.port) u.port = '5666';
+  try { u = new URL(`${tlsHint ? 'https' : 'http'}://${raw}`); } catch (_) { throw new Error('服务器地址格式不正确'); }
+  // 注意：URL 会吞掉默认端口（https:443 → port 为空），仅非 TLS 提示且确实无端口时才补 5666
+  if (!u.port && !tlsHint) u.port = '5666';
   return { origin: u.origin, href: u.toString(), isFnId: false };
+}
+
+// v2.13.0 r33：裸地址 scheme 探测——对候选 URL 发起短超时 GET /，识别"明文 HTTP
+// 打到 HTTPS 端口"（表现为可达但 400、空响应或连接重置）并自动改走 https。
+// 显式 scheme、FN ID 永不改写；仅 auth:connect 首连路径调用，探测所得显式地址
+// 会随历史/设置持久化，后续重连直接复用不再重复探测。
+function __probeOnce(u, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    let req = null;
+    const finish = (r) => {
+      if (done) return;
+      done = true;
+      try { if (req) req.destroy(); } catch (_) {}
+      resolve(r);
+    };
+    try {
+      const lib = u.startsWith('https:') ? require('https') : require('http');
+      req = lib.get(u, { rejectUnauthorized: false, timeout: timeoutMs }, (res) => {
+        const status = res.statusCode || 0;
+        res.resume(); // 丢弃 body，只看状态码
+        finish({ reachable: true, status });
+      });
+      req.on('timeout', () => finish({ reachable: false, error: 'timeout' }));
+      req.on('error', (e) => finish({ reachable: false, error: (e && e.message) || 'error' }));
+    } catch (e) {
+      resolve({ reachable: false, error: (e && e.message) || 'error' });
+    }
+  });
+}
+
+async function __resolveServerScheme(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return raw;
+  if (/^https?:\/\//i.test(raw)) return raw;              // 显式 scheme 永不改写
+  if (/^(?:www\.)?fnos\.net\//i.test(raw)) return raw;    // FN ID 固定走 https://fnos.net
+  if (/^[A-Za-z0-9_-]+$/.test(raw) && !/^\d+$/.test(raw)) return raw; // 裸 FN ID 不动
+  let hostPart = raw; let pathPart = '';
+  const slash = raw.indexOf('/');
+  if (slash > 0) { hostPart = raw.slice(0, slash); pathPart = raw.slice(slash); }
+  const m = hostPart.match(/^([^:]+):(\d+)$/);
+  const host = m ? m[1] : hostPart;
+  const port = m ? m[2] : '';
+  const candidates = [];
+  if (port) {
+    // 443/8443 这类 TLS 端口先试 https；其余端口维持先 http 的向后兼容顺序
+    const hint = (port === '443' || port === '8443') ? 'https' : 'http';
+    const other = hint === 'https' ? 'http' : 'https';
+    candidates.push(`${hint}://${host}:${port}${pathPart}`);
+    candidates.push(`${other}://${host}:${port}${pathPart}`);
+  } else {
+    candidates.push(`http://${host}:5666${pathPart}`);   // 现行为默认（绝大多数 NAS）
+    candidates.push(`https://${host}${pathPart}`);
+    candidates.push(`https://${host}:5666${pathPart}`);
+  }
+  let firstReachable = '';
+  for (const c of candidates) {
+    const r = await __probeOnce(c, 2000);
+    // 可达且非 400 直接采用；"可达但 400"高度疑似打到 HTTPS 端口，继续试下一候选
+    if (r.reachable && r.status !== 400) {
+      fnosLog('info', 'net', 'scheme.autoprobed', { input: raw, picked: c });
+      return c;
+    }
+    if (r.reachable && !firstReachable) firstReachable = c;
+  }
+  if (firstReachable) return firstReachable;
+  return raw; // 全不可达：原样返回，让连接流程正常报错
 }
 
 // v1.16.3：全应用共享同一个持久化 partition，主窗口/飞牛 webview/设置/直播窗口
@@ -6693,9 +6765,37 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// v2.13.0 r33：https 连接支持——NAS 常见自签名证书，Electron 默认拒绝会让
+// loadURL 直接失败（ERR_CERT_AUTHORITY_INVALID）。仅对"已连接/历史记录内的
+// NAS 来源"接受证书，其余来源维持默认拒绝；接受事件记日志便于排查。
+app.on('certificate-error', (event, _webContents, url, error, _certificate, callback) => {
+  let accept = false;
+  try {
+    const origin = new URL(url).origin;
+    const s = loadSettings();
+    const known = new Set();
+    const addO = (v) => { try { if (v) known.add(new URL(String(v)).origin); } catch (_) {} };
+    addO(currentOrigin);
+    addO(s.origin);
+    addO(s.lastConnectHref);
+    (Array.isArray(s.history) ? s.history : []).forEach((h) => { addO(h && h.href); addO(h && h.origin); });
+    accept = known.has(origin);
+  } catch (_) {}
+  if (accept) {
+    event.preventDefault();
+    fnosLog('warn', 'net', 'cert.accepted_selfsigned', { url: String(url).slice(0, 120), error: String(error).slice(0, 80) });
+  }
+  callback(accept);
+});
+
 // ---------------------- IPC ----------------------
 ipcMain.handle('auth:connect', async (_e, payload) => {
-  try { connectTo((payload && payload.server) || ''); return { ok: true }; }
+  try {
+    // v2.13.0 r33：裸地址先做 scheme 探测（https 域名/端口自动识别），探测结果
+    // 以显式 scheme 传入 connectTo 并随历史持久化，重连不再踩明文 HTTP 打 HTTPS 端口
+    const server = await __resolveServerScheme((payload && payload.server) || '');
+    connectTo(server); return { ok: true };
+  }
   catch (e) { return { ok: false, error: e.message || '连接失败' }; }
 });
 ipcMain.handle('auth:load-history', async () => {

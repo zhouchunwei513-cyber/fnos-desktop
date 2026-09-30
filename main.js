@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.10.0';
+const APP_VERSION = '2.11.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -705,6 +705,11 @@ const HISTORY_FILE = path.join(app.getPath('userData'), 'servers.json');
 try { fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true }); } catch (_) {}
 const ICON_PATH = path.join(__dirname, 'icon.ico');
 const ICON_PNG = path.join(__dirname, 'icon.png');
+// v2.11.0 r31（新需求：电视直播播放器桌面快捷方式）：保留启动 ID——设置页"直播设置→
+// 创建桌面快捷方式"专用，不经 FPK/manifest 解析；三链（wscript loopback /launch、
+// --launch-app 冷启动、second-instance 热启动）均识别此 ID 直达内置直播窗（live.html），
+// 主界面保持不露面（--launch-app 命中 __isQuietStart）。
+const LIVE_LAUNCH_ID = '__fnos.live__';
 
 const DEFAULT_SHORTCUTS = { lockApp: 'Ctrl+Alt+L', hideAll: 'Ctrl+Alt+H' };
 const GITHUB_REPO = 'zhouchunwei513-cyber/fnos-desktop';
@@ -8684,12 +8689,91 @@ ipcMain.handle('get-installed-apps', async () => {
 });
 
 // v2.1.5: IPC handler for creating desktop shortcuts with proper icon handling
+// v2.11.0 r31：电视直播播放器桌面快捷方式（设置页"直播与播放→创建桌面快捷方式"）。
+// 与 FPK 应用快捷方式同链：.lnk → wscript 触发器（秒开 loopback /launch）→程序未运行回落
+// 冷启动 exe --launch-app=__fnos.live__；/launch、__handleSecondInstance、
+// launchSubAppFromArgs 三处识别保留 ID 直达内置直播窗（live.html），全程不弹主界面。
+async function __createLiveShortcut(name) {
+  try {
+    const appName = String(name || '电视直播').trim() || '电视直播';
+    const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    // 图标：默认客户端 icon.png → ico（文件名带内容 hash 头 6 位，绕开 Windows 图标缓存），
+    // 转换失败回落 exe 自带图标，绝不留空 IconLocation（r18 白纸图铁则）
+    let icoPath = '';
+    try {
+      const pngBuf = fs.readFileSync(ICON_PNG);
+      const icoBuf = pngToIco(pngBuf);
+      if (icoBuf && icoBuf.length) {
+        let __h6 = '';
+        try { __h6 = require('crypto').createHash('md5').update(icoBuf).digest('hex').slice(0, 6); } catch (_) {}
+        icoPath = path.join(ASSETS_DIR, `live_shortcut${__h6 ? '_' + __h6 : ''}.ico`);
+        fs.writeFileSync(icoPath, icoBuf);
+      }
+    } catch (_) {}
+    // v2.2.6：桌面路径用 app.getPath('desktop')（OneDrive 重定向/权限受限兜底同 FPK 分支）
+    let desktop = '';
+    try { desktop = app.getPath('desktop'); } catch (_) {}
+    if (!desktop || !fs.existsSync(desktop)) desktop = path.join(os.homedir(), 'Desktop');
+    if (desktop && !fs.existsSync(desktop)) { try { fs.mkdirSync(desktop, { recursive: true }); } catch (_) {} }
+    if (!desktop || !fs.existsSync(desktop)) {
+      fnosLog('error', 'shortcut.path', 'desktop path unavailable', { desktopTried: String(desktop || ''), err: 'desktop path not found' });
+      return { success: false, msg: '桌面路径不存在：请检查系统桌面目录配置', data: null };
+    }
+    const lnkBaseName = appName.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '电视直播';
+    const lnkPath = path.join(desktop, `${lnkBaseName}.lnk`);
+    // v2.4.8 秒开定案：目标=wscript 触发器脚本（毫秒级、无黑窗）；第三参 nasBase 传空
+    // （直播窗配置走设置存储，无需 --nas）
+    const __vbsPath = __ensureLauncherVbs();
+    const __wscript = path.join(String(process.env.SystemRoot || 'C:\\Windows'), 'System32', 'wscript.exe');
+    const __lnkArgs = `//B //Nologo "${__vbsPath}" "${LIVE_LAUNCH_ID}" "${exePath}" ""`;
+    fnosLog('info', 'shortcut.path', 'live-shortcut.lnk-wscript', { vbsPath: __vbsPath, lnkPath });
+    let iconPs = '';
+    try {
+      if (icoPath && fs.existsSync(icoPath)) iconPs = `$sc.IconLocation = '${icoPath.replace(/'/g, "''")}'`;
+      else iconPs = `$sc.IconLocation = '${exePath.replace(/'/g, "''")}',0`;
+    } catch (_) { iconPs = `$sc.IconLocation = '${exePath.replace(/'/g, "''")}',0`; }
+    const ps = `
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')
+$sc.TargetPath = '${__wscript.replace(/'/g, "''")}'
+$sc.Arguments = '${__lnkArgs.replace(/'/g, "''")}'
+$sc.WorkingDirectory = '${path.dirname(exePath).replace(/'/g, "''")}'
+$sc.Description = 'FNOS 电视直播播放器'
+${iconPs}
+$sc.Save()
+`;
+    const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    if (result.status === 0) {
+      fnosLog('info', 'ipc', '电视直播快捷方式创建成功', { lnkPath, icoPath });
+      return { success: true, msg: '桌面快捷方式已生成', data: { path: lnkPath } };
+    }
+    const __errText = String((result && (result.stderr || result.error)) || '');
+    fnosLog('error', 'ipc', '电视直播快捷方式创建失败', { lnkPath, stderr: __errText.slice(0, 500) });
+    let __msg = __errText.slice(0, 300) || '创建失败';
+    if (/拒绝访问|access\s*is\s*denied|0x80070005|EPERM|EACCES|unauthorized/i.test(__errText)) {
+      __msg = '权限不足：无法写入桌面快捷方式，请以管理员权限重试';
+    }
+    return { success: false, msg: __msg, data: null };
+  } catch (e) {
+    fnosLog('error', 'ipc', '__createLiveShortcut error', { err: e.message, stack: e.stack });
+    const code = String((e && e.code) || '');
+    let msg = String(e.message || e).slice(0, 300);
+    if (code === 'EACCES' || code === 'EPERM' || /拒绝访问|access\s*is\s*denied/i.test(msg)) {
+      msg = '权限不足：无法创建桌面快捷方式';
+    } else if (code === 'ENOENT' && /desktop/i.test(String((e && e.path) || msg))) {
+      msg = '桌面路径不存在：请检查系统桌面目录配置';
+    }
+    return { success: false, msg, data: null };
+  }
+}
 ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
   try {
     const { appId, appName, iconPath, nasAddress } = payload || {};
     // v2.4.0（需求第一部分-3）：IPC 收日志（含入参，敏感字段由 logger.js 脱敏）
     try { fnosLog('info', 'ipc', 'create-desktop-shortcut recv', { appId, appName, iconPath: String(iconPath || '').slice(0, 160), nasAddress }); } catch (_) {}
     if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+    // v2.11.0 r31：电视直播播放器快捷方式——保留 ID 走独立创建分支（不走 FPK 图标/URL 解析）
+    if (String(appId) === LIVE_LAUNCH_ID) return await __createLiveShortcut(String(appName || '电视直播'));
     // v2.3.2: 归一化 nasAddress——设置页传入的可能无协议头（如 192.168.31.101），
     // 拼 appview URL 必须带 http://，否则 Electron loadURL 当文件路径 -> chrome-error
     let __nasBase = String(nasAddress || '').trim().replace(/\/+$/, '');
@@ -9078,6 +9162,14 @@ function __startLaunchServer() {
           if (!__launchToken || token !== __launchToken) {
             try { require('./logger.js').log('warn', 'launch', 'launch.http auth-fail', { params: { appId: appId.slice(0, 80) } }, __RUN_MODE); } catch (_) {}
             try { res.writeHead(403); res.end(); } catch (_) {}
+            return;
+          }
+          // v2.11.0 r31：电视直播快捷方式（保留 ID）秒开链路——直达内置直播窗，
+          // 不走 FPK 解析/不弹主界面（与菜单"电视直播"行为一致）
+          if (appId === LIVE_LAUNCH_ID) {
+            try { invokeLiveWindow(); } catch (_) {}
+            try { require('./logger.js').log('info', 'live', 'live.shortcut_invoke', { params: { via: 'wscript' } }, __RUN_MODE); } catch (_) {}
+            try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
             return;
           }
           // v2.5.1 r17：per-appId 3s 防抖——快捷方式重复触发（vbs 重发/用户连点）会双开同应用
@@ -9845,6 +9937,14 @@ function launchSubAppFromArgs() {
   if (!launchArgs.appId) return false;
   // v2.1.15：增强日志——记录快捷方式冷启动的完整参数
   fnosLog('info', 'launch', '检测到快捷方式启动参数，转主程序内打开', { ...launchArgs, t0: new Date().toISOString() });
+
+  // v2.11.0 r31：电视直播快捷方式冷启动（保留 ID）——ready 后直达内置直播窗；
+  // --launch-app 命中 __isQuietStart 主界面保持隐藏，返回 true 走"参数启动跳过主界面"路径
+  if (String(launchArgs.appId) === LIVE_LAUNCH_ID) {
+    try { app.whenReady().then(() => { try { invokeLiveWindow(); } catch (_) {} }).catch(() => {}); } catch (_) {}
+    fnosLog('info', 'live', 'live.shortcut_invoke', { via: 'coldstart' });
+    return true;
+  }
 
   const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
   const url = nasAddr || '';
@@ -12011,6 +12111,12 @@ function __handleSecondInstance(_e, commandLine) {
     rawAppId = u;
     // v2.4.0（需求第一部分-3）：second-instance 触发日志（含 argv / appId / nas 参数）
     try { require('./logger.js').log('info', 'ipc', 'second-instance 触发', { params: { argv: argv.slice(1).map((x) => String(x).slice(0, 80)), rawAppId: String(rawAppId).slice(0, 120), nasAddr: String(nasAddr).slice(0, 80) } }, __RUN_MODE); } catch (_) {}
+    // v2.11.0 r31：电视直播快捷方式热启动（保留 ID）——直达内置直播窗，不经 FPK 解析
+    if (rawAppId === LIVE_LAUNCH_ID) {
+      try { invokeLiveWindow(); } catch (_) {}
+      try { require('./logger.js').log('info', 'live', 'live.shortcut_invoke', { params: { via: 'second-instance' } }, __RUN_MODE); } catch (_) {}
+      return;
+    }
     // v2.3.3: --launch-app 传的是 appname，统一解析成完整 URL 再打开
     if (u) { u = __resolveLaunchUrl(u, nasAddr); }
     // v2.3.3: 解析失败（无 nas 地址或应用 ID 无法定位）→ 提示用户重建快捷方式

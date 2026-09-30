@@ -438,6 +438,43 @@
     });
   }
 
+  // v2.11.0 r31：电视直播播放器桌面快捷方式（保留 ID __fnos.live__，主进程三链直达直播窗，
+  // 复用 create-desktop-shortcut IPC 的独立创建分支；结果反馈与应用列表快捷方式同约定：
+  // 成功按钮态反馈、失败弹窗）
+  const iptvShortcut = document.getElementById('iptv-shortcut');
+  if (iptvShortcut) {
+    iptvShortcut.addEventListener('click', async () => {
+      if (!window.fnosSettings || !window.fnosSettings.createDesktopShortcut) {
+        showError(iptvError, '创建快捷方式功能不可用');
+        return;
+      }
+      iptvShortcut.disabled = true;
+      iptvShortcut.textContent = '创 建 中';
+      showError(iptvError, '');
+      try {
+        const result = await window.fnosSettings.createDesktopShortcut({
+          appId: '__fnos.live__',
+          appName: '电视直播',
+          iconPath: '',
+          nasAddress: '',
+        });
+        if (result && result.success) {
+          iptvShortcut.textContent = '✓ 桌面快捷方式已生成';
+        } else {
+          iptvShortcut.textContent = '创建桌面快捷方式';
+          const msg = (result && result.msg) || '未知错误';
+          showError(iptvError, '创建失败：' + msg);
+          alert('创建失败：' + msg);
+        }
+      } catch (err) {
+        iptvShortcut.textContent = '创建桌面快捷方式';
+        showError(iptvError, '创建失败：' + (err?.message || '未知错误'));
+        alert('创建失败：' + (err?.message || '未知错误'));
+      }
+      setTimeout(() => { iptvShortcut.disabled = false; iptvShortcut.textContent = '创建桌面快捷方式'; }, 3000);
+    });
+  }
+
   // --------- 兼容性播放器（MPV）v1.25.0 ---------
   const vlcEnabled = document.getElementById('vlc-enabled');
   const vlcEnabledLabel = document.getElementById('vlc-enabled-label');

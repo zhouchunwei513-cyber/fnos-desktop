@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.11.0';
+const APP_VERSION = '2.12.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -710,6 +710,9 @@ const ICON_PNG = path.join(__dirname, 'icon.png');
 // --launch-app 冷启动、second-instance 热启动）均识别此 ID 直达内置直播窗（live.html），
 // 主界面保持不露面（--launch-app 命中 __isQuietStart）。
 const LIVE_LAUNCH_ID = '__fnos.live__';
+// r32（v2.12.0）：电视直播快捷方式专属图标（用户要求：按"电视直播"字面意象独立成标，
+// 不用飞牛主程序图标）——电视+播放三角+红色直播点+广播信号波，圆角方形深蓝渐变底
+const LIVE_ICON_PNG = path.join(__dirname, 'live-icon.png');
 
 const DEFAULT_SHORTCUTS = { lockApp: 'Ctrl+Alt+L', hideAll: 'Ctrl+Alt+H' };
 const GITHUB_REPO = 'zhouchunwei513-cyber/fnos-desktop';
@@ -8701,7 +8704,11 @@ async function __createLiveShortcut(name) {
     // 转换失败回落 exe 自带图标，绝不留空 IconLocation（r18 白纸图铁则）
     let icoPath = '';
     try {
-      const pngBuf = fs.readFileSync(ICON_PNG);
+      // r32（v2.12.0）：优先内置电视直播专属图标（live-icon.png）；文件缺失才回落
+      // 主程序图标兜底——用户明确要求快捷方式不用飞牛主程序图标
+      let pngBuf = null;
+      try { pngBuf = fs.readFileSync(LIVE_ICON_PNG); } catch (_) {}
+      if (!pngBuf) pngBuf = fs.readFileSync(ICON_PNG);
       const icoBuf = pngToIco(pngBuf);
       if (icoBuf && icoBuf.length) {
         let __h6 = '';

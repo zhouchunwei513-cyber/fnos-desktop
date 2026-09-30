@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.11.0",
+  "version": "2.12.0",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -65,6 +65,7 @@
       "assets/**/*",
       "icon.ico",
       "icon.png",
+      "live-icon.png",
       "package.json",
       "subapp-preload.js"
     ],

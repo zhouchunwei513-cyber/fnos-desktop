@@ -30,6 +30,9 @@ module.exports = function injectTitleBar(ctx) {
     let isAppview = /\/appview/i.test(String(location.pathname || ''));
     try {
       const __chromeGo = function () { if (!isAppview && !__SUB) return;
+        // v2.10.0 r30（问题1/2 根修）：假窗控清扫与 iframe 撑满只在 --fnos-app-window 应用窗内生效
+        //——主窗整棵 frame 树（web 桌面内嵌窗真窗控/真实布局）全豁免；无旗标默认不动（安全方向）。
+        try { if (!process || !process.argv || process.argv.indexOf('--fnos-app-window') < 0) return; } catch (_) { return; }
         (function __appviewChromeFix() {
           const __log = (o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'appview.chrome-fix' }, o)); } catch (_) {} };
           const __hidden = [];
@@ -659,14 +662,24 @@ module.exports = function injectTitleBar(ctx) {
         applyStyle(bar);
         if (AUTO_HIDE) hide(bar); else show(bar);
 
-        // ---- 防 SPA 重渲染清除：节点被移除则重注 ----
+        // ---- 防 SPA 重渲染清除：v2.10.0 r30（问题1 次因）全件检查+整件重建+解除防重入死锁 ----
+        // 旧实现只查 bar+hotzone 两个 id：按钮子节点被 SPA 移除不触发重建；hotzone 缺而 bar 在时
+        // disconnect+build() 撞 build() 防重入早退 → 拖动/按钮永久失效（自愈缺口实锤）。现全件
+        // 检查（bar/hotzone/☰/—□✕），缺失即先清残留再整体重建——残留清掉后防重入早退不再拦。
         try {
+          const __need = ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
           const mo = new MutationObserver(() => {
             try {
-              if (!document.getElementById('fnos-titlebar') || !document.getElementById('fnos-titlebar-hotzone')) {
-                mo.disconnect();
-                build();
-              }
+              let __gone = false;
+              for (let i = 0; i < __need.length; i++) { if (!document.getElementById(__need[i])) { __gone = true; break; } }
+              if (!__gone) return;
+              const __now = Date.now();
+              if (window.__fnosTbHealAt && __now - window.__fnosTbHealAt < 700) return; // 防重建风暴
+              window.__fnosTbHealAt = __now;
+              mo.disconnect();
+              try { const o = document.getElementById('fnos-titlebar'); if (o && o.parentNode) o.parentNode.removeChild(o); } catch (_) {}
+              try { const o = document.getElementById('fnos-titlebar-hotzone'); if (o && o.parentNode) o.parentNode.removeChild(o); } catch (_) {}
+              build();
             } catch (_) {}
           });
           mo.observe(document.documentElement || document, { childList: true, subtree: true });
@@ -692,8 +705,8 @@ module.exports = function injectTitleBar(ctx) {
         hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;';
         root2.appendChild(hot);
         const bar = document.createElement('div');
-        bar.id = 'fnos-tb-bar'; // v2.5.2 r18：稳定标识（appview chrome 清理排除注入标题栏）
-        bar.id = 'fnos-titlebar';
+        bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
+        bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
         bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:#000;-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题
         const left = document.createElement('div');
@@ -762,14 +775,21 @@ module.exports = function injectTitleBar(ctx) {
           let __ticks = 0;
           const __iv = setInterval(() => { try { syncMeta(); if (++__ticks > 400) clearInterval(__iv); } catch (_) {} }, 1500);
         } catch (_) {}
-        // 防 SPA 重渲染清除：节点被移除则重注（与普通标题栏同款）
+        // 防 SPA 重渲染清除：v2.10.0 r30（问题1 次因）全件检查+整件重建+解除防重入死锁（与普通标题栏同款）
         try {
+          const __need = ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-reload', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
           const mo = new MutationObserver(() => {
             try {
-              if (!document.getElementById('fnos-titlebar') || !document.getElementById('fnos-titlebar-hotzone')) {
-                mo.disconnect();
-                buildEmbed();
-              }
+              let __gone = false;
+              for (let i = 0; i < __need.length; i++) { if (!document.getElementById(__need[i])) { __gone = true; break; } }
+              if (!__gone) return;
+              const __now = Date.now();
+              if (window.__fnosTbHealAt && __now - window.__fnosTbHealAt < 700) return; // 防重建风暴
+              window.__fnosTbHealAt = __now;
+              mo.disconnect();
+              try { const o = document.getElementById('fnos-titlebar'); if (o && o.parentNode) o.parentNode.removeChild(o); } catch (_) {}
+              try { const o = document.getElementById('fnos-titlebar-hotzone'); if (o && o.parentNode) o.parentNode.removeChild(o); } catch (_) {}
+              buildEmbed();
             } catch (_) {}
           });
           mo.observe(document.documentElement || document, { childList: true, subtree: true });

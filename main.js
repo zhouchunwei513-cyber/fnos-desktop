@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.9.0';
+const APP_VERSION = '2.10.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -156,7 +156,7 @@ const __FNOS_FRAME_SCRIPT25 = [
   'if(t===""&&!hasSvg)continue;',
   'var rk=Math.round(rc.top/12);if(!rows[rk])rows[rk]=[];rows[rk].push({e:e,ch:t!==""});',
   '}catch(_){}}',
-  'for(var rk2 in rows){try{var g=rows[rk2];var charHit=false;',
+  'if(__KILLON29__)for(var rk2 in rows){try{var g=rows[rk2];var charHit=false;',
   'for(var q=0;q<g.length;q++){if(g[q].ch){charHit=true;break;}}',
   'var kill=(g.length>=2&&(charHit||g.length>=3))||(g.length===1&&g[0].ch);',
   'if(kill){for(var z=0;z<g.length;z++){try{g[z].e.setAttribute("data-fnos-hide25","1");g[z].e.style.setProperty("display","none","important");out.h++;}catch(_){}}}',
@@ -179,7 +179,9 @@ function __frameSweep25(win, tag) {
     if (!mf) return;
     let frames = [];
     try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
-    const __script = __FNOS_FRAME_SCRIPT25.split('__DARK24__').join(__darkExpr28());
+    // v2.10.0 r30（问题1 根修）：杀除段只在 --fnos-app-window 应用窗内生效（win.__fnosAppWin29）——
+    // 主窗整棵 frame 树全豁免（web 桌面内嵌窗真 —□✕/拖动手柄不许杀）；主题归一不受影响。
+    const __script = __FNOS_FRAME_SCRIPT25.split('__DARK24__').join(__darkExpr28()).split('__KILLON29__').join(win.__fnosAppWin29 ? '1' : '0');
     let __done = 0; let __hidden = 0; let __sub = 0;
     const __t0 = Date.now();
     for (const f of frames) {
@@ -253,7 +255,7 @@ const __FNOS_FRAME_SCRIPT26 = [
   'if(t===""&&!hasSvg)continue;',
   'var rk=Math.round(rc.top/12);if(!rows[rk])rows[rk]=[];rows[rk].push({e:e,ch:t!==""});',
   '}catch(_){}}',
-  'for(var rk2 in rows){try{var g=rows[rk2];var charHit=false;',
+  'if(__KILLON29__)for(var rk2 in rows){try{var g=rows[rk2];var charHit=false;',
   'for(var q=0;q<g.length;q++){if(g[q].ch){charHit=true;break;}}',
   'var kill=(g.length>=2&&(charHit||g.length>=3))||(g.length===1&&g[0].ch);',
   'if(kill){for(var z=0;z<g.length;z++){try{var ez=g[z].e;if(ez.getAttribute&&ez.getAttribute("data-fnos-killed26"))continue;',
@@ -270,7 +272,8 @@ function __frameSweep26(win, tag) {
     if (!mf) return;
     let frames = [];
     try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
-    const __script = __FNOS_FRAME_SCRIPT26.split('__DARK24__').join(__darkExpr28());
+    // v2.10.0 r30（问题1 根修）：同 __frameSweep25——杀除段只在 --fnos-app-window 应用窗内生效。
+    const __script = __FNOS_FRAME_SCRIPT26.split('__DARK24__').join(__darkExpr28()).split('__KILLON29__').join(win.__fnosAppWin29 ? '1' : '0');
     let __done = 0; let __hidden = 0; let __sub = 0; let __bg = 0;
     const __t0 = Date.now();
     for (const f of frames) {
@@ -4110,12 +4113,9 @@ function registerWindow(win, opts = {}) {
         if (!__okH) { try { createAppWindow(url, { partition: entry.partition }); } catch (_) {} }
         // v2.5.3 r19：从主页面打开应用 → 主页面不隐藏到托盘（快捷方式链保持藏托盘单窗体验）
         if (__embedStyle) {
-          try {
-            if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) {
-              if (mainWindow.isVisible() && !mainWindow.isMinimized()) mainWindow.webContents.loadURL(lastConnectHref);
-              else __pendingHomeReset = true;
-            }
-          } catch (_) {}
+          // v2.10.0 r30（问题2 根修）：统一走 __resetMainHome29——lastConnectHref 为空有 origin 兜底、
+          // 重置留痕与消费链一致（原实现为空时静默不重置=卡死隐患）。
+          try { __resetMainHome29(url); } catch (_) {}
         }
       });
       return { action: 'deny' };
@@ -4560,7 +4560,10 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       partition,
       // v2.4.9（反馈 8 两种窗口模式自动适配）：内嵌窗形态宿主窗标记——titlebar-inject 据此
       // 渲染 fnOS 内嵌窗样式标题栏（logo+标题+↻↗—□✕），区别于普通跳出窗的 ☰+系统钮样式。
-      additionalArguments: opts.embedStyle ? ['--fnos-embed-style'] : [],
+      // v2.10.0 r30（问题1 根修）：--fnos-app-window 旗标——三套假窗控清扫（preload instantHide26 /
+      // titlebar-inject chromeFix / 主进程帧脚本25/26）只在应用窗内生效；主窗整棵 frame 树（web 桌面
+      // 内嵌窗的真 —□✕ 与拖动手柄）全豁免，杜绝把真实窗控当假窗控聚组杀除（反馈问题1）。
+      additionalArguments: [...(opts.embedStyle ? ['--fnos-embed-style'] : []), '--fnos-app-window'],
       enableBlinkFeatures: 'CSSBackdropFilter',
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
       // v1.76.0：应用窗口禁用硬件加速（软件渲染）。修复部分 Docker 应用
@@ -4573,6 +4576,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
 
   // v1.48.0：无边框窗口，无系统菜单栏；菜单功能改由自定义标题栏「☰ 菜单」按钮弹出。
   try { win.setMenuBarVisibility(false); } catch (_) {}
+  // v2.10.0 r30（问题1 根修）：应用窗旗标——帧脚本25/26 的杀除段据此放行（__KILLON29__）。
+  // 主窗/设置窗等无此旗标 = 整棵 frame 树只做主题归一、绝不杀除（web 桌面内嵌窗真窗控安全）。
+  try { win.__fnosAppWin29 = true; } catch (_) {}
 
   // v2.0.0：为每个子应用窗口设置独立 AppUserModelId，避免 Windows 任务栏图标合并/空白
   try {
@@ -5603,10 +5609,14 @@ function __restoreMainHome(reason, force) {
     } catch (_) {}
     try { mainWindow.focus(); mainWindow.moveTop(); } catch (_) {}
     const __cur = String(mainWindow.webContents.getURL() || '');
-    const needReload = !!force || !/^https?:/i.test(__cur);
+    // v2.10.0 r30（问题2 根修）：停在 appview（应用中心占满主页面卡死态）或有未消费的 home 重置
+    // 旗标也必须重载回主页——原 needReload 只看协议，卡死态唤回不刷新=问题2 持续不愈；
+    // 重载目标 lastConnectHref 为空时以当前 URL 的 origin 根兜底（同 __resetMainHome29）。
+    const needReload = !!force || !/^https?:/i.test(__cur) || !!__pendingHomeReset || /\/appview(\?|$)/i.test(__cur);
     __pendingHomeReset = false;
-    if (needReload && lastConnectHref) {
-      try { mainWindow.webContents.loadURL(lastConnectHref); } catch (_) {}
+    const __home29 = String(lastConnectHref || '') || (function () { try { return new URL(__cur).origin + '/'; } catch (_) { return ''; } })();
+    if (needReload && __home29) {
+      try { mainWindow.webContents.loadURL(__home29); } catch (_) {}
       try { require('./logger.js').log('info', 'window', 'main.restore-home.reload', { params: { reason: String(reason || ''), wasVisible, force: !!force, urlOk: /^https?:/i.test(__cur) } }, __RUN_MODE); } catch (_) {}
     } else {
       try { require('./logger.js').log('info', 'window', 'main.restore-home', { params: { reason: String(reason || ''), wasVisible, needReload: false } }, __RUN_MODE); } catch (_) {}
@@ -5906,6 +5916,18 @@ function createMainWindow(partition, loadTarget) {
     },
   });
 
+  // v2.10.0 r30（问题2 根修）：主窗 show 即核查卡死态——停在 /appview（应用中心占满主页面）或
+  // 带着未消费的 __pendingHomeReset（隐藏/最小化期撞上 appview 转出）现身时立即拉回主页；
+  // 非卡死态消费清旗标。与 __restoreMainHome 互补，覆盖不经 restore 的 show 路径。
+  try {
+    mainWindow.on('show', () => {
+      try {
+        const cur = String(mainWindow.webContents.getURL() || '');
+        const stuck = /\/appview(\?|$)/i.test(cur) || (!/^https?:/i.test(cur) && !!__pendingHomeReset);
+        if (stuck) { __resetMainHome29(cur); } else { __pendingHomeReset = false; }
+      } catch (_) {}
+    });
+  } catch (_) {}
   // v2.4.1（用户真机反馈，覆盖 v2.4.0 恒 hide）：点击启动飞牛主程时不隐藏主窗口——
   // 只有点击应用快捷方式（--launch-app/--app/--open-app）时才隐藏；开机自启（--autostart）
   // 同样隐藏、只驻留托盘（需求 2.2：开机命令不带应用 ID，不自动打开任何应用）。
@@ -9605,25 +9627,50 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
 //（PreAuth 完整）——直开真实 URL 丢登录态（/v、/seek 等跳登录页=黑屏根因）。主窗静默关闭内嵌
 // 视图：可见才动页面，隐藏置标记唤回时回桌面。全程单窗口。
 const __appviewConvAt = new Map();
+// v2.10.0 r30（问题2 根修）：主窗拉回主页重置必达——旧 __appviewToPopout 三重丢失（2s 防抖
+// early return 连重置一起吞掉 / anchor 缺失直接 return / lastConnectHref 为空静默不重置），
+// 叠加 __pendingHomeReset 只写无读（死旗标）→ 主窗一旦在隐藏/最小化态撞上转换就永久卡死
+// /appview?anchor=trim.app-center（应用中心占满主页面、假 —□✕ 不可用=反馈问题2）。
+// 现：重置独立于防抖、无条件执行；lastConnectHref 为空以 fallback（appview URL 的 origin 根）
+// 兜底；可见即重载，隐藏/最小化置 __pendingHomeReset（由 __restoreMainHome / 主窗 show 事件消费）。
+let __lastHomeResetAt = 0;
+function __resetMainHome29(fallbackHref) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const t = Date.now();
+    // did-navigate + did-navigate-in-page 双触发合并；但已有未消费重置（pending）时不许跳过
+    if (t - __lastHomeResetAt < 1500 && !__pendingHomeReset) return;
+    __lastHomeResetAt = t;
+    let home = String(lastConnectHref || '');
+    if (!home) {
+      try { home = new URL(String(fallbackHref || '')).origin + '/'; } catch (_) { home = ''; }
+    }
+    if (!home) return;
+    const visible = mainWindow.isVisible() && !mainWindow.isMinimized();
+    if (visible) { mainWindow.webContents.loadURL(home); __pendingHomeReset = false; }
+    else __pendingHomeReset = true;
+    try { require('./logger.js').log('info', 'wintype', 'main.home-reset29', { params: { home: String(home).slice(0, 120), visible, pending: !visible } }, __RUN_MODE); } catch (_) {}
+  } catch (_) {}
+}
 function __appviewToPopout(navUrl) {
   const s = String(navUrl || '');
   if (!/\/appview/i.test(s)) return;
   let anchor = '';
   try { anchor = new URL(s).searchParams.get('anchor') || ''; } catch (_) {}
-  if (!anchor) return;
   const now = Date.now();
-  if (now - (__appviewConvAt.get(anchor) || 0) < 2000) return;
-  __appviewConvAt.set(anchor, now);
+  const __dup = !!anchor && (now - (__appviewConvAt.get(anchor) || 0) < 2000);
+  if (anchor && !__dup) __appviewConvAt.set(anchor, now);
   setImmediate(() => {
-    try { createAppWindow(s, { appId: anchor }); } catch (_) {}
-    try {
-      if (mainWindow && !mainWindow.isDestroyed() && lastConnectHref) {
-        if (mainWindow.isVisible() && !mainWindow.isMinimized()) mainWindow.webContents.loadURL(lastConnectHref);
-        else __pendingHomeReset = true;
-      }
-    } catch (_) {}
+    // v2.10.0 r30：防抖只作用于 createAppWindow（防同 anchor 2s 内双开跳出窗）；
+    // 主窗重置不再被防抖/anchor 缺失吞掉——无论是否转出，主窗都必须离开 appview。
+    if (anchor && !__dup) {
+      try { createAppWindow(s, { appId: anchor }); } catch (_) {}
+    }
+    try { __resetMainHome29(s); } catch (_) {}
     // v2.5.3 r19：从主页面打开应用 → 主页面不藏托盘（appview 内嵌转出同属主页面打开链）
-    try { require('./logger.js').log('info', 'wintype', 'appview.to-popout', { params: { app: anchor, url: s.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+    if (anchor && !__dup) {
+      try { require('./logger.js').log('info', 'wintype', 'appview.to-popout', { params: { app: anchor, url: s.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+    }
   });
 }
 

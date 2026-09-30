@@ -174,6 +174,9 @@ function __fnosLaunchByClick(appId, url, labels) {
   try {
     if (window.__fnosInstant26) return;
     window.__fnosInstant26 = 1;
+    // v2.10.0 r30（问题1 根修）：清扫只在 --fnos-app-window 应用窗内生效——主窗整棵 frame 树
+    //（web 桌面内嵌窗的真 —□✕ 与拖动手柄）全豁免；无旗标默认不杀（安全方向，宁漏不误杀）。
+    try { if (!process || !process.argv || process.argv.indexOf('--fnos-app-window') < 0) return; } catch (_) { return; }
     var KEEP = '[data-fnos-tb],[id^=fnos-],[class*=fnos-]';
     var CH = /^[\u2014_\u229F\u25A1\u25FB\u25A2\u2922\u2923\u2715Xx\u00D7\u00B7.,\-\/\\| ]{1,4}$/;
     var sweep = function () {

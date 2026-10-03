@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.13.1';
+const APP_VERSION = '2.13.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================

@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.13.2",
+  "version": "2.14.0",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -10,7 +10,8 @@
     "dev": "electron .",
     "dist": "electron-builder --win portable --x64",
     "build": "electron-builder --win portable --x64",
-    "dist:setup": "electron-builder --win nsis --x64 --publish never"
+    "dist:setup": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac --x64 --arm64 --publish never"
   },
   "devDependencies": {
     "electron": "^44.3.0",
@@ -69,17 +70,17 @@
       "package.json",
       "subapp-preload.js"
     ],
-    "extraResources": [
-      {
-        "from": "mpv",
-        "to": "mpv"
-      },
-      {
-        "from": "mpv-config",
-        "to": "mpv-config"
-      }
-    ],
     "win": {
+      "extraResources": [
+        {
+          "from": "mpv",
+          "to": "mpv"
+        },
+        {
+          "from": "mpv-config",
+          "to": "mpv-config"
+        }
+      ],
       "target": [
         {
           "target": "portable",
@@ -109,6 +110,35 @@
       "shortcutName": "FNOS",
       "runAfterFinish": true,
       "artifactName": "FNOS-${version}-setup.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.entertainment",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "icon.png",
+      "artifactName": "FNOS-${version}-mac-${arch}.${ext}",
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "artifactName": "FNOS-${version}-mac-${arch}.dmg"
+    },
+    "zip": {
+      "artifactName": "FNOS-${version}-mac-${arch}.zip"
     }
   },
   "dependencies": {

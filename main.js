@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.13.2';
+const APP_VERSION = '2.14.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -8873,12 +8873,166 @@ $sc.Save()
     return { success: false, msg, data: null };
   }
 }
+
+// ---------------------- v2.14.0 macOS 桌面快捷方式（.app 启动器） ----------------------
+// 与 Windows 链路同语义：热路径 loopback POST /launch 秒开常驻主程序（同一端点文件/端口/
+// token 通道）；失败回落冷启动直启主程序二进制 --launch-app/--nas（Electron 单实例锁走
+// second-instance，与 Windows VBS 触发器回落 exe 完全同链）。Windows 分支代码保持原样。
+function __macQuote(s) { return "'" + String(s || '').replace(/'/g, "'\\''") + "'"; }
+
+// 图标：PNG → sips/iconutil 生成 .icns（macOS 自带工具）。r20 教训：动图/坏图不得直进
+// nativeImage（native 崩溃 JS catch 不住）——mac 分支只吃原始 PNG 文件，非 PNG 回落默认图标。
+function __pngToIcnsMac(pngBuf) {
+  try {
+    if (!pngBuf || !pngBuf.length) return '';
+    let __h6 = '';
+    try { __h6 = require('crypto').createHash('md5').update(pngBuf).digest('hex').slice(0, 6); } catch (_) {}
+    const outIcns = path.join(ASSETS_DIR, `shortcut${__h6 ? '_' + __h6 : ''}.icns`);
+    if (fs.existsSync(outIcns)) return outIcns;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fnos-icns-'));
+    const iconset = path.join(tmp, 'app.iconset');
+    fs.mkdirSync(iconset);
+    const base = path.join(tmp, 'base.png');
+    fs.writeFileSync(base, pngBuf);
+    for (const s of [16, 32, 128, 256, 512]) {
+      cp.execSync(`sips -z ${s} ${s} ${__macQuote(base)} --out ${__macQuote(path.join(iconset, `icon_${s}x${s}.png`))}`, { stdio: 'ignore', timeout: 15000 });
+      cp.execSync(`sips -z ${s * 2} ${s * 2} ${__macQuote(base)} --out ${__macQuote(path.join(iconset, `icon_${s}x${s}@2x.png`))}`, { stdio: 'ignore', timeout: 15000 });
+    }
+    cp.execSync(`iconutil -c icns ${__macQuote(iconset)} -o ${__macQuote(outIcns)}`, { stdio: 'ignore', timeout: 15000 });
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+    return fs.existsSync(outIcns) ? outIcns : '';
+  } catch (_) { return ''; }
+}
+
+function __macIconPngBuffer(iconPath, preferLive) {
+  try {
+    if (preferLive) { try { return fs.readFileSync(LIVE_ICON_PNG); } catch (_) {} }
+    if (iconPath && fs.existsSync(iconPath) && /\.png$/i.test(iconPath)) {
+      const buf = fs.readFileSync(iconPath);
+      if (buf && buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50) return buf;
+    }
+  } catch (_) {}
+  try { return fs.readFileSync(ICON_PNG); } catch (_) {}
+  return null;
+}
+
+async function __createMacShortcut(payload) {
+  try {
+    const isLive = String(payload.appId) === LIVE_LAUNCH_ID;
+    const appName = String(payload.appName || '').trim() || (isLive ? '电视直播' : '应用');
+    let launchName = String(payload.appId || '');
+    if (!isLive) { try { launchName = /^https?:/i.test(launchName) ? fpkAppNameFromUrl(launchName) : launchName; } catch (_) {} }
+    if (!launchName) launchName = String(payload.appId || '');
+    const exePath = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    // nasBase 归一化同 Windows 分支（补协议头 + 端口补正）
+    let nasBase = String(payload.nasAddress || '').trim().replace(/\/+$/, '');
+    if (nasBase && !/^https?:/i.test(nasBase)) nasBase = 'http://' + nasBase;
+    try {
+      const stP = loadSettings();
+      const origP = String((stP && stP.origin) || '').trim();
+      if (origP && nasBase) {
+        const oP = new URL(/^https?:/i.test(origP) ? origP : 'http://' + origP);
+        const bP = new URL(nasBase);
+        if (oP.hostname === bP.hostname && oP.port) nasBase = oP.protocol + '//' + oP.host;
+      }
+    } catch (_) {}
+    let desktop = '';
+    try { desktop = app.getPath('desktop'); } catch (_) {}
+    if (!desktop || !fs.existsSync(desktop)) desktop = path.join(os.homedir(), 'Desktop');
+    if (desktop && !fs.existsSync(desktop)) { try { fs.mkdirSync(desktop, { recursive: true }); } catch (_) {} }
+    if (!desktop || !fs.existsSync(desktop)) {
+      fnosLog('error', 'shortcut.path', 'desktop path unavailable', { desktopTried: String(desktop || ''), err: 'desktop path not found' });
+      return { success: false, msg: '桌面路径不存在：请检查系统桌面目录配置', data: null };
+    }
+    const baseName = appName.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '应用';
+    const appDir = path.join(desktop, `${baseName}.app`);
+    const contents = path.join(appDir, 'Contents');
+    const macosDir = path.join(contents, 'MacOS');
+    const resDir = path.join(contents, 'Resources');
+    try {
+      if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true, force: true });
+      fs.mkdirSync(macosDir, { recursive: true });
+      fs.mkdirSync(resDir, { recursive: true });
+    } catch (e) {
+      fnosLog('error', 'shortcut.path', 'mac shortcut mkdir failed', { appDir, err: String(e.message || e) });
+      return { success: false, msg: '权限不足：无法写入桌面快捷方式', data: null };
+    }
+    try {
+      const pngBuf = __macIconPngBuffer(String(payload.iconPath || ''), isLive);
+      const icns = __pngToIcnsMac(pngBuf);
+      if (icns) fs.copyFileSync(icns, path.join(resDir, 'app.icns'));
+    } catch (_) {}
+    // 启动器脚本：热路径 loopback /launch（端点文件与 Windows 触发器同一通道），失败回落
+    // 冷启动直启主程序（--launch-app/--nas 参数与 VBS 触发器回落完全一致，均不编码）
+    const epFile = __LAUNCH_ENDPOINT_FILE();
+    const launcher = [
+      '#!/bin/bash',
+      '# FNOS fast launcher (generated, do not edit)',
+      'EP=' + __macQuote(epFile),
+      'APP=' + __macQuote(launchName),
+      'NAS=' + __macQuote(nasBase),
+      'EXE=' + __macQuote(exePath),
+      'if [ -f "$EP" ]; then',
+      '  PORT=$(sed -n 1p "$EP" | tr -d "[:space:]")',
+      '  TOKEN=$(sed -n 2p "$EP" | tr -d "[:space:]")',
+      '  if [ -n "$PORT" ] && [ -n "$TOKEN" ]; then',
+      '    CODE=$(curl -s -m 1 -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "app=$APP" --data-urlencode "token=$TOKEN" "http://127.0.0.1:$PORT/launch" 2>/dev/null)',
+      '    [ "$CODE" = "200" ] && exit 0',
+      '  fi',
+      'fi',
+      'if [ -x "$EXE" ]; then',
+      '  if [ -n "$NAS" ]; then',
+      '    "$EXE" "--launch-app=$APP" "--nas=$NAS" >/dev/null 2>&1 &',
+      '  else',
+      '    "$EXE" "--launch-app=$APP" >/dev/null 2>&1 &',
+      '  fi',
+      '  exit 0',
+      'fi',
+      'exit 1',
+      ''
+    ].join('\n');
+    const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const plistXml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>${escXml(appName)}</string>
+  <key>CFBundleDisplayName</key><string>${escXml(appName)}</string>
+  <key>CFBundleIdentifier</key><string>com.fnos.client.shortcut.${isLive ? 'live' : 'app'}</string>
+  <key>CFBundleExecutable</key><string>launcher</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${escXml(APP_VERSION)}</string>
+  <key>CFBundleIconFile</key><string>app.icns</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(path.join(contents, 'Info.plist'), plistXml);
+    const launcherPath = path.join(macosDir, 'launcher');
+    fs.writeFileSync(launcherPath, launcher, { mode: 0o755 });
+    try { fs.chmodSync(launcherPath, 0o755); } catch (_) {}
+    fnosLog('info', 'shortcut.path', 'mac shortcut created', { appDir, isLive, launchName: launchName.slice(0, 120) });
+    return { success: true, msg: '桌面快捷方式已生成', data: { path: appDir } };
+  } catch (e) {
+    fnosLog('error', 'ipc', '__createMacShortcut error', { err: e.message, stack: e.stack });
+    let msg = String(e.message || e).slice(0, 300);
+    if (/EACCES|EPERM|拒绝访问/i.test(msg)) msg = '权限不足：无法创建桌面快捷方式';
+    return { success: false, msg, data: null };
+  }
+}
+
 ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
   try {
     const { appId, appName, iconPath, nasAddress } = payload || {};
     // v2.4.0（需求第一部分-3）：IPC 收日志（含入参，敏感字段由 logger.js 脱敏）
     try { fnosLog('info', 'ipc', 'create-desktop-shortcut recv', { appId, appName, iconPath: String(iconPath || '').slice(0, 160), nasAddress }); } catch (_) {}
     if (!appId || !appName) return { success: false, msg: '缺少 appId 或 appName', data: null };
+    // v2.14.0：macOS 桌面快捷方式 = .app 启动器（loopback 秒开 + 冷启动回落，语义同
+    // Windows wscript 触发器链）；Windows 分支代码保持原样不动。
+    if (process.platform === 'darwin') {
+      return await __createMacShortcut({ appId: String(appId), appName: String(appName), iconPath: String(iconPath || ''), nasAddress: String(nasAddress || '') });
+    }
     // v2.11.0 r31：电视直播播放器快捷方式——保留 ID 走独立创建分支（不走 FPK 图标/URL 解析）
     if (String(appId) === LIVE_LAUNCH_ID) return await __createLiveShortcut(String(appName || '电视直播'));
     // v2.3.2: 归一化 nasAddress——设置页传入的可能无协议头（如 192.168.31.101），
@@ -9376,10 +9530,19 @@ ipcMain.handle('uninstall-nas-app', async (_e, payload) => {
       try { desktop = app.getPath('desktop'); } catch (_) {}
       if (!desktop || !fs.existsSync(desktop)) desktop = path.join(os.homedir(), 'Desktop');
       const lnkName = String(appName || '应用').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '应用';
-      const lnkPath = path.join(desktop, lnkName + '.lnk');
-      if (fs.existsSync(lnkPath)) {
-        fs.unlinkSync(lnkPath);
-        fnosLog('info', 'uninstall', '已删除桌面快捷方式', { lnkPath });
+      if (process.platform === 'darwin') {
+        // v2.14.0：macOS 快捷方式是 .app 启动器，卸载时整包删除
+        const stubPath = path.join(desktop, lnkName + '.app');
+        if (fs.existsSync(stubPath)) {
+          fs.rmSync(stubPath, { recursive: true, force: true });
+          fnosLog('info', 'uninstall', '已删除桌面快捷方式', { lnkPath: stubPath });
+        }
+      } else {
+        const lnkPath = path.join(desktop, lnkName + '.lnk');
+        if (fs.existsSync(lnkPath)) {
+          fs.unlinkSync(lnkPath);
+          fnosLog('info', 'uninstall', '已删除桌面快捷方式', { lnkPath });
+        }
       }
     } catch (_) {}
 
@@ -10141,6 +10304,11 @@ ipcMain.handle('settings:set-accent-color', async (_e, color) => {
 // 支持便携版：用 PORTABLE_EXECUTABLE_FILE 稳定路径，避免解压临时目录变化导致自启失效
 ipcMain.handle('settings:get-autostart', async () => {
   try {
+    // v2.14.0：macOS 开机自启状态 = LaunchAgent plist 是否存在（同语义查询）
+    if (process.platform === 'darwin') {
+      const __lp = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.fnos.client.plist');
+      return { success: true, msg: '', data: fs.existsSync(__lp) };
+    }
     if (process.platform !== 'win32') return { success: false, msg: '仅 Windows 支持', data: false };
     return new Promise((resolve) => {
       cp.exec('reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v FNOS', { timeout: 10000, windowsHide: true }, (err, stdout) => {
@@ -10178,9 +10346,54 @@ function __isQuietStart() {
 }
 
 
+// v2.14.0：macOS 开机自启 = LaunchAgent（与 Windows HKCU Run 同语义：开机命令只带
+// --autostart 不带应用 ID，__isQuietStart() 命中后静默驻留托盘）。不用 setLoginItemSettings，
+// 保持"手写系统自启项"的既有实现约定（原需求 2.8 禁止项不破例）。
+function __setAutoLaunchMac(enable) {
+  try {
+    const dir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+    const plist = path.join(dir, 'com.fnos.client.plist');
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (!enable) {
+      try { cp.execSync('launchctl unload ' + __macQuote(plist), { stdio: 'ignore', timeout: 5000 }); } catch (_) {}
+      try { if (fs.existsSync(plist)) fs.unlinkSync(plist); } catch (_) {}
+      try { saveSettings({ autoLaunch: false }); } catch (_) {}
+      try { require('./logger.js').log('info', 'autolaunch', 'launchagent removed', { params: { enable: false } }, __RUN_MODE); } catch (_) {}
+      return { success: true, msg: '已关闭开机自启' };
+    }
+    if (!exe) return { success: false, msg: '可执行文件路径为空' };
+    fs.mkdirSync(dir, { recursive: true });
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<plist version="1.0"><dict>',
+      '<key>Label</key><string>com.fnos.client</string>',
+      '<key>ProgramArguments</key><array>',
+      '<string>' + esc(exe) + '</string>',
+      '<string>--autostart</string>',
+      '</array>',
+      '<key>RunAtLoad</key><true/>',
+      '<key>KeepAlive</key><false/>',
+      '</dict></plist>',
+      ''
+    ].join('\n');
+    fs.writeFileSync(plist, xml);
+    try { cp.execSync('launchctl unload ' + __macQuote(plist), { stdio: 'ignore', timeout: 5000 }); } catch (_) {}
+    try { cp.execSync('launchctl load ' + __macQuote(plist), { stdio: 'ignore', timeout: 5000 }); } catch (_) {}
+    try { saveSettings({ autoLaunch: true }); } catch (_) {}
+    try { require('./logger.js').log('info', 'autolaunch', 'launchagent write ok', { params: { enable: true, exe: String(exe).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
+    return { success: true, msg: '已开启开机自启' };
+  } catch (e) {
+    try { require('./logger.js').log('error', 'autolaunch', 'launchagent write exception', { params: { enable } }, __RUN_MODE); } catch (_) {}
+    return { success: false, msg: String(e.message || e).slice(0, 200) };
+  }
+}
+
 function __setAutoLaunchRegistry(enable) {
   return new Promise((resolve) => {
     try {
+      if (process.platform === 'darwin') { resolve(__setAutoLaunchMac(enable)); return; }
       if (process.platform !== 'win32') { resolve({ success: false, msg: '仅 Windows 支持' }); return; }
       const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
       const safeExe = String(exe).replace(/"/g, '');
@@ -12122,7 +12335,7 @@ ipcMain.handle('iptv:record-open-folder', async (_e, id) => {
   try {
     const s = RECORDINGS.get(id);
     const dir = s ? s.recDir : path.join(app.getPath('videos') || app.getPath('home'), 'FNOS-Recordings');
-    require('child_process').exec((process.platform === 'win32' ? 'explorer.exe "' + dir + '"' : 'xdg-open "' + dir + '"'));
+    require('child_process').exec((process.platform === 'win32' ? 'explorer.exe "' + dir + '"' : process.platform === 'darwin' ? 'open "' + dir + '"' : 'xdg-open "' + dir + '"'));
     return { ok: true, dir };
   } catch (e) { return { ok: false, error: e.message }; }
 });
@@ -12586,4 +12799,16 @@ app.on('window-all-closed', () => {
   if (app.isQuitting) {
     if (process.platform !== 'darwin') app.quit();
   }
+});
+
+// v2.14.0：macOS Dock 图标点击恢复主窗口（Windows 无此事件；行为等价任务栏恢复）。
+// 主窗常驻（hide 而非 destroy），故只需 show/restore/focus；窗口真销毁时走既有重启链。
+app.on('activate', () => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!mainWindow.isVisible()) mainWindow.show();
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  } catch (_) {}
 });

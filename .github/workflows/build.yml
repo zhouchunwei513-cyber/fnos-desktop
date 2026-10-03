@@ -128,3 +128,96 @@ jobs:
           $names = @($view.assets | ForEach-Object { $_.name })
           if ($names.Count -eq 0) { throw "release assets not visible via auth (see job log)" }
           Write-Host "Release $tag visibility check passed (auth-read): $($names -join ', ')"
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # v2.14.0 macOS 支持：不签名（identity:null + 关闭证书自动发现），
+      # 用户侧首次打开需右键→打开 或 xattr -dr com.apple.quarantine。
+      # mpv 外挂内核为 Windows 专属；mac 播放走内置 hls.js 网页内核，无需下载 mpv。
+      - name: Build macOS dmg+zip (x64+arm64)
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm exec electron-builder --mac --x64 --arm64 --publish never
+
+      - name: 校验 macOS 产物
+        shell: bash
+        run: |
+          ls -la dist/ || true
+          DMG=$(ls dist/FNOS-*-mac-*.dmg 2>/dev/null | wc -l | tr -d ' ')
+          ZIP=$(ls dist/FNOS-*-mac-*.zip 2>/dev/null | wc -l | tr -d ' ')
+          echo "dmg=$DMG zip=$ZIP"
+          if [ "$DMG" -lt 2 ] || [ "$ZIP" -lt 2 ]; then
+            echo "::error::macOS 产物缺失（期望 dmg×2 zip×2，实际 dmg=$DMG zip=$ZIP）"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FNOS-mac-${{ github.ref_name }}
+          path: |
+            dist/FNOS-*-mac-*.dmg
+            dist/FNOS-*-mac-*.zip
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 与 build-windows 并发：release 可能已由 win job 创建。view 失败→create，
+          # create 失败再回查 view（竞态被对方先建则视为已存在），最终仍不存在才失败。
+          set -uo pipefail
+          tag="$GITHUB_REF_NAME"
+          mapfile -t files < <(ls dist/FNOS-*-mac-*.dmg dist/FNOS-*-mac-*.zip 2>/dev/null)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::dist 下 FNOS-*-mac-*.dmg/.zip 无匹配产物，拒绝发布空资产"
+            exit 1
+          fi
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            extra=()
+            if [[ "$tag" == *-rc* || "$tag" == *-beta* ]]; then extra+=(--prerelease); fi
+            if ! gh release create "$tag" --generate-notes "${extra[@]}" 2>/dev/null; then
+              if ! gh release view "$tag" >/dev/null 2>&1; then
+                echo "::error::gh release create $tag 失败且 release 不存在"
+                exit 1
+              fi
+              echo "release $tag 已由并发 job 创建，继续上传"
+            fi
+          fi
+          for f in "${files[@]}"; do
+            ok=0
+            for i in 1 2 3 4; do
+              if gh release upload "$tag" "$f" --clobber; then ok=1; break; fi
+              echo "上传 $(basename "$f") 第 $i 次失败，5s 后重试"
+              sleep 5
+            done
+            if [ "$ok" -ne 1 ]; then
+              echo "::error::资产 $(basename "$f") 连续 4 次上传失败"
+              exit 1
+            fi
+          done
+          echo "Release $tag macOS 资产就绪：${files[*]}"
+          sleep 3
+          mapfile -t names < <(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null)
+          echo "auth-read visibility: ${names[*]:-EMPTY}"

@@ -189,7 +189,10 @@ jobs:
           # create 失败再回查 view（竞态被对方先建则视为已存在），最终仍不存在才失败。
           set -uo pipefail
           tag="$GITHUB_REF_NAME"
-          mapfile -t files < <(ls dist/FNOS-*-mac-*.dmg dist/FNOS-*-mac-*.zip 2>/dev/null)
+          files=()
+          for f in dist/FNOS-*-mac-*.dmg dist/FNOS-*-mac-*.zip; do
+            if [ -e "$f" ]; then files+=("$f"); fi
+          done
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::dist 下 FNOS-*-mac-*.dmg/.zip 无匹配产物，拒绝发布空资产"
             exit 1
@@ -219,5 +222,5 @@ jobs:
           done
           echo "Release $tag macOS 资产就绪：${files[*]}"
           sleep 3
-          mapfile -t names < <(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null)
-          echo "auth-read visibility: ${names[*]:-EMPTY}"
+          names=$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null)
+          echo "auth-read visibility: ${names:-EMPTY}"

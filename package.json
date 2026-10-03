@@ -136,9 +136,6 @@
     },
     "dmg": {
       "artifactName": "FNOS-${version}-mac-${arch}.dmg"
-    },
-    "zip": {
-      "artifactName": "FNOS-${version}-mac-${arch}.zip"
     }
   },
   "dependencies": {

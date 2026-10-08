@@ -75,5 +75,7 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   close: () => ipcRenderer.send('settings:close'),
 });
 
-// v1.54：设置窗注入与主窗口同款无边框标题栏
-try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }
+// v2.15.2：macOS 用原生红绿灯，不注入自绘标题栏；Windows 保持自绘无边框标题栏。
+if (process.platform !== 'darwin') {
+  try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }
+}

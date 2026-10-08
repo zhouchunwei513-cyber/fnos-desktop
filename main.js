@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.1';
+const APP_VERSION = '2.15.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -3883,7 +3883,7 @@ function createSettingsWindow() {
     title: 'FNOS 设置',
     backgroundColor: '#05060a',
     autoHideMenuBar: true,
-    frame: false, // v1.54：无边框，settings-preload 内注入与主窗口同款标题栏
+    frame: process.platform === 'darwin', // v2.15.2：mac 原生红绿灯，Windows 无边框 + settings-preload 注入自绘标题栏
     icon: ICON_PATH,
     show: false,
     webPreferences: {
@@ -4139,7 +4139,7 @@ function registerWindow(win, opts = {}) {
           minWidth: 640, minHeight: 480,
           backgroundColor: '#0b0d12',
           autoHideMenuBar: true,
-          frame: process.platform !== 'darwin', // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
+          frame: process.platform === 'darwin', // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
           icon: ICON_PATH,
           title: APP_NAME,
           webPreferences: {
@@ -4606,7 +4606,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +
     //   titleBarOverlay——overlay 在 Windows 会重新绘制系统原生窗口按钮(右上角 - □ ✕)，
     //   自定义标题栏盖不住，表现为"标题栏不统一/仍是系统按钮"。
-    frame: process.platform !== 'darwin',
+    frame: process.platform === 'darwin',
     // v2.0.6：优先使用 manifest 中存储的应用图标，避免初始显示主图标
     icon: (() => {
       try {
@@ -5988,7 +5988,7 @@ function createMainWindow(partition, loadTarget) {
     // 标题栏 DOM 由 preload.js 注入（可拖拽 + 最小化/最大化/关闭按钮），系统菜单栏随之移除，
     // 原"隐藏菜单栏"设置项不再需要（始终无系统菜单栏）。
     // v2.15.0：macOS 用原生标题栏（红绿灯按钮，符合苹果系统格式），Windows 保持自绘无边框。
-    frame: process.platform !== 'darwin',
+    frame: process.platform === 'darwin',
     autoHideMenuBar: true,
     icon: ICON_PATH,
     webPreferences: {
@@ -6766,7 +6766,7 @@ function buildMenuTemplate() {
             width: 720, height: 680,
             title: 'FNOS · 操作帮助',
             autoHideMenuBar: true,
-            frame: process.platform !== 'darwin', // v1.54：无边框，preload 注入与主窗口同款标题栏
+            frame: process.platform === 'darwin', // v1.54：无边框，preload 注入与主窗口同款标题栏
             backgroundColor: '#0b0d12',
             icon: ICON_PATH,
             parent: mainWindow || undefined,
@@ -10535,7 +10535,7 @@ function createLiveWindow(autoplayChannel) {
       title: APP_NAME + ' · 电视直播',
       backgroundColor: '#0b0d12',
       // v2.15.0：macOS 用原生标题栏（红绿灯），Windows 保持自绘无边框
-      frame: process.platform !== 'darwin',
+      frame: process.platform === 'darwin',
       autoHideMenuBar: true,
       show: false,
       icon: ICON_PATH,
@@ -11867,7 +11867,7 @@ try {
             // 统一的无边框 + preload 开窗覆盖项（所有由网页 window.open 弹出的窗口都走这个，
             // 彻底杜绝 Electron 默认带系统原生标题栏的窗口）
             const frameLessOverride = () => ({
-              frame: process.platform !== 'darwin',
+              frame: process.platform === 'darwin',
               backgroundColor: '#0b0d12',
               autoHideMenuBar: true,
               icon: ICON_PATH,
@@ -12211,7 +12211,12 @@ ipcMain.handle('mpv:embed', async (e, payload) => {
     p._sender = e && e.sender;
     const hostWin = hostWindowFromSender(e && e.sender) || mainWindow;
     dlog('info', 'mpv.embed.invoke', { from: (e && e.sender && e.sender.getType()) || 'unknown', scope: p.scope, hasUrl: !!p.url });
-    return await embedMpvPlay(hostWin, p);
+    // v2.15.2：mpv 内核启动失败/IPC 未就绪时 embedMpvPlay 可能永久 pending → ipcMain.handle 的 reply 永不返回
+    // （渲染进程 invoke 永久等待，报 "reply was never sent"→"打开失败"）。加 20s 超时兜底必回结果。
+    return await Promise.race([
+      embedMpvPlay(hostWin, p),
+      new Promise(res => setTimeout(() => res({ ok: false, reason: 'MPV 启动超时（内核未就绪，请检查内置 mpv）' }), 20000)),
+    ]);
   } catch (err) { dlog('warn', 'mpv.embed.invoke.error', { err: String(err && err.message || err) }); return { ok: false, reason: err.message }; }
 });
 

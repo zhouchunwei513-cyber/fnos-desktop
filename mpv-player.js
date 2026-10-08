@@ -150,12 +150,13 @@ function buildCacheArgs(level) {
 }
 
 function hwDecodeArgs(mode) {
-  // macOS：VideoToolbox 硬解（Apple Silicon / Intel 通用），gpu-context 用 cocoa-cb（Metal 渲染）
+  // macOS：VideoToolbox 硬解（Apple Silicon / Intel 通用）。gpu-context 不指定，交 mpv 自动选
+  // （此 mpv 构建 metal/cocoa-cb 均不支持，硬写会 fatal；auto 一定挑有效值，VideoToolbox 照常硬解）
   if (process.platform === 'darwin') {
     switch (mode) {
       case 'no':     return ['--hwdec=no'];
       case 'auto':
-      default:       return ['--hwdec=videotoolbox', '--gpu-context=cocoa-cb'];
+      default:       return ['--hwdec=videotoolbox'];
     }
   }
   switch (mode) {

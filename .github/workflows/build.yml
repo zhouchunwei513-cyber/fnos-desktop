@@ -65,7 +65,7 @@ jobs:
           if ($d3d) { Copy-Item $d3d.FullName "mpv/d3dcompiler_43.dll" -Force }
           Get-ChildItem mpv | ForEach-Object { Write-Host "  mpv/$($_.Name) $([math]::Round($_.Length/1MB,1)) MB" }
 
-      - name: Build Windows portable+zip
+      - name: Build Windows setup (nsis only)
         run: pnpm exec electron-builder --x64 --publish never   # target 由 package.json win.target 驱动（portable+zip）
 
       - name: 校验内置 mpv 内核已打包（防止产出无内核安装包）
@@ -88,7 +88,6 @@ jobs:
           name: FNOS-${{ github.ref_name }}
           path: |
             dist/FNOS-*.exe
-            dist/FNOS-*.zip
           if-no-files-found: error
 
       - name: Release
@@ -101,7 +100,7 @@ jobs:
           # 上传软失败偶发（v2.4.9 实录：step success 但 Release assets=0）。改为 gh CLI 显式
           # 流程：无产物直接失败（拒绝空 Release）、上传 4 次重试、--clobber 幂等可重跑。
           $tag = $env:GITHUB_REF_NAME
-          $files = Get-ChildItem dist -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'FNOS-*.exe' -or $_.Name -like 'FNOS-*.zip' }
+          $files = Get-ChildItem dist -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'FNOS-*.exe' }
           if (-not $files) { throw "dist 下 FNOS-*.exe / FNOS-*.zip 无匹配产物，拒绝发布空 Release" }
           gh release view $tag 2>$null | Out-Null
           if ($LASTEXITCODE -ne 0) {
@@ -152,10 +151,8 @@ jobs:
       # v2.14.0 macOS 支持：不签名（identity:null + 关闭证书自动发现），
       # 用户侧首次打开需右键→打开 或 xattr -dr com.apple.quarantine。
       # mpv 外挂内核为 Windows 专属；mac 播放走内置 hls.js 网页内核，无需下载 mpv。
-      - name: Build macOS dmg+zip (x64+arm64)
+      - name: Build macOS dmg (x64+arm64)
         shell: bash
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm exec electron-builder --mac --x64 --arm64 --publish never
 
       - name: 校验 macOS 产物
@@ -163,9 +160,8 @@ jobs:
         run: |
           ls -la dist/ || true
           DMG=$(ls dist/FNOS-*-mac-*.dmg 2>/dev/null | wc -l | tr -d ' ')
-          ZIP=$(ls dist/FNOS-*-mac-*.zip 2>/dev/null | wc -l | tr -d ' ')
-          echo "dmg=$DMG zip=$ZIP"
-          if [ "$DMG" -lt 2 ] || [ "$ZIP" -lt 2 ]; then
+          echo "dmg=$DMG"
+          if [ "$DMG" -lt 2 ]; then
             echo "::error::macOS 产物缺失（期望 dmg×2 zip×2，实际 dmg=$DMG zip=$ZIP）"
             exit 1
           fi
@@ -176,7 +172,6 @@ jobs:
           name: FNOS-mac-${{ github.ref_name }}
           path: |
             dist/FNOS-*-mac-*.dmg
-            dist/FNOS-*-mac-*.zip
           if-no-files-found: error
 
       - name: Release
@@ -190,7 +185,7 @@ jobs:
           set -uo pipefail
           tag="$GITHUB_REF_NAME"
           files=()
-          for f in dist/FNOS-*-mac-*.dmg dist/FNOS-*-mac-*.zip; do
+          for f in dist/FNOS-*-mac-*.dmg; do
             if [ -e "$f" ]; then files+=("$f"); fi
           done
           if [ "${#files[@]}" -eq 0 ]; then

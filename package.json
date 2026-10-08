@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.14.0",
+  "version": "2.14.1",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -8,8 +8,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "dist": "electron-builder --win portable --x64",
-    "build": "electron-builder --win portable --x64",
+    "dist": "electron-builder --win nsis --x64",
+    "build": "electron-builder --win nsis --x64",
     "dist:setup": "electron-builder --win nsis --x64 --publish never",
     "dist:mac": "electron-builder --mac --x64 --arm64 --publish never"
   },
@@ -83,12 +83,6 @@
       ],
       "target": [
         {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
           "target": "nsis",
           "arch": [
             "x64"
@@ -97,9 +91,6 @@
       ],
       "icon": "icon.ico",
       "artifactName": "FNOS-${version}-win.${ext}"
-    },
-    "portable": {
-      "artifactName": "FNOS-${version}-portable.exe"
     },
     "nsis": {
       "oneClick": false,
@@ -120,18 +111,11 @@
             "x64",
             "arm64"
           ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
         }
       ],
       "icon": "icon.png",
       "artifactName": "FNOS-${version}-mac-${arch}.${ext}",
-      "identity": null,
+      "identity": "-",
       "hardenedRuntime": false
     },
     "dmg": {

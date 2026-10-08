@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.14.1';
+const APP_VERSION = '2.14.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -8947,23 +8947,13 @@ async function __createMacShortcut(payload) {
     const baseName = appName.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '应用';
     const appDir = path.join(desktop, `${baseName}.app`);
     const contents = path.join(appDir, 'Contents');
-    const macosDir = path.join(contents, 'MacOS');
     const resDir = path.join(contents, 'Resources');
     try {
       if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true, force: true });
-      fs.mkdirSync(macosDir, { recursive: true });
-      fs.mkdirSync(resDir, { recursive: true });
     } catch (e) {
-      fnosLog('error', 'shortcut.path', 'mac shortcut mkdir failed', { appDir, err: String(e.message || e) });
-      return { success: false, msg: '权限不足：无法写入桌面快捷方式', data: null };
+      fnosLog('error', 'shortcut.path', 'mac shortcut cleanup failed', { appDir, err: String(e.message || e) });
+      return { success: false, msg: 'cleanup failed: cannot rewrite desktop shortcut', data: null };
     }
-    try {
-      const pngBuf = __macIconPngBuffer(String(payload.iconPath || ''), isLive);
-      const icns = __pngToIcnsMac(pngBuf);
-      if (icns) fs.copyFileSync(icns, path.join(resDir, 'app.icns'));
-    } catch (_) {}
-    // 启动器脚本：热路径 loopback /launch（端点文件与 Windows 触发器同一通道），失败回落
-    // 冷启动直启主程序（--launch-app/--nas 参数与 VBS 触发器回落完全一致，均不编码）
     const epFile = __LAUNCH_ENDPOINT_FILE();
     const launcher = [
       '#!/bin/bash',
@@ -8990,28 +8980,38 @@ async function __createMacShortcut(payload) {
       'fi',
       'exit 1',
       ''
-    ].join('\n');
-    const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const plistXml = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>${escXml(appName)}</string>
-  <key>CFBundleDisplayName</key><string>${escXml(appName)}</string>
-  <key>CFBundleIdentifier</key><string>com.fnos.client.shortcut.${isLive ? 'live' : 'app'}</string>
-  <key>CFBundleExecutable</key><string>launcher</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>${escXml(APP_VERSION)}</string>
-  <key>CFBundleIconFile</key><string>app.icns</string>
-  <key>LSUIElement</key><true/>
-  <key>NSHighResolutionCapable</key><true/>
-</dict>
-</plist>
-`;
-    fs.writeFileSync(path.join(contents, 'Info.plist'), plistXml);
-    const launcherPath = path.join(macosDir, 'launcher');
-    fs.writeFileSync(launcherPath, launcher, { mode: 0o755 });
-    try { fs.chmodSync(launcherPath, 0o755); } catch (_) {}
+    ].join(String.fromCharCode(10));
+    const scpt = 'do shell script "/bin/bash " & quoted form of (POSIX path of (path to resource "run.sh"))';
+    const tmpScpt = path.join(os.tmpdir(), 'fnos-shortcut-' + Date.now() + '.applescript');
+    try {
+      fs.writeFileSync(tmpScpt, scpt);
+      cp.execSync('osacompile -o ' + __macQuote(appDir) + ' ' + __macQuote(tmpScpt), { stdio: 'ignore', timeout: 20000 });
+    } catch (e) {
+      fnosLog('error', 'shortcut.path', 'mac osacompile failed', { appDir, err: String(e.message || e) });
+      return { success: false, msg: 'osacompile failed: cannot build mac shortcut', data: null };
+    } finally { try { fs.rmSync(tmpScpt, { force: true }); } catch (_) {} }
+    try {
+      const __runSh = path.join(resDir, 'run.sh');
+      fs.writeFileSync(__runSh, launcher, { mode: 0o755 });
+      fs.chmodSync(__runSh, 0o755);
+    } catch (_) {}
+    let __icnsOk = false;
+    try {
+      const pngBuf = __macIconPngBuffer(String(payload.iconPath || ''), isLive);
+      const icns = __pngToIcnsMac(pngBuf);
+      if (icns) { fs.copyFileSync(icns, path.join(resDir, 'app.icns')); __icnsOk = true; }
+    } catch (_) {}
+    try {
+      const infoPlist = path.join(contents, 'Info.plist');
+      const pb = '/usr/libexec/PlistBuddy';
+      const pbSet = (cmd) => { try { cp.execSync(pb + ' -c ' + __macQuote(cmd) + ' ' + __macQuote(infoPlist), { stdio: 'ignore', timeout: 10000 }); } catch (_) {} };
+      pbSet('Set :CFBundleName string ' + appName);
+      pbSet('Set :CFBundleDisplayName string ' + appName);
+      pbSet('Set :CFBundleIdentifier string com.fnos.client.shortcut.' + (isLive ? 'live' : 'app'));
+      if (__icnsOk) pbSet('Set :CFBundleIconFile string app');
+      pbSet('Add :LSUIElement bool true');
+    } catch (_) {}
+    try { cp.execSync('codesign --deep --force --sign - ' + __macQuote(appDir), { stdio: 'ignore', timeout: 20000 }); } catch (_) {}
     fnosLog('info', 'shortcut.path', 'mac shortcut created', { appDir, isLive, launchName: launchName.slice(0, 120) });
     return { success: true, msg: '桌面快捷方式已生成', data: { path: appDir } };
   } catch (e) {

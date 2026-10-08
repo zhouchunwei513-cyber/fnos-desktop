@@ -213,9 +213,11 @@ jobs:
             exit 1
           fi
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            extra=()
-            if [[ "$tag" == *-rc* || "$tag" == *-beta* ]]; then extra+=(--prerelease); fi
-            if ! gh release create "$tag" --generate-notes "${extra[@]}" 2>/dev/null; then
+            # v2.15.5：create_args 恒非空（起点 --generate-notes），避免 bash 3.2 + set -u 下
+            # 空数组 "${extra[@]}" 触发 "unbound variable" 崩溃（macOS 自带 bash 3.2，release 竞态时踩中）。
+            create_args=(--generate-notes)
+            if [[ "$tag" == *-rc* || "$tag" == *-beta* ]]; then create_args+=(--prerelease); fi
+            if ! gh release create "$tag" "${create_args[@]}" 2>/dev/null; then
               if ! gh release view "$tag" >/dev/null 2>&1; then
                 echo "::error::gh release create $tag 失败且 release 不存在"
                 exit 1

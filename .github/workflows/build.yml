@@ -161,6 +161,9 @@ jobs:
           curl -L --retry 3 -o /tmp/mpv-x64.zip "https://github.com/mpv-player/mpv/releases/download/v0.41.0/mpv-v0.41.0-macos-15-intel.zip"
           unzip -q -o /tmp/mpv-arm64.zip -d /tmp/mpv-arm64-x
           unzip -q -o /tmp/mpv-x64.zip -d /tmp/mpv-x64-x
+          # zip 内嵌套 mpv.tar.gz，需第二层解压才得到 mpv.app（吞 ownership 噪声，靠 find 校验）
+          tar -xzf /tmp/mpv-arm64-x/mpv.tar.gz -C /tmp/mpv-arm64-x 2>/dev/null || true
+          tar -xzf /tmp/mpv-x64-x/mpv.tar.gz -C /tmp/mpv-x64-x 2>/dev/null || true
           ARM_APP=$(find /tmp/mpv-arm64-x -name mpv.app -type d | head -1)
           X64_APP=$(find /tmp/mpv-x64-x -name mpv.app -type d | head -1)
           echo "arm64=$ARM_APP x64=$X64_APP"

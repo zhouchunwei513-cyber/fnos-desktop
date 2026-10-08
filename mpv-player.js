@@ -946,6 +946,15 @@ class MpvPlayer extends EventEmitter {
           .then(() => { winOk++; })
           .catch(() => { winErr++; });
       }
+      // v2.15.4：macOS 加固运行时重定位——mac mpv 后端对 window-* 属性/geometry 的运行时
+      // 重定位支持不一。补发 window-move/window-resize 命令（部分 mac 构建支持；shinchiro
+      // Windows 构建没有这俩命令，故仅 mac 走此分支）+ geometry 属性，多通道下发提高"跟随主窗"
+      // 命中率；均失败静默（不影响播放）。坐标统一 DIP（见 mpv-surface _computeScreenGeometry）。
+      if (process.platform === 'darwin') {
+        try { this.command(['window-move', x, y]).catch(() => {}); } catch (_) {}
+        try { this.command(['window-resize', w, h]).catch(() => {}); } catch (_) {}
+        try { this.command(['set_property', 'geometry', geoStr]).catch(() => {}); } catch (_) {}
+      }
       // 全部 window-* 都失败时才尝试 geometry 回退（避免每次抖动都双写 IPC）
       const fallbackTimer = setTimeout(() => {
         try {

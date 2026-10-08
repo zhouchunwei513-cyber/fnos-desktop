@@ -18,7 +18,10 @@ module.exports = function injectTitleBar(ctx) {
     const __SUB = (window.top !== window);
     // v2.15.3：macOS 用 titleBarStyle:hiddenInset（原生红绿灯内嵌），本标题栏只画 ☰菜单+拖动，
     // 不画 —□✕（最小化/最大化/关闭交给原生红绿灯）；Windows 保持自绘 —□✕。
-    const isMac = (typeof process !== 'undefined' && process.platform === 'darwin');
+    // v2.15.4：isMac 双通道判定——preload 上下文 process.platform 可用，但个别内嵌窗注入点
+    // process 可能不可用，补 navigator 兜底，确保 mac 上绝不画自绘 —□✕（红绿灯交原生）。
+    const isMac = (typeof process !== 'undefined' && process.platform === 'darwin') ||
+      (typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(String(navigator.platform || '') + String(navigator.userAgent || '')));
 
     // ---------------- v2.5.2 r18：appview 容器页 chrome 清理 + 布局修复 + 状态埋点 ----------------
     // r18 实测（图2/5/7）：appview?anchor= 顶层独立窗里 fnOS 前端把桌面壳残留全部渲染：右上角

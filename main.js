@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.3';
+const APP_VERSION = '2.15.4';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -8914,8 +8914,11 @@ function __pngToIcnsMac(pngBuf) {
     if (!pngBuf || !pngBuf.length) return '';
     let __h6 = '';
     try { __h6 = require('crypto').createHash('md5').update(pngBuf).digest('hex').slice(0, 6); } catch (_) {}
+    try { fs.mkdirSync(ASSETS_DIR, { recursive: true }); } catch (_) {}
     const outIcns = path.join(ASSETS_DIR, `shortcut${__h6 ? '_' + __h6 : ''}.icns`);
-    if (fs.existsSync(outIcns)) return outIcns;
+    // v2.15.4：命中缓存须校验非空——此前失败可能留下 0 字节坏 .icns，复用会导致图标不显示。
+    if (fs.existsSync(outIcns) && fs.statSync(outIcns).size > 0) return outIcns;
+    try { if (fs.existsSync(outIcns)) fs.rmSync(outIcns, { force: true }); } catch (_) {}
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fnos-icns-'));
     const iconset = path.join(tmp, 'app.iconset');
     fs.mkdirSync(iconset);
@@ -8927,7 +8930,7 @@ function __pngToIcnsMac(pngBuf) {
     }
     cp.execSync(`iconutil -c icns ${__macQuote(iconset)} -o ${__macQuote(outIcns)}`, { stdio: 'ignore', timeout: 15000 });
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
-    return fs.existsSync(outIcns) ? outIcns : '';
+    return (fs.existsSync(outIcns) && fs.statSync(outIcns).size > 0) ? outIcns : '';
   } catch (_) { return ''; }
 }
 
@@ -9028,6 +9031,13 @@ async function __createMacShortcut(payload) {
       const icns = __pngToIcnsMac(pngBuf);
       if (icns) { fs.copyFileSync(icns, path.join(resDir, 'app.icns')); __icnsOk = true; }
     } catch (_) {}
+    // v2.15.4：osacompile 生成的 applet 自带默认卷轴图标（applet.icns/AppletIcon）会盖住自定义图，
+    // 生成自定义 icns 后移除默认图，避免 Finder 回落显示卷轴图标。
+    if (__icnsOk) {
+      for (const dicon of ['applet.icns', 'AppletIcon.icns', 'AppletIcon.rsrc', 'applet.rsrc', 'droplet.rsrc']) {
+        try { fs.rmSync(path.join(resDir, dicon), { force: true }); } catch (_) {}
+      }
+    }
     try {
       const infoPlist = path.join(contents, 'Info.plist');
       const pb = '/usr/libexec/PlistBuddy';
@@ -9039,7 +9049,13 @@ async function __createMacShortcut(payload) {
       pbSet('Add :LSUIElement bool true');
     } catch (_) {}
     try { cp.execSync('codesign --deep --force --sign - ' + __macQuote(appDir), { stdio: 'ignore', timeout: 20000 }); } catch (_) {}
-    fnosLog('info', 'shortcut.path', 'mac shortcut created', { appDir, isLive, launchName: launchName.slice(0, 120) });
+    // v2.15.4：强制 LaunchServices 重新注册 + touch 更新 mtime，刷新 Finder 图标缓存。
+    // 否则即便 CFBundleIconFile/app.icns 正确，Finder 仍显示旧的 applet 默认图标。
+    try {
+      cp.execSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f ' + __macQuote(appDir), { stdio: 'ignore', timeout: 15000 });
+    } catch (_) {}
+    try { cp.execSync('touch ' + __macQuote(appDir), { stdio: 'ignore', timeout: 5000 }); } catch (_) {}
+    fnosLog('info', 'shortcut.path', 'mac shortcut created', { appDir, isLive, icnsOk: __icnsOk, launchName: launchName.slice(0, 120) });
     return { success: true, msg: '桌面快捷方式已生成', data: { path: appDir } };
   } catch (e) {
     fnosLog('error', 'ipc', '__createMacShortcut error', { err: e.message, stack: e.stack });

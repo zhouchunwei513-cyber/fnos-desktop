@@ -20,14 +20,32 @@ let mpvMod = null;
 // ---------- MPV 可执行文件发现 ----------
 function findMpvExe() {
   const candidates = [];
+  const isMac = process.platform === 'darwin';
   if (process.resourcesPath) {
-    candidates.push(path.join(process.resourcesPath, 'mpv', 'mpv.exe'));
-    candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'mpv', 'mpv.exe'));
+    if (isMac) {
+      // 内置 mpv.app（macOS，按 CPU 架构选 arm64/x64）
+      const arch = process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64';
+      candidates.push(path.join(process.resourcesPath, 'mpv', arch, 'mpv.app', 'Contents', 'MacOS', 'mpv'));
+      candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'mpv', arch, 'mpv.app', 'Contents', 'MacOS', 'mpv'));
+    } else {
+      candidates.push(path.join(process.resourcesPath, 'mpv', 'mpv.exe'));
+      candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'mpv', 'mpv.exe'));
+    }
   }
   // 开发环境
-  candidates.push(path.join(__dirname, 'mpv', 'mpv.exe'));
-  candidates.push(path.join(process.cwd(), 'mpv', 'mpv.exe'));
-  // 系统安装
+  if (isMac) {
+    candidates.push(path.join(__dirname, 'mpv', 'mac-arm64', 'mpv.app', 'Contents', 'MacOS', 'mpv'));
+    candidates.push(path.join(__dirname, 'mpv', 'mac-x64', 'mpv.app', 'Contents', 'MacOS', 'mpv'));
+  } else {
+    candidates.push(path.join(__dirname, 'mpv', 'mpv.exe'));
+    candidates.push(path.join(process.cwd(), 'mpv', 'mpv.exe'));
+  }
+  // 系统安装（mac：Homebrew/MacPorts 常见前缀；win：PATH）
+  if (isMac) {
+    candidates.push('/opt/homebrew/bin/mpv');
+    candidates.push('/usr/local/bin/mpv');
+    candidates.push('/opt/local/bin/mpv');
+  }
   candidates.push('mpv');
   for (const p of candidates) {
     try {
@@ -132,6 +150,14 @@ function buildCacheArgs(level) {
 }
 
 function hwDecodeArgs(mode) {
+  // macOS：VideoToolbox 硬解（Apple Silicon / Intel 通用），gpu-context 走默认 metal
+  if (process.platform === 'darwin') {
+    switch (mode) {
+      case 'no':     return ['--hwdec=no'];
+      case 'auto':
+      default:       return ['--hwdec=videotoolbox', '--gpu-context=metal'];
+    }
+  }
   switch (mode) {
     case 'auto':     // 默认：Windows + Intel 核显（如 N100）用 d3d11va 零拷贝，解码/显示全程留在 GPU，CPU 占用最低
     case 'd3d11va':  return ['--hwdec=d3d11va', '--gpu-context=d3d11'];
@@ -243,7 +269,9 @@ class MpvPlayer extends EventEmitter {
     this._resolveReady = null;
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
     this._dead = false;
-    this.pipePath = `\\\\.\\pipe\\fnos-mpv-${process.pid}-${Date.now()}`;
+    this.pipePath = (process.platform === 'darwin')
+      ? path.join(os.tmpdir(), 'fnos-mpv-' + process.pid + '-' + Date.now() + '.sock')
+      : '\\\\.\\pipe\\fnos-mpv-' + process.pid + '-' + Date.now();
 
     // 详细 mpv 日志文件（fnos-mpv.log）：记录 HTTP 状态/重定向/end-file/demuxer 网络细节，
     // 供离线排查“点播播到一半中断”。超 8MB 启动时截断，防止无限增长。

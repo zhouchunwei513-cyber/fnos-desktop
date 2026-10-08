@@ -1482,4 +1482,7 @@ try {
   });
 } catch (_) {}
 
-try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }
+// v2.15.0：macOS 用原生标题栏（红绿灯），不注入自绘标题栏；Windows 保持自绘无边框标题栏。
+if (process.platform !== 'darwin') {
+  try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }
+}

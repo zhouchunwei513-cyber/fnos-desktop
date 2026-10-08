@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.14.2';
+const APP_VERSION = '2.15.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1293,6 +1293,8 @@ function defaultSettings() {
       host: '',                // FPK 服务地址（如 192.168.31.101）
       port: 18080,             // FPK 服务端口
     },
+    // v2.15.0：主窗口位置/尺寸持久化（关闭/调整时存，启动恢复上次大小），null 表示用默认
+    windowBounds: null,
   };
 }
 
@@ -4137,7 +4139,7 @@ function registerWindow(win, opts = {}) {
           minWidth: 640, minHeight: 480,
           backgroundColor: '#0b0d12',
           autoHideMenuBar: true,
-          frame: false, // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
+          frame: process.platform !== 'darwin', // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
           icon: ICON_PATH,
           title: APP_NAME,
           webPreferences: {
@@ -4604,7 +4606,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +
     //   titleBarOverlay——overlay 在 Windows 会重新绘制系统原生窗口按钮(右上角 - □ ✕)，
     //   自定义标题栏盖不住，表现为"标题栏不统一/仍是系统按钮"。
-    frame: false,
+    frame: process.platform !== 'darwin',
     // v2.0.6：优先使用 manifest 中存储的应用图标，避免初始显示主图标
     icon: (() => {
       try {
@@ -5961,9 +5963,20 @@ function createMainWindow(partition, loadTarget) {
   // 未登录（无 loadTarget，load 本地连接页/登录页）时仍需显示，由 did-navigate 到 https /login 兜底显示。
   const __shortcutKeepHidden = !!__pendingFromShortcut && !!(loadTarget && loadTarget.href);
 
+  // v2.15.0：恢复上次窗口大小/位置（关闭/调整时存 settings.windowBounds），无有效记录用默认 1320x860
+  let savedBounds = null;
+  try {
+    const b = loadSettings().windowBounds;
+    if (b && typeof b === 'object' && Number.isFinite(b.width) && Number.isFinite(b.height) && b.width >= 1000 && b.height >= 680) {
+      savedBounds = b;
+    }
+  } catch (_) {}
+
   mainWindow = new BrowserWindow({
-    width: 1320,
-    height: 860,
+    width: savedBounds ? savedBounds.width : 1320,
+    height: savedBounds ? savedBounds.height : 860,
+    x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
+    y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
     minWidth: 1000,
     minHeight: 680,
     title: APP_NAME,
@@ -5974,7 +5987,8 @@ function createMainWindow(partition, loadTarget) {
     // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。
     // 标题栏 DOM 由 preload.js 注入（可拖拽 + 最小化/最大化/关闭按钮），系统菜单栏随之移除，
     // 原"隐藏菜单栏"设置项不再需要（始终无系统菜单栏）。
-    frame: false,
+    // v2.15.0：macOS 用原生标题栏（红绿灯按钮，符合苹果系统格式），Windows 保持自绘无边框。
+    frame: process.platform !== 'darwin',
     autoHideMenuBar: true,
     icon: ICON_PATH,
     webPreferences: {
@@ -6007,6 +6021,19 @@ function createMainWindow(partition, loadTarget) {
         if (stuck) { __resetMainHome29(cur); } else { __pendingHomeReset = false; }
       } catch (_) {}
     });
+  } catch (_) {}
+  // v2.15.0：主窗口位置/尺寸持久化——调整大小/移动/关闭时存 settings.windowBounds，下次启动恢复上次大小
+  try {
+    const __saveBounds = () => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !mainWindow.isFullScreen() && !mainWindow.isMaximized()) {
+          saveSettings({ windowBounds: mainWindow.getBounds() });
+        }
+      } catch (_) {}
+    };
+    mainWindow.on('resized', __saveBounds);
+    mainWindow.on('moved', __saveBounds);
+    mainWindow.on('close', __saveBounds);
   } catch (_) {}
   // v2.4.1（用户真机反馈，覆盖 v2.4.0 恒 hide）：点击启动飞牛主程时不隐藏主窗口——
   // 只有点击应用快捷方式（--launch-app/--app/--open-app）时才隐藏；开机自启（--autostart）
@@ -6739,7 +6766,7 @@ function buildMenuTemplate() {
             width: 720, height: 680,
             title: 'FNOS · 操作帮助',
             autoHideMenuBar: true,
-            frame: false, // v1.54：无边框，preload 注入与主窗口同款标题栏
+            frame: process.platform !== 'darwin', // v1.54：无边框，preload 注入与主窗口同款标题栏
             backgroundColor: '#0b0d12',
             icon: ICON_PATH,
             parent: mainWindow || undefined,
@@ -11392,7 +11419,7 @@ async function playMediaWithMpv(mediaUrl, opts) {
     if (!MpvPlayerMod || !MpvSurfaceMod) return { ok: false, reason: 'MPV 模块未加载' };
     const st = getMpvSettings();
     if (!st.enabled) return { ok: false, reason: 'MPV 播放已在设置中关闭' };
-    if (process.platform !== 'win32') return { ok: false, reason: 'MPV 外部播放器仅支持 Windows' };
+    if (process.platform !== 'win32' && process.platform !== 'darwin') return { ok: false, reason: 'MPV 外部播放器仅支持 Windows/macOS' };
     const info = MpvPlayerMod.getMpvInfo();
     if (!info.available) {
       try { glassMessageBox(mainWindow, { type: 'warning', title: 'MPV 不可用', message: info.reason || '未找到内置 MPV 播放器', buttons: ['确定'] }); } catch (_) {}
@@ -11840,7 +11867,7 @@ try {
             // 统一的无边框 + preload 开窗覆盖项（所有由网页 window.open 弹出的窗口都走这个，
             // 彻底杜绝 Electron 默认带系统原生标题栏的窗口）
             const frameLessOverride = () => ({
-              frame: false,
+              frame: process.platform !== 'darwin',
               backgroundColor: '#0b0d12',
               autoHideMenuBar: true,
               icon: ICON_PATH,
@@ -12029,9 +12056,9 @@ async function refreshVodStreamUrl(guestWc) {
 }
 
 async function embedMpvPlay(hostWin, payload) {
-  if (process.platform !== 'win32' || !MpvSurfaceMod || !MpvPlayerMod) {
+  if ((process.platform !== 'win32' && process.platform !== 'darwin') || !MpvSurfaceMod || !MpvPlayerMod) {
     dlog('warn', 'mpv.embed.skip', { reason: 'platform-or-module', platform: process.platform, hasSurface: !!MpvSurfaceMod, hasPlayer: !!MpvPlayerMod });
-    return { ok: false, reason: 'MPV 仅支持 Windows 且模块已加载' };
+    return { ok: false, reason: 'MPV 仅支持 Windows/macOS 且模块已加载' };
   }
   const exePath = MpvPlayerMod.getMpvExe();
   if (!exePath) {

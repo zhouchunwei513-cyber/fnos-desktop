@@ -78,8 +78,14 @@ local function helper_async(route, bodyJson, onDone)
         if not port or port == "" then
             mp.osd_message("字幕服务未就绪（请更新客户端）", 3); onDone(nil); return
         end
-        local windir = (os.getenv and os.getenv("WINDIR")) or "C:\\Windows"
-        local curl = windir .. "\\System32\\curl.exe"
+        local isWin = (os.getenv and os.getenv("WINDIR")) ~= nil
+        local curl
+        if isWin then
+            local windir = (os.getenv and os.getenv("WINDIR")) or "C:\\Windows"
+            curl = windir .. "\\System32\\curl.exe"
+        else
+            curl = "/usr/bin/curl"
+        end
         local url = "http://127.0.0.1:" .. port .. route .. "?token=" .. token
         local args = { curl, "-s", "-m", "45", "-X", "POST",
                        "-H", "Content-Type: application/json",

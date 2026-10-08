@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.14.2",
+  "version": "2.15.0",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -116,7 +116,21 @@
       "icon": "icon.png",
       "artifactName": "FNOS-${version}-mac-${arch}.${ext}",
       "identity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "extraResources": [
+        {
+          "from": "mpv/mac-arm64",
+          "to": "mpv/mac-arm64"
+        },
+        {
+          "from": "mpv/mac-x64",
+          "to": "mpv/mac-x64"
+        },
+        {
+          "from": "mpv-config",
+          "to": "mpv-config"
+        }
+      ]
     },
     "dmg": {
       "artifactName": "FNOS-${version}-mac-${arch}.dmg"

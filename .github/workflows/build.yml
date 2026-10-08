@@ -150,7 +150,19 @@ jobs:
 
       # v2.14.0 macOS 支持：不签名（identity:null + 关闭证书自动发现），
       # 用户侧首次打开需右键→打开 或 xattr -dr com.apple.quarantine。
-      # mpv 外挂内核为 Windows 专属；mac 播放走内置 hls.js 网页内核，无需下载 mpv。
+      # v2.15.0：mac 内置 mpv 内核（stolendata 自包含 mpv.app，含 libmpv+依赖），按 CPU 架构打包。
+      - name: 下载内置 mpv 运行时（macOS arm64+x64）
+        shell: bash
+        run: |
+          set -e
+          mkdir -p mpv/mac-arm64 mpv/mac-x64
+          curl -L --retry 3 -o /tmp/mpv-arm64.tar.gz "https://laboratory.stolendata.net/~djinn/mpv_osx/mpv-arm64-0.40.0.tar.gz"
+          curl -L --retry 3 -o /tmp/mpv-x64.tar.gz "https://laboratory.stolendata.net/~djinn/mpv_osx/mpv-0.40.0.tar.gz"
+          tar -xzf /tmp/mpv-arm64.tar.gz -C mpv/mac-arm64
+          tar -xzf /tmp/mpv-x64.tar.gz -C mpv/mac-x64
+          if [ -d mpv/mac-arm64/mpv-arm64-0.40.0 ]; then mv mpv/mac-arm64/mpv-arm64-0.40.0/mpv.app mpv/mac-arm64/mpv.app; rm -rf mpv/mac-arm64/mpv-arm64-0.40.0; fi
+          if [ -d mpv/mac-x64/mpv-0.40.0 ]; then mv mpv/mac-x64/mpv-0.40.0/mpv.app mpv/mac-x64/mpv.app; rm -rf mpv/mac-x64/mpv-0.40.0; fi
+          echo "=== mpv mac binaries ==="; ls -la mpv/mac-arm64/mpv.app/Contents/MacOS/ mpv/mac-x64/mpv.app/Contents/MacOS/
       - name: Build macOS dmg (x64+arm64)
         shell: bash
         run: pnpm exec electron-builder --mac --x64 --arm64 --publish never

@@ -150,12 +150,12 @@ function buildCacheArgs(level) {
 }
 
 function hwDecodeArgs(mode) {
-  // macOS：VideoToolbox 硬解（Apple Silicon / Intel 通用），gpu-context 走默认 metal
+  // macOS：VideoToolbox 硬解（Apple Silicon / Intel 通用），gpu-context 用 cocoa-cb（Metal 渲染）
   if (process.platform === 'darwin') {
     switch (mode) {
       case 'no':     return ['--hwdec=no'];
       case 'auto':
-      default:       return ['--hwdec=videotoolbox', '--gpu-context=metal'];
+      default:       return ['--hwdec=videotoolbox', '--gpu-context=cocoa-cb'];
     }
   }
   switch (mode) {

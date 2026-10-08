@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.0';
+const APP_VERSION = '2.15.1';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -10534,8 +10534,8 @@ function createLiveWindow(autoplayChannel) {
       width: 1280, height: 820, minWidth: 960, minHeight: 600,
       title: APP_NAME + ' · 电视直播',
       backgroundColor: '#0b0d12',
-      // v1.50.0：统一无边框 + 自定义标题栏（与主窗口/应用窗口风格一致）
-      frame: false,
+      // v2.15.0：macOS 用原生标题栏（红绿灯），Windows 保持自绘无边框
+      frame: process.platform !== 'darwin',
       autoHideMenuBar: true,
       show: false,
       icon: ICON_PATH,

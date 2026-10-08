@@ -74,4 +74,7 @@ contextBridge.exposeInMainWorld('fnosLive', {
 });
 
 // v1.54：电视直播窗口统一无边框标题栏（与主窗口/应用窗口/设置页同款）
-try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }
+// v2.15.0：macOS 用原生标题栏（红绿灯），不注入自绘标题栏；Windows 保持自绘无边框标题栏。
+if (process.platform !== 'darwin') {
+  try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }
+}

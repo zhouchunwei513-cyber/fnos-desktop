@@ -16,6 +16,9 @@ module.exports = function injectTitleBar(ctx) {
     // 白区=iframe）。nodeIntegrationInSubFrames 开启后 preload 进每个 iframe：子帧只跑 chrome
     // 清理+主题归一，不注入标题栏。
     const __SUB = (window.top !== window);
+    // v2.15.3：macOS 用 titleBarStyle:hiddenInset（原生红绿灯内嵌），本标题栏只画 ☰菜单+拖动，
+    // 不画 —□✕（最小化/最大化/关闭交给原生红绿灯）；Windows 保持自绘 —□✕。
+    const isMac = (typeof process !== 'undefined' && process.platform === 'darwin');
 
     // ---------------- v2.5.2 r18：appview 容器页 chrome 清理 + 布局修复 + 状态埋点 ----------------
     // r18 实测（图2/5/7）：appview?anchor= 顶层独立窗里 fnOS 前端把桌面壳残留全部渲染：右上角
@@ -558,7 +561,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
         const left = document.createElement('div');
-        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:6px;margin-left:4px;';
+        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;';
         const menuBtn = document.createElement('button');
         menuBtn.id = 'fnos-tb-menu';
         menuBtn.title = '菜单（文件/下载/视图/工具/设置/帮助）';
@@ -627,7 +630,7 @@ module.exports = function injectTitleBar(ctx) {
         hot.addEventListener('mousedown', startNativeDrag);
         bar.addEventListener('mousedown', startNativeDrag);
 
-        btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
+        if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
         bar.appendChild(left);
         bar.appendChild(btns);
         root().appendChild(bar);
@@ -667,7 +670,7 @@ module.exports = function injectTitleBar(ctx) {
         // disconnect+build() 撞 build() 防重入早退 → 拖动/按钮永久失效（自愈缺口实锤）。现全件
         // 检查（bar/hotzone/☰/—□✕），缺失即先清残留再整体重建——残留清掉后防重入早退不再拦。
         try {
-          const __need = ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
+          const __need = isMac ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu'] : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
           const mo = new MutationObserver(() => {
             try {
               let __gone = false;
@@ -710,7 +713,7 @@ module.exports = function injectTitleBar(ctx) {
         bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:#000;-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题
         const left = document.createElement('div');
-        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:12px;overflow:hidden;';
+        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';
         const logo = document.createElement('img');
         logo.id = 'fnos-embed-logo';
         logo.style.cssText = 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;';
@@ -745,7 +748,7 @@ module.exports = function injectTitleBar(ctx) {
         minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
         maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
         closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
-        btns.appendChild(reloadBtn); btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
+        btns.appendChild(reloadBtn); if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
         bar.appendChild(left);
         bar.appendChild(btns);
         root2.appendChild(bar);
@@ -777,7 +780,7 @@ module.exports = function injectTitleBar(ctx) {
         } catch (_) {}
         // 防 SPA 重渲染清除：v2.10.0 r30（问题1 次因）全件检查+整件重建+解除防重入死锁（与普通标题栏同款）
         try {
-          const __need = ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-reload', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
+          const __need = isMac ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-reload'] : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-reload', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
           const mo = new MutationObserver(() => {
             try {
               let __gone = false;

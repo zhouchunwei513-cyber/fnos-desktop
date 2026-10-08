@@ -74,7 +74,6 @@ contextBridge.exposeInMainWorld('fnosLive', {
 });
 
 // v1.54：电视直播窗口统一无边框标题栏（与主窗口/应用窗口/设置页同款）
-// v2.15.0：macOS 用原生标题栏（红绿灯），不注入自绘标题栏；Windows 保持自绘无边框标题栏。
-if (process.platform !== 'darwin') {
-  try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }
-}
+// v2.15.3：全平台注入。macOS 用 titleBarStyle:hiddenInset（原生红绿灯内嵌），标题栏只画 ☰菜单+拖动、
+// 不画 —□✕（交给原生红绿灯）；Windows 保持自绘 —□✕。
+try { require('./titlebar-inject')({ ipcRenderer }); } catch (e) { console.error('titlebar inject failed', e); }

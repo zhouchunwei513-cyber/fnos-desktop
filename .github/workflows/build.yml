@@ -1,4 +1,4 @@
-name: Build & Release
+﻿name: Build & Release
 
 # 推送 v* 标签（如 v1.27.1）时自动构建 Windows 便携版并发布到 Releases；
 # 也可在 Actions 页面手动触发（Run workflow，可填自定义 mpv 直链）。
@@ -23,19 +23,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
+          cache: npm
 
       - name: Install dependencies
-        run: pnpm install
+        run: npm ci
 
       - name: 下载内置 mpv 运行时（Windows x86_64，GPL）
         shell: pwsh
@@ -66,7 +62,7 @@ jobs:
           Get-ChildItem mpv | ForEach-Object { Write-Host "  mpv/$($_.Name) $([math]::Round($_.Length/1MB,1)) MB" }
 
       - name: Build Windows setup (nsis only)
-        run: pnpm exec electron-builder --x64 --publish never   # target 由 package.json win.target 驱动（portable+zip）
+        run: npx electron-builder --x64 --publish never   # target 由 package.json win.target 驱动（portable+zip）
 
       - name: 校验内置 mpv 内核已打包（防止产出无内核安装包）
         shell: pwsh
@@ -134,19 +130,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
+          cache: npm
 
       - name: Install dependencies
-        run: pnpm install
+        run: npm ci
 
       # v2.14.0 macOS 支持：不签名（identity:null + 关闭证书自动发现），
       # 用户侧首次打开需右键→打开 或 xattr -dr com.apple.quarantine。
@@ -173,7 +165,7 @@ jobs:
           echo "=== mpv mac binaries ==="; ls -la mpv/mac-arm64/mpv.app/Contents/MacOS/ mpv/mac-x64/mpv.app/Contents/MacOS/
       - name: Build macOS dmg (x64+arm64)
         shell: bash
-        run: pnpm exec electron-builder --mac --x64 --arm64 --publish never
+        run: npx electron-builder --mac --x64 --arm64 --publish never
 
       - name: 校验 macOS 产物
         shell: bash

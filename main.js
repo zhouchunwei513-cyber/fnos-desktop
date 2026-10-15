@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.8';
+const APP_VERSION = '2.15.9';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5972,7 +5972,7 @@ function createMainWindow(partition, loadTarget) {
     }
   } catch (_) {}
 
-  // v2.15.8: savedBounds 坐标安全校验 - 防止恢复到屏幕外(断开的显示器)导致窗口不可见
+  // v2.15.9: savedBounds 坐标安全校验 - 防止恢复到屏幕外(断开的显示器)导致窗口不可见
   if (savedBounds) {
     try {
       const { screen } = require('electron');

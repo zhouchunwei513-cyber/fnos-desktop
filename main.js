@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.7';
+const APP_VERSION = '2.15.8';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5971,6 +5971,20 @@ function createMainWindow(partition, loadTarget) {
       savedBounds = b;
     }
   } catch (_) {}
+
+  // v2.15.8: savedBounds 坐标安全校验 - 防止恢复到屏幕外(断开的显示器)导致窗口不可见
+  if (savedBounds) {
+    try {
+      const { screen } = require('electron');
+      const displays = screen.getAllDisplays();
+      const onScreen = displays.some((d) => {
+        const a = d.workArea;
+        return savedBounds.x < a.x + a.width - 50 && savedBounds.x + savedBounds.width > a.x + 50
+          && savedBounds.y < a.y + a.height - 50 && savedBounds.y + savedBounds.height > a.y + 50;
+      });
+      if (!onScreen) { savedBounds = null; dlog('warn', 'window.bounds-reset', { msg: 'saved bounds off-screen, reset to default' }); }
+    } catch (_) { savedBounds = null; }
+  }
 
   mainWindow = new BrowserWindow({
     width: savedBounds ? savedBounds.width : 1320,

@@ -635,6 +635,11 @@ module.exports = function injectTitleBar(ctx) {
 
         if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
         bar.appendChild(left);
+        const dragStrip = document.createElement('div');
+        dragStrip.id = 'fnos-tb-dragstrip';
+        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:drag;pointer-events:auto;cursor:move;';
+        dragStrip.addEventListener('pointerdown', (e) => { try { e.preventDefault(); win.startDrag(); } catch (_) {} });
+        bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
 
@@ -753,6 +758,11 @@ module.exports = function injectTitleBar(ctx) {
         closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
         btns.appendChild(reloadBtn); if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
         bar.appendChild(left);
+        const dragStrip = document.createElement('div');
+        dragStrip.id = 'fnos-tb-dragstrip';
+        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:drag;pointer-events:auto;cursor:move;';
+        dragStrip.addEventListener('pointerdown', (e) => { try { e.preventDefault(); win.startDrag(); } catch (_) {} });
+        bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root2.appendChild(bar);
         // 原生拖拽兜底（与普通标题栏同款）

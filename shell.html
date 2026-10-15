@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
@@ -7,7 +7,7 @@
 <style>
   :root {
     --tb-height: 38px;
-    --tb-bg: rgba(18, 22, 30, 0.72);
+    --tb-bg: rgba(18, 22, 30, 0.58);
     --tb-fg: #e7ecf3;
     --tb-accent: #3377ff;
     --tb-btn-hover: rgba(255,255,255,0.10);
@@ -15,7 +15,7 @@
     --tb-close-hover: #e81123;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; width: 100%; overflow: hidden; background: #0b0d12; }
+  html, body { height: 100%; width: 100%; overflow: hidden; background: transparent; }
   body { font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
 
   /* 自定义标题栏 */
@@ -76,7 +76,7 @@
   .win-btn svg { width: 11px; height: 11px; }
 
   /* 内容区：承载 webview */
-  #content { flex: 1 1 auto; position: relative; min-height: 0; background: #0b0d12; }
+  #content { flex: 1 1 auto; position: relative; min-height: 0; background: transparent; }
   webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; outline: none; }
 
   /* 加载遮罩 */

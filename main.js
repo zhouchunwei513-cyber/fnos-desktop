@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FNOS 桌面客户端 - 主进程 (v2.0.0)
  *
  * 核心设计：
@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.5';
+const APP_VERSION = '2.15.6';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5981,7 +5981,7 @@ function createMainWindow(partition, loadTarget) {
     minHeight: 680,
     title: APP_NAME,
     // 使用深色背景，避免页面首帧渲染前出现绿色/白色闪烁（Win11 部分显卡绿屏问题）
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#1a1a1a', backgroundMaterial: process.platform === 'win32' ? 'acrylic' : 'none',
     show: false,
     paintWhenInitiallyHidden: true,
     // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。

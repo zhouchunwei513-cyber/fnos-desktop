@@ -1,4 +1,4 @@
-// titlebar-inject.js — 统一的无边框自定义标题栏注入
+﻿// titlebar-inject.js — 统一的无边框自定义标题栏注入
 // 被 preload.js / settings-preload.js / live-preload.js 复用，保证所有窗口标题栏一致。
 // 功能：顶部拖动热区、☰ 菜单、最小化/最大化/关闭（实心按钮）、自动隐藏（默认关闭）、
 //       ALT 键调出、设置实时更新、SPA 重渲染自愈。
@@ -557,7 +557,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:transparent', 'backdrop-filter:none', '-webkit-backdrop-filter:none',
+          'background:rgba(18,22,30,0.58)', 'backdrop-filter:blur(24px) saturate(1.6)', '-webkit-backdrop-filter:blur(24px) saturate(1.6)',
           '-webkit-app-region:drag', 'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');

@@ -557,14 +557,14 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:rgba(18,22,30,0.72)', 'backdrop-filter:blur(24px) saturate(1.4)', '-webkit-backdrop-filter:blur(24px) saturate(1.4)', 'border-bottom:1px solid rgba(255,255,255,0.06)',
+          'background:linear-gradient(180deg,rgba(24,28,38,0.82) 0%,rgba(14,17,24,0.72) 100%)', 'backdrop-filter:blur(24px) saturate(1.4)', '-webkit-backdrop-filter:blur(24px) saturate(1.4)', 'border-bottom:1px solid rgba(255,255,255,0.06)',
           '-webkit-app-region:drag', 'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
 
         // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
         const left = document.createElement('div');
-        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;';
+        left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;';
         const menuBtn = document.createElement('button');
         menuBtn.id = 'fnos-tb-menu';
         menuBtn.title = '菜单（文件/下载/视图/工具/设置/帮助）';
@@ -583,7 +583,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // 右侧：最小化/最大化/关闭——实心 Windows 风格，按钮可点击区域充足
         const btns = document.createElement('div');
-        btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;overflow:hidden;';
+        btns.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;overflow:hidden;';
 
         const mkBtn = (id, svg, hoverBg) => {
           const b = document.createElement('button');
@@ -637,7 +637,7 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(left);
         const dragStrip = document.createElement('div');
         dragStrip.id = 'fnos-tb-dragstrip';
-        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:none;cursor:default;';
+        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:drag;pointer-events:none;cursor:default;';
         dragStrip.addEventListener('pointerdown', (e) => { try { e.preventDefault(); win.startDrag(); } catch (_) {} });
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
@@ -718,10 +718,10 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.72);backdrop-filter:blur(24px) saturate(1.4);-webkit-app-region:drag;user-select:none;';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:linear-gradient(180deg,rgba(24,28,38,0.82) 0%,rgba(14,17,24,0.72) 100%);backdrop-filter:blur(24px) saturate(1.4);-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题
         const left = document.createElement('div');
-        left.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';
+        left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';
         const logo = document.createElement('img');
         logo.id = 'fnos-embed-logo';
         logo.style.cssText = 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;';
@@ -732,7 +732,7 @@ module.exports = function injectTitleBar(ctx) {
         left.appendChild(titleEl);
         // 右：↻ — □ ✕ 四钮（r15 硬规则移除 ↗ 跳出：内嵌窗绝不剥离 fnOS 框架转独立跳出窗）
         const btns = document.createElement('div');
-        btns.style.cssText = '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;';
+        btns.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;';
         const mkBtn = (id, titleTxt, svg, hoverBg) => {
           const b = document.createElement('button');
           b.id = id;
@@ -760,7 +760,7 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(left);
         const dragStrip = document.createElement('div');
         dragStrip.id = 'fnos-tb-dragstrip';
-        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:none;cursor:default;';
+        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:drag;pointer-events:none;cursor:default;';
         dragStrip.addEventListener('pointerdown', (e) => { try { e.preventDefault(); win.startDrag(); } catch (_) {} });
         bar.appendChild(dragStrip);
         bar.appendChild(btns);

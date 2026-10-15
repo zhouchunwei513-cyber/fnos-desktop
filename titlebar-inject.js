@@ -1,4 +1,4 @@
-﻿// titlebar-inject.js — 统一的无边框自定义标题栏注入
+// titlebar-inject.js — 统一的无边框自定义标题栏注入
 // 被 preload.js / settings-preload.js / live-preload.js 复用，保证所有窗口标题栏一致。
 // 功能：顶部拖动热区、☰ 菜单、最小化/最大化/关闭（实心按钮）、自动隐藏（默认关闭）、
 //       ALT 键调出、设置实时更新、SPA 重渲染自愈。

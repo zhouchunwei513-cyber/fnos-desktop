@@ -1,4 +1,4 @@
-﻿name: Build & Release
+name: Build & Release
 
 # 推送 v* 标签（如 v1.27.1）时自动构建 Windows 便携版并发布到 Releases；
 # 也可在 Actions 页面手动触发（Run workflow，可填自定义 mpv 直链）。

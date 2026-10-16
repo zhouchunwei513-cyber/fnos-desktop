@@ -1484,4 +1484,16 @@ try {
 
 // v2.15.3：全平台注入。macOS 用 titleBarStyle:hiddenInset（原生红绿灯内嵌），标题栏只画 ☰菜单+拖动、
 // 不画 —□✕（最小化/最大化/关闭交给原生红绿灯）；Windows 保持自绘 —□✕。
-try { var __tbInject = true; try { __tbInject = (process.argv && process.argv.indexOf('--fnos-shell') >= 0) || !/^https?:/i.test(String(location.href || '')); } catch(_){} if (__tbInject) require('./titlebar-inject')({ ipcRenderer }); else console.log('[titlebar] skipped (webview guest)'); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }
+try {
+  var __tbInject = true;
+  try { __tbInject = (process.argv && process.argv.indexOf('--fnos-shell') >= 0) || !/^https?:/i.test(String(location.href || '')); } catch(_){}
+  try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.guard', inject: __tbInject, href: String(location.href||'').slice(0,80), hasShell: (typeof process!=='undefined'&&process.argv)?process.argv.indexOf('--fnos-shell')>=0:'?' }); } catch(_){}
+  if (__tbInject) {
+    require('./titlebar-inject')({ ipcRenderer });
+    try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.loaded' }); } catch(_){}
+  } else {
+    try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.skipped' }); } catch(_){}
+  }
+} catch (e) {
+  try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.loadfail', err: String(e&&e.stack||e) }); } catch(_){}
+}

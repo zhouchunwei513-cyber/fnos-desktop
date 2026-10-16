@@ -394,6 +394,7 @@ module.exports = function injectTitleBar(ctx) {
     })();
 
     // v2.5.7 r23：子帧只做 chrome 清理+主题归一，不注入标题栏/拖动热区
+    try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.enter', sub: __SUB, href: String(location.href||'').slice(0,80) }); } catch(_) {}
     if (__SUB) return;
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
@@ -441,14 +442,21 @@ module.exports = function injectTitleBar(ctx) {
           bar.style.backdropFilter = `blur(${blur}px) saturate(1.4)`;
           bar.style.webkitBackdropFilter = `blur(${blur}px) saturate(1.4)`;
         } else {
-          // 透明：底色由不透明度滑块控制（默认 0=完全透明），无模糊
+          // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
           const a = TB.opacity / 100;
-          bar.style.background = a > 0.001 ? hexToRgba(TB.color, a) : 'transparent';
-          bar.style.backdropFilter = 'none';
-          bar.style.webkitBackdropFilter = 'none';
+          if (a > 0.001) {
+            bar.style.background = hexToRgba(TB.color, a);
+            bar.style.backdropFilter = 'none';
+            bar.style.webkitBackdropFilter = 'none';
+          } else {
+            bar.style.background = 'linear-gradient(180deg,rgba(24,28,38,0.82) 0%,rgba(14,17,24,0.72) 100%)';
+            bar.style.backdropFilter = 'blur(24px) saturate(1.4)';
+            bar.style.webkitBackdropFilter = 'blur(24px) saturate(1.4)';
+          }
         }
         // 底色较深时图标用白，较浅时图标用深色——保证对比
-        const darkBg = TB.material === 'frosted' || (TB.material === 'transparent' && TB.opacity > 45);
+        // v2.15.14：opacity=0 默认走深色渐变 → 也用白图标
+        const darkBg = TB.material === 'frosted' || (TB.material === 'transparent' && (TB.opacity > 45 || TB.opacity <= 0.001));
         bar.__useDarkIcon = !darkBg; // true = 浅底用深图标
         const iconStroke = darkBg ? 'rgba(255,255,255,0.95)' : 'rgba(20,20,20,0.92)';
         const iconShadow = darkBg

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.15';
+const APP_VERSION = '2.15.16';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6008,6 +6008,9 @@ function createMainWindow(partition, loadTarget) {
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      // v2.15.16 根修：主窗口必须带 --fnos-shell 旗标——preload guard 据此决定是否注入标题栏。
+      // 之前此旗标缺失，guard 判定 HTTP URL 非 shell 页面 → 标题栏从未注入。
+      additionalArguments: ['--fnos-shell'],
       contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱

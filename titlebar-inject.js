@@ -650,6 +650,13 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
+    // v2.15.16：标题栏不遮挡内容——body 加 34px 顶部偏移，整页内容下移
+    try {
+      const __padStyle = document.createElement('style');
+      __padStyle.id = 'fnos-tb-content-offset';
+      __padStyle.textContent = 'html>body{padding-top:34px !important;}html>body [style*="position:fixed"],html>body [style*="position: fixed"]{margin-top:0;}';
+      (document.head || document.documentElement).appendChild(__padStyle);
+    } catch(_) {}
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级
         //      被其它内容干扰时也能触发）。进入顶部 34px 显示，移出后延迟隐藏（常驻模式永不隐藏） ----

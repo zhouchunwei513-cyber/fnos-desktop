@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.19';
+const APP_VERSION = '2.15.20';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5996,7 +5996,7 @@ function createMainWindow(partition, loadTarget) {
     minHeight: 680,
     title: APP_NAME,
     // 使用深色背景，避免页面首帧渲染前出现绿色/白色闪烁（Win11 部分显卡绿屏问题）
-    backgroundColor: '#1a1a1a', 
+    backgroundColor: '#00000000', 
     backgroundMaterial: 'acrylic', // v2.15.18: Win11 Acrylic - desktop wallpaper shows through titlebar
     show: false,
     paintWhenInitiallyHidden: true,

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.16';
+const APP_VERSION = '2.15.17';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4629,7 +4629,6 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     })(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      additionalArguments: ['--fnos-shell'],
       contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱
@@ -4646,7 +4645,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // v2.10.0 r30（问题1 根修）：--fnos-app-window 旗标——三套假窗控清扫（preload instantHide26 /
       // titlebar-inject chromeFix / 主进程帧脚本25/26）只在应用窗内生效；主窗整棵 frame 树（web 桌面
       // 内嵌窗的真 —□✕ 与拖动手柄）全豁免，杜绝把真实窗控当假窗控聚组杀除（反馈问题1）。
-      additionalArguments: [...(opts.embedStyle ? ['--fnos-embed-style'] : []), '--fnos-app-window'],
+      additionalArguments: ['--fnos-shell', ...(opts.embedStyle ? ['--fnos-embed-style'] : []), '--fnos-app-window'],
       enableBlinkFeatures: 'CSSBackdropFilter',
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
       // v1.76.0：应用窗口禁用硬件加速（软件渲染）。修复部分 Docker 应用

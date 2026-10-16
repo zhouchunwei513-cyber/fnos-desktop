@@ -1486,7 +1486,7 @@ try {
 // 不画 —□✕（最小化/最大化/关闭交给原生红绿灯）；Windows 保持自绘 —□✕。
 try {
   var __tbInject = true;
-  try { __tbInject = (process.argv && process.argv.indexOf('--fnos-shell') >= 0) || !/^https?:/i.test(String(location.href || '')); } catch(_){}
+  try { __tbInject = (process.argv && (process.argv.indexOf('--fnos-shell') >= 0 || process.argv.indexOf('--fnos-app-window') >= 0)) || !/^https?:/i.test(String(location.href || '')); } catch(_){}
   try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.guard', inject: __tbInject, href: String(location.href||'').slice(0,80), hasShell: (typeof process!=='undefined'&&process.argv)?process.argv.indexOf('--fnos-shell')>=0:'?' }); } catch(_){}
   if (__tbInject) {
     require('./titlebar-inject')({ ipcRenderer });

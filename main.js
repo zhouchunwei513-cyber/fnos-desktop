@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.24';
+const APP_VERSION = '2.15.25';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4600,7 +4600,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     minWidth: 900,
     minHeight: 600,
     title: opts.title || APP_NAME,
-    backgroundColor: cachedSettings.themeColor || '#0b0d12',
+    backgroundColor: '#00000000',
+    transparent: true, // v2.15.21: fully transparent app windows (moved to top-level; webPreferences.transparent was ineffective)
     show: false,
     autoHideMenuBar: true,
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +
@@ -4652,7 +4653,6 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // （影视/音乐等）在 Windows 上触发 GPU 进程崩溃，导致窗口创建即崩、
       // 后续所有应用窗口连锁打不开（render-process-gone crashed 0x80000003）。
       // 主窗口/主页仍保留硬件加速；视频播放走 MPV 外部播放器不受影响。
-      transparent: true, // v2.15.21: transparent app windows too
       disableHardwareAcceleration: true,
     },
   });
@@ -10568,7 +10568,8 @@ function createLiveWindow(autoplayChannel) {
     liveWindow = new BrowserWindow({
       width: 1280, height: 820, minWidth: 960, minHeight: 600,
       title: APP_NAME + ' · 电视直播',
-      backgroundColor: '#0b0d12',
+      backgroundColor: '#00000000',
+      transparent: true, // v2.15.25: live window transparent (titlebar shows desktop)
       // v2.15.0：macOS 用原生标题栏（红绿灯），Windows 保持自绘无边框
       frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
       autoHideMenuBar: true,

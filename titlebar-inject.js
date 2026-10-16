@@ -449,9 +449,9 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           } else {
-            bar.style.background = 'rgba(18,22,30,0.15)'; // v2.15.17 skin-plugin glass
-            bar.style.backdropFilter = 'blur(24px) saturate(1.6)';
-            bar.style.webkitBackdropFilter = 'blur(24px) saturate(1.6)';
+            bar.style.background = 'rgba(18,22,30,0.30)'; // v2.15.22 skin-plugin glass
+            bar.style.backdropFilter = 'blur(24px) saturate(1.3) brightness(1.08)';
+            bar.style.webkitBackdropFilter = 'blur(24px) saturate(1.3) brightness(1.08)';
           }
         }
         // 底色较深时图标用白，较浅时图标用深色——保证对比
@@ -565,7 +565,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:rgba(18,22,30,0.15)', 'backdrop-filter:blur(24px) saturate(1.6)', '-webkit-backdrop-filter:blur(24px) saturate(1.6)', 'border-bottom:1px solid rgba(255,255,255,0.06)',
+          'background:rgba(18,22,30,0.30)', 'backdrop-filter:blur(24px) saturate(1.3) brightness(1.08)', '-webkit-backdrop-filter:blur(24px) saturate(1.3) brightness(1.08)', 'border-bottom:1px solid rgba(255,255,255,0.06)',
           '-webkit-app-region:drag', 'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -650,12 +650,27 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
-    // v2.15.16：标题栏不遮挡内容——body 加 34px 顶部偏移，整页内容下移
+    // v2.15.22：标题栏不遮挡内容 + 全透明透传桌面壁纸
+    // CSS 全面透明化（含伪元素、常见根容器）+ inline !important 兜底 + 定时强制
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      __padStyle.textContent = 'html{background:transparent !important;}html>body{transform:translateY(34px) !important;padding-top:0 !important;}';
+      __padStyle.textContent = [
+        'html{background:transparent !important;background-color:transparent !important;background-image:none !important;}',
+        'html::before,html::after,body::before,body::after{content:none !important;display:none !important;}',
+        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}',
+        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title){transform:translateY(34px) !important;}',
+        '#__nuxt,#app,#root,#__next,#__layout,#___gatsby,[id="app"],[id="root"]{background:transparent !important;}',
+      ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
+      const __enforceTrans = () => {
+        try {
+          document.documentElement.style.setProperty('background', 'transparent', 'important');
+          document.documentElement.style.setProperty('background-color', 'transparent', 'important');
+        } catch(_) {}
+      };
+      __enforceTrans();
+      setInterval(__enforceTrans, 2000);
     } catch(_) {}
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级
@@ -733,7 +748,7 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.15);backdrop-filter:blur(24px) saturate(1.6);-webkit-app-region:drag;user-select:none;';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);backdrop-filter:blur(24px) saturate(1.3) brightness(1.08);-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题
         const left = document.createElement('div');
         left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';

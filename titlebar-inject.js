@@ -654,7 +654,7 @@ module.exports = function injectTitleBar(ctx) {
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      __padStyle.textContent = 'html{background:transparent !important;}html>body{padding-top:34px !important;background-clip:content-box !important;-webkit-background-clip:content-box !important;background-origin:content-box !important;}';
+      __padStyle.textContent = 'html{background:transparent !important;}html>body{transform:translateY(34px) !important;padding-top:0 !important;}';
       (document.head || document.documentElement).appendChild(__padStyle);
     } catch(_) {}
 

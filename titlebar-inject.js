@@ -659,7 +659,7 @@ module.exports = function injectTitleBar(ctx) {
         'html{background:transparent !important;background-color:transparent !important;background-image:none !important;}',
         'html::before,html::after,body::before,body::after{content:none !important;display:none !important;}',
         'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}',
-        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title){transform:translateY(34px) !important;}',
+        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title):not(#fnos-titlebar):not(#fnos-titlebar-hotzone){transform:translateY(34px) !important;}',
         '#__nuxt,#app,#root,#__next,#__layout,#___gatsby,[id="app"],[id="root"]{background:transparent !important;}',
       ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
@@ -670,7 +670,8 @@ module.exports = function injectTitleBar(ctx) {
         } catch(_) {}
       };
       __enforceTrans();
-      setInterval(__enforceTrans, 2000);
+      // v2.15.23: remove setInterval - writing html inline style every 2s triggers full style recalc/reflow,
+      // causing lag/freeze on complex pages (preferences). inline !important priority is enough, set once at init.
     } catch(_) {}
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级

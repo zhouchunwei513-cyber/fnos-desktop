@@ -449,7 +449,7 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           } else {
-            bar.style.background = 'rgba(18,22,30,0.58)'; // v2.15.17 skin-plugin glass
+            bar.style.background = 'rgba(18,22,30,0.30)'; // v2.15.17 skin-plugin glass
             bar.style.backdropFilter = 'blur(24px) saturate(1.6)';
             bar.style.webkitBackdropFilter = 'blur(24px) saturate(1.6)';
           }
@@ -565,7 +565,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:rgba(18,22,30,0.58)', 'backdrop-filter:blur(24px) saturate(1.6)', '-webkit-backdrop-filter:blur(24px) saturate(1.6)', 'border-bottom:1px solid rgba(255,255,255,0.06)',
+          'background:rgba(18,22,30,0.30)', 'backdrop-filter:blur(24px) saturate(1.6)', '-webkit-backdrop-filter:blur(24px) saturate(1.6)', 'border-bottom:1px solid rgba(255,255,255,0.06)',
           '-webkit-app-region:drag', 'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -654,7 +654,7 @@ module.exports = function injectTitleBar(ctx) {
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      __padStyle.textContent = 'html>body{padding-top:34px !important;}html>body [style*="position:fixed"],html>body [style*="position: fixed"]{margin-top:0;}';
+      __padStyle.textContent = 'html{background:transparent !important;}html>body{padding-top:34px !important;background-clip:content-box !important;-webkit-background-clip:content-box !important;background-origin:content-box !important;}';
       (document.head || document.documentElement).appendChild(__padStyle);
     } catch(_) {}
 
@@ -733,7 +733,7 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.58);backdrop-filter:blur(24px) saturate(1.6);-webkit-app-region:drag;user-select:none;';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);backdrop-filter:blur(24px) saturate(1.6);-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题
         const left = document.createElement('div');
         left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';

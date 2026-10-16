@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.17';
+const APP_VERSION = '2.15.18';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4652,6 +4652,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // （影视/音乐等）在 Windows 上触发 GPU 进程崩溃，导致窗口创建即崩、
       // 后续所有应用窗口连锁打不开（render-process-gone crashed 0x80000003）。
       // 主窗口/主页仍保留硬件加速；视频播放走 MPV 外部播放器不受影响。
+      backgroundMaterial: 'acrylic', // v2.15.18: Acrylic for app windows
       disableHardwareAcceleration: true,
     },
   });
@@ -5996,6 +5997,7 @@ function createMainWindow(partition, loadTarget) {
     title: APP_NAME,
     // 使用深色背景，避免页面首帧渲染前出现绿色/白色闪烁（Win11 部分显卡绿屏问题）
     backgroundColor: '#1a1a1a', 
+    backgroundMaterial: 'acrylic', // v2.15.18: Win11 Acrylic - desktop wallpaper shows through titlebar
     show: false,
     paintWhenInitiallyHidden: true,
     // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。

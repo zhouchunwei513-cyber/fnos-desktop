@@ -1484,4 +1484,4 @@ try {
 
 // v2.15.3：全平台注入。macOS 用 titleBarStyle:hiddenInset（原生红绿灯内嵌），标题栏只画 ☰菜单+拖动、
 // 不画 —□✕（最小化/最大化/关闭交给原生红绿灯）；Windows 保持自绘 —□✕。
-try { if (String(location.protocol || '') === 'file:') require('./titlebar-inject')({ ipcRenderer }); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }
+try { var __tbHttp = false; try { __tbHttp = /^https?:/i.test(String(location.href || '')); } catch(_){} if (!__tbHttp) require('./titlebar-inject')({ ipcRenderer }); } catch (e) { try { console.error('[titlebar] inject failed:', e && e.stack || e); } catch (_) {} }

@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.12';
+const APP_VERSION = '2.15.13';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4629,6 +4629,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     })(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      additionalArguments: ['--fnos-shell'],
       contextIsolation: true, webviewTag: true,
       nodeIntegration: false,
       sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject，必须关闭沙箱

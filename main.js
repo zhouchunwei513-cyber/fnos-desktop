@@ -120,7 +120,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.29';
+const APP_VERSION = '2.15.30';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4849,6 +4849,15 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                         let __clickMeta26 = null;
                         try { __clickMeta26 = __fnosManifestLookup26(__clickApp25) || __fnosManifestLookup26(__appLabel); } catch (_) {}
                         if (__clickMeta26 && __clickMeta26.appId) { try { __clickApp25 = __clickMeta26.appId; } catch (_) {} }
+                        // v2.15.30（Docker 容器/端口转发入口）：manifest 查不到（__clickMeta26 空）说明
+                        // __clickApp25/__appLabel 都不是已知 FPK 应用，「FNOS」只是占位默认名。此时模拟点击
+                        // 必然 icon-not-found，形成「主进程 entry-click-fallback ↔ 渲染进程 fallback-window-open」
+                        // 往返死循环（1905 Docker 容器实锤：同入口反复 fallback + 黑屏 reload）。
+                        // 保持原页面不做 fallback，让容器页面自行展示真实状态（404 或正常内容）。
+                        if (!__clickMeta26 || !__clickMeta26.appId) {
+                          try { require('./logger.js').log('info', 'appwin', 'appwin.entry-unknown-nonfpk', { params: { winId: win.id, app: String(__clickApp25).slice(0, 80), last: String(win.webContents.getURL() || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+                          return;
+                        }
                         try { global.__fnClickOpened25 = false; } catch (_) {}
                         try { require('./logger.js').log('info', 'appwin', 'appwin.entry-click-fallback', { params: { winId: win.id, app: String(__clickApp25).slice(0, 80), last: String(win.webContents.getURL() || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
                         try { __notifyOpenFpkApp(__clickApp25, true, String(win.webContents.getURL() || ''), '', (__clickMeta26 && __clickMeta26.label) ? [__clickMeta26.label] : []); } catch (_) {}

@@ -6,8 +6,8 @@
 <title>FNOS</title>
 <style>
   :root {
-    --tb-height: 38px;
-    --tb-bg: rgba(18, 22, 30, 0.58);
+    --tb-height: 34px;
+    --tb-bg: linear-gradient(180deg, rgba(24,28,38,0.88) 0%, rgba(14,17,24,0.82) 100%);
     --tb-fg: #e7ecf3;
     --tb-accent: #3377ff;
     --tb-btn-hover: rgba(255,255,255,0.10);
@@ -20,8 +20,8 @@
 
   /* 自定义标题栏 */
   #titlebar {
-    /* v1.52.0：主壳改用 preload 注入的统一自动隐藏标题栏，隐藏原静态标题栏 */
-    display: none !important;
+    /* v2.15.15：直接启用原生 shell 标题栏（titlebar-inject 注入在打包环境不可靠） */
+    display: flex;
     height: var(--tb-height);
     flex: 0 0 var(--tb-height);
     align-items: stretch;
@@ -77,7 +77,7 @@
 
   /* 内容区：承载 webview */
   #content { flex: 1 1 auto; position: relative; min-height: 0; background: transparent; }
-  webview { position: absolute; top: 34px; left: 0; right: 0; bottom: 0; width: 100%; height: calc(100% - 34px); border: 0; outline: none; }
+  webview { position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; border: 0; outline: none; }
 
   /* 加载遮罩 */
   #loader {

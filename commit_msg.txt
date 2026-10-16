@@ -1,0 +1,14 @@
+v2.15.15: 标题栏根修——直接启用 shell.html 原生标题栏
+
+根因：shell.html 的 #titlebar（含拖拽区/菜单/最小化/最大化/关闭按钮，
+window.fnosShell API 已完整对接）被 display:none!important 隐藏，
+而替代方案 titlebar-inject.js 在打包环境中 require 注入从未执行
+（v2.15.10-14 连续5轮修复注入链路均无效）。
+
+修复：
+- shell.html: 移除 display:none!important，直接显示 #titlebar
+- shell.html: --tb-height 38px→34px，背景改深色渐变毛玻璃
+- shell.html: webview CSS top:34px→0（标题栏为 flex 项，内容区自动下移）
+- shell.js: webview 内联样式同步 top:0, height:100%
+- shell.js: 按钮事件已通过 window.fnosShell API 对接（无需额外修改）
+- 版本号 2.15.15

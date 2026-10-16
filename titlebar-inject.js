@@ -565,7 +565,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:rgba(18,22,30,0.30)', 'border-bottom:1px solid rgba(255,255,255,0.06)', 'border-radius:8px 8px 0 0',
+          'background:rgba(18,22,30,0.30)', 'border-radius:8px 8px 0 0',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');

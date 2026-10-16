@@ -89,7 +89,13 @@ try { app.disableHardwareAcceleration(); } catch (_) {}
 try {
   if (process.platform === 'win32') {
     app.commandLine.appendSwitch('disable-gpu');
-    app.commandLine.appendSwitch('disable-software-rasterizer');
+    // v2.15.31：移除 --disable-software-rasterizer。此前「--disable-gpu + --disable-software-rasterizer」
+    // 双重禁用后 Chromium 完全无 GPU 进程、无 SwiftShader 软件光栅化器，走纯 CPU 软件绘制路径，
+    // 该路径下 backdrop-filter / mix-blend-mode / SVG filter 等特效的合成层 z-order 会错乱，导致：
+    // 设置界面极光遮罩盖内容（v2.15.29 已临时移除 mix-blend-mode）、FNTB/OpenList/XTE 等应用
+    // 「主界面与应用界面层级重叠、布局错位、滚动内容显示不全」（视频实锤）。仅保留 --disable-gpu
+    // 禁用硬件 GPU（v2.2.4 崩溃链根源是硬件 GPU 进程崩溃 0x80000003，与 SwiftShader 无关），
+    // 让 SwiftShader 软件光栅化器接管合成层，正确渲染玻璃拟态等特效，从根源消除层级错乱。
   }
 } catch (_) {}
 
@@ -120,7 +126,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.30';
+const APP_VERSION = '2.15.31';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================

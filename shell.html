@@ -21,7 +21,10 @@
   /* 自定义标题栏 */
   #titlebar {
     /* v2.15.15：直接启用原生 shell 标题栏（titlebar-inject 注入在打包环境不可靠） */
-    display: flex;
+    /* v2.15.53: hide native #titlebar - titlebar-inject already injects #fnos-titlebar via --fnos-shell.
+       Keeping native bar stacks two titlebars + double-offsets body transform(34px)+native bar(34px),
+       making webview height=100vh-68px and clipping fnOS home bottom. Hiding restores 100vh-34px. */
+    display: none;
     height: var(--tb-height);
     flex: 0 0 var(--tb-height);
     align-items: stretch;

@@ -672,14 +672,29 @@ module.exports = function injectTitleBar(ctx) {
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      const __isAppWin = (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.indexOf('--fnos-app-window') >= 0);
-      const __bodyBg = __isAppWin ? '' : 'background:transparent !important;';
-      const __htmlOverflow = __isAppWin ? 'overflow:hidden !important;' : '';
-      const __bodySize = __isAppWin ? 'overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;' : 'height:calc(100vh - 34px) !important;box-sizing:border-box !important;';
-      __padStyle.textContent = [
-        'html{' + __htmlOverflow + 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;}',
-        'html>body{transform:translateY(34px) !important;' + __bodySize + 'clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;' + __bodyBg + '}'
-      ].join('');
+      const __argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+      const __isAppWin = __argv.indexOf('--fnos-app-window') >= 0;
+      const __isSettings = (!__isAppWin && __argv.indexOf('--fnos-shell') < 0); // 设置窗口：无 --fnos-shell 也无 --fnos-app-window（不透明窗口，独立布局）
+      const __gifBg = 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;';
+      if (__isSettings) {
+        // 设置窗口（settings.html，不透明窗口）：不注入 body 位移/限高/裁切/透明（这些只服务于透明主窗口）。
+        // 标题栏 bar 占顶部 34px，用 body padding-top 让位；html 锁死滚动，body 单滚动（settings.css 配合）。
+        __padStyle.textContent = 'html{overflow:hidden !important;}' +
+          'html>body{padding-top:54px !important;box-sizing:border-box !important;}';
+      } else if (__isAppWin) {
+        // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
+        __padStyle.textContent = [
+          'html{overflow:hidden !important;' + __gifBg + '}',
+          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;}'
+        ].join('');
+      } else {
+        // 主窗口（透明 + webview 飞牛桌面）：webview 占满 100vh（body 不再下移/限高），
+        // 避免飞牛监控面板底部被裁 34px；标题栏 bar fixed 透明盖在顶部 34px，底部完整显示。
+        __padStyle.textContent = [
+          'html{' + __gifBg + '}',
+          'html>body{clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
+        ].join('');
+      }
       (document.head || document.documentElement).appendChild(__padStyle);
     } catch(_) {}
     // v2.15.52：应用网页自带 fixed 顶部标题栏落到内容区（UPS 电源管理等）修复。

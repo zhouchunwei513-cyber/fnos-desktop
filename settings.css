@@ -1,9 +1,14 @@
 /* 设置页 — 复用 lock.css 中的玻璃与按钮样式 */
 /* 覆盖 lock.css 的 html,body { overflow:hidden }，使设置页可纵向滚动 */
 html, body {
-  height: auto !important;
-  min-height: 100vh;
+  height: 100vh;
+  box-sizing: border-box;
   overflow-x: hidden !important;
+}
+html {
+  overflow-y: hidden !important;
+}
+body {
   overflow-y: auto !important;
 }
 .settings-body {

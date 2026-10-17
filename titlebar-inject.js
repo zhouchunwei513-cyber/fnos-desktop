@@ -515,6 +515,13 @@ module.exports = function injectTitleBar(ctx) {
         bar.style.transform = 'translateY(0)';
         bar.style.opacity = '1';
         bar.style.pointerEvents = 'auto';
+        // v2.15.43: 自动隐藏调出后 -webkit-app-region:drag 的拖拽区域可能因 transform 过渡失效，
+        // 强制 no-drag→drag 重注册拖拽区域，恢复可拖动
+        if (AUTO_HIDE) {
+          bar.style.setProperty('-webkit-app-region', 'no-drag');
+          void bar.offsetHeight; // 强制同步 reflow，确保 no-drag 先生效
+          bar.style.setProperty('-webkit-app-region', 'drag');
+        }
       } catch (_) {}
     }
     function hide(bar) {
@@ -650,28 +657,14 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
-    // v2.15.35：标题栏不遮挡内容（body 加 34px 顶部偏移，整页内容下移）+ 只让 html 透明透出亚克力背景。
-    // 回退 v2.15.22 的"全透明 CSS"——强制 body/#app 等根容器透明会挖掉飞牛主页背景，
-    // 与 v2.15.21 透明窗口叠加后，页面内容渲染失败即显示纯白（白板根因）。
+    // v2.15.43：标题栏不遮挡内容（body 下移 34px）+ 只让 html 透明透出桌面壁纸。
+    // 不再强制 body/#app 等根容器透明（v2.15.40 恢复 v2.15.22 全透明时误带回来，
+    // 会挖掉应用/飞牛主页背景，导致应用窗口背景穿透桌面壁纸）。
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      __padStyle.textContent = [
-        'html{background:transparent !important;background-color:transparent !important;background-image:none !important;}',
-        'html::before,html::after,body::before,body::after{content:none !important;display:none !important;}',
-        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}',
-        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title):not(#fnos-titlebar):not(#fnos-titlebar-hotzone){transform:translateY(34px) !important;}',
-        '#__nuxt,#app,#root,#__next,#__layout,#___gatsby,[id="app"],[id="root"]{background:transparent !important;}',
-      ].join('');
+      __padStyle.textContent = 'html{background:transparent !important;}html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;}';
       (document.head || document.documentElement).appendChild(__padStyle);
-      const __enforceTrans = () => {
-        try {
-          document.documentElement.style.setProperty('background', 'transparent', 'important');
-          document.documentElement.style.setProperty('background-color', 'transparent', 'important');
-        } catch(_) {}
-      };
-      __enforceTrans();
-      // v2.15.23: 移除 setInterval——每 2 秒写 html inline style 触发整页重排，复杂页面卡死；inline !important 优先级足够，init 写一次即可
     } catch(_) {}
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级

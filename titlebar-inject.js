@@ -565,14 +565,18 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（MutationObserver/build 检测依赖）
         bar.setAttribute('data-fnos-tb', '1'); // v2.5.4 r20：清理排除标记（r18 的 fnos-tb-bar 双赋值被上一行覆盖，改用 data 属性）
+        // v2.15.56：主窗口标题栏改用深色填充（飞牛状态栏同色系）——标题栏透明透出 Windows 桌面灰色壁纸
+        // 会形成"灰条"；深色填充让标题栏与飞牛桌面顶部状态栏视觉连贯，消除灰条。应用/设置窗口保持透明
+        // （v1.57 原因：避免浅色应用顶部出现实色栏；设置窗口不透明背景本身即深色）。
+        const __argvB = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        const __isMainWin = __argvB.indexOf('--fnos-shell') >= 0 && __argvB.indexOf('--fnos-app-window') < 0;
+        const __barBg = __isMainWin ? 'linear-gradient(180deg, rgb(24,28,38) 0%, rgb(14,17,24) 100%)' : 'transparent';
         bar.style.cssText = [
           'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
-          // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
-          // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:transparent', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
+          'background:' + __barBg, 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -677,10 +681,12 @@ module.exports = function injectTitleBar(ctx) {
       const __isSettings = (!__isAppWin && __argv.indexOf('--fnos-shell') < 0); // 设置窗口：无 --fnos-shell 也无 --fnos-app-window（不透明窗口，独立布局）
       const __gifBg = 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;';
       if (__isSettings) {
-        // 设置窗口（settings.html，不透明窗口）：不注入 body 位移/限高/裁切/透明（这些只服务于透明主窗口）。
-        // 标题栏 bar 占顶部 34px，用 body padding-top 让位；html 锁死滚动，body 单滚动（settings.css 配合）。
+        // 设置窗口（settings.html，不透明窗口）：标题栏 bar 占顶部 34px。
+        // v2.15.56：改用 body transform 下移 34px（而非 padding-top）——padding-top 无法约束 fixed 元素
+        // 会钻到标题栏底下；transform 让全部内容（含 fixed）整体下移，标题栏独立顶部。
+        // html 锁死滚动，body 单滚动（settings.css 配合）。
         __padStyle.textContent = 'html{overflow:hidden !important;}' +
-          'html>body{padding-top:54px !important;box-sizing:border-box !important;}';
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;}';
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [

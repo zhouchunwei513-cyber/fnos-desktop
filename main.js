@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.55';
+const APP_VERSION = '2.15.56';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5983,11 +5983,11 @@ function createMainWindow(partition, loadTarget) {
 
   mainWindow = new BrowserWindow({
     width: savedBounds ? savedBounds.width : 1320,
-    height: savedBounds ? (savedBounds.height + 34) : 894,
+    height: savedBounds ? savedBounds.height : 860,
     x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
     y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
     minWidth: 1000,
-    minHeight: 714,
+    minHeight: 680,
     title: APP_NAME,
     // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
@@ -6042,8 +6042,7 @@ function createMainWindow(partition, loadTarget) {
     const __saveBounds = () => {
       try {
         if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !mainWindow.isFullScreen() && !mainWindow.isMaximized()) {
-          const b = mainWindow.getBounds();
-          saveSettings({ windowBounds: { ...b, height: b.height - 34 } });
+          saveSettings({ windowBounds: mainWindow.getBounds() });
         }
       } catch (_) {}
     };

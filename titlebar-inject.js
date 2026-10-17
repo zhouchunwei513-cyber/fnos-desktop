@@ -449,9 +449,9 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           } else {
-            bar.style.background = 'transparent'; // v2.15.39: transparent (titlebar shows desktop wallpaper)
-            bar.style.backdropFilter = 'none';
-            bar.style.webkitBackdropFilter = 'none';
+            bar.style.background = 'rgba(18,22,30,0.30)'; // v2.15.40: restore v2.15.22 glass (blur over transparent html -> desktop wallpaper)
+            bar.style.backdropFilter = 'blur(24px) saturate(1.3) brightness(1.08)';
+            bar.style.webkitBackdropFilter = 'blur(24px) saturate(1.3) brightness(1.08)';
           }
         }
         // 底色较深时图标用白，较浅时图标用深色——保证对比
@@ -565,7 +565,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:transparent', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
+          'background:rgba(18,22,30,0.30)', 'backdrop-filter:blur(24px) saturate(1.3) brightness(1.08)', '-webkit-backdrop-filter:blur(24px) saturate(1.3) brightness(1.08)', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -656,8 +656,22 @@ module.exports = function injectTitleBar(ctx) {
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      __padStyle.textContent = 'html{background:transparent !important;}html>body{transform:translateY(34px) !important;padding-top:0 !important;}';
+      __padStyle.textContent = [
+        'html{background:transparent !important;background-color:transparent !important;background-image:none !important;}',
+        'html::before,html::after,body::before,body::after{content:none !important;display:none !important;}',
+        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}',
+        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title){transform:translateY(34px) !important;}',
+        '#__nuxt,#app,#root,#__next,#__layout,#___gatsby,[id="app"],[id="root"]{background:transparent !important;}',
+      ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
+      const __enforceTrans = () => {
+        try {
+          document.documentElement.style.setProperty('background', 'transparent', 'important');
+          document.documentElement.style.setProperty('background-color', 'transparent', 'important');
+        } catch(_) {}
+      };
+      __enforceTrans();
+      setInterval(__enforceTrans, 2000);
     } catch(_) {}
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级

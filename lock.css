@@ -28,19 +28,21 @@ html, body {
   pointer-events: none;
 }
 
+/* v2.15.48：移除 SVG feGaussianBlur 极光光斑（lock.html/settings.html 的 .aurora-svg），
+   改用纯 CSS radial-gradient 四色光斑（粉黄青紫）。根因：客户端 v2.15.36 起
+   disable-gpu-compositing（CPU 合成），SVG filter（feGaussianBlur stdDeviation=30）在
+   CPU 合成下把彩色光斑灰化，设置页/锁屏页背景呈现"灰蒙蒙"遮罩（用户反馈）。纯 CSS
+   radial-gradient 在 CPU 合成下仍正确渲染彩色，实测 --disable-gpu 下彩色恢复、灰蒙消失。 */
 .aurora {
   position: fixed; inset: 0; z-index: 0;
   background:
+    radial-gradient(ellipse 60% 45% at 30% 85%, rgba(255,91,140,.30), transparent 70%),
+    radial-gradient(ellipse 55% 42% at 62% 72%, rgba(255,209,102,.28), transparent 70%),
+    radial-gradient(ellipse 60% 45% at 78% 88%, rgba(67,231,255,.30), transparent 70%),
+    radial-gradient(ellipse 55% 42% at 25% 50%, rgba(139,107,255,.28), transparent 70%),
     radial-gradient(ellipse at 50% 120%, rgba(120,90,255,.18), transparent 60%),
     radial-gradient(ellipse at 100% 0%, rgba(67,231,255,.12), transparent 55%);
   overflow: hidden;
-}
-.aurora-svg {
-  position: absolute; inset: -10%;
-  width: 120%; height: 120%;
-  /* v2.15.29：移除 mix-blend-mode:screen —— 客户端 win32 已 disable-gpu（CPU 软件渲染），
-     mix-blend-mode + feGaussianBlur 在软件合成下合成层 z-order 错乱，光带异常覆盖到
-     settings-card 内容之上（截图实锤：设置页上半区被半透明紫蓝渐变遮罩覆盖、文字发灰）。 */
 }
 .aurora::after {
   content: ""; position: absolute; inset: 0; pointer-events: none;

@@ -663,7 +663,13 @@ module.exports = function injectTitleBar(ctx) {
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      __padStyle.textContent = 'html{background:transparent !important;}html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;}';
+      __padStyle.textContent = [
+        // v2.15.45：顶栏贴顶负偏移归零——飞牛顶栏自带 margin-top:-17px 贴顶，与 body 下移 34px 抵消后顶栏只下移 17px，
+        // 上半截被透明标题栏透出、下半截(34px处)露出一条蓝灰横条(灰条)。把 body 直接子元素 margin-top 归零，顶栏完整落到标题栏下方。
+        'html{background:transparent !important;}',
+        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;}',
+        'html>body>*{margin-top:0 !important;}'
+      ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
     } catch(_) {}
 

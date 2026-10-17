@@ -126,7 +126,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.31';
+const APP_VERSION = '2.15.32';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4606,8 +4606,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     minWidth: 900,
     minHeight: 600,
     title: opts.title || APP_NAME,
-    backgroundColor: '#00000000',
-    transparent: true, // v2.15.21: fully transparent app windows (moved to top-level; webPreferences.transparent was ineffective)
+    backgroundColor: '#12141a',
+    // v2.15.32：移除 transparent:true（v2.15.21"完全透明应用窗"）——透明窗口导致应用内容透出（割裂）与合成层错乱，改回不透明背景。
     show: false,
     autoHideMenuBar: true,
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +

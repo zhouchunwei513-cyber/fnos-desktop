@@ -657,12 +657,12 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
-    // v2.15.49：四角 R 角 + 修复飞牛主页底部裁切。
+    // v2.15.50：四角 R 角 + 修复飞牛主页底部裁切 + 滚动条顶部落到标题栏下方。
     // 1) 四角 R 角：body 加 clip-path:inset(0 round 20px)（标题栏保持长方形直角，仅 body 四角圆角），
     //    html 不加 clip-path——避免 v2.15.47 把标题栏顶部两角也裁成圆角的问题。
     // 2) 底部裁切根因：body transform 下移 34px 后，飞牛 fixed 侧边栏（inset-y-0=100vh）底部超出
-    //    视口 34px 被裁。修复：仅主窗口加 height:calc(100vh-34px)（fixed 元素底部对齐视口）；
-    //    应用窗口不加 height，避免历史"滚动截断/内容显示不全"问题。
+    //    视口 34px 被裁。修复：主窗口加 height:calc(100vh-34px)（fixed 元素底部对齐视口）；
+    //    应用窗口加 height:calc(100vh-34px)+overflow-y:auto 内部滚动（滚动条落到标题栏下方），避免历史"滚动截断/内容显示不全"问题。
     // 灰条根因（CDP 实测）：html 透明后，body 蓝灰渐变背景按 CSS 规范传播到 canvas，body 下移
     // 不影响 canvas 背景，导致标题栏区域露出灰条。修复：html 加透明 GIF background-image 阻止
     // body 背景传播（标题栏透出 Windows 桌面），body 背景保留防穿透。
@@ -671,7 +671,7 @@ module.exports = function injectTitleBar(ctx) {
       __padStyle.id = 'fnos-tb-content-offset';
       const __isAppWin = (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.indexOf('--fnos-app-window') >= 0);
       const __bodyBg = __isAppWin ? '' : 'background:transparent !important;';
-      const __bodySize = __isAppWin ? '' : 'height:calc(100vh - 34px) !important;box-sizing:border-box !important;';
+      const __bodySize = __isAppWin ? 'overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;' : 'height:calc(100vh - 34px) !important;box-sizing:border-box !important;';
       __padStyle.textContent = [
         'html{background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;}',
         'html>body{transform:translateY(34px) !important;' + __bodySize + 'clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;' + __bodyBg + '}'

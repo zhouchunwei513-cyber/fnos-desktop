@@ -449,9 +449,9 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           } else {
-            bar.style.background = 'rgba(18,22,30,0.30)'; // v2.15.40: restore v2.15.22 glass (blur over transparent html -> desktop wallpaper)
-            bar.style.backdropFilter = 'blur(24px) saturate(1.3) brightness(1.08)';
-            bar.style.webkitBackdropFilter = 'blur(24px) saturate(1.3) brightness(1.08)';
+            bar.style.background = 'rgba(18,22,30,0.30)'; // v2.15.41: 纯深灰无 blur（透明窗口软件渲染 backdrop-filter 会产生黑边，v2.15.26 已移除）
+            bar.style.backdropFilter = 'none';
+            bar.style.webkitBackdropFilter = 'none';
           }
         }
         // 底色较深时图标用白，较浅时图标用深色——保证对比
@@ -565,7 +565,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:rgba(18,22,30,0.30)', 'backdrop-filter:blur(24px) saturate(1.3) brightness(1.08)', '-webkit-backdrop-filter:blur(24px) saturate(1.3) brightness(1.08)', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
+          'background:rgba(18,22,30,0.30)', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -659,8 +659,8 @@ module.exports = function injectTitleBar(ctx) {
       __padStyle.textContent = [
         'html{background:transparent !important;background-color:transparent !important;background-image:none !important;}',
         'html::before,html::after,body::before,body::after{content:none !important;display:none !important;}',
-        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}',
-        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title){transform:translateY(34px) !important;}',
+        'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;min-height:0 !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;clip-path:inset(0 round 8px) !important;}',
+        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title):not(#fnos-titlebar):not(#fnos-titlebar-hotzone){transform:translateY(34px) !important;}',
         '#__nuxt,#app,#root,#__next,#__layout,#___gatsby,[id="app"],[id="root"]{background:transparent !important;}',
       ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
@@ -671,7 +671,7 @@ module.exports = function injectTitleBar(ctx) {
         } catch(_) {}
       };
       __enforceTrans();
-      setInterval(__enforceTrans, 2000);
+      // v2.15.23: 移除 setInterval——每 2 秒写 html inline style 触发整页重排，复杂页面卡死；inline !important 优先级足够，init 写一次即可
     } catch(_) {}
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级

@@ -48,10 +48,6 @@ if (process.platform === 'win32') {
     // 主窗口渲染为纯白（白板）。本开关只禁用 GPU 合成（改用 CPU 合成），保留 GPU 进程（光栅化/视频硬解），
     // 既根治白板，又不回退 v2.15.33 解决的“应用加载不全”。v2.15.36 同时给 black-scan 增加白屏自愈兜底。
     app.commandLine.appendSwitch('disable-gpu-compositing');
-    // v2.15.37：加回 disable-gpu-rasterization（禁用 GPU 光栅化，改 SwiftShader 软件光栅化）。
-    // 配合 disable-gpu-compositing 形成「SwiftShader 光栅化 + CPU 合成」，位图驻留 CPU 内存，
-    // 避免「GPU 光栅化 + CPU 合成」下 GPU 位图无法被 CPU 合成器读取导致的影视/相册封面图不显示。
-    app.commandLine.appendSwitch('disable-gpu-rasterization');
     // v1.23.0：开启 Windows 平台 HEVC/H.265 硬解，修复 4K 直播/影视无法播放
     // PlatformHEVCDecoderSupport：启用系统 HEVC 解码器（需安装 HEVC 视频扩展）
     // D3D11VideoDecoder：D3D11 硬解；MojoVideoDecoder：新版视频解码管线
@@ -107,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.37';
+const APP_VERSION = '2.15.38';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4587,8 +4583,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     minWidth: 900,
     minHeight: 600,
     title: opts.title || APP_NAME,
-    backgroundColor: '#12141a',
-    // v2.15.32：移除 transparent:true（v2.15.21"完全透明应用窗"）——透明窗口导致应用内容透出（割裂）与合成层错乱，改回不透明背景。
+    // v2.15.38：恢复应用窗透明（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
+    // v2.15.36 已用 disable-gpu-compositing 根治白板，透明窗口本身不是白板根因；应用窗内容由
+    // titlebar-inject 的「只 html 透明」CSS 保证 body 不透明，标题栏顶部 34px 透出桌面壁纸。
+    transparent: true,
+    backgroundColor: '#00000000',
     show: false,
     autoHideMenuBar: true,
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +

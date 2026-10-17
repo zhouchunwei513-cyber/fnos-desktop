@@ -449,7 +449,7 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           } else {
-            bar.style.background = 'rgba(18,22,30,0.30)'; // v2.15.22 skin-plugin glass
+            bar.style.background = 'transparent'; // v2.15.39: transparent (titlebar shows desktop wallpaper)
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           }
@@ -463,7 +463,7 @@ module.exports = function injectTitleBar(ctx) {
           ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))'
           : 'drop-shadow(0 1px 1px rgba(255,255,255,0.6))';
         bar.querySelectorAll('svg').forEach((svg) => {
-          svg.querySelectorAll('path,line').forEach((p) => { p.setAttribute('stroke', iconStroke); });
+          svg.querySelectorAll('path,line,rect').forEach((p) => { try { p.style.setProperty('stroke', iconStroke, 'important'); } catch (_) { p.setAttribute('stroke', iconStroke); } });
           svg.style.filter = iconShadow;
         });
       } catch (_) {}
@@ -565,7 +565,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:rgba(18,22,30,0.30)', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
+          'background:transparent', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');

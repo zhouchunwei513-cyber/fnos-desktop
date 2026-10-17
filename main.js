@@ -40,6 +40,7 @@ try { MpvHelperMod = require('./mpv-helper.js'); } catch (e) { MpvHelperMod = nu
 // v2.15.33：打开 GPU 支持（用户明确要求）。v1.18.1~v2.15.32 长期禁用 GPU 合成/硬件加速，
 // 纯软件渲染下影视/相册等复杂页面渲染不完整（加载一半、比例失调、内容不全，浏览器正常客户端异常）。
 // 移除全部禁用 GPU 开关恢复硬件合成；媒体硬解（HEVC 等）与 DPI 配置继续保留。
+// v2.15.34：应用窗口（__KILLON29__=1）跳过 frame-inject 主题归一（data-theme/colorScheme/classList 强制 + 白底统一），保持应用主题与浏览器一致。
 if (process.platform === 'win32') {
   try {
     // 禁用 GPU 合成，强制 CPU 合成，从根源消除绿屏（仍保留视频硬件解码）
@@ -98,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.33';
+const APP_VERSION = '2.15.34';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -202,18 +203,18 @@ const __FNOS_FRAME_SCRIPT26 = [
   '(function(){try{',
   'var D=__DARK24__;var out={h:0,bg:0,sub:(window.top!==window),href:String(location.href||"").slice(0,80)};',
   'var KEEP="[data-fnos-tb],[id^=fnos-],[class*=fnos-]";',
-  'try{var r=document.documentElement;',
+  'if(!__KILLON29__){try{var r=document.documentElement;',
   'r.setAttribute("data-fnos-theme",D?"dark":"light");r.setAttribute("data-theme",D?"dark":"light");',
   'r.style.colorScheme=D?"dark":"light";',
   'try{r.classList.remove(D?"light":"dark");r.classList.add(D?"dark":"light");}catch(_){}',
   'try{if(document.body&&document.body.classList){document.body.classList.remove(D?"light":"dark");document.body.classList.add(D?"dark":"light");}}catch(_){}',
-  '}catch(_){}',
-  'try{if(D){var bg="";try{bg=(document.body&&getComputedStyle(document.body).backgroundColor)||"";}catch(_){}',
+  '}catch(_){}}',
+  'if(!__KILLON29__){try{if(D){var bg="";try{bg=(document.body&&getComputedStyle(document.body).backgroundColor)||"";}catch(_){}',
   'var m=/rgba?\\((\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)/.exec(bg);',
   'if(m&&+m[1]>230&&+m[2]>230&&+m[3]>230){',
   'try{document.body.style.setProperty("background-color","#12141a","important");}catch(_){}',
   'try{document.documentElement.style.setProperty("background-color","#12141a","important");}catch(_){}',
-  'out.bg=1;}}}catch(_){}',
+  'out.bg=1;}}}catch(_){}}',
   'try{/* v2.8.0 r28（问题③）：mq 假对象 patch 移除——钉死 matches 与 CSS 实时值分裂=混搭根源；themeSource=system 下原生 matchMedia 即系统实时值 */}catch(_){}',
   'try{/*v2.9.0 r29（问题③）：不再改写用户主题设置——os-theme-mode 三态（10/20/30）为真值*/}catch(_){}',
   'try{window.dispatchEvent(new CustomEvent("fnos-theme",{detail:{dark:!!D}}));window.dispatchEvent(new CustomEvent("theme-change",{detail:{dark:!!D}}));}catch(_){}',

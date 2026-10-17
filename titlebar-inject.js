@@ -657,24 +657,24 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
-    // v2.15.48：仅保留标题栏透明（应用窗标题栏透出桌面），回退 v2.15.47 的 clip-path 圆角与
-    // body height:calc(100vh-34px)。回退原因：clip-path 把标题栏顶部两角裁成圆角（用户要长方形直角），
-    // 且 body height 减 34 + clip 裁剪导致应用滚动截断、主页面内容显示不全。
-    // 灰条根因（CDP 实测）：html 透明后，body 的蓝灰渐变背景（linear-gradient）按 CSS 规范
-    // 传播到 canvas（视口背景），body transform 下移 34px 不影响 canvas 背景，导致标题栏透明
-    // 区域(y=0~34)露出蓝灰渐变=灰条（应用窗保留 body 背景时最明显，视觉上"标题栏在窗口内"）。
-    // 修复：html 加【透明 GIF background-image】使 background-image 非 none——按 CSS 规范仅当 html
-    // 的 background-image 为 none 且 background-color 为 transparent 时才把 body 背景传播到 canvas，
-    // 故透明 GIF 可阻止 body 背景传播（标题栏区域透出 Windows 桌面），同时 body 背景保留防穿透。
-    // v2.15.45 的 html>body>*{margin-top:0} 实测对飞牛主页无效（body 直接子元素 margin-top 均为 0），回退。
+    // v2.15.49：四角 R 角 + 修复飞牛主页底部裁切。
+    // 1) 四角 R 角：body 加 clip-path:inset(0 round 20px)（标题栏保持长方形直角，仅 body 四角圆角），
+    //    html 不加 clip-path——避免 v2.15.47 把标题栏顶部两角也裁成圆角的问题。
+    // 2) 底部裁切根因：body transform 下移 34px 后，飞牛 fixed 侧边栏（inset-y-0=100vh）底部超出
+    //    视口 34px 被裁。修复：仅主窗口加 height:calc(100vh-34px)（fixed 元素底部对齐视口）；
+    //    应用窗口不加 height，避免历史"滚动截断/内容显示不全"问题。
+    // 灰条根因（CDP 实测）：html 透明后，body 蓝灰渐变背景按 CSS 规范传播到 canvas，body 下移
+    // 不影响 canvas 背景，导致标题栏区域露出灰条。修复：html 加透明 GIF background-image 阻止
+    // body 背景传播（标题栏透出 Windows 桌面），body 背景保留防穿透。
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
       const __isAppWin = (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.indexOf('--fnos-app-window') >= 0);
       const __bodyBg = __isAppWin ? '' : 'background:transparent !important;';
+      const __bodySize = __isAppWin ? '' : 'height:calc(100vh - 34px) !important;box-sizing:border-box !important;';
       __padStyle.textContent = [
         'html{background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;}',
-        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;' + __bodyBg + '}'
+        'html>body{transform:translateY(34px) !important;' + __bodySize + 'clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;' + __bodyBg + '}'
       ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
     } catch(_) {}

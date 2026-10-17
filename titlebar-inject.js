@@ -682,6 +682,46 @@ module.exports = function injectTitleBar(ctx) {
       ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
     } catch(_) {}
+    // v2.15.52：应用网页自带 fixed 顶部标题栏落到内容区（UPS 电源管理等）修复。
+    // 根因：body transform:translateY(34px) 创建 containing block，body 里 position:fixed 元素改以
+    // body 为定位基准（而非 viewport），应用网页自己的 fixed 顶部标题栏（fixed top:0）被顶到 y=34
+    // （内容区顶部），与 fnos-desktop bar（y=0~34）形成"两层标题栏"。修复：应用窗口里，把 body 里
+    // fixed 且吸附顶部（top:0）且未同时贴底（bottom 非 0）的元素反向补偿 translateY(-34px)，使其
+    // 回到 y=0，被 fnos-desktop bar（z-index 更高）覆盖，只保留一层标题栏。
+    if (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.indexOf('--fnos-app-window') >= 0) {
+      try {
+        const __compFixedTop = (el) => {
+          try {
+            if (!el || el.nodeType !== 1 || el.getAttribute('data-fnos-fixed-comp')) return;
+            const cs = getComputedStyle(el);
+            if (cs.position !== 'fixed') return;
+            if (parseFloat(cs.top) === 0 && parseFloat(cs.bottom) !== 0) {
+              el.setAttribute('data-fnos-fixed-comp', '1');
+              el.style.setProperty('translate', '0 -34px', 'important');
+            }
+          } catch (_) {}
+        };
+        const __scanFixedTop = () => {
+          try { const all = document.querySelectorAll('body *'); for (let i = 0; i < all.length; i++) __compFixedTop(all[i]); } catch (_) {}
+        };
+        __scanFixedTop();
+        try {
+          const __fmo = new MutationObserver((muts) => {
+            for (let i = 0; i < muts.length; i++) {
+              const added = muts[i].addedNodes;
+              for (let j = 0; j < added.length; j++) {
+                const n = added[j];
+                if (n && n.nodeType === 1) {
+                  __compFixedTop(n);
+                  if (n.querySelectorAll) { const c = n.querySelectorAll('*'); for (let k = 0; k < c.length; k++) __compFixedTop(c[k]); }
+                }
+              }
+            }
+          });
+          __fmo.observe(document.documentElement || document, { childList: true, subtree: true });
+        } catch (_) {}
+      } catch (_) {}
+    }
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级
         //      被其它内容干扰时也能触发）。进入顶部 34px 显示，移出后延迟隐藏（常驻模式永不隐藏） ----

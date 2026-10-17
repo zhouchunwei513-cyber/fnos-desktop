@@ -24,7 +24,7 @@ body {
   position: relative; z-index: 1;
   width: 640px;
   max-width: 100%;
-  padding: 16px 0 12px;
+  padding: 4px 0 12px;
   animation: pop .35s cubic-bezier(.2,.9,.3,1.2);
 }
 

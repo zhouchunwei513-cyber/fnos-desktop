@@ -570,7 +570,7 @@ module.exports = function injectTitleBar(ctx) {
         // （v1.57 原因：避免浅色应用顶部出现实色栏；设置窗口不透明背景本身即深色）。
         const __argvB = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
         const __isMainWin = __argvB.indexOf('--fnos-shell') >= 0 && __argvB.indexOf('--fnos-app-window') < 0;
-        const __barBg = __isMainWin ? 'linear-gradient(180deg, rgb(24,28,38) 0%, rgb(14,17,24) 100%)' : 'transparent';
+        const __barBg = __isMainWin ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
         bar.style.cssText = [
           'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
           'z-index:2147483647', 'display:flex', 'align-items:center',

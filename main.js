@@ -99,7 +99,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.34';
+const APP_VERSION = '2.15.35';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5982,9 +5982,11 @@ function createMainWindow(partition, loadTarget) {
     minWidth: 1000,
     minHeight: 680,
     title: APP_NAME,
-    // 使用深色背景，避免页面首帧渲染前出现绿色/白色闪烁（Win11 部分显卡绿屏问题）
-    backgroundColor: '#00000000', 
-    transparent: true, // v2.15.21: fully transparent window - desktop shows through titlebar
+    // v2.15.35：主窗口回退 Win11 亚克力方案（backgroundMaterial:'acrylic'），根治"完全透明窗口"白板。
+    // v2.15.21 引入 transparent:true + backgroundColor:'#00000000' 后，页面内容渲染失败即显示纯白（白板）；
+    // acrylic 保留"桌面壁纸透出标题栏"的毛玻璃观感，同时窗口有深色兜底背景，绝不会白板。
+    backgroundColor: '#1a1a1a',
+    backgroundMaterial: 'acrylic', // Win11 Acrylic - desktop wallpaper shows through titlebar
     show: false,
     paintWhenInitiallyHidden: true,
     // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。

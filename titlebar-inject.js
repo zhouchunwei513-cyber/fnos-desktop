@@ -650,28 +650,14 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
-    // v2.15.22：标题栏不遮挡内容 + 全透明透传桌面壁纸
-    // CSS 全面透明化（含伪元素、常见根容器）+ inline !important 兜底 + 定时强制
+    // v2.15.35：标题栏不遮挡内容（body 加 34px 顶部偏移，整页内容下移）+ 只让 html 透明透出亚克力背景。
+    // 回退 v2.15.22 的"全透明 CSS"——强制 body/#app 等根容器透明会挖掉飞牛主页背景，
+    // 与 v2.15.21 透明窗口叠加后，页面内容渲染失败即显示纯白（白板根因）。
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
-      __padStyle.textContent = [
-        'html{background:transparent !important;background-color:transparent !important;background-image:none !important;}',
-        'html::before,html::after,body::before,body::after{content:none !important;display:none !important;}',
-        'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;min-height:0 !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;clip-path:inset(0 round 8px) !important;}',
-        'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title):not(#fnos-titlebar):not(#fnos-titlebar-hotzone){transform:translateY(34px) !important;}',
-        '#__nuxt,#app,#root,#__next,#__layout,#___gatsby,[id="app"],[id="root"]{background:transparent !important;}',
-      ].join('');
+      __padStyle.textContent = 'html{background:transparent !important;}html>body{transform:translateY(34px) !important;padding-top:0 !important;}';
       (document.head || document.documentElement).appendChild(__padStyle);
-      const __enforceTrans = () => {
-        try {
-          document.documentElement.style.setProperty('background', 'transparent', 'important');
-          document.documentElement.style.setProperty('background-color', 'transparent', 'important');
-        } catch(_) {}
-      };
-      __enforceTrans();
-      // v2.15.23: remove setInterval - writing html inline style every 2s triggers full style recalc/reflow,
-      // causing lag/freeze on complex pages (preferences). inline !important priority is enough, set once at init.
     } catch(_) {}
 
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级

@@ -659,7 +659,7 @@ module.exports = function injectTitleBar(ctx) {
       __padStyle.textContent = [
         'html{background:transparent !important;background-color:transparent !important;background-image:none !important;}',
         'html::before,html::after,body::before,body::after{content:none !important;display:none !important;}',
-        'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;min-height:0 !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;clip-path:inset(0 round 8px) !important;}',
+        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}',
         'html>*:not(body):not(head):not(script):not(style):not(link):not(meta):not(title):not(#fnos-titlebar):not(#fnos-titlebar-hotzone){transform:translateY(34px) !important;}',
         '#__nuxt,#app,#root,#__next,#__layout,#___gatsby,[id="app"],[id="root"]{background:transparent !important;}',
       ].join('');

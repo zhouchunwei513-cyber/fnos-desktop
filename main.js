@@ -37,17 +37,12 @@ try { MpvHelperMod = require('./mpv-helper.js'); } catch (e) { MpvHelperMod = nu
 // 所有直播流（内置播放器 + 飞牛影视网页）直连 FPK 服务端，链路最短化。
 // 相关历史 IPC（iptv:get-status/set-config/clear-cache/toggle-proxy）已全部删除。
 
-// v1.18.1：彻底解决启动绿屏/花屏/黑屏问题。部分 Win11/Intel 核显/老 N 卡环境下，
-// Chromium 的 GPU 合成会导致页面渲染为纯绿色，部分用户无法进入下一步。
-// 统一关闭 GPU 合成相关特性（视频仍走硬件解码，性能影响极小），不再提供开关。
+// v2.15.33：打开 GPU 支持（用户明确要求）。v1.18.1~v2.15.32 长期禁用 GPU 合成/硬件加速，
+// 纯软件渲染下影视/相册等复杂页面渲染不完整（加载一半、比例失调、内容不全，浏览器正常客户端异常）。
+// 移除全部禁用 GPU 开关恢复硬件合成；媒体硬解（HEVC 等）与 DPI 配置继续保留。
 if (process.platform === 'win32') {
   try {
-    app.commandLine.appendSwitch('disable-gpu-sandbox');
-    app.commandLine.appendSwitch('disable-gpu-rasterization');
-    app.commandLine.appendSwitch('disable-zero-copy');
-    app.commandLine.appendSwitch('disable-gpu-compositing-triggers');
     // 禁用 GPU 合成，强制 CPU 合成，从根源消除绿屏（仍保留视频硬件解码）
-    app.commandLine.appendSwitch('disable-gpu-compositing');
     // v1.23.0：开启 Windows 平台 HEVC/H.265 硬解，修复 4K 直播/影视无法播放
     // PlatformHEVCDecoderSupport：启用系统 HEVC 解码器（需安装 HEVC 视频扩展）
     // D3D11VideoDecoder：D3D11 硬解；MojoVideoDecoder：新版视频解码管线
@@ -72,32 +67,9 @@ if (process.platform === 'win32') {
   } catch (_) {}
 }
 
-// v2.2.3：全局禁用硬件加速（必须在 app ready 前调用）。
-// 此前 v1.76.0 把 disableHardwareAcceleration 写在 BrowserWindow webPreferences 里——
-// 该选项在 Electron 中无效（Electron 仅支持 app.disableHardwareAcceleration() 全局调用），
-// 导致应用窗口创建时仍走 GPU 合成，Windows 上部分 Docker 应用（影视/音乐/34500 XTE 等）
-// 触发 GPU 进程崩溃（render-process-gone crashed exitCode=0x80000003），
-// 并连锁拖垮主窗口渲染进程（日志 00:37:56/00:38:17/00:38:18 主窗口三次崩溃）→ 黑屏/标题栏按钮失效。
-// 全局软件渲染：视频播放走 MPV 外部播放器不受影响；网页内视频降为软解，NAS 管理界面无感知。
-try { app.disableHardwareAcceleration(); } catch (_) {}
-
-// v2.2.4：崩溃链修复增强——仅 app.disableHardwareAcceleration() 未能阻止
-// 用户环境崩溃链（v2.2.3 日志：34500/music 创建即崩 0x80000003、主窗口连崩 4 次）。
-// 追加 --disable-gpu（完全禁用 GPU 进程，不再创建 GPU 子进程），从根源消除
-// "GPU 进程崩溃 → 渲染进程连锁崩溃"；视频硬解由 MPV 外部播放器承担，不受影响。
-// 若未来需要恢复 GPU 合成，可改由设置项控制（此处先强制关闭以恢复稳定性）。
-try {
-  if (process.platform === 'win32') {
-    app.commandLine.appendSwitch('disable-gpu');
-    // v2.15.31：移除 --disable-software-rasterizer。此前「--disable-gpu + --disable-software-rasterizer」
-    // 双重禁用后 Chromium 完全无 GPU 进程、无 SwiftShader 软件光栅化器，走纯 CPU 软件绘制路径，
-    // 该路径下 backdrop-filter / mix-blend-mode / SVG filter 等特效的合成层 z-order 会错乱，导致：
-    // 设置界面极光遮罩盖内容（v2.15.29 已临时移除 mix-blend-mode）、FNTB/OpenList/XTE 等应用
-    // 「主界面与应用界面层级重叠、布局错位、滚动内容显示不全」（视频实锤）。仅保留 --disable-gpu
-    // 禁用硬件 GPU（v2.2.4 崩溃链根源是硬件 GPU 进程崩溃 0x80000003，与 SwiftShader 无关），
-    // 让 SwiftShader 软件光栅化器接管合成层，正确渲染玻璃拟态等特效，从根源消除层级错乱。
-  }
-} catch (_) {}
+// v2.15.33：已移除全局 disableHardwareAcceleration + --disable-gpu 等禁用 GPU 开关（用户明确要求打开 GPU）。
+// 历史：v2.2.3/v2.2.4 曾为规避 GPU 进程崩溃（0x80000003）禁用硬件加速/GPU 进程，
+// 代价是纯软件渲染下影视/相册等复杂页面渲染不完整（加载一半/比例失调/内容不全）。现恢复硬件 GPU 合成。
 
 // v1.16.2：全局兜底——未捕获异常 / 未处理 Promise 拒绝时只记录日志，绝不闪退
 process.on('uncaughtException', (err) => {
@@ -126,7 +98,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.32';
+const APP_VERSION = '2.15.33';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4659,7 +4631,6 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // （影视/音乐等）在 Windows 上触发 GPU 进程崩溃，导致窗口创建即崩、
       // 后续所有应用窗口连锁打不开（render-process-gone crashed 0x80000003）。
       // 主窗口/主页仍保留硬件加速；视频播放走 MPV 外部播放器不受影响。
-      disableHardwareAcceleration: true,
     },
   });
 

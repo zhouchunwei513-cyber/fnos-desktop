@@ -449,7 +449,7 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           } else {
-            bar.style.background = 'rgba(18,22,30,0.30)'; // v2.15.41: 纯深灰无 blur（透明窗口软件渲染 backdrop-filter 会产生黑边，v2.15.26 已移除）
+            bar.style.background = 'transparent'; // v2.15.39: 标题栏透明透出桌面壁纸（v2.15.41 误回退为 30% 深灰，现恢复）
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           }
@@ -572,7 +572,7 @@ module.exports = function injectTitleBar(ctx) {
           'pointer-events:auto',
           // v1.57：标题栏统一为【完全透明】，直接透出网页内容（与主页面一致）；
           // 不再有深色填充/毛玻璃，避免在浅色应用（应用中心/飞牛音乐）顶部出现一条实色栏。
-          'background:rgba(18,22,30,0.30)', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
+          'background:transparent', 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');

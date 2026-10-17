@@ -102,8 +102,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             $extra = @()
             if ($tag -match '(-rc|-beta)') { $extra += '--prerelease' }
-            gh release create $tag --generate-notes @extra
-            if ($LASTEXITCODE -ne 0) { throw "gh release create $tag 失败" }
+            gh release create $tag --generate-notes @extra 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              # 竞态幂等：并发 mac job 可能已创建 release，回查 view，已存在则继续上传
+              gh release view $tag 2>$null | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "gh release create $tag 失败" }
+              Write-Host "release $tag 已由并发 job 创建，继续上传"
+            }
           }
           foreach ($f in $files) {
             $ok = $false

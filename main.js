@@ -48,6 +48,10 @@ if (process.platform === 'win32') {
     // 主窗口渲染为纯白（白板）。本开关只禁用 GPU 合成（改用 CPU 合成），保留 GPU 进程（光栅化/视频硬解），
     // 既根治白板，又不回退 v2.15.33 解决的“应用加载不全”。v2.15.36 同时给 black-scan 增加白屏自愈兜底。
     app.commandLine.appendSwitch('disable-gpu-compositing');
+    // v2.15.37：加回 disable-gpu-rasterization（禁用 GPU 光栅化，改 SwiftShader 软件光栅化）。
+    // 配合 disable-gpu-compositing 形成「SwiftShader 光栅化 + CPU 合成」，位图驻留 CPU 内存，
+    // 避免「GPU 光栅化 + CPU 合成」下 GPU 位图无法被 CPU 合成器读取导致的影视/相册封面图不显示。
+    app.commandLine.appendSwitch('disable-gpu-rasterization');
     // v1.23.0：开启 Windows 平台 HEVC/H.265 硬解，修复 4K 直播/影视无法播放
     // PlatformHEVCDecoderSupport：启用系统 HEVC 解码器（需安装 HEVC 视频扩展）
     // D3D11VideoDecoder：D3D11 硬解；MojoVideoDecoder：新版视频解码管线
@@ -103,7 +107,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.36';
+const APP_VERSION = '2.15.37';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5986,11 +5990,11 @@ function createMainWindow(partition, loadTarget) {
     minWidth: 1000,
     minHeight: 680,
     title: APP_NAME,
-    // v2.15.35：主窗口回退 Win11 亚克力方案（backgroundMaterial:'acrylic'），根治"完全透明窗口"白板。
-    // v2.15.21 引入 transparent:true + backgroundColor:'#00000000' 后，页面内容渲染失败即显示纯白（白板）；
-    // acrylic 保留"桌面壁纸透出标题栏"的毛玻璃观感，同时窗口有深色兜底背景，绝不会白板。
-    backgroundColor: '#1a1a1a',
-    backgroundMaterial: 'acrylic', // Win11 Acrylic - desktop wallpaper shows through titlebar
+    // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
+    // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
+    // 故恢复透明让标题栏透出桌面壁纸；body 仍保留飞牛主页背景（titlebar-inject 只 html 透明），不挖空内容。
+    transparent: true,
+    backgroundColor: '#00000000',
     show: false,
     paintWhenInitiallyHidden: true,
     // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。

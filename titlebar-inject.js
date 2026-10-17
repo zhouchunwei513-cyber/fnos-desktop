@@ -688,11 +688,12 @@ module.exports = function injectTitleBar(ctx) {
           'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;}'
         ].join('');
       } else {
-        // 主窗口（透明 + webview 飞牛桌面）：webview 占满 100vh（body 不再下移/限高），
-        // 避免飞牛监控面板底部被裁 34px；标题栏 bar fixed 透明盖在顶部 34px，底部完整显示。
+        // 主窗口（透明 + webview 飞牛桌面）：body 下移 34px 给标题栏让位（顶部透出桌面壁纸），
+        // height:calc(100vh-34px) 让 webview 视口 = 窗口高度 - 34px；窗口高度已 +34px（main.js）补偿，
+        // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
           'html{' + __gifBg + '}',
-          'html>body{clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);

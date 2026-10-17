@@ -657,18 +657,20 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
-    // v2.15.43：标题栏不遮挡内容（body 下移 34px）+ 只让 html 透明透出桌面壁纸。
-    // 不再强制 body/#app 等根容器透明（v2.15.40 恢复 v2.15.22 全透明时误带回来，
-    // 会挖掉应用/飞牛主页背景，导致应用窗口背景穿透桌面壁纸）。
+    // v2.15.46：标题栏不遮挡内容（body 下移 34px）+ html 透明透出桌面壁纸。
+    // 灰条根因（CDP 实测）：html 透明后，body 的蓝灰渐变背景（linear-gradient）按 CSS 规范
+    // 传播到 canvas（视口背景），body transform 下移 34px 不影响 canvas 背景，导致标题栏透明
+    // 区域(y=0~34)露出蓝灰渐变=灰条。修复：主窗口让 body 背景透明（canvas 随之透明，灰条消失，
+    // 壁纸 IMG 是 body 后代不受影响）；应用窗(--fnos-app-window)保留 body 背景防应用内容穿透壁纸。
+    // v2.15.45 的 html>body>*{margin-top:0} 实测对飞牛主页无效（body 直接子元素 margin-top 均为 0），回退。
     try {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
+      const __isAppWin = (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.indexOf('--fnos-app-window') >= 0);
+      const __bodyBg = __isAppWin ? '' : 'background:transparent !important;';
       __padStyle.textContent = [
-        // v2.15.45：顶栏贴顶负偏移归零——飞牛顶栏自带 margin-top:-17px 贴顶，与 body 下移 34px 抵消后顶栏只下移 17px，
-        // 上半截被透明标题栏透出、下半截(34px处)露出一条蓝灰横条(灰条)。把 body 直接子元素 margin-top 归零，顶栏完整落到标题栏下方。
         'html{background:transparent !important;}',
-        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;}',
-        'html>body>*{margin-top:0 !important;}'
+        'html>body{transform:translateY(34px) !important;padding-top:0 !important;margin-top:0 !important;' + __bodyBg + '}'
       ].join('');
       (document.head || document.documentElement).appendChild(__padStyle);
     } catch(_) {}

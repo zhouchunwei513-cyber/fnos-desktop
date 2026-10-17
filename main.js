@@ -43,7 +43,11 @@ try { MpvHelperMod = require('./mpv-helper.js'); } catch (e) { MpvHelperMod = nu
 // v2.15.34：应用窗口（__KILLON29__=1）跳过 frame-inject 主题归一（data-theme/colorScheme/classList 强制 + 白底统一），保持应用主题与浏览器一致。
 if (process.platform === 'win32') {
   try {
-    // 禁用 GPU 合成，强制 CPU 合成，从根源消除绿屏（仍保留视频硬件解码）
+    // v2.15.36：重新加回 disable-gpu-compositing（禁用 GPU 合成，强制 CPU 合成）。
+    // v2.15.33 完全打开 GPU 后，部分显卡/驱动环境（历史 v1.18.1 绿屏、v2.2.3 崩溃）在硬件 GPU 合成下
+    // 主窗口渲染为纯白（白板）。本开关只禁用 GPU 合成（改用 CPU 合成），保留 GPU 进程（光栅化/视频硬解），
+    // 既根治白板，又不回退 v2.15.33 解决的“应用加载不全”。v2.15.36 同时给 black-scan 增加白屏自愈兜底。
+    app.commandLine.appendSwitch('disable-gpu-compositing');
     // v1.23.0：开启 Windows 平台 HEVC/H.265 硬解，修复 4K 直播/影视无法播放
     // PlatformHEVCDecoderSupport：启用系统 HEVC 解码器（需安装 HEVC 视频扩展）
     // D3D11VideoDecoder：D3D11 硬解；MojoVideoDecoder：新版视频解码管线
@@ -99,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.35';
+const APP_VERSION = '2.15.36';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5596,17 +5600,17 @@ function __armBlackScan(win, tag) {
           if (!win || win.isDestroyed() || !win.isVisible()) return;
           const img = await win.webContents.capturePage();
           const bmp = (img && !img.isEmpty()) ? img.getBitmap() : null;
-          let black = false;
+          let black = false; let white = false;
           if (bmp && bmp.length > 100) {
             let sum = 0, sum2 = 0, n = 0;
             for (let i = 0; i + 3 < bmp.length; i += 4 * 97) {
               const y = bmp[i] * 0.299 + bmp[i + 1] * 0.587 + bmp[i + 2] * 0.114;
               sum += y; sum2 += y * y; n++;
             }
-            if (n > 10) { const mean = sum / n; const varr = sum2 / n - mean * mean; black = mean < 8 && varr < 25; }
+            if (n > 10) { const mean = sum / n; const varr = sum2 / n - mean * mean; black = mean < 8 && varr < 25; white = mean > 245 && varr < 25; }
           }
-          try { require('./logger.js').log('info', 'window', 'black-scan.check', { params: { tag: String(tag || ''), ms: __ms, black, empty: !bmp, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
-          if (black && !win.isDestroyed() && win.__fnBlackHeals < 3) { // v2.8.0 r28（问题⑧）：自愈上限 2→3
+          try { require('./logger.js').log('info', 'window', 'black-scan.check', { params: { tag: String(tag || ''), ms: __ms, black, white, empty: !bmp, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
+          if ((black || white) && !win.isDestroyed() && win.__fnBlackHeals < 3) { // v2.15.36 增加白屏检测；v2.8.0 r28（合并到 5 档快检）单窗自愈上限 2→3
             win.__fnBlackHeals++;
             try {
               const b = win.getBounds();

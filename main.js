@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.66';
+const APP_VERSION = '2.15.67';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6038,30 +6038,40 @@ function createMainWindow(partition, loadTarget) {
   });
 
 
-  // v2.15.66：锁定窗口 45:27.65（用户实测比例，高=round(宽×553/900)、宽=round(高×900/553)）。
-  // 根因：Windows 上 will-resize 改 newBounds 不回写系统 resize（v2.15.65 实测无效），preventDefault+setBounds 又可能卡住拖拽。
-  // 修复：resize 事件后 setSize 强制回正（可靠兜底，不依赖 will-resize）；will-resize 仅软修正 newBounds（能生效则更顺滑）。
+  // v2.15.67：以【内容区(getContentSize)】为基准锁 45:27.65（=900:553），再反推外框(getSize)。
+  // 用户反馈：v2.15.66 锁的是窗口外轮廓比例，但 Windows 窗口含左右边框/上下边距，外框减边框后
+  // 内容区(网页渲染区)比例≠1.627→灰边。修：内容区高=round(内容区宽×553/900)、宽=round(内容区高×900/553)，
+  // 反推外框=目标内容区+边框差(dx=外框宽-内容区宽, dy=外框高-内容区高)；resize 事件 setSize 强制回正兜底。
   let __lockAspect = false;
+  const __aspectFix = (win) => {
+    const [cw, ch] = win.getContentSize();
+    const [w, h] = win.getSize();
+    const dx = w - cw, dy = h - ch;
+    const tch = Math.round(cw * 553 / 900);
+    const tcw = Math.round(ch * 900 / 553);
+    const errH = Math.abs(ch - tch), errW = Math.abs(cw - tcw);
+    let nw = w, nh = h;
+    if (errW <= errH) { nh = tch + dy; } else { nw = tcw + dx; }
+    return [nw, nh];
+  };
   try {
     mainWindow.on('will-resize', (event, newBounds) => {
       try {
         if (mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
-        const w = newBounds.width, h = newBounds.height;
-        const [cw, ch] = mainWindow.getSize();
-        const dw = Math.abs(w - cw), dh = Math.abs(h - ch);
-        if (dw >= dh) { newBounds.height = Math.round(w * 553 / 900); }
-        else { newBounds.width = Math.round(h * 900 / 553); }
+        const [cw, ch] = mainWindow.getContentSize();
+        const [w, h] = mainWindow.getSize();
+        const dx = w - cw, dy = h - ch;
+        const ncw = newBounds.width - dx, nch = newBounds.height - dy;
+        const dw = Math.abs(newBounds.width - w), dh = Math.abs(newBounds.height - h);
+        if (dw >= dh) { newBounds.height = Math.round(ncw * 553 / 900) + dy; }
+        else { newBounds.width = Math.round(nch * 900 / 553) + dx; }
       } catch (_) {}
     });
     mainWindow.on('resize', () => {
       try {
         if (__lockAspect || mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
+        const [nw, nh] = __aspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
-        const targetH = Math.round(w * 553 / 900);
-        const targetW = Math.round(h * 900 / 553);
-        const errH = Math.abs(h - targetH), errW = Math.abs(w - targetW);
-        let nw = w, nh = h;
-        if (errW <= errH) { nh = targetH; } else { nw = targetW; }
         if (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) {
           __lockAspect = true;
           try { mainWindow.setSize(nw, nh); } catch (_) {}

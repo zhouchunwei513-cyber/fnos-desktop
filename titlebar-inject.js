@@ -699,7 +699,7 @@ module.exports = function injectTitleBar(ctx) {
         // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
           'html{' + __gifBg + '}',
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);

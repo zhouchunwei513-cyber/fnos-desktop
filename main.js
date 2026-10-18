@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.65';
+const APP_VERSION = '2.15.66';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6038,8 +6038,10 @@ function createMainWindow(partition, loadTarget) {
   });
 
 
-  // v2.15.65：锁定窗口 45:27.65（用户实测比例，高=round(宽×553/900)、宽=round(高×900/553)）。
-  // 直接修改 newBounds 让 Electron 用修正后尺寸，避免 preventDefault+setBounds 在 Windows 上不稳定导致比例锁不住。
+  // v2.15.66：锁定窗口 45:27.65（用户实测比例，高=round(宽×553/900)、宽=round(高×900/553)）。
+  // 根因：Windows 上 will-resize 改 newBounds 不回写系统 resize（v2.15.65 实测无效），preventDefault+setBounds 又可能卡住拖拽。
+  // 修复：resize 事件后 setSize 强制回正（可靠兜底，不依赖 will-resize）；will-resize 仅软修正 newBounds（能生效则更顺滑）。
+  let __lockAspect = false;
   try {
     mainWindow.on('will-resize', (event, newBounds) => {
       try {
@@ -6047,12 +6049,25 @@ function createMainWindow(partition, loadTarget) {
         const w = newBounds.width, h = newBounds.height;
         const [cw, ch] = mainWindow.getSize();
         const dw = Math.abs(w - cw), dh = Math.abs(h - ch);
-        if (dw >= dh) {
-          newBounds.height = Math.round(w * 553 / 900);
-        } else {
-          newBounds.width = Math.round(h * 900 / 553);
-        }
+        if (dw >= dh) { newBounds.height = Math.round(w * 553 / 900); }
+        else { newBounds.width = Math.round(h * 900 / 553); }
       } catch (_) {}
+    });
+    mainWindow.on('resize', () => {
+      try {
+        if (__lockAspect || mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
+        const [w, h] = mainWindow.getSize();
+        const targetH = Math.round(w * 553 / 900);
+        const targetW = Math.round(h * 900 / 553);
+        const errH = Math.abs(h - targetH), errW = Math.abs(w - targetW);
+        let nw = w, nh = h;
+        if (errW <= errH) { nh = targetH; } else { nw = targetW; }
+        if (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) {
+          __lockAspect = true;
+          try { mainWindow.setSize(nw, nh); } catch (_) {}
+          setImmediate(() => { __lockAspect = false; });
+        }
+      } catch (_) { __lockAspect = false; }
     });
   } catch (_) {}
   // v2.10.0 r30（问题2 根修）：主窗 show 即核查卡死态——停在 /appview（应用中心占满主页面）或

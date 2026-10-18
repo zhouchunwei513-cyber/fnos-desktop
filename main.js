@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.57';
+const APP_VERSION = '2.15.58';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5962,7 +5962,7 @@ function createMainWindow(partition, loadTarget) {
   let savedBounds = null;
   try {
     const b = loadSettings().windowBounds;
-    if (b && typeof b === 'object' && Number.isFinite(b.width) && Number.isFinite(b.height) && b.width >= 1000 && b.height >= 680) {
+    if (b && typeof b === 'object' && Number.isFinite(b.width) && Number.isFinite(b.height) && b.width >= 1024 && b.height >= 576) {
       savedBounds = b;
     }
   } catch (_) {}
@@ -5981,13 +5981,22 @@ function createMainWindow(partition, loadTarget) {
     } catch (_) { savedBounds = null; }
   }
 
+  // v2.15.58：主窗口锁定 16:9（飞牛主页是固定 16:9 桌面 UI，窗口比例不匹配会产生顶部灰条/底部裁切）。
+  // 恢复上次保存的窗口尺寸时强制归一化为 16:9，避免历史非 16:9 尺寸造成灰条。
+  if (savedBounds) {
+    try {
+      const targetH = Math.round(savedBounds.width * 9 / 16);
+      if (Math.abs(savedBounds.height - targetH) > 8) { savedBounds.height = targetH; }
+    } catch (_) {}
+  }
+
   mainWindow = new BrowserWindow({
-    width: savedBounds ? savedBounds.width : 1320,
-    height: savedBounds ? savedBounds.height : 860,
+    width: savedBounds ? savedBounds.width : 1440,
+    height: savedBounds ? savedBounds.height : 810,
     x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
     y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
-    minWidth: 1000,
-    minHeight: 680,
+    minWidth: 1024,
+    minHeight: 576,
     title: APP_NAME,
     // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
@@ -6024,6 +6033,11 @@ function createMainWindow(partition, loadTarget) {
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
     },
   });
+
+  // v2.15.58：锁定主窗口宽高比 16:9（与飞牛主页设计比例一致），resize/最大化时保持比例，
+  // 消除窗口比例不匹配导致的顶部灰条与底部裁切。extraSize.height=34 补偿自绘标题栏，
+  // 使 webview 内容区（窗口高-34）精确 16:9。
+  try { mainWindow.setAspectRatio(16 / 9, { width: 0, height: 34 }); } catch (_) {}
 
   // v2.10.0 r30（问题2 根修）：主窗 show 即核查卡死态——停在 /appview（应用中心占满主页面）或
   // 带着未消费的 __pendingHomeReset（隐藏/最小化期撞上 appview 转出）现身时立即拉回主页；

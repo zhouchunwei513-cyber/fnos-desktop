@@ -711,7 +711,11 @@ module.exports = function injectTitleBar(ctx) {
         // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
           'html{' + __gifBg + '}',
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
+          // v2.15.75：主窗口 body 底色由 transparent 改为深色 #05060a。
+          // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
+          // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。
+          // 深色兜底后，即使有 1px 偏差也与标题栏同色，不再看得出灰条。
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);

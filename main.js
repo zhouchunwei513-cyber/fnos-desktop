@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.68';
+const APP_VERSION = '2.15.69';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -3864,7 +3864,8 @@ function createSettingsWindow() {
     maximizable: true,
     fullscreenable: false,
     title: 'FNOS 设置',
-    backgroundColor: '#05060a',
+    transparent: true,
+    backgroundColor: '#00000000',
     autoHideMenuBar: true,
     frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v2.15.2：mac 原生红绿灯，Windows 无边框 + settings-preload 注入自绘标题栏
     icon: ICON_PATH,

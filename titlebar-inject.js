@@ -449,7 +449,10 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           } else {
-            bar.style.background = 'transparent'; // v2.15.39: 标题栏透明透出桌面壁纸（v2.15.41 误回退为 30% 深灰，现恢复）
+            // v2.15.69：设置窗口透明后标题栏透出桌面灰边，改深色渐变；主/应用窗口保持 transparent 透出下层
+            var __argvS = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+            var __isSettingsS = __argvS.indexOf('--fnos-shell') < 0 && __argvS.indexOf('--fnos-app-window') < 0;
+            bar.style.background = __isSettingsS ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
           }
@@ -577,6 +580,7 @@ module.exports = function injectTitleBar(ctx) {
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
           'background:' + __barBg, 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
+          'box-shadow:0 1px 0 rgba(6,9,21,0.9)',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -686,7 +690,7 @@ module.exports = function injectTitleBar(ctx) {
         // 会钻到标题栏底下；transform 让全部内容（含 fixed）整体下移，标题栏独立顶部。
         // html 锁死滚动，body 单滚动（settings.css 配合）。
         __padStyle.textContent = 'html{overflow:hidden !important;}' +
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;}';
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}';
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [

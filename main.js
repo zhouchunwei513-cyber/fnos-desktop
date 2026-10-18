@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.76';
+const APP_VERSION = '2.15.77';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -10626,6 +10626,11 @@ function createLiveWindow(autoplayChannel) {
       webPreferences: {
         preload: LIVE_PRELOAD,
         partition: livePartition,
+        // v2.15.77: live-window flag. titlebar-inject decides window kind from
+        // --fnos-shell / --fnos-app-window; the live window has neither, so it used to be
+        // misdetected as the settings window and got an opaque dark gradient titlebar,
+        // which showed up as a black rectangle where the titlebar should be transparent.
+        additionalArguments: ['--fnos-live-window'],
         contextIsolation: true, webviewTag: true,
         nodeIntegration: false,
         sandbox: false, // v1.56：live-preload 需 require 本地 titlebar-inject，必须关闭沙箱

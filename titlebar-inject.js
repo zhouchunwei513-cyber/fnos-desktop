@@ -451,7 +451,10 @@ module.exports = function injectTitleBar(ctx) {
           } else {
             // v2.15.69：设置窗口透明后标题栏透出桌面灰边，改深色渐变；主/应用窗口保持 transparent 透出下层
             var __argvS = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
-            var __isSettingsS = __argvS.indexOf('--fnos-shell') < 0 && __argvS.indexOf('--fnos-app-window') < 0;
+            // v2.15.77：补排除直播窗口（--fnos-live-window）。直播窗口既无 --fnos-shell 也无
+            // --fnos-app-window，旧条件会把它误判成设置窗口 → bar 被刷成深色渐变不透明，
+            // 压在透明标题栏位置就成了用户看到的"长方形黑条"。
+            var __isSettingsS = __argvS.indexOf('--fnos-shell') < 0 && __argvS.indexOf('--fnos-app-window') < 0 && __argvS.indexOf('--fnos-live-window') < 0;
             bar.style.background = __isSettingsS ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
@@ -689,7 +692,14 @@ module.exports = function injectTitleBar(ctx) {
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
       const __argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
-      const __isAppWin = __argv.indexOf('--fnos-app-window') >= 0;
+      const __isLiveWin = __argv.indexOf('--fnos-live-window') >= 0; // v2.15.77: live window flag
+      // v2.15.77: live window treated as app window. It carries neither --fnos-shell nor
+      // --fnos-app-window, so the old condition dropped it into the __isSettings branch:
+      // body got an opaque #05060a background and html lost the transparent-GIF guard,
+      // producing a dark rectangle behind the transparent titlebar. As an app window it
+      // gets html transparency (desktop shows through), margin:0 (keeps the 20px radius)
+      // and the fixed-top compensation so only one titlebar layer remains.
+      const __isAppWin = __argv.indexOf('--fnos-app-window') >= 0 || __isLiveWin;
       const __isSettings = (!__isAppWin && __argv.indexOf('--fnos-shell') < 0); // 设置窗口：无 --fnos-shell 也无 --fnos-app-window（不透明窗口，独立布局）
       const __gifBg = 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;';
       if (__isSettings) {
@@ -729,7 +739,7 @@ module.exports = function injectTitleBar(ctx) {
     // （内容区顶部），与 fnos-desktop bar（y=0~34）形成"两层标题栏"。修复：应用窗口里，把 body 里
     // fixed 且吸附顶部（top:0）且未同时贴底（bottom 非 0）的元素反向补偿 translateY(-34px)，使其
     // 回到 y=0，被 fnos-desktop bar（z-index 更高）覆盖，只保留一层标题栏。
-    if (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.indexOf('--fnos-app-window') >= 0) {
+    if (typeof process !== 'undefined' && Array.isArray(process.argv) && (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-live-window') >= 0)) {
       try {
         const __compFixedTop = (el) => {
           try {

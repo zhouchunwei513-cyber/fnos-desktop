@@ -582,7 +582,8 @@ module.exports = function injectTitleBar(ctx) {
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
-          'background:' + __barBg, 'border-radius:20px 20px 0 0', '-webkit-app-region:drag',
+          // v2.15.72：标题栏恢复长方形直角（用户要求），去掉 border-radius
+          'background:' + __barBg, '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -692,12 +693,12 @@ module.exports = function injectTitleBar(ctx) {
         // 会钻到标题栏底下；transform 让全部内容（含 fixed）整体下移，标题栏独立顶部。
         // html 锁死滚动，body 单滚动（settings.css 配合）。
         __padStyle.textContent = 'html{overflow:hidden !important;}' +
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}';
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;clip-path:inset(0 round 0px) !important;background:#05060a !important;}';
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [
           'html{overflow:hidden !important;' + __gifBg + '}',
-          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;}'
+          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 0px) !important;padding-top:0 !important;margin-top:0 !important;}'
         ].join('');
       } else {
         // 主窗口（透明 + webview 飞牛桌面）：body 下移 34px 给标题栏让位（顶部透出桌面壁纸），
@@ -705,7 +706,7 @@ module.exports = function injectTitleBar(ctx) {
         // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
           'html{' + __gifBg + '}',
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 0px) !important;padding-top:0 !important;margin-top:0 !important;background:transparent !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);

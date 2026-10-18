@@ -574,8 +574,11 @@ module.exports = function injectTitleBar(ctx) {
         const __argvB = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
         const __isMainWin = __argvB.indexOf('--fnos-shell') >= 0 && __argvB.indexOf('--fnos-app-window') < 0;
         const __barBg = __isMainWin ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
+        // v2.15.71：主窗口标题栏高度 34->35px，标题栏本体向下侵入内容区 1px 盖住接缝，
+        // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
+        // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
         bar.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:34px',
+          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:' + (__isMainWin ? '35px' : '34px'),
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
@@ -664,13 +667,6 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
-        // v2.15.70：标题栏底部接缝根治——伪元素向下延伸 1px 不透明同色块，替代 box-shadow（抗亚像素偏移更强）
-        try {
-          const __seam = document.createElement('style');
-          __seam.id = 'fnos-tb-seam';
-          __seam.textContent = '#fnos-titlebar::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:rgb(3,6,16);pointer-events:none;}';
-          (document.head || document.documentElement).appendChild(__seam);
-        } catch(_) {}
     // v2.15.51：四角 R 角 + 修复飞牛主页底部裁切 + 滚动条顶部落到标题栏下方。
     // 1) 四角 R 角：body 加 clip-path:inset(0 round 20px)（标题栏保持长方形直角，仅 body 四角圆角），
     //    html 不加 clip-path——避免 v2.15.47 把标题栏顶部两角也裁成圆角的问题。

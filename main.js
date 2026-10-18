@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.72';
+const APP_VERSION = '2.15.73';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4589,7 +4589,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v2.15.36 已用 disable-gpu-compositing 根治白板，透明窗口本身不是白板根因；应用窗内容由
     // titlebar-inject 的「只 html 透明」CSS 保证 body 不透明，标题栏顶部 34px 透出桌面壁纸。
     transparent: true,
-    roundedCorners: false, // v2.15.72：关闭系统圆角，窗口恢复长方形
+    roundedCorners: true,
     backgroundColor: '#00000000',
     show: false,
     autoHideMenuBar: true,
@@ -6009,7 +6009,7 @@ function createMainWindow(partition, loadTarget) {
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
     // 故恢复透明让标题栏透出桌面壁纸；body 仍保留飞牛主页背景（titlebar-inject 只 html 透明），不挖空内容。
     transparent: true,
-    roundedCorners: false, // v2.15.72：关闭系统圆角，窗口恢复长方形
+    roundedCorners: true,
     backgroundColor: '#00000000',
     show: false,
     paintWhenInitiallyHidden: true,

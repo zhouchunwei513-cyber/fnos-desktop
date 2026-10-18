@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.62';
+const APP_VERSION = '2.15.63';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5981,24 +5981,14 @@ function createMainWindow(partition, loadTarget) {
     } catch (_) { savedBounds = null; }
   }
 
-  // v2.15.58：主窗口锁定用户指定比例 32.8:20（窗口高 = round(宽×25/41)），窗口比例不匹配会产生顶部灰条/底部裁切。
-  // 恢复上次保存的窗口尺寸时归一化为 32.8:20（窗口高 = round(宽×25/41)），避免历史非 32.8:20 尺寸造成灰条。
-  // v2.15.60：webview 是 OOPIF，合成层不遵循 body transform:translateY(34px)，实际占满窗口，
-  // 故 webview 视口 = 窗口高（不是窗口高-34），窗口高直接 = round(宽×25/41) 即 32.8:20，不再 +34。
-  if (savedBounds) {
-    try {
-      const targetH = Math.round(savedBounds.width * 25 / 41);
-      if (Math.abs(savedBounds.height - targetH) > 8) { savedBounds.height = targetH; }
-    } catch (_) {}
-  }
 
   mainWindow = new BrowserWindow({
-    width: savedBounds ? savedBounds.width : 1440,
-    height: savedBounds ? savedBounds.height : 878,
+    width: savedBounds ? savedBounds.width : 1320,
+    height: savedBounds ? savedBounds.height : 860,
     x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
     y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
-    minWidth: 1024,
-    minHeight: 624,
+    minWidth: 1000,
+    minHeight: 680,
     title: APP_NAME,
     // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
@@ -6036,34 +6026,6 @@ function createMainWindow(partition, loadTarget) {
     },
   });
 
-  // v2.15.58：锁定窗口 32.8:20（用户指定比例，比例不匹配→顶部灰条/底部裁切）。
-  // v2.15.60：webview 是 OOPIF，合成层不遵循 body transform:translateY(34px)，实际占满窗口，
-  // 视口 = 窗口高（不是窗口高-34），故窗口高 = round(宽×25/41)（不再 +34）。Windows 用 will-resize 手动修正。
-  try {
-    let __fixAspect = false;
-    mainWindow.on('will-resize', (event, newBounds) => {
-      try {
-        if (__fixAspect || mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
-        const w = newBounds.width, h = newBounds.height;
-        const [cw, ch] = mainWindow.getSize();
-        const dw = Math.abs(w - cw), dh = Math.abs(h - ch);
-        let changed = false;
-        if (dw >= dh) {
-          const targetH = Math.round(w * 25 / 41);
-          if (Math.abs(h - targetH) > 2) { newBounds.height = targetH; changed = true; }
-        } else {
-          const targetW = Math.round(h * 41 / 25);
-          if (Math.abs(w - targetW) > 2) { newBounds.width = targetW; changed = true; }
-        }
-        if (changed) {
-          event.preventDefault();
-          __fixAspect = true;
-          mainWindow.setBounds(newBounds);
-          __fixAspect = false;
-        }
-      } catch (_) { __fixAspect = false; }
-    });
-  } catch (_) {}
 
   // v2.10.0 r30（问题2 根修）：主窗 show 即核查卡死态——停在 /appview（应用中心占满主页面）或
   // 带着未消费的 __pendingHomeReset（隐藏/最小化期撞上 appview 转出）现身时立即拉回主页；

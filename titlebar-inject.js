@@ -579,8 +579,7 @@ module.exports = function injectTitleBar(ctx) {
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
-          'background:' + __barBg, 'border-radius:8px 8px 0 0', '-webkit-app-region:drag',
-          'box-shadow:0 1px 0 rgba(6,9,21,0.9)',
+          'background:' + __barBg, 'border-radius:20px 20px 0 0', '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
@@ -665,6 +664,13 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
+        // v2.15.70：标题栏底部接缝根治——伪元素向下延伸 1px 不透明同色块，替代 box-shadow（抗亚像素偏移更强）
+        try {
+          const __seam = document.createElement('style');
+          __seam.id = 'fnos-tb-seam';
+          __seam.textContent = '#fnos-titlebar::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:rgb(3,6,16);pointer-events:none;}';
+          (document.head || document.documentElement).appendChild(__seam);
+        } catch(_) {}
     // v2.15.51：四角 R 角 + 修复飞牛主页底部裁切 + 滚动条顶部落到标题栏下方。
     // 1) 四角 R 角：body 加 clip-path:inset(0 round 20px)（标题栏保持长方形直角，仅 body 四角圆角），
     //    html 不加 clip-path——避免 v2.15.47 把标题栏顶部两角也裁成圆角的问题。

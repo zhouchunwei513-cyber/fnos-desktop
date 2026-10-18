@@ -578,12 +578,17 @@ module.exports = function injectTitleBar(ctx) {
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
         bar.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:' + (__isMainWin ? '35px' : '34px'),
+          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:' + (__isMainWin ? '36px' : '34px'),
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
           // v2.15.72：标题栏恢复长方形直角（用户要求），去掉 border-radius
-          'background:' + __barBg, '-webkit-app-region:drag',
+          'background:' + __barBg,
+          // v2.15.74：主窗口底部 1px 同色实边，与 height 36px 配合把重叠 1px 加到 2px，
+          // 吸收 Windows 高分 DPI 下窗口缩放产生的小数亚像素抗锯齿，根治间歇性灰线。
+          // box-sizing:border-box 使内容盒仍为 35px，标题栏按钮/菜单垂直位置与 v2.15.73 完全一致。
+          'border-bottom:' + (__isMainWin ? '1px solid rgb(3,6,16)' : 'none'),
+          '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');

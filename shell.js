@@ -56,7 +56,7 @@
   function hideLoader() { loader.classList.add('hidden'); }
 
   // v1.71.0：飞牛主页按窗口大小自动缩放页面及图标。
-  // 大窗口下飞牛主页图标网格偏大/错位，这里以 1440x810 为基准整体 zoom 缩放
+  // 大窗口下飞牛主页图标网格偏大/错位，这里以 1440x878（32.8:20）为基准整体 zoom 缩放
   // （窗口越大缩放越小，图标相对窗口变小），小窗口保持 1.0；窗口尺寸变化与
   // SPA 路由切换时自动重新计算。
   function injectHomeScale(wv) {
@@ -70,7 +70,7 @@
         function applyScale() {
           try {
             if (!isHomePage()) return;
-            var s = Math.min(1440 / window.innerWidth, 810 / window.innerHeight);
+            var s = Math.min(1440 / window.innerWidth, 878 / window.innerHeight);
             s = Math.max(0.55, Math.min(1.0, s));
             var el = document.documentElement;
             var cur = parseFloat(el.style.zoom) || 1;

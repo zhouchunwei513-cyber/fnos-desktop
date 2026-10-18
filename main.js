@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.59';
+const APP_VERSION = '2.15.60';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5982,21 +5982,23 @@ function createMainWindow(partition, loadTarget) {
   }
 
   // v2.15.58：主窗口锁定 16:9（飞牛主页是固定 16:9 桌面 UI，窗口比例不匹配会产生顶部灰条/底部裁切）。
-  // 恢复上次保存的窗口尺寸时归一化为 webview 16:9（窗口高 = round(宽×9/16)+34 标题栏），避免历史非 16:9 尺寸造成灰条。
+  // 恢复上次保存的窗口尺寸时归一化为 16:9（窗口高 = round(宽×9/16)），避免历史非 16:9 尺寸造成灰条。
+  // v2.15.60：webview 是 OOPIF，合成层不遵循 body transform:translateY(34px)，实际占满窗口，
+  // 故 webview 视口 = 窗口高（不是窗口高-34），窗口高直接 = round(宽×9/16) 即 16:9，不再 +34。
   if (savedBounds) {
     try {
-      const targetH = Math.round(savedBounds.width * 9 / 16) + 34;
+      const targetH = Math.round(savedBounds.width * 9 / 16);
       if (Math.abs(savedBounds.height - targetH) > 8) { savedBounds.height = targetH; }
     } catch (_) {}
   }
 
   mainWindow = new BrowserWindow({
     width: savedBounds ? savedBounds.width : 1440,
-    height: savedBounds ? savedBounds.height : 844,
+    height: savedBounds ? savedBounds.height : 810,
     x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
     y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
     minWidth: 1024,
-    minHeight: 610,
+    minHeight: 576,
     title: APP_NAME,
     // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
@@ -6034,9 +6036,9 @@ function createMainWindow(partition, loadTarget) {
     },
   });
 
-  // v2.15.58：锁定 webview 内容区 16:9（飞牛主页固定 16:9 设计，比例不匹配→顶部灰条/底部裁切）。
-  // 标题栏占 34px（titlebar-inject 对 body transform:translateY(34px)），webview 视口 = 窗口高 - 34，
-  // 故需窗口高 = round(宽×9/16) + 34。setAspectRatio 的 extraSize 仅 macOS 生效，Windows 用 will-resize 手动修正。
+  // v2.15.58：锁定窗口 16:9（飞牛主页固定 16:9 设计，比例不匹配→顶部灰条/底部裁切）。
+  // v2.15.60：webview 是 OOPIF，合成层不遵循 body transform:translateY(34px)，实际占满窗口，
+  // 视口 = 窗口高（不是窗口高-34），故窗口高 = round(宽×9/16)（不再 +34）。Windows 用 will-resize 手动修正。
   try {
     let __fixAspect = false;
     mainWindow.on('will-resize', (event, newBounds) => {
@@ -6047,10 +6049,10 @@ function createMainWindow(partition, loadTarget) {
         const dw = Math.abs(w - cw), dh = Math.abs(h - ch);
         let changed = false;
         if (dw >= dh) {
-          const targetH = Math.round(w * 9 / 16) + 34;
+          const targetH = Math.round(w * 9 / 16);
           if (Math.abs(h - targetH) > 2) { newBounds.height = targetH; changed = true; }
         } else {
-          const targetW = Math.round((h - 34) * 16 / 9);
+          const targetW = Math.round(h * 16 / 9);
           if (Math.abs(w - targetW) > 2) { newBounds.width = targetW; changed = true; }
         }
         if (changed) {

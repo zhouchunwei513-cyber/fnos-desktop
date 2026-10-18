@@ -70,7 +70,7 @@
         function applyScale() {
           try {
             if (!isHomePage()) return;
-            var s = Math.min(1440 / window.innerWidth, 750 / window.innerHeight);
+            var s = Math.min(1440 / window.innerWidth, 810 / window.innerHeight);
             s = Math.max(0.55, Math.min(1.0, s));
             var el = document.documentElement;
             var cur = parseFloat(el.style.zoom) || 1;

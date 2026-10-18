@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.67';
+const APP_VERSION = '2.15.68';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5982,11 +5982,12 @@ function createMainWindow(partition, loadTarget) {
   }
 
 
-  // v2.15.65：主窗口锁定用户实测比例 45:27.65（高=round(宽×553/900)、宽=round(高×900/553)，双向取偏差小者）。
+  // v2.15.68：主窗口锁定用户实测「桌面画面」比例 45:27.65（画面=内容区减自绘标题栏34px）。
+  // 画面高=round(画面宽×553/900)，窗口高=画面高+34；savedBounds 是外框，边框差≈0 此处忽略。
   if (savedBounds) {
     try {
-      const targetH = Math.round(savedBounds.width * 553 / 900);
-      const targetW = Math.round(savedBounds.height * 900 / 553);
+      const targetH = Math.round(savedBounds.width * 553 / 900) + 34;
+      const targetW = Math.round((savedBounds.height - 34) * 900 / 553);
       const errH = Math.abs(savedBounds.height - targetH);
       const errW = Math.abs(savedBounds.width - targetW);
       if (errW <= errH) { savedBounds.height = targetH; }
@@ -5995,11 +5996,11 @@ function createMainWindow(partition, loadTarget) {
   }
   mainWindow = new BrowserWindow({
     width: savedBounds ? savedBounds.width : 1320,
-    height: savedBounds ? savedBounds.height : 811,
+    height: savedBounds ? savedBounds.height : 845,
     x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
     y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
     minWidth: 1000,
-    minHeight: 614,
+    minHeight: 648,
     title: APP_NAME,
     // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
@@ -6038,17 +6039,16 @@ function createMainWindow(partition, loadTarget) {
   });
 
 
-  // v2.15.67：以【内容区(getContentSize)】为基准锁 45:27.65（=900:553），再反推外框(getSize)。
-  // 用户反馈：v2.15.66 锁的是窗口外轮廓比例，但 Windows 窗口含左右边框/上下边距，外框减边框后
-  // 内容区(网页渲染区)比例≠1.627→灰边。修：内容区高=round(内容区宽×553/900)、宽=round(内容区高×900/553)，
-  // 反推外框=目标内容区+边框差(dx=外框宽-内容区宽, dy=外框高-内容区高)；resize 事件 setSize 强制回正兜底。
+  // v2.15.68：以【桌面画面】为基准锁 45:27.65，画面=内容区(getContentSize)减自绘标题栏34px，再反推外框。
+  // 根因：v2.15.67 锁的是内容区(含标题栏)比例，但桌面画面(减标题栏34px)比例≠1.627→灰边。
+  // 修：画面宽=内容区宽、画面高=内容区高-34，内容区高=round(内容区宽×553/900)+34、宽=round((内容区高-34)×900/553)。
   let __lockAspect = false;
   const __aspectFix = (win) => {
     const [cw, ch] = win.getContentSize();
     const [w, h] = win.getSize();
     const dx = w - cw, dy = h - ch;
-    const tch = Math.round(cw * 553 / 900);
-    const tcw = Math.round(ch * 900 / 553);
+    const tch = Math.round(cw * 553 / 900) + 34;
+    const tcw = Math.round((ch - 34) * 900 / 553);
     const errH = Math.abs(ch - tch), errW = Math.abs(cw - tcw);
     let nw = w, nh = h;
     if (errW <= errH) { nh = tch + dy; } else { nw = tcw + dx; }
@@ -6063,8 +6063,8 @@ function createMainWindow(partition, loadTarget) {
         const dx = w - cw, dy = h - ch;
         const ncw = newBounds.width - dx, nch = newBounds.height - dy;
         const dw = Math.abs(newBounds.width - w), dh = Math.abs(newBounds.height - h);
-        if (dw >= dh) { newBounds.height = Math.round(ncw * 553 / 900) + dy; }
-        else { newBounds.width = Math.round(nch * 900 / 553) + dx; }
+        if (dw >= dh) { newBounds.height = Math.round(ncw * 553 / 900) + 34 + dy; }
+        else { newBounds.width = Math.round((nch - 34) * 900 / 553) + dx; }
       } catch (_) {}
     });
     mainWindow.on('resize', () => {

@@ -703,7 +703,10 @@ module.exports = function injectTitleBar(ctx) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [
           'html{overflow:hidden !important;' + __gifBg + '}',
-          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;}'
+          // v2.15.76：应用窗口 body 的 margin 全方向归零。
+          // 原只重置了 margin-top，页面 body 自带的 8px margin-bottom 会把 body 底边推出窗口，
+          // 导致 clip-path 的 20px 底部圆角被裁到看不见（顶部两角正常、底部两角变直角）。
+          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin:0 !important;}'
         ].join('');
       } else {
         // 主窗口（透明 + webview 飞牛桌面）：body 下移 34px 给标题栏让位（顶部透出桌面壁纸），

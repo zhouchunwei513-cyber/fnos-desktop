@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.75';
+const APP_VERSION = '2.15.76';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6059,19 +6059,12 @@ function createMainWindow(partition, loadTarget) {
     return [nw, nh];
   };
   try {
-    mainWindow.on('will-resize', (event, newBounds) => {
-      try {
-        if (mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
-        const [cw, ch] = mainWindow.getContentSize();
-        const [w, h] = mainWindow.getSize();
-        const dx = w - cw, dy = h - ch;
-        const ncw = newBounds.width - dx, nch = newBounds.height - dy;
-        const dw = Math.abs(newBounds.width - w), dh = Math.abs(newBounds.height - h);
-        if (dw >= dh) { newBounds.height = Math.round(ncw * 553 / 900) + 34 + dy; }
-        else { newBounds.width = Math.round((nch - 34) * 900 / 553) + dx; }
-      } catch (_) {}
-    });
-    mainWindow.on('resize', () => {
+    // v2.15.76：拖动全程零干预，只在拖动结束校正一次比例。
+    // 灰条根因（用户实测对照）：应用窗口不做任何 resize 干预，拖动全程无灰条；
+    // 主窗口原来在 will-resize 里每帧改写 newBounds、又在 resize 里 setSize 回弹，
+    // Windows 高 DPI 下频繁重排导致 Chromium 来不及重绘，露出未绘制区域 = 灰条。
+    // 现改为只等 'resized'（拖动结束后一次性事件）校正一次，与应用窗口行为一致。
+    mainWindow.on('resized', () => {
       try {
         if (__lockAspect || mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
         const [nw, nh] = __aspectFix(mainWindow);
@@ -6079,7 +6072,7 @@ function createMainWindow(partition, loadTarget) {
         if (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) {
           __lockAspect = true;
           try { mainWindow.setSize(nw, nh); } catch (_) {}
-          setImmediate(() => { __lockAspect = false; });
+          setTimeout(() => { __lockAspect = false; }, 260);
         }
       } catch (_) { __lockAspect = false; }
     });

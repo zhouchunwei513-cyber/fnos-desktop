@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.84';
+const APP_VERSION = '2.15.85';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6101,6 +6101,32 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resized', __saveBounds);
     mainWindow.on('moved', __saveBounds);
     mainWindow.on('close', __saveBounds);
+  } catch (_) {}
+  // v2.15.85：窗口几何变化时反复把窗口背景重置为全透明，赶走 DWM 的兜底灰。
+  // 四段录屏逐帧实测：灰带恒定 rgb(67,67,67)，位置恒在「窗口顶 +34px」（即 body 顶部，
+  // 标题栏正下方），只在拖动/缩放过程中出现，静止后自动消失。成因见 Electron 官方博客
+  // 《Improving Window Resize Behavior》：Present1 与 IDCompositionDevice::Commit 都是异步
+  // 提交，Windows 不提供同步手段，新帧落地前该区域只能露 DWM 的默认底色。官方补丁只保证
+  // 「不显示视口外的旧像素」，fills 仍由 DWM 决定，所以透明窗口上会看到这层灰。
+  // 社区同类做法（vscode-vibrancy 等透明窗口方案）在 resize/move 结束后以固定间隔重新设置
+  // 窗口背景色，借 SetLayeredWindowAttributes 触发 DWM 重新合成，把兜底色刷回 alpha=0。
+  // 这里放在主进程：不受渲染进程在拖动期间被系统模态循环拖慢的影响。
+  try {
+    let __ghostTimer = null;
+    const __refreshAlpha = () => {
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor('#00000000'); } catch (_) {}
+    };
+    const __ghostBurst = () => {
+      __refreshAlpha();
+      if (__ghostTimer) return;
+      let n = 0;
+      __ghostTimer = setInterval(() => {
+        __refreshAlpha();
+        if (++n >= 45) { clearInterval(__ghostTimer); __ghostTimer = null; }
+      }, 16);
+    };
+    mainWindow.on('resize', __ghostBurst);
+    mainWindow.on('move', __ghostBurst);
   } catch (_) {}
   // v2.4.1（用户真机反馈，覆盖 v2.4.0 恒 hide）：点击启动飞牛主程时不隐藏主窗口——
   // 只有点击应用快捷方式（--launch-app/--app/--open-app）时才隐藏；开机自启（--autostart）

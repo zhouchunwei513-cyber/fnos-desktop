@@ -610,7 +610,9 @@ module.exports = function injectTitleBar(ctx) {
         // including the titlebar strip itself -- which showed up as a dark rectangle behind the
         // transparent titlebar, and v2.15.83 painted it permanently. Both were wrong. The titlebar
         // strip must stay fully transparent at all times; only the first 36px of body may be
-        // covered, and only while the geometry is actually changing.
+        // covered, and only while the geometry is actually changing. The cover colour is #120606,
+        // the dark red-black the desktop wallpaper itself starts with on this machine, so the flash
+        // reads as part of the content top rather than as a bar.
         // v2.15.84 also swaps the html::before pseudo element for a real div: a page style reset can
         // neutralise pseudo elements, an element with an inline style cannot be overridden.
         try {
@@ -619,7 +621,7 @@ module.exports = function injectTitleBar(ctx) {
             if (!__rcEl) {
               __rcEl = document.createElement('div');
               __rcEl.id = 'fnos-resize-cover';
-              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:36px;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
+              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:34px;background:#120606;z-index:2147483645;pointer-events:none;display:none;';
               (document.documentElement || document.body).appendChild(__rcEl);
             }
             if (!window.__fnosResizeCover) {

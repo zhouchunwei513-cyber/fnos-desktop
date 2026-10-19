@@ -597,57 +597,46 @@ module.exports = function injectTitleBar(ctx) {
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
 
-        // v2.15.81: grey band at the top while resizing.
-        // Frame-by-frame analysis of the user's screen recording (488 frames, 28.6fps) shows that
-        // between t=9.61s and t=11.08s -- exactly while the window is being dragged bigger -- the
-        // strip above the content turns a flat rgb(67,67,67) (~#434343), 1054x30 px, spanning the
-        // full window width and following the 20px corner curve. Before and after that window the
-        // same strip is transparent wallpaper again.
-        // The strip is the only part of the window with no opaque pixel of ours on it: body is
-        // pushed down by translateY(34px), and html carries only the 1x1 transparent GIF guard, so
-        // nothing is painted over y=0..34. On a transparent frameless window DWM composites that
-        // empty area with its opaque default backdrop while the renderer is still painting the new
-        // frame (Present1 and IDCompositionDevice::Commit are asynchronous and cannot be
-        // synchronised -- see Electron blog "Improving Window Resize Behavior"). Steady state is
-        // fine because the pending frame lands and the strip becomes genuinely transparent again.
-        // Fix: paint our own opaque pixels over that strip whenever the window geometry changes, so
-        // nothing can show through. The strip is left transparent while the window is at rest, so the
-        // auto-hide look is unchanged; #05060a matches the body background, so the cover reads as the
-        // top of the content, not as a separate bar. Settings window has an opaque body already and
-        // is skipped.
-        // v2.15.82: a second recording shows the same grey on the strip *below* the bar as well (the
-        // first 34px of body), and it also appears while the window is being dragged around, not only
-        // while it is resized. Both are the same missing-pixels effect: body is a translateY(34px)
-        // composited layer, so its own top edge can lag behind the window by 34px too. The cover now
-        // spans bar + the first 34px of body (70px main / 68px otherwise) and is also driven by
-        // window moves, detected from window.screenX/screenY because a move fires no DOM event.
+        // v2.15.84: grey band at the top of the content area while the window geometry changes.
+        // Four recordings analysed frame by frame (r65..r68) all show the same thing: the band is
+        // always the first ~3-33px of body -- screen y = window top + 34, i.e. directly below the
+        // titlebar -- spans the full window width, follows body's 20px corner radius, colour is a
+        // flat rgb(67,67,67), and it exists only while the window is being resized or dragged.
+        // That colour is the opaque backdrop DWM composites into a transparent frameless window
+        // while the new frame has not landed yet (Present1 and IDCompositionDevice::Commit are
+        // asynchronous and cannot be synchronised; see Electron blog "Improving Window Resize
+        // Behavior").
+        // v2.15.81-83 painted an opaque strip over that area, but they also covered y=0..70 --
+        // including the titlebar strip itself -- which showed up as a dark rectangle behind the
+        // transparent titlebar, and v2.15.83 painted it permanently. Both were wrong. The titlebar
+        // strip must stay fully transparent at all times; only the first 36px of body may be
+        // covered, and only while the geometry is actually changing.
+        // v2.15.84 also swaps the html::before pseudo element for a real div: a page style reset can
+        // neutralise pseudo elements, an element with an inline style cannot be overridden.
         try {
-          const __isSettingsWin = !__isMainWin && __argvB.indexOf('--fnos-app-window') < 0 && __argvB.indexOf('--fnos-live-window') < 0;
-          if (!__isSettingsWin) {
-            let __rcStyle = document.getElementById('fnos-resize-cover');
-            if (!__rcStyle) {
-              __rcStyle = document.createElement('style');
-              __rcStyle.id = 'fnos-resize-cover';
-              __rcStyle.textContent = 'html.fnos-resizing::before{content:"";position:fixed;top:0;left:0;right:0;height:'
-                + (__isMainWin ? '70px' : '68px')
-                + ';background:#05060a;z-index:2147483645;pointer-events:none;}';
-              (document.head || document.documentElement).appendChild(__rcStyle);
+          if (__isMainWin) {
+            let __rcEl = document.getElementById('fnos-resize-cover');
+            if (!__rcEl) {
+              __rcEl = document.createElement('div');
+              __rcEl.id = 'fnos-resize-cover';
+              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:36px;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
+              (document.documentElement || document.body).appendChild(__rcEl);
             }
             if (!window.__fnosResizeCover) {
               window.__fnosResizeCover = true;
               let __rcT = 0;
               const __rcBump = function () {
-                try { document.documentElement.classList.add('fnos-resizing'); } catch (_) {}
+                const el = document.getElementById('fnos-resize-cover');
+                if (el) { try { el.style.display = 'block'; } catch (_) {} }
                 if (__rcT) clearTimeout(__rcT);
                 __rcT = setTimeout(function () {
                   __rcT = 0;
-                  try { document.documentElement.classList.remove('fnos-resizing'); } catch (_) {}
-                }, 220);
+                  const e2 = document.getElementById('fnos-resize-cover');
+                  if (e2) { try { e2.style.display = 'none'; } catch (_) {} }
+                }, 260);
               };
               window.addEventListener('resize', __rcBump, { passive: true });
-              // No DOM event fires when the window itself is dragged, but window.screenX/screenY
-              // follow it, and the move goes through the same compositor path that can leave the
-              // strip unpainted. Two property reads per frame is all this costs.
+              // A window move fires no DOM event, but window.screenX/screenY follow it.
               let __rcX = window.screenX, __rcY = window.screenY;
               const __rcWatch = function () {
                 if (window.screenX !== __rcX || window.screenY !== __rcY) {
@@ -795,17 +784,6 @@ module.exports = function injectTitleBar(ctx) {
         // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
           'html{' + __gifBg + '}',
-          // v2.15.83: the main window is the only place where the strip above body (the top 34px,
-          // where the bar lives when it is shown) had no opaque pixel at all -- html carried just the
-          // 1x1 transparent GIF guard so the desktop wallpaper shows through. Whenever the compositor
-          // repaints during a resize or a window move, that strip is the last region to get a new
-          // frame, and DWM fills it with its opaque backdrop (rgb(67,67,67)) until the frame lands.
-          // That is the grey band seen while dragging. An always-present backdrop at the same 34px
-          // geometry removes the transparent region entirely, so there is nothing left for DWM to
-          // fill. It is a square 34px bar like the titlebar itself (the 20px radius still belongs to
-          // body, which starts at y=34), painted with the same #05060a the body uses, so when the bar
-          // auto-hides the strip reads as a continuation of the content instead of a gap.
-          'html::before{content:"" !important;position:fixed !important;top:0 !important;left:0 !important;right:0 !important;height:34px !important;background:#05060a !important;z-index:-1 !important;pointer-events:none !important;}',
           // v2.15.75：主窗口 body 底色由 transparent 改为深色 #05060a。
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。

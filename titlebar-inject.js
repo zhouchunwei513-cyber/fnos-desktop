@@ -795,6 +795,17 @@ module.exports = function injectTitleBar(ctx) {
         // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
           'html{' + __gifBg + '}',
+          // v2.15.83: the main window is the only place where the strip above body (the top 34px,
+          // where the bar lives when it is shown) had no opaque pixel at all -- html carried just the
+          // 1x1 transparent GIF guard so the desktop wallpaper shows through. Whenever the compositor
+          // repaints during a resize or a window move, that strip is the last region to get a new
+          // frame, and DWM fills it with its opaque backdrop (rgb(67,67,67)) until the frame lands.
+          // That is the grey band seen while dragging. An always-present backdrop at the same 34px
+          // geometry removes the transparent region entirely, so there is nothing left for DWM to
+          // fill. It is a square 34px bar like the titlebar itself (the 20px radius still belongs to
+          // body, which starts at y=34), painted with the same #05060a the body uses, so when the bar
+          // auto-hides the strip reads as a continuation of the content instead of a gap.
+          'html::before{content:"" !important;position:fixed !important;top:0 !important;left:0 !important;right:0 !important;height:34px !important;background:#05060a !important;z-index:-1 !important;pointer-events:none !important;}',
           // v2.15.75：主窗口 body 底色由 transparent 改为深色 #05060a。
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。

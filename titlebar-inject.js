@@ -610,11 +610,17 @@ module.exports = function injectTitleBar(ctx) {
         // frame (Present1 and IDCompositionDevice::Commit are asynchronous and cannot be
         // synchronised -- see Electron blog "Improving Window Resize Behavior"). Steady state is
         // fine because the pending frame lands and the strip becomes genuinely transparent again.
-        // Fix: paint our own opaque pixels over that strip for the duration of the resize only, so
-        // nothing can show through. The strip is left transparent between resizes, so the auto-hide
-        // look is unchanged; #05060a matches the body background, so the cover reads as the top of
-        // the content, not as a separate bar. Settings window has an opaque body already and is
-        // skipped.
+        // Fix: paint our own opaque pixels over that strip whenever the window geometry changes, so
+        // nothing can show through. The strip is left transparent while the window is at rest, so the
+        // auto-hide look is unchanged; #05060a matches the body background, so the cover reads as the
+        // top of the content, not as a separate bar. Settings window has an opaque body already and
+        // is skipped.
+        // v2.15.82: a second recording shows the same grey on the strip *below* the bar as well (the
+        // first 34px of body), and it also appears while the window is being dragged around, not only
+        // while it is resized. Both are the same missing-pixels effect: body is a translateY(34px)
+        // composited layer, so its own top edge can lag behind the window by 34px too. The cover now
+        // spans bar + the first 34px of body (70px main / 68px otherwise) and is also driven by
+        // window moves, detected from window.screenX/screenY because a move fires no DOM event.
         try {
           const __isSettingsWin = !__isMainWin && __argvB.indexOf('--fnos-app-window') < 0 && __argvB.indexOf('--fnos-live-window') < 0;
           if (!__isSettingsWin) {
@@ -623,21 +629,35 @@ module.exports = function injectTitleBar(ctx) {
               __rcStyle = document.createElement('style');
               __rcStyle.id = 'fnos-resize-cover';
               __rcStyle.textContent = 'html.fnos-resizing::before{content:"";position:fixed;top:0;left:0;right:0;height:'
-                + (__isMainWin ? '36px' : '34px')
+                + (__isMainWin ? '70px' : '68px')
                 + ';background:#05060a;z-index:2147483645;pointer-events:none;}';
               (document.head || document.documentElement).appendChild(__rcStyle);
             }
             if (!window.__fnosResizeCover) {
               window.__fnosResizeCover = true;
               let __rcT = 0;
-              window.addEventListener('resize', function () {
+              const __rcBump = function () {
                 try { document.documentElement.classList.add('fnos-resizing'); } catch (_) {}
                 if (__rcT) clearTimeout(__rcT);
                 __rcT = setTimeout(function () {
                   __rcT = 0;
                   try { document.documentElement.classList.remove('fnos-resizing'); } catch (_) {}
                 }, 220);
-              }, { passive: true });
+              };
+              window.addEventListener('resize', __rcBump, { passive: true });
+              // No DOM event fires when the window itself is dragged, but window.screenX/screenY
+              // follow it, and the move goes through the same compositor path that can leave the
+              // strip unpainted. Two property reads per frame is all this costs.
+              let __rcX = window.screenX, __rcY = window.screenY;
+              const __rcWatch = function () {
+                if (window.screenX !== __rcX || window.screenY !== __rcY) {
+                  __rcX = window.screenX;
+                  __rcY = window.screenY;
+                  __rcBump();
+                }
+                requestAnimationFrame(__rcWatch);
+              };
+              requestAnimationFrame(__rcWatch);
             }
           }
         } catch (_) {}

@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.85';
+const APP_VERSION = '2.15.86';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5945,6 +5945,30 @@ function rebuildTrayMenu() {
 
 // ---------------------- 窗口创建 ----------------------
 
+// v2.15.86：抑制 Win11 DWM 边框（DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE）。
+// 用户 16:47 截图逐像素实测：窗口四周一圈 6px rgb(68,68,68) 灰边（顶部那条最扎眼），
+// 颜色就是 DWM 的默认边框色。r63 只设了 roundedCorners:false（DWMWA_WINDOW_CORNER_PREFERENCE
+// = 不圆角），但 DWM 边框是独立属性 DWMWA_BORDER_COLOR，默认仍会画这层灰边。
+// 微软文档：DwmSetWindowAttribute 传 DWMWA_COLOR_NONE(0xFFFFFFFE) 可「suppress the drawing
+// of the window border」。Electron 不暴露该属性，故用 PowerShell P/Invoke 直接调 dwmapi.dll
+// （沿用项目既有 cp.spawnSync('powershell', ...) 模式）。DWMWA_BORDER_COLOR=34，COLOR_NONE=-2。
+function __suppressDwmBorder(win) {
+  try {
+    if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
+    const buf = win.getNativeWindowHandle();
+    if (!buf || !buf.length) return;
+    let hwnd;
+    try { hwnd = buf.length >= 8 ? buf.readBigUInt64LE(0).toString() : String(buf.readUInt32LE(0)); } catch (_) { return; }
+    if (!hwnd || hwnd === '0') return;
+    const ps = "$ErrorActionPreference='SilentlyContinue';" +
+      "$src='using System; using System.Runtime.InteropServices; public static class FDWM { [DllImport(\"dwmapi.dll\")] public static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s); }';" +
+      "Add-Type -TypeDefinition $src;" +
+      "$v=-2;" +
+      "[FDWM]::DwmSetWindowAttribute([IntPtr]" + hwnd + ",34,[ref]$v,4)|Out-Null;";
+    cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 8000, windowsHide: true });
+  } catch (_) {}
+}
+
 function createMainWindow(partition, loadTarget) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     isSwitchingPartition = true;
@@ -6128,6 +6152,9 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resize', __ghostBurst);
     mainWindow.on('move', __ghostBurst);
   } catch (_) {}
+  // v2.15.86：抑制 Win11 DWM 边框（见 __suppressDwmBorder 定义）。窗口创建后立即同步设一次，
+  // 边框色在窗口生命周期内持久，show 前设好即可，DWM 不会因 show 重置该属性。
+  __suppressDwmBorder(mainWindow);
   // v2.4.1（用户真机反馈，覆盖 v2.4.0 恒 hide）：点击启动飞牛主程时不隐藏主窗口——
   // 只有点击应用快捷方式（--launch-app/--app/--open-app）时才隐藏；开机自启（--autostart）
   // 同样隐藏、只驻留托盘（需求 2.2：开机命令不带应用 ID，不自动打开任何应用）。

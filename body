@@ -1,6 +1,0 @@
-269:      // matchMedia 桥（组件库/iframe 读同一系统值）+ html colorScheme + body attr + fnOS 存储 30。
-682:    //    html 不加 clip-path——避免 v2.15.47 把标题栏顶部两角也裁成圆角的问题。
-687:    //    裁掉溢出内容导致截断。修复：应用窗口 html 加 overflow:hidden 阻止传播，body overflow-y:auto 内部
-699:      // body got an opaque #05060a background and html lost the transparent-GIF guard,
-701:      // gets html transparency (desktop shows through), margin:0 (keeps the 20px radius)
-710:        // html 锁死滚动，body 单滚动（settings.css 配合）。

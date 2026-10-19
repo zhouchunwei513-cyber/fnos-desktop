@@ -581,7 +581,7 @@ module.exports = function injectTitleBar(ctx) {
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
         bar.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'right:0', 'height:' + (__isMainWin ? '36px' : '34px'),
+          'position:fixed', 'top:0', 'left:0', (__isMainWin ? 'width:calc(100vw * var(--fnos-f, 1))' : 'right:0'), 'height:' + (__isMainWin ? '36px' : '34px'),
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
@@ -594,8 +594,9 @@ module.exports = function injectTitleBar(ctx) {
           'border-bottom:' + (__isMainWin ? '1px solid transparent' : 'none'),
           '-webkit-app-region:drag',
           'user-select:none',
-          'transition:transform .16s ease,opacity .16s ease'
-        ].join(';');
+          'transition:transform .16s ease,opacity .16s ease',
+          __isMainWin ? 'zoom:calc(1 / var(--fnos-f, 1))' : ''
+        ].filter(Boolean).join(';');
 
         // v2.15.84: grey band at the top of the content area while the window geometry changes.
         // Four recordings analysed frame by frame (r65..r68) all show the same thing: the band is
@@ -785,12 +786,12 @@ module.exports = function injectTitleBar(ctx) {
         // height:calc(100vh-34px) 让 webview 视口 = 窗口高度 - 34px；窗口高度已 +34px（main.js）补偿，
         // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
-          'html{' + __gifBg + '}',
+          'html{' + __gifBg + '--fnos-f:1;}',
           // v2.15.75：主窗口 body 底色由 transparent 改为深色 #05060a。
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。
           // 深色兜底后，即使有 1px 偏差也与标题栏同色，不再看得出灰条。
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}'
+          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);

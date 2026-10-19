@@ -597,6 +597,51 @@ module.exports = function injectTitleBar(ctx) {
           'transition:transform .16s ease,opacity .16s ease'
         ].join(';');
 
+        // v2.15.81: grey band at the top while resizing.
+        // Frame-by-frame analysis of the user's screen recording (488 frames, 28.6fps) shows that
+        // between t=9.61s and t=11.08s -- exactly while the window is being dragged bigger -- the
+        // strip above the content turns a flat rgb(67,67,67) (~#434343), 1054x30 px, spanning the
+        // full window width and following the 20px corner curve. Before and after that window the
+        // same strip is transparent wallpaper again.
+        // The strip is the only part of the window with no opaque pixel of ours on it: body is
+        // pushed down by translateY(34px), and html carries only the 1x1 transparent GIF guard, so
+        // nothing is painted over y=0..34. On a transparent frameless window DWM composites that
+        // empty area with its opaque default backdrop while the renderer is still painting the new
+        // frame (Present1 and IDCompositionDevice::Commit are asynchronous and cannot be
+        // synchronised -- see Electron blog "Improving Window Resize Behavior"). Steady state is
+        // fine because the pending frame lands and the strip becomes genuinely transparent again.
+        // Fix: paint our own opaque pixels over that strip for the duration of the resize only, so
+        // nothing can show through. The strip is left transparent between resizes, so the auto-hide
+        // look is unchanged; #05060a matches the body background, so the cover reads as the top of
+        // the content, not as a separate bar. Settings window has an opaque body already and is
+        // skipped.
+        try {
+          const __isSettingsWin = !__isMainWin && __argvB.indexOf('--fnos-app-window') < 0 && __argvB.indexOf('--fnos-live-window') < 0;
+          if (!__isSettingsWin) {
+            let __rcStyle = document.getElementById('fnos-resize-cover');
+            if (!__rcStyle) {
+              __rcStyle = document.createElement('style');
+              __rcStyle.id = 'fnos-resize-cover';
+              __rcStyle.textContent = 'html.fnos-resizing::before{content:"";position:fixed;top:0;left:0;right:0;height:'
+                + (__isMainWin ? '36px' : '34px')
+                + ';background:#05060a;z-index:2147483645;pointer-events:none;}';
+              (document.head || document.documentElement).appendChild(__rcStyle);
+            }
+            if (!window.__fnosResizeCover) {
+              window.__fnosResizeCover = true;
+              let __rcT = 0;
+              window.addEventListener('resize', function () {
+                try { document.documentElement.classList.add('fnos-resizing'); } catch (_) {}
+                if (__rcT) clearTimeout(__rcT);
+                __rcT = setTimeout(function () {
+                  __rcT = 0;
+                  try { document.documentElement.classList.remove('fnos-resizing'); } catch (_) {}
+                }, 220);
+              }, { passive: true });
+            }
+          }
+        } catch (_) {}
+
         // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
         const left = document.createElement('div');
         left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;';

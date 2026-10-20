@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.94';
+const APP_VERSION = '2.15.95';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -12207,7 +12207,12 @@ async function refreshVodStreamUrl(guestWc) {
         if (sameOrigin) {
           const ck = await gatherCookiesForOrigin(origin || fresh.url);
           if (ck) headers['Cookie'] = ck;
-          if (fresh.token) headers['Authorization'] = String(fresh.token);
+          // v2.15.95：media/range 点播取流只用 Cookie session 鉴权（与 embedMpvPlay 一致）。
+          // preload 捕获的 Authorization 是飞牛网页登录 JWT（有时效），带过期 JWT 请求 media/range
+          // 会命中 "Auth Failed"(code=-2) 返回 JSON，导致 mpv "Failed to recognize file format"、
+          // 续播反复失败直至放弃。media/range 一律不带 Authorization，只用 Cookie。
+          const isMediaRange = /\/v\/api\/v1\/media\/range\//i.test(fresh.url);
+          if (fresh.token && !isMediaRange) headers['Authorization'] = String(fresh.token);
           if (fresh.playLink) headers['Play-Link'] = String(fresh.playLink);
           if (origin) headers['Referer'] = origin.replace(/\/?$/, '/');
         }

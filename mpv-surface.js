@@ -237,8 +237,16 @@ class MpvSurface {
             // v2.15.94：变化比例异常（如最小化/恢复瞬时宽高突变）不缩放，仅刷新基准，
             // 避免把 dipRect 缩成 160x90 或放大到异常值。
             if (sw > 0 && sh > 0 && sw < 4 && sh < 4) {
+              // width 始终按 sw 缩放：视频区宽度跟随内容区宽度，等比正确。
               this.dipRect.width = Math.max(160, Math.round(this.dipRect.width * sw));
-              this.dipRect.height = Math.max(90, Math.round(this.dipRect.height * sh));
+              // v2.15.95：height 只在宽高近似等比（小幅拖动边框）时按 sh 缩放。最大化/还原
+              // 等宽高不等比变化时，视频区高度跟随视频宽高比 + 上下黑边（不跟随内容区高度），
+              // 用 sh 缩放会把高度缩错（实测最大化 879→1015，正确约 991），导致最大化/还原后
+              // MPV 高度错误、反复抖动（"不跟随"）。此时保持旧高度，交由 guest reportRect
+              // （500ms 定时 + resize + MutationObserver）上报真实值一次性纠正。
+              if (Math.abs(sw - sh) < 0.08) {
+                this.dipRect.height = Math.max(90, Math.round(this.dipRect.height * sh));
+              }
             }
           }
           // 更新基准（reportRect 已同步则仅刷新基准，不缩放）

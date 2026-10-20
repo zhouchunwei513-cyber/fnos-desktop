@@ -185,6 +185,12 @@ class MpvSurface {
     // 画中画小窗期间脱离视频区跟随（窗口已固定为右下角小尺寸并可被用户自由拖动），
     // 不再随宿主窗移动/滚动重定位。
     if (this._pip) return;
+    // v2.15.94：最小化/隐藏时不重算几何。Windows 最小化会把窗口移到离屏(-32000)，
+    // move/resize 事件仍会触发，此时 getContentBounds 返回离屏/异常值，会污染
+    // dipRect(_syncDipToResize) 和 mpv 几何(_computeScreenGeometry)，导致恢复后
+    // 播放器变小卡在左上角、不再跟随。这里与轮询守卫一致地跳过。
+    const _w = this.parent;
+    if (_w && !_w.isDestroyed() && (_w.isMinimized() || !_w.isVisible())) return;
     this._syncDipToResize();
     const geo = this._computeScreenGeometry();
     if (geo && this._started) {
@@ -214,7 +220,10 @@ class MpvSurface {
     try {
       const w = this.parent;
       if (!w || w.isDestroyed() || this._standalone) return;
+      // v2.15.94：最小化/隐藏时不缩放（getContentBounds 返回离屏/异常值会污染 dipRect）
+      if (w.isMinimized() || !w.isVisible()) return;
       const cb = w.getContentBounds();
+      if (!cb || cb.width <= 0 || cb.height <= 0) return;
       if (this._baseCbW > 0) {
         const cbChanged = cb.width !== this._baseCbW || cb.height !== this._baseCbH;
         if (cbChanged) {
@@ -225,8 +234,12 @@ class MpvSurface {
             // reportRect 尚未同步：按内容区宽高变化比例缩放视频区宽高
             const sw = cb.width / this._baseCbW;
             const sh = cb.height / this._baseCbH;
-            this.dipRect.width = Math.max(160, Math.round(this.dipRect.width * sw));
-            this.dipRect.height = Math.max(90, Math.round(this.dipRect.height * sh));
+            // v2.15.94：变化比例异常（如最小化/恢复瞬时宽高突变）不缩放，仅刷新基准，
+            // 避免把 dipRect 缩成 160x90 或放大到异常值。
+            if (sw > 0 && sh > 0 && sw < 4 && sh < 4) {
+              this.dipRect.width = Math.max(160, Math.round(this.dipRect.width * sw));
+              this.dipRect.height = Math.max(90, Math.round(this.dipRect.height * sh));
+            }
           }
           // 更新基准（reportRect 已同步则仅刷新基准，不缩放）
           this._baseCbW = cb.width;

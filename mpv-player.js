@@ -1070,8 +1070,11 @@ class MpvPlayer extends EventEmitter {
         try { this.command(['set_property', 'skip-taskbar', 'no']).catch(() => {}); } catch (_) {}
       }
       try { this.command(['set_property', 'window-minimized', 'no']).catch(() => {}); } catch (_) {}
-      // 还原最小化后重新贴合几何，确保回到正确位置
-      try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {}
+      // 还原最小化后重新贴合几何，确保回到正确位置。
+      // v2.15.94：先清掉 _lastGeoStr 去抖缓存再 setGeometry——最小化/恢复会让 mpv 窗口几何
+      // 漂移（可能缩到默认尺寸/左上角），若目标几何与缓存串一致，setGeometry 会跳过 IPC，
+      // 导致漂移无法纠正、播放器"变小卡在左上角且不跟随"。
+      try { if (this._geometry) { this._lastGeoStr = ''; this.setGeometry(this._geometry); } } catch (_) {}
     };
     if (!this.connected) { Promise.resolve().then(() => this.once('ipc-ready', () => apply())); return Promise.resolve(); }
     apply();

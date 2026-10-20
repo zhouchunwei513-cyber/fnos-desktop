@@ -502,7 +502,7 @@ class MpvPlayer extends EventEmitter {
         this._firstFrameShown = false;
         // v1.50.0：visibility 在 d3d11 为空操作；首帧前用 geometry 移出屏幕隐藏待机画面。
         this._offscreenHidden = true;
-        try { this.setGeometry({ x: -32000, y: -32000, w: 160, h: 90 }); } catch (_) {}
+        try { this.setGeometry({ x: -32000, y: -32000, width: 160, height: 90 }); } catch (_) {}
       }
       // 开启属性事件观察
       this.command(['observe_property', 1, 'pause']);
@@ -1084,7 +1084,7 @@ class MpvPlayer extends EventEmitter {
     // v1.49.0：visibility 在 d3d11 为空操作（-3 UNAVAILABLE），改用 geometry 把窗口移出屏幕，
     // 露出网页自身的加载/封面界面；首帧就绪后由 _revealOnFirstFrame 移回。
     this._offscreenHidden = true;
-    try { this.setGeometry({ x: -32000, y: -32000, w: 160, h: 90 }); } catch (_) {}
+    try { this.setGeometry({ x: -32000, y: -32000, width: 160, height: 90 }); } catch (_) {}
     // 兜底：若长时间没有 video-params（纯音频/异常源），最多 6s 后强制显示，避免永久离屏
     this._revealFallback = setTimeout(() => { try { this._revealOnFirstFrame(); } catch (_) {} }, 6000);
     if (this._revealFallback.unref) this._revealFallback.unref();

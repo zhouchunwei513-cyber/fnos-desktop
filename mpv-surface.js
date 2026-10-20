@@ -37,6 +37,12 @@ class MpvSurface {
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
     this._pollTimer = null;
     this._lastBoundsKey = '';
+    // v2.15.89：resize 比例兜底基准。记录上次对齐时的内容区宽高与 dipRect，
+    // 用于宿主窗口缩放时，若 guest 的 reportRect 尚未同步上报新视频区坐标，则按
+    // 内容区宽高变化比例就地缩放 dipRect 的 width/height，保证 MPV 跟随窗口缩放。
+    this._baseCbW = 0;
+    this._baseCbH = 0;
+    this._baseDip = null;
     // 画中画状态：小窗时脱离视频区几何跟随，固定右下角小尺寸、保持置顶、可自由拖动。
     this._pip = false;
     this._pipSavedGeo = null;
@@ -173,6 +179,7 @@ class MpvSurface {
     // 画中画小窗期间脱离视频区跟随（窗口已固定为右下角小尺寸并可被用户自由拖动），
     // 不再随宿主窗移动/滚动重定位。
     if (this._pip) return;
+    this._syncDipToResize();
     const geo = this._computeScreenGeometry();
     if (geo && this._started) {
       try {
@@ -192,6 +199,40 @@ class MpvSurface {
         }
       } catch (_) {}
     }
+  }
+
+  // v2.15.89：resize 比例兜底——宿主窗口缩放时，若 guest 的 reportRect 尚未同步更新
+  // dipRect，则按内容区宽高变化比例就地缩放 dipRect 的 width/height，保证 MPV 跟随缩放。
+  // x/y 保持不变（视频区在页面中的位置由导航栏/侧边栏等固定布局决定，通常不随缩放变化）。
+  _syncDipToResize() {
+    try {
+      const w = this.parent;
+      if (!w || w.isDestroyed() || this._standalone) return;
+      const cb = w.getContentBounds();
+      if (this._baseCbW > 0) {
+        const cbChanged = cb.width !== this._baseCbW || cb.height !== this._baseCbH;
+        if (cbChanged) {
+          const dipChanged = !this._baseDip ||
+            this.dipRect.width !== this._baseDip.width ||
+            this.dipRect.height !== this._baseDip.height;
+          if (!dipChanged) {
+            // reportRect 尚未同步：按内容区宽高变化比例缩放视频区宽高
+            const sw = cb.width / this._baseCbW;
+            const sh = cb.height / this._baseCbH;
+            this.dipRect.width = Math.max(160, Math.round(this.dipRect.width * sw));
+            this.dipRect.height = Math.max(90, Math.round(this.dipRect.height * sh));
+          }
+          // 更新基准（reportRect 已同步则仅刷新基准，不缩放）
+          this._baseCbW = cb.width;
+          this._baseCbH = cb.height;
+          this._baseDip = { x: this.dipRect.x, y: this.dipRect.y, width: this.dipRect.width, height: this.dipRect.height };
+        }
+      } else {
+        this._baseCbW = cb.width;
+        this._baseCbH = cb.height;
+        this._baseDip = { x: this.dipRect.x, y: this.dipRect.y, width: this.dipRect.width, height: this.dipRect.height };
+      }
+    } catch (_) {}
   }
 
   // v1.48.0：宿主窗口重新显示（一键呼出/解锁）后调用：恢复可见并重新贴合视频区。
@@ -358,7 +399,14 @@ class MpvSurface {
 
   // 更新视频区 DIP 坐标（guest 持续上报 / 网页滚动 / 缩放）
   setRect(dipRect, viewOffset) {
-    if (dipRect) this.dipRect = dipRect;
+    if (dipRect) {
+      this.dipRect = dipRect;
+      // v2.15.89：reportRect 已同步上报新坐标，同步刷新 resize 兜底基准，避免
+      // 网页滚动导致的 dipRect 变化被误判为"resize 未同步"而重复缩放。
+      if (this._baseCbW > 0) {
+        this._baseDip = { x: this.dipRect.x, y: this.dipRect.y, width: this.dipRect.width, height: this.dipRect.height };
+      }
+    }
     if (viewOffset) this.viewOffset = { x: viewOffset.x || 0, y: viewOffset.y || 0 };
     this._applyGeometry();
   }

@@ -21,6 +21,9 @@ class MpvSurface {
     this.parentId = (parentWin && parentWin.id) || 0;
     this._dead = false;
     this._standalone = !!opts.standalone;
+    // v2.15.93：宿主窗口标题栏高度（主窗口 36px、应用/直播窗 34px），
+    // 用于把 mpv 顶边对齐到标题栏下方（见 _computeScreenGeometry 的双向对齐）。
+    this._titlebarHeight = opts.titlebarHeight || 34;
     this.viewOffset = { x: opts.viewOffsetX || 0, y: opts.viewOffsetY || 0 };
     this.dipRect = dipRect || { x: 0, y: 0, width: 800, height: 450 };
     this.player = new mpvMod.MpvPlayer({ standalone: this._standalone });
@@ -127,11 +130,14 @@ class MpvSurface {
     // 标题栏(34px)下方，标题栏永远在 mpv 之上（可拖动/点按钮），标题栏下方即为 mpv 黑底，
     // 自动隐藏标题栏后顶部纯黑与 mpv 黑边一致。standalone（菜单"用mpv打开"）不绑定父窗，不约束。
     if (!this._standalone && !this._pip) {
-      const minY = cb.y + (off.y || 0) + 34;
-      if (y < minY) {
-        const dy = minY - y;
-        y = minY;
-        height = Math.max(90, height - dy);
+      // v2.15.93：由单向"向下压"改为双向对齐。点播页 <video> 的 dipRect.y 含飞牛影视自身标题栏
+      // （点播页约 51px），而 fnos 主窗口标题栏只有 36px，露出的约 15px 飞牛标题栏会留在 mpv 上方，
+      // 导致"覆盖不了标题栏下方"。现将 mpv 顶边对齐到标题栏底边 topY：高于则下压、低于则上扩。
+      const topY = cb.y + (off.y || 0) + this._titlebarHeight;
+      const dy = y - topY;
+      if (dy !== 0) {
+        y = topY;
+        height = Math.max(90, height + dy);
       }
     }
     return {

@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.92';
+const APP_VERSION = '2.15.93';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -12279,6 +12279,7 @@ async function embedMpvPlay(hostWin, payload) {
     const onNeedFreshUrl = () => refreshVodStreamUrl(guestWc);
     surf = new MpvSurfaceMod.MpvSurface(hostWin, dipRect, {
       viewOffsetX: viewOffset.x, viewOffsetY: viewOffset.y,
+      titlebarHeight: hostWin === mainWindow ? 36 : 34,
       settings: st,
       onNeedFreshUrl
     });

@@ -1000,10 +1000,13 @@ class MpvPlayer extends EventEmitter {
     if (!this.proc || this._dead) return;
     const pid = this.proc.pid;
     if (!pid) return;
-    // 点播（飞牛影视电影/剧集）圆角；直播/独立播放器保持直角（电视直播窗口本身是直角无 clip-path）
-    const rounded = !this._isLive && !this._standalone;
+    // 圆角形态：点播（飞牛影视电影/剧集）四角圆角；直播仅右上角圆角（其余三角直角，露出右上角窗口控制按钮区）；
+    // 独立播放器保持直角。v2.15.96：直播由"直角"改为"仅右上角圆角"（用户要求）。
+    let mode = 'none';
+    if (!this._standalone) { mode = this._isLive ? 'top-right' : 'all'; }
     const scale = this._scaleFactor || 1;
     const d = Math.max(2, Math.round(40 * scale)); // 圆角直径（物理像素）：20px 半径 DIP * 2 * scale
+    const halfD = Math.max(1, Math.round(d / 2)); // 圆角半径（物理像素），用于补直角的竖条/横条宽度
     const ps = [
       "$ErrorActionPreference='SilentlyContinue';",
       "$src=@'",
@@ -1016,6 +1019,8 @@ class MpvPlayer extends EventEmitter {
       '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);',
       '  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT r);',
       '  [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);',
+      '  [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int l, int t, int r, int b);',
+      '  [DllImport("gdi32.dll")] public static extern int CombineRgn(IntPtr hDest, IntPtr hSrc1, IntPtr hSrc2, int mode);',
       '  [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hWnd, IntPtr rgn, bool redraw);',
       '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }',
       '  public static IntPtr ByPid(uint pid) {',
@@ -1028,10 +1033,21 @@ class MpvPlayer extends EventEmitter {
       'Add-Type -TypeDefinition $src;',
       `$hwnd=[FMPVC]::ByPid(${pid});`,
       'if($hwnd -ne [IntPtr]::Zero){',
-      `  if(${rounded ? '$true' : '$false'}){`,
+      `  if(${JSON.stringify(mode)} -eq 'all'){`,
       '    $r=New-Object FMPVC+RECT; [FMPVC]::GetClientRect($hwnd,[ref]$r)|Out-Null;',
       '    $w=$r.R-$r.L; $h=$r.B-$r.T;',
       `    if($w -gt 40 -and $h -gt 40){ $rgn=[FMPVC]::CreateRoundRectRgn(0,0,($w+1),($h+1),${d},${d}); [FMPVC]::SetWindowRgn($hwnd,$rgn,$true)|Out-Null; }`,
+      `  } elseif(${JSON.stringify(mode)} -eq 'top-right'){`,
+      '    $r=New-Object FMPVC+RECT; [FMPVC]::GetClientRect($hwnd,[ref]$r)|Out-Null;',
+      '    $w=$r.R-$r.L; $h=$r.B-$r.T;',
+      `    if($w -gt 40 -and $h -gt 40){`,
+      `      $rgn=[FMPVC]::CreateRoundRectRgn(0,0,($w+1),($h+1),${d},${d});`,
+      `      $pl=[FMPVC]::CreateRectRgn(0,0,(${halfD}+1),($h+1));`,
+      `      $pb=[FMPVC]::CreateRectRgn(0,($h-${halfD}),($w+1),($h+1));`,
+      '      [FMPVC]::CombineRgn($rgn,$rgn,$pl,2)|Out-Null;',
+      '      [FMPVC]::CombineRgn($rgn,$rgn,$pb,2)|Out-Null;',
+      `      [FMPVC]::SetWindowRgn($hwnd,$rgn,$true)|Out-Null;`,
+      '    }',
       '  } else {',
       '    [FMPVC]::SetWindowRgn($hwnd,[IntPtr]::Zero,$true)|Out-Null;',
       '  }',
@@ -1116,6 +1132,17 @@ class MpvPlayer extends EventEmitter {
   _applyCoverZoom(vw, vh) {
     try {
       this._videoW = vw; this._videoH = vh;
+      // v2.15.96：直播不 cover 缩放。cover 缩放（video-zoom>0）会把画面放大填满窗口、
+      // 裁掉四周——直播的台标/字幕/完整构图会被切掉（用户反馈"画面被扩大、看不到全部画面"）。
+      // 直播应 contain 完整显示（video-zoom=0）；仅点播用 cover 消除宽银幕 letterbox 黑边。
+      if (this._isLive) {
+        if (this._lastCoverZoom !== 0) {
+          this._lastCoverZoom = 0;
+          this.command(['set_property', 'video-zoom', 0]).catch(() => {});
+          this.emit('log', 'cover-zoom skip-live (video-zoom=0) video=' + vw + 'x' + vh);
+        }
+        return;
+      }
       const g = this._geometry;
       if (!g || !(g.width > 0) || !(g.height > 0) || !(vw > 0) || !(vh > 0)) return;
       const winAspect = g.width / g.height;

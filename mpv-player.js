@@ -1125,36 +1125,18 @@ class MpvPlayer extends EventEmitter {
     this.emit('log', 'first-frame revealed');
     try { this.emit('first-frame'); } catch (_) {}
   }
-  // v2.15.92：cover 填满窗口，消除宽银幕视频在非等比窗口里的 letterbox 黑边（"不贴合"）。
-  //   注意 mpv 的 video-zoom 是 log2 对数语义：zoom=log2(放大倍率)，不是线性比例；
-  //   放大倍率 = 较大 aspect / 较小 aspect（相对 keepaspect 的 contain 结果），
-  //   之前 v2.15.90 误按线性（倍率-1）计算，导致放大不足、上下仍留黑边。
+  // v2.15.97：点播/直播一律不 cover 缩放。v2.15.92 引入的 cover（video-zoom>0）本意是消除
+  // 宽银幕视频在非等比窗口里的 letterbox 黑边，但副作用是把画面放大填满窗口、裁掉四周——
+  // 电影字幕/完整构图被切掉（用户反馈"画面被扩大、看不到全部画面"，点播与直播均如此）。
+  // 现恢复 contain 完整显示（video-zoom=0）；宽高比不一致时的黑边是正常表现，不再放大裁切。
   _applyCoverZoom(vw, vh) {
     try {
       this._videoW = vw; this._videoH = vh;
-      // v2.15.96：直播不 cover 缩放。cover 缩放（video-zoom>0）会把画面放大填满窗口、
-      // 裁掉四周——直播的台标/字幕/完整构图会被切掉（用户反馈"画面被扩大、看不到全部画面"）。
-      // 直播应 contain 完整显示（video-zoom=0）；仅点播用 cover 消除宽银幕 letterbox 黑边。
-      if (this._isLive) {
-        if (this._lastCoverZoom !== 0) {
-          this._lastCoverZoom = 0;
-          this.command(['set_property', 'video-zoom', 0]).catch(() => {});
-          this.emit('log', 'cover-zoom skip-live (video-zoom=0) video=' + vw + 'x' + vh);
-        }
-        return;
+      if (this._lastCoverZoom !== 0) {
+        this._lastCoverZoom = 0;
+        this.command(['set_property', 'video-zoom', 0]).catch(() => {});
+        this.emit('log', 'cover-zoom disabled (video-zoom=0) video=' + vw + 'x' + vh);
       }
-      const g = this._geometry;
-      if (!g || !(g.width > 0) || !(g.height > 0) || !(vw > 0) || !(vh > 0)) return;
-      const winAspect = g.width / g.height;
-      const vidAspect = vw / vh;
-      const ratio = Math.max(vidAspect, winAspect) / Math.min(vidAspect, winAspect);
-      let zoom = ratio > 1 ? Math.log2(ratio) : 0;
-      if (zoom < 0) zoom = 0;
-      if (Math.abs(zoom - (this._lastCoverZoom || 0)) < 0.001) return;
-      this._lastCoverZoom = zoom;
-      this.command(['set_property', 'video-zoom', zoom]).catch(() => {});
-      this.emit('log', 'cover-zoom ' + zoom.toFixed(4) + ' video=' + vw + 'x' + vh
-        + ' win=' + Math.round(g.width) + 'x' + Math.round(g.height));
     } catch (_) {}
   }
   async _maybeRevealByTracks() {

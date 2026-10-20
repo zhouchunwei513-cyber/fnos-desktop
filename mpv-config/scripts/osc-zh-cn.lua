@@ -274,6 +274,7 @@ local user_opts = {
     valign = 0.8,               -- vertical alignment, -1 (top) to 1 (bottom)
     halign = 0,                 -- horizontal alignment, -1 (left) to 1 (right)
     barmargin = 0,              -- vertical margin of top/bottombar
+    corner_inset = 20,          -- 窗口控制按钮（右上角）的水平内移量：配合 SetWindowRgn 20px 圆角，避免关闭按钮被切角
     boxalpha = 80,              -- alpha of the background box,
                                 -- 0 (opaque) to 255 (fully transparent)
     hidetimeout = 500,          -- duration in ms until the OSC hides if no
@@ -1407,7 +1408,8 @@ local function window_controls(topbar)
     local titlebox_w = wc_geo.w - controlbox_w
 
     -- Default alignment is "right"
-    local controlbox_left = wc_geo.w - controlbox_w
+    -- v2.15.88：窗口做 20px 圆角（SetWindowRgn）后，右上角窗口控制按钮整体内移 corner_inset 避开圆角切角
+    local controlbox_left = wc_geo.w - controlbox_w - user_opts.corner_inset
     local titlebox_left = wc_geo.x
     local titlebox_right = wc_geo.w - controlbox_w
 

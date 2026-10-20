@@ -233,6 +233,8 @@ class MpvPlayer extends EventEmitter {
     this._resumeTargetAt = 0;  // 续播定位目标秒数；播放越过该位置+5s 判定续播成功并重置计数
     this._lastRecoverAt = 0;   // 最近一次自动恢复时间戳（恢复冷却，防重复触发）
     this._logFilePath = '';   // mpv 自身详细日志文件（fnos-mpv.log）
+    this._scaleFactor = 1;    // mpv 窗口所在显示器的 DPI 缩放（圆角物理像素 = 40 * scaleFactor）
+    this._cornerTimer = null; // 圆角应用 debounce 定时器（点播圆角，直播直角）
   }
 
   // mpv 详细日志文件路径：放 userData（与 fnos-diag.log 同目录），回退系统临时目录
@@ -264,6 +266,8 @@ class MpvPlayer extends EventEmitter {
     // 独立播放器窗口（菜单"用 mpv 打开"）：无边框但不置顶、不绑定父窗、可自由移动/缩放/全屏，
     // 任务栏可见；仍走 IPC，画中画/字幕/弹幕等中文菜单功能均可用。
     this._standalone = !!opts.standalone;
+    // mpv 窗口所在显示器的 DPI 缩放（用于 SetWindowRgn 圆角物理像素换算）
+    this._scaleFactor = (typeof opts.scaleFactor === 'number' && opts.scaleFactor > 0) ? opts.scaleFactor : 1;
     // 重置 IPC 就绪 promise（新进程/新管道）
     this.connected = false;
     this._readyPromise = null;
@@ -853,6 +857,7 @@ class MpvPlayer extends EventEmitter {
     this._lastUrl = url;
     this._lastHeaders = headers || null;
     this._isLive = !!(opts && opts.isLive);
+    this._scheduleCorners(); // 点播/直播形态确定后，重设窗口圆角（直播恢复直角）
     this._reloadTries = 0;
     this._refreshing = false;
     const recover = !!(opts && opts.recover);
@@ -964,10 +969,78 @@ class MpvPlayer extends EventEmitter {
         } catch (_) {}
       }, 60);
       if (fallbackTimer.unref) fallbackTimer.unref();
+      // v2.15.88：窗口尺寸变化后重建圆角 RGN（debounce 合并，窗口 resize 稳定后再裁）
+      this._scheduleCorners();
     };
     if (!this.connected) { this.once('ipc-ready', apply); return; }
     apply();
   }
+  // v2.15.88：MPV 窗口圆角（贴合飞牛影视主窗口 20px clip-path 圆角；电视直播/独立播放器不圆角）。
+  // 思路：Windows 下用 SetWindowRgn(CreateRoundRectRgn) 把 mpv 原生窗口裁成圆角。
+  //   - mpv 自带 --window-corners 只能做 DWM 8px/4px 圆角，达不到主窗 20px，故用 SetWindowRgn。
+  //   - RGN 基于窗口客户区物理像素，圆角直径 = 40 * scaleFactor（20px 半径 DIP）。
+  //   - 窗口 resize 后 RGN 需重建，故在 setGeometry / 首帧 reveal / loadfile 后统一 debounce 重设。
+  _scheduleCorners() {
+    if (process.platform !== 'win32') return;
+    if (this._cornerTimer) return;
+    this._cornerTimer = setTimeout(() => {
+      this._cornerTimer = null;
+      this._applyRoundedCorners();
+    }, 300);
+    if (this._cornerTimer.unref) this._cornerTimer.unref();
+  }
+
+  _applyRoundedCorners() {
+    if (process.platform !== 'win32') return;
+    if (!this.proc || this._dead) return;
+    const pid = this.proc.pid;
+    if (!pid) return;
+    // 点播（飞牛影视电影/剧集）圆角；直播/独立播放器保持直角（电视直播窗口本身是直角无 clip-path）
+    const rounded = !this._isLive && !this._standalone;
+    const scale = this._scaleFactor || 1;
+    const d = Math.max(2, Math.round(40 * scale)); // 圆角直径（物理像素）：20px 半径 DIP * 2 * scale
+    const ps = [
+      "$ErrorActionPreference='SilentlyContinue';",
+      "$src=@'",
+      'using System;',
+      'using System.Runtime.InteropServices;',
+      'public static class FMPVC {',
+      '  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);',
+      '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);',
+      '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);',
+      '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);',
+      '  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT r);',
+      '  [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);',
+      '  [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hWnd, IntPtr rgn, bool redraw);',
+      '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }',
+      '  public static IntPtr ByPid(uint pid) {',
+      '    IntPtr f = IntPtr.Zero;',
+      '    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) { f = h; return false; } return true; }, IntPtr.Zero);',
+      '    return f;',
+      '  }',
+      '}',
+      "'@",
+      'Add-Type -TypeDefinition $src;',
+      `$hwnd=[FMPVC]::ByPid(${pid});`,
+      'if($hwnd -ne [IntPtr]::Zero){',
+      `  if(${rounded ? '$true' : '$false'}){`,
+      '    $r=New-Object FMPVC+RECT; [FMPVC]::GetClientRect($hwnd,[ref]$r)|Out-Null;',
+      '    $w=$r.R-$r.L; $h=$r.B-$r.T;',
+      `    if($w -gt 40 -and $h -gt 40){ $rgn=[FMPVC]::CreateRoundRectRgn(0,0,($w+1),($h+1),${d},${d}); [FMPVC]::SetWindowRgn($hwnd,$rgn,$true)|Out-Null; }`,
+      '  } else {',
+      '    [FMPVC]::SetWindowRgn($hwnd,[IntPtr]::Zero,$true)|Out-Null;',
+      '  }',
+      '}'
+    ].join('\n');
+    try {
+      // 异步执行：Add-Type 编译 C# 每次约 0.5~1s，窗口拖动/缩放时会高频触发圆角重设，
+      // 用 spawn（异步）避免同步阻塞主线程导致拖动卡顿。失败/乱序均无害（圆角状态幂等）。
+      const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true });
+      child.on('error', () => {});
+      if (child.unref) child.unref();
+    } catch (_) { /* 圆角失败不阻断播放 */ }
+  }
+
   // v1.49.0：隐藏/显示窗口。
   // 关键：实测 `visibility` 属性在 d3d11 VO 上 Set property 返回 -3（UNAVAILABLE/不可用），
   //       是个空操作，导致一键隐藏/锁定时 MPV 窗口仍停留在屏幕上。改用 `window-minimized`
@@ -1023,6 +1096,8 @@ class MpvPlayer extends EventEmitter {
     if (this._revealFallback) { clearTimeout(this._revealFallback); this._revealFallback = null; }
     // 若用户在此期间手动最小化（一键隐藏），则不移回，保持最小化状态
     if (!this._userHidden) { try { if (this._geometry) this.setGeometry(this._geometry); } catch (_) {} }
+    // v2.15.88：首帧 reveal 后窗口可见且几何确定，裁一次圆角（setGeometry 内部已 debounce 重设）
+    this._scheduleCorners();
     this.emit('log', 'first-frame revealed');
     try { this.emit('first-frame'); } catch (_) {}
   }

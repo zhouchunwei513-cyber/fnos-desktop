@@ -774,8 +774,8 @@ contextBridge.exposeInMainWorld('fnos', {
       const body = { item_guid: itemGuid, nonce: randDigits() };
       const apiPath = '/v/api/v1/play/info';
       try {
+        // v2.15.88：play/info 走 Authx 签名 + Cookie 鉴权；带过期 JWT 反而命中 "Auth Failed"
         const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authx': genAuthx(apiPath, body) };
-        if (state.token) headers['Authorization'] = state.token;
         const r = await fetch(state.baseOrigin + apiPath, {
           method: 'POST',
           credentials: 'include',
@@ -793,8 +793,8 @@ contextBridge.exposeInMainWorld('fnos', {
     async function fetchStreamList(itemGuid) {
       const apiPath = '/v/api/v1/stream/list/' + itemGuid; // 与 fntv signMd5 一致，用未编码 path
       try {
+        // v2.15.88：stream/list 走 Authx 签名 + Cookie 鉴权（实测不带 Authorization 返回 code=0）
         const headers = { 'Accept': 'application/json', 'Authx': genAuthx(apiPath, undefined) };
-        if (state.token) headers['Authorization'] = state.token;
         const r = await fetch(state.baseOrigin + apiPath, {
           credentials: 'include',
           headers

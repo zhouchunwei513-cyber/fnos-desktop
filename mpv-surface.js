@@ -24,6 +24,14 @@ class MpvSurface {
     this.viewOffset = { x: opts.viewOffsetX || 0, y: opts.viewOffsetY || 0 };
     this.dipRect = dipRect || { x: 0, y: 0, width: 800, height: 450 };
     this.player = new mpvMod.MpvPlayer({ standalone: this._standalone });
+    // v2.15.88：mpv 窗口所在显示器的 DPI 缩放（SetWindowRgn 圆角物理像素换算用）
+    this._scaleFactor = 1;
+    try {
+      const { screen } = require('electron');
+      const b = (parentWin && !parentWin.isDestroyed()) ? parentWin.getBounds() : null;
+      const d = b ? screen.getDisplayMatching(b) : screen.getPrimaryDisplay();
+      this._scaleFactor = (d && d.scaleFactor) || 1;
+    } catch (_) {}
     this._started = false;
     this._startSettings = opts.settings || {};
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
@@ -143,7 +151,8 @@ class MpvSurface {
         cacheLevel: this._startSettings.cacheLevel || 'smooth',
         headers: this._startSettings.headers || null,
         // 点播断流（签名链接时效失效）时，由主进程注入回调重新签名取新鲜地址
-        onNeedFreshUrl: this._onNeedFreshUrl || null
+        onNeedFreshUrl: this._onNeedFreshUrl || null,
+        scaleFactor: this._scaleFactor || 1
       });
       // 用户点 mpv 窗口自带关闭按钮：仅标记本嵌入层死亡。
       // 注意：绝不能再把 'user-closed' 通过 this.player.emit 回抛出去——该事件的监听者

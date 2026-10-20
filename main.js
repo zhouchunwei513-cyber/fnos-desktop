@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.87';
+const APP_VERSION = '2.15.88';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -12327,7 +12327,12 @@ async function embedMpvPlay(hostWin, payload) {
       const ck = await gatherCookiesForOrigin(origin || url);
       if (ck) headers['Cookie'] = ck;
     } catch (e) { dlog('warn', 'mpv.embed.cookie', { err: String(e && e.message || e) }); }
-    if (payload.token) headers['Authorization'] = payload.token;
+    // v2.15.88：media/range 点播取流走 Cookie session 鉴权；preload 捕获的 Authorization 是
+    // 飞牛网页登录 JWT（有时效），一旦过期，带它请求 media/range 会命中 "Auth Failed"(code=-2) 返回
+    // JSON，导致 mpv/ffmpeg "Failed to recognize file format"。点播 media/range 一律不带 Authorization，
+    // 只用 Cookie（实测带 Cookie 返回 206 MP4 流正常）；跨域直播/直连源不受影响（本就在 sameOrigin 分支外）。
+    const isMediaRange = /\/v\/api\/v1\/media\/range\//i.test(url);
+    if (payload.token && !isMediaRange) headers['Authorization'] = payload.token;
     // 飞牛影视网页内直播：/wp/m3u8 转码网关要求 Play-Link 头（hls.js/flv.js 原样携带），否则 401/403
     if (payload.playLink) headers['Play-Link'] = String(payload.playLink);
     if (origin) headers['Referer'] = origin.replace(/\/?$/, '/');

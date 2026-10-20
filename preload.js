@@ -1154,7 +1154,15 @@ contextBridge.exposeInMainWorld('fnos', {
         rect = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
         log('embed.fallbackrect', { reason: reason || '' });
       } else {
-        log('embed.rect', { rect: JSON.stringify(rect), reason: reason || '', hasBox: !!state.playerBox });
+        let of = '', vw = 0, vh = 0;
+        try {
+          const m = getMainVideo();
+          if (m) {
+            of = (window.getComputedStyle(m).objectFit) || '';
+            vw = m.videoWidth || 0; vh = m.videoHeight || 0;
+          }
+        } catch (_) {}
+        log('embed.rect', { rect: JSON.stringify(rect), reason: reason || '', hasBox: !!state.playerBox, objectFit: of, videoW: vw, videoH: vh });
       }
       state.resolving = true;
       startRectLoop();

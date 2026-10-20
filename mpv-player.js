@@ -601,7 +601,10 @@ class MpvPlayer extends EventEmitter {
       }
       else if (id === 9) {
         // video-params：首帧解码就绪（有画面尺寸）→ 显示窗口（首帧前已隐藏，露出网页加载界面）
-        if (val && val.w && val.h) this._revealOnFirstFrame();
+        if (val && val.w && val.h) {
+          this._applyCoverZoom(val.w, val.h);
+          this._revealOnFirstFrame();
+        }
       }
       else if (id === 10) {
         // 轨道列表：至少有视频轨道时也可揭示（兼容某些源 video-params 稍晚）
@@ -1100,6 +1103,28 @@ class MpvPlayer extends EventEmitter {
     this._scheduleCorners();
     this.emit('log', 'first-frame revealed');
     try { this.emit('first-frame'); } catch (_) {}
+  }
+  // v2.15.90：cover 填满窗口。网页 <video> 通常 object-fit:cover（裁剪填满无黑边），
+  //   而 MPV 默认 keepaspect（contain）会让宽银幕视频在非等比窗口 letterbox 产生黑边，
+  //   导致"不贴合"。用 video-zoom 放大视频填满窗口（超出部分居中裁剪）即可等价 cover。
+  _applyCoverZoom(vw, vh) {
+    try {
+      const g = this._geometry;
+      if (!g || !(g.width > 0) || !(g.height > 0) || !(vw > 0) || !(vh > 0)) return;
+      const winAspect = g.width / g.height;
+      const vidAspect = vw / vh;
+      let zoom = 0;
+      if (vidAspect > winAspect) {
+        zoom = (g.height * vidAspect) / g.width - 1;
+      } else if (vidAspect < winAspect) {
+        zoom = g.width / (g.height * vidAspect) - 1;
+      }
+      if (zoom > 0.002) {
+        this.command(['set_property', 'video-zoom', zoom]).catch(() => {});
+        this.emit('log', 'cover-zoom ' + zoom.toFixed(4) + ' video=' + vw + 'x' + vh
+          + ' win=' + Math.round(g.width) + 'x' + Math.round(g.height));
+      }
+    } catch (_) {}
   }
   async _maybeRevealByTracks() {
     try {

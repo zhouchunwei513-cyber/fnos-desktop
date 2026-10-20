@@ -972,6 +972,8 @@ class MpvPlayer extends EventEmitter {
         } catch (_) {}
       }, 60);
       if (fallbackTimer.unref) fallbackTimer.unref();
+      // v2.15.90：窗口几何变化（缩放跟随）后，按新窗口比例重算 cover 缩放，保证 resize 后仍贴合
+      if (this._videoW && this._videoH) this._applyCoverZoom(this._videoW, this._videoH);
       // v2.15.88：窗口尺寸变化后重建圆角 RGN（debounce 合并，窗口 resize 稳定后再裁）
       this._scheduleCorners();
     };
@@ -1109,6 +1111,7 @@ class MpvPlayer extends EventEmitter {
   //   导致"不贴合"。用 video-zoom 放大视频填满窗口（超出部分居中裁剪）即可等价 cover。
   _applyCoverZoom(vw, vh) {
     try {
+      this._videoW = vw; this._videoH = vh;
       const g = this._geometry;
       if (!g || !(g.width > 0) || !(g.height > 0) || !(vw > 0) || !(vh > 0)) return;
       const winAspect = g.width / g.height;
@@ -1119,11 +1122,12 @@ class MpvPlayer extends EventEmitter {
       } else if (vidAspect < winAspect) {
         zoom = g.width / (g.height * vidAspect) - 1;
       }
-      if (zoom > 0.002) {
-        this.command(['set_property', 'video-zoom', zoom]).catch(() => {});
-        this.emit('log', 'cover-zoom ' + zoom.toFixed(4) + ' video=' + vw + 'x' + vh
-          + ' win=' + Math.round(g.width) + 'x' + Math.round(g.height));
-      }
+      if (zoom < 0) zoom = 0;
+      if (Math.abs(zoom - (this._lastCoverZoom || 0)) < 0.001) return;
+      this._lastCoverZoom = zoom;
+      this.command(['set_property', 'video-zoom', zoom]).catch(() => {});
+      this.emit('log', 'cover-zoom ' + zoom.toFixed(4) + ' video=' + vw + 'x' + vh
+        + ' win=' + Math.round(g.width) + 'x' + Math.round(g.height));
     } catch (_) {}
   }
   async _maybeRevealByTracks() {

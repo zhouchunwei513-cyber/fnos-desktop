@@ -781,6 +781,12 @@ module.exports = function injectTitleBar(ctx) {
           // top two corners look round while the bottom two are cut square.
           'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;min-height:0 !important;max-height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin:0 !important;}'
         ].join('');
+        // v2.15.92: auth pages (/signin, /oauth, /login) are centered cards with overflow:hidden.
+        // Skip body shift + overflow-y:auto injection to avoid extra scrollbars.
+        const __authPath = (typeof location !== 'undefined' && location.pathname) ? String(location.pathname) : '';
+        if (__authPath.indexOf('/signin') >= 0 || __authPath.indexOf('/oauth') >= 0 || __authPath.indexOf('/login') >= 0) {
+          __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}html>body{clip-path:inset(0 round 20px) !important;}';
+        }
       } else {
         // 主窗口（透明 + webview 飞牛桌面）：body 下移 34px 给标题栏让位（顶部透出桌面壁纸），
         // height:calc(100vh-34px) 让 webview 视口 = 窗口高度 - 34px；窗口高度已 +34px（main.js）补偿，

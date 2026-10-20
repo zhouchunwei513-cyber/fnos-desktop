@@ -1106,9 +1106,10 @@ class MpvPlayer extends EventEmitter {
     this.emit('log', 'first-frame revealed');
     try { this.emit('first-frame'); } catch (_) {}
   }
-  // v2.15.90：cover 填满窗口。网页 <video> 通常 object-fit:cover（裁剪填满无黑边），
-  //   而 MPV 默认 keepaspect（contain）会让宽银幕视频在非等比窗口 letterbox 产生黑边，
-  //   导致"不贴合"。用 video-zoom 放大视频填满窗口（超出部分居中裁剪）即可等价 cover。
+  // v2.15.92：cover 填满窗口，消除宽银幕视频在非等比窗口里的 letterbox 黑边（"不贴合"）。
+  //   注意 mpv 的 video-zoom 是 log2 对数语义：zoom=log2(放大倍率)，不是线性比例；
+  //   放大倍率 = 较大 aspect / 较小 aspect（相对 keepaspect 的 contain 结果），
+  //   之前 v2.15.90 误按线性（倍率-1）计算，导致放大不足、上下仍留黑边。
   _applyCoverZoom(vw, vh) {
     try {
       this._videoW = vw; this._videoH = vh;
@@ -1116,12 +1117,8 @@ class MpvPlayer extends EventEmitter {
       if (!g || !(g.width > 0) || !(g.height > 0) || !(vw > 0) || !(vh > 0)) return;
       const winAspect = g.width / g.height;
       const vidAspect = vw / vh;
-      let zoom = 0;
-      if (vidAspect > winAspect) {
-        zoom = (g.height * vidAspect) / g.width - 1;
-      } else if (vidAspect < winAspect) {
-        zoom = g.width / (g.height * vidAspect) - 1;
-      }
+      const ratio = Math.max(vidAspect, winAspect) / Math.min(vidAspect, winAspect);
+      let zoom = ratio > 1 ? Math.log2(ratio) : 0;
       if (zoom < 0) zoom = 0;
       if (Math.abs(zoom - (this._lastCoverZoom || 0)) < 0.001) return;
       this._lastCoverZoom = zoom;

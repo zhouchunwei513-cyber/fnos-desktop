@@ -585,7 +585,8 @@ module.exports = function injectTitleBar(ctx) {
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
-          // v2.15.72：标题栏恢复长方形直角（用户要求），去掉 border-radius
+          // v2.15.98：标题栏四角 R 角（左上右上 20px 对齐窗口 clip-path 20px 圆角，左下右下 10px）
+          'border-radius:20px 20px 10px 10px',
           'background:' + __barBg,
           // v2.15.74：主窗口底部 1px 同色实边，与 height 36px 配合把重叠 1px 加到 2px，
           // 吸收 Windows 高分 DPI 下窗口缩放产生的小数亚像素抗锯齿，根治间歇性灰线。
@@ -918,7 +919,7 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:8px 8px 0 0;-webkit-app-region:drag;user-select:none;';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:8px 8px 6px 6px;-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题
         const left = document.createElement('div');
         left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';

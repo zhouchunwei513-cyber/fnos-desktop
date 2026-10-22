@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.15.97';
+const APP_VERSION = '2.15.98';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6152,29 +6152,26 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resize', __ghostBurst);
     mainWindow.on('move', __ghostBurst);
   } catch (_) {}
-  // v2.15.87：桌面内容随窗口等比缩放。基准=首次内容区宽（画面宽），resize 后
-  // factor=当前画面宽/基准宽，setZoomFactor 缩放飞牛桌面（图标/文字/间距整体等比），
-  // 标题栏 34px 与四角 20px 圆角由 titlebar-inject 用 CSS 变量 --fnos-f 反向补偿保持物理大小。
-  let __zoomBaseW = 0;
-  try { __zoomBaseW = mainWindow.getContentSize()[0] || 0; } catch (_) {}
-  let __zoomTimer = null;
+  // v2.15.98：用户要求桌面图标大小固定（参照 Windows 系统桌面在对应分辨率下的图标大小），
+  // 不随窗口缩放。移除 v2.15.87 引入的 setZoomFactor 整页等比缩放——setZoomFactor 会连带
+  // 缩放图标/文字/间距，无法只固定图标。飞牛桌面（cqfndesk.js）本就使用固定像素图标
+  // （桌面图标 144px、网格 100px 列），窗口缩放时飞牛只做「换列数」重排、图标大小不变，
+  // 这正是 Windows 桌面的行为（图标固定，仅可视区域增减）。--fnos-f 恒为 1，titlebar-inject
+  // 的反向补偿公式随之退化为恒定值，标题栏 36px 与四角 20px 圆角保持固定物理大小。
+  // 此处保留 did-finish-load / resized 触发，幂等地把 zoomFactor 与 --fnos-f 固定为 1，
+  // 防历史上任何非 1 状态残留。
   const __applyDesktopZoom = () => {
     try {
-      if (!__zoomBaseW || !mainWindow || mainWindow.isDestroyed()) return;
-      const cw = mainWindow.getContentSize()[0] || __zoomBaseW;
-      const f = Math.max(0.5, Math.min(2, cw / __zoomBaseW));
+      if (!mainWindow || mainWindow.isDestroyed()) return;
       const wc = mainWindow.webContents;
       if (!wc || wc.isDestroyed()) return;
-      try { wc.setZoomFactor(f); } catch (_) {}
-      try { wc.executeJavaScript('(function(){try{document.documentElement.style.setProperty("--fnos-f",' + f + ');}catch(e){}})()').catch(() => {}); } catch (_) {}
+      try { wc.setZoomFactor(1); } catch (_) {}
+      try { wc.executeJavaScript('(function(){try{document.documentElement.style.setProperty("--fnos-f",1);}catch(e){}})()').catch(() => {}); } catch (_) {}
     } catch (_) {}
   };
   try {
     mainWindow.on('resized', () => {
-      try {
-        if (__zoomTimer) clearTimeout(__zoomTimer);
-        __zoomTimer = setTimeout(() => __applyDesktopZoom(), 280);
-      } catch (_) {}
+      try { __applyDesktopZoom(); } catch (_) {}
     });
     try { mainWindow.webContents.once('did-finish-load', () => { try { __applyDesktopZoom(); } catch (_) {} }); } catch (_) {}
   } catch (_) {}

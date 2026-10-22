@@ -813,7 +813,6 @@ module.exports = function injectTitleBar(ctx) {
           '[class~="size-[52px]"]{width:calc(52px * var(--ui-scale, 1)) !important;height:calc(52px * var(--ui-scale, 1)) !important;}' +
           '[class~="!h-[52px]"]{height:calc(52px * var(--ui-scale, 1)) !important;}' +
           '[class~="!w-[52px]"]{width:calc(52px * var(--ui-scale, 1)) !important;}' +
-          '[class~="size-[80px]"]{width:calc(80px * var(--ui-scale, 1)) !important;height:calc(80px * var(--ui-scale, 1)) !important;}' +
           '[class~="w-[144px]"]{width:calc(144px * var(--ui-scale, 1)) !important;}' +
           '[class~="h-[120px]"]{height:calc(120px * var(--ui-scale, 1)) !important;}' +
           '[class~="text-[14px]"]{font-size:calc(14px * var(--ui-scale, 1)) !important;}' +

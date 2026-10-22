@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.1';
+const APP_VERSION = '2.17.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6167,12 +6167,12 @@ function createMainWindow(partition, loadTarget) {
     };
     const __ghostBurst = () => {
       __refreshAlpha();
-      if (__ghostTimer) return;
+      if (__ghostTimer) { clearInterval(__ghostTimer); __ghostTimer = null; }
       let n = 0;
       __ghostTimer = setInterval(() => {
         __refreshAlpha();
-        if (++n >= 45) { clearInterval(__ghostTimer); __ghostTimer = null; }
-      }, 16);
+        if (++n >= 90) { clearInterval(__ghostTimer); __ghostTimer = null; }
+      }, 8);
     };
     mainWindow.on('resize', __ghostBurst);
     mainWindow.on('move', __ghostBurst);

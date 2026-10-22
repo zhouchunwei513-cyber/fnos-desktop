@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.2';
+const APP_VERSION = '2.17.3';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6056,7 +6056,7 @@ function createMainWindow(partition, loadTarget) {
     // 故恢复透明让标题栏透出桌面壁纸；body 仍保留飞牛主页背景（titlebar-inject 只 html 透明），不挖空内容。
     transparent: true,
     roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
-    backgroundColor: '#00000000',
+    backgroundColor: '#00030610',
     show: false,
     paintWhenInitiallyHidden: true,
     // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。
@@ -6163,7 +6163,7 @@ function createMainWindow(partition, loadTarget) {
   try {
     let __ghostTimer = null;
     const __refreshAlpha = () => {
-      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor('#00000000'); } catch (_) {}
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor('#00030610'); } catch (_) {}
     };
     const __ghostBurst = () => {
       __refreshAlpha();

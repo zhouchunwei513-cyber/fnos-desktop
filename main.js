@@ -43,11 +43,13 @@ try { MpvHelperMod = require('./mpv-helper.js'); } catch (e) { MpvHelperMod = nu
 // v2.15.34：应用窗口（__KILLON29__=1）跳过 frame-inject 主题归一（data-theme/colorScheme/classList 强制 + 白底统一），保持应用主题与浏览器一致。
 if (process.platform === 'win32') {
   try {
-    // v2.15.36：重新加回 disable-gpu-compositing（禁用 GPU 合成，强制 CPU 合成）。
-    // v2.15.33 完全打开 GPU 后，部分显卡/驱动环境（历史 v1.18.1 绿屏、v2.2.3 崩溃）在硬件 GPU 合成下
-    // 主窗口渲染为纯白（白板）。本开关只禁用 GPU 合成（改用 CPU 合成），保留 GPU 进程（光栅化/视频硬解），
-    // 既根治白板，又不回退 v2.15.33 解决的“应用加载不全”。v2.15.36 同时给 black-scan 增加白屏自愈兜底。
-    app.commandLine.appendSwitch('disable-gpu-compositing');
+    // v2.16.3：删除 disable-gpu-compositing（恢复 GPU 合成）。
+    // 历史复盘：v2.15.33 打开 GPU 合成后主窗口纯白，v2.15.36 误判为“GPU 合成本身问题”、
+    // 加回 disable-gpu-compositing 强制 CPU 合成绕开；代价是透明窗口 + 整页 clip-path 圆角在
+    // CPU 合成下逐像素蒙版，动画掉到 ~23fps（全局卡顿/白板风险）。
+    // 实测白板真因是 enable-features 里的 RawDraw（GPU 合成 + 透明窗口下把表面的纹理提交成纯白，
+    // 见下方 enable-features 处）。故 v2.16.3 删除 RawDraw 并恢复 GPU 合成：动画 ~180fps 且无白板，
+    // 透明 / 20px 圆角在 GPU 合成下正常。GPU 进程（光栅化 / 视频硬解）与下方 HEVC 硬解开关不受影响。
     // v1.23.0：开启 Windows 平台 HEVC/H.265 硬解，修复 4K 直播/影视无法播放
     // PlatformHEVCDecoderSupport：启用系统 HEVC 解码器（需安装 HEVC 视频扩展）
     // D3D11VideoDecoder：D3D11 硬解；MojoVideoDecoder：新版视频解码管线
@@ -103,7 +105,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.16.2';
+const APP_VERSION = '2.16.3';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -586,8 +588,10 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 // MediaFoundation 等硬解开关在全局 disable-gpu 下仍可能强制初始化 GPU 媒体栈，
 // 是 /music、/v 媒体页面渲染进程创建即崩的另一诱因。视频播放走 MPV 外部播放器
 // 不受影响；网页内视频退回软解更稳定。
+// v2.16.3：删除 RawDraw——RawDraw 在 GPU 合成 + 透明窗口下会把窗口表面提交成纯白（白板），
+// 正是 v2.15.33~v2.15.35 主窗口白板的真正根因（此前误判为 GPU 合成本身、用 disable-gpu-compositing 绕开）。
+// 保留 ScrollPredictorSmoothness（滚动预测平滑）提升滚动流畅度。
 app.commandLine.appendSwitch('enable-features', [
-  'RawDraw',
   'ScrollPredictorSmoothness',
 ].join(','));
 app.commandLine.appendSwitch('enable-async-dns');

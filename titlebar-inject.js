@@ -780,7 +780,15 @@ module.exports = function injectTitleBar(ctx) {
           // so the body box grows back to the full viewport and its bottom edge (and
           // therefore the 20px clip-path radius) lands below the window bottom -- the
           // top two corners look round while the bottom two are cut square.
-          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;min-height:0 !important;max-height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin:0 !important;}'
+          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;min-height:0 !important;max-height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin:0 !important;}',
+          // v2.16.0: fixed-viewport SPA apps (Tailwind h-dvh / h-screen / min-h-dvh) size their
+          // root to 100vh/dvh, ignoring the 34px titlebar. The body is already shrunk to
+          // calc(100vh-34px), but a child at height:100vh still spans the full window, so its
+          // bottom 34px overflows the body and is clipped (fnOS music: progress bar and the
+          // bottom of "recently added" cut off, and the page's scrollbar-width:none hides the
+          // scrollbar). Re-anchor viewport units to the visible area below the titlebar.
+          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px) !important;}',
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px) !important;}'
         ].join('');
         // v2.15.92: auth pages (/signin, /oauth, /login) are centered cards with overflow:hidden.
         // Skip body shift + overflow-y:auto injection to avoid extra scrollbars.

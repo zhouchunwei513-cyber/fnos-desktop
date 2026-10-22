@@ -801,15 +801,70 @@ module.exports = function injectTitleBar(ctx) {
         // height:calc(100vh-34px) 让 webview 视口 = 窗口高度 - 34px；窗口高度已 +34px（main.js）补偿，
         // 使 webview 视口 = 原内容高度，飞牛监控面板底部完整显示、标题栏独立顶部不被 webview 覆盖。
         __padStyle.textContent = [
-          'html{' + __gifBg + '--fnos-f:1;}',
+          'html{' + __gifBg + '--fnos-f:1;--ui-scale:.8;}',
           // v2.15.75：主窗口 body 底色由 transparent 改为深色 #05060a。
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。
           // 深色兜底后，即使有 1px 偏差也与标题栏同色，不再看得出灰条。
-          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}'
+          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}',
+          // v2.17.0（DPI 方案 A）：飞牛桌面主页是远程 React SPA（cqfndesk），应用图标为 52px 位图，
+          // 客户端无法改源码，只能注入覆盖：图标/卡片/文字/间距统一 x--ui-scale（0.8），图标 52->约 42px。
+          // 选择器用 [class~="..."] 精确匹配 Tailwind token（规避 [ ] ! 转义），仅作用于主窗口主 frame。
+          '[class~="size-[52px]"]{width:calc(52px * var(--ui-scale, 1)) !important;height:calc(52px * var(--ui-scale, 1)) !important;}' +
+          '[class~="!h-[52px]"]{height:calc(52px * var(--ui-scale, 1)) !important;}' +
+          '[class~="!w-[52px]"]{width:calc(52px * var(--ui-scale, 1)) !important;}' +
+          '[class~="size-[80px]"]{width:calc(80px * var(--ui-scale, 1)) !important;height:calc(80px * var(--ui-scale, 1)) !important;}' +
+          '[class~="w-[144px]"]{width:calc(144px * var(--ui-scale, 1)) !important;}' +
+          '[class~="h-[120px]"]{height:calc(120px * var(--ui-scale, 1)) !important;}' +
+          '[class~="text-[14px]"]{font-size:calc(14px * var(--ui-scale, 1)) !important;}' +
+          '[class~="leading-[18px]"]{line-height:calc(18px * var(--ui-scale, 1)) !important;}' +
+          '[class~="gap-[10px]"]{gap:calc(10px * var(--ui-scale, 1)) !important;}' +
+          '[class~="pt-[22px]"]{padding-top:calc(22px * var(--ui-scale, 1)) !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);
+      // v2.17.0（DPI 方案 A）：飞牛桌面应用网格的列/行/间距是 JS 直接写的 inline style
+      // （repeat(auto-fill,100px)/110px/10px），CSS 选择器匹配不到（无 class/id），须用 JS 覆盖为
+      // calc(Npx * var(--ui-scale)) 以跟随 --ui-scale。React 重渲染会重置 inline style，故用
+      // MutationObserver 持续校正（已应用 calc 的跳过，避免死循环）。
+      // 同时监听主进程 dpi-changed（切换显示器/改系统缩放时广播）：--ui-scale 是固定密度系数 0.8，
+      // 不随 scaleFactor 累乘（PM-DPI 下 Chromium 已按 deviceScaleFactor 自动映射 CSS px，再乘 DPR
+      // 会双重放大）；收到事件仅记录 scaleFactor 到 --ui-dpr 并触发一次网格重扫，保证切换后即时重排。
+      const __fnosScaleGrid = (el) => {
+        try {
+          if (!el || el.nodeType !== 1) return;
+          const _sg = el.style;
+          if (_sg.display !== 'grid') return;
+          const _gtc = String(_sg.gridTemplateColumns || '');
+          if (_gtc.indexOf('100px') >= 0 && _gtc.indexOf('var(--ui-scale') < 0) {
+            _sg.gridTemplateColumns = 'repeat(auto-fill, calc(100px * var(--ui-scale, 1)))';
+            _sg.gridAutoRows = 'calc(110px * var(--ui-scale, 1))';
+            _sg.gap = 'calc(10px * var(--ui-scale, 1))';
+          }
+        } catch (_) {}
+      };
+      const __fnosGridScan = () => {
+        try {
+          const _els = document.querySelectorAll('div[style*="grid"]');
+          for (let _i = 0; _i < _els.length; _i++) __fnosScaleGrid(_els[_i]);
+        } catch (_) {}
+      };
+      try {
+        __fnosGridScan();
+        try {
+          const __fgsmo = new MutationObserver(() => { try { __fnosGridScan(); } catch (_) {} });
+          __fgsmo.observe(document.documentElement || document, { childList: true, subtree: true });
+        } catch (_) {}
+      } catch (_) {}
+      try {
+        ipcRenderer.on('dpi-changed', (_ev, _info) => {
+          try {
+            const _sf = (_info && Number(_info.scaleFactor)) || 1;
+            try { document.documentElement.style.setProperty('--ui-dpr', String(_sf)); } catch (_) {}
+            try { __fnosGridScan(); } catch (_) {}
+          } catch (_) {}
+        });
+      } catch (_) {}
       // v2.16.1: unify app/settings window scrollbars to the fnOS video (os-scrollbar) look:
       // 8px, transparent track, 4px radius, semi-transparent thumb. App pages ship their own
       // scrollbars (fnOS music hides them via *{scrollbar-width:none}; 3rd-party apps like

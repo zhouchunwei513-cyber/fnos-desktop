@@ -71,6 +71,10 @@ if (process.platform === 'win32') {
     app.commandLine.appendSwitch('disable-renderer-backgrounding');
     // 高清屏 DPI
     app.commandLine.appendSwitch('high-dpi-support', '1');
+    // v2.17.0：显式开逐显示器 DPI 感知（Windows PM-DPI）。新版 Electron 默认已开启高 DPI，
+    // 此处补 enableHighDpiScaling 满足需求规范并兼容旧路径；物理视觉大小一致性由 Chromium
+    // 的 deviceScaleFactor 自动完成（CSS px 跨 DPI 恒定），不引入整页缩放。
+    try { app.enableHighDpiScaling(); } catch (_) {}
   } catch (_) {}
 }
 
@@ -105,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.16.3';
+const APP_VERSION = '2.17.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5998,12 +6002,13 @@ function createMainWindow(partition, loadTarget) {
     const pa = screen.getPrimaryDisplay().workAreaSize;
     __primaryWA = { width: pa.width, height: pa.height };
   } catch (_) {}
-  const __defaultWinW = Math.round(Math.min(1600, Math.max(1000, __primaryWA.width * 0.72)));
-  const __defaultWinH = Math.round(__defaultWinW * 553 / 900) + 34;
+  // v2.17.0：默认窗口改为固定 1200×740（DPI 方案 A），不再随主屏 workArea 自适应。
+  const __defaultWinW = 1200;
+  const __defaultWinH = 740;
   let savedBounds = null;
   try {
     const b = loadSettings().windowBounds;
-    if (b && typeof b === 'object' && Number.isFinite(b.width) && Number.isFinite(b.height) && b.width >= 1024 && b.height >= 610) {
+    if (b && typeof b === 'object' && Number.isFinite(b.width) && Number.isFinite(b.height) && b.width >= 900 && b.height >= 600) {
       // v2.16.2：旧记录无 waW/waH 视为未知（保留）；新记录若保存时工作区与当前差异 >128px（换屏/换分辨率）则弃用。
       const __sameWA = !Number.isFinite(b.waW) || !Number.isFinite(b.waH)
         || (Math.abs(b.waW - __primaryWA.width) <= 128 && Math.abs(b.waH - __primaryWA.height) <= 128);
@@ -6043,8 +6048,8 @@ function createMainWindow(partition, loadTarget) {
     height: savedBounds ? savedBounds.height : __defaultWinH,
     x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
     y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
-    minWidth: 1000,
-    minHeight: 648,
+    minWidth: 900,
+    minHeight: 600,
     title: APP_NAME,
     // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
@@ -6172,31 +6177,34 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resize', __ghostBurst);
     mainWindow.on('move', __ghostBurst);
   } catch (_) {}
-  // v2.16.2：用户要求飞牛主页面图标大小自适应——参照 Windows 系统桌面图标（约 40px），当前
-  // 1920×1080@100% 笔记本上飞牛桌面（cqfndesk.js）固定 52px 图标 / 144px 卡片 / 100px 网格列
-  // 明显偏大，用户确认整体缩放到 70%。
-  // 采用 page zoom（setZoomFactor）整页等比缩放：图标/文字/间距一起缩小，界面协调；缩放系数
-  // 用常量 __DESKTOP_SCALE（0.7），不随窗口缩放变化（区别于 v2.15.87 的随窗口缩放方案）。
-  // 不同 DPI 屏幕由 Chromium 的 deviceScaleFactor 自动处理（52px CSS 图标 × deviceScaleFactor
-  // 已让物理视觉大小跨 DPI 恒定），故此处无需按分辨率重算，统一 ×0.7 即实现「任何屏幕都同样
-  // 缩小 30%」，与 Windows 图标视觉恒定一致。
-  // --fnos-f 同步设为 __DESKTOP_SCALE，titlebar-inject 的反向补偿公式据此把标题栏 36px、四角
-  // 20px 圆角、标题栏让位 34px 全部还原成物理大小（不随页面缩放）。
-  const __DESKTOP_SCALE = 0.7;
-  const __applyDesktopZoom = () => {
-    try {
-      if (!mainWindow || mainWindow.isDestroyed()) return;
-      const wc = mainWindow.webContents;
-      if (!wc || wc.isDestroyed()) return;
-      try { wc.setZoomFactor(__DESKTOP_SCALE); } catch (_) {}
-      try { wc.executeJavaScript('(function(){try{document.documentElement.style.setProperty("--fnos-f",' + __DESKTOP_SCALE + ');}catch(e){}})()').catch(() => {}); } catch (_) {}
-    } catch (_) {}
-  };
+  // v2.17.0（DPI 方案 A）：移除 v2.16.2 的整页 zoom（setZoomFactor 0.7）——它导致图标/窗口
+  // 视觉大小不对，且整页缩放带来鼠标坐标/悬浮/滚动条错位。改用「PM-DPI + CSS 变量 --ui-scale」
+  // 方案：DPI 物理一致性交给 Chromium deviceScaleFactor 自动完成，UI 密度由渲染进程注入的
+  // --ui-scale（固定 0.8）统一换算，不再对整页做 transform / zoom 变形。
+  // 监听屏幕 DPI/显示器变化：切换显示器或改系统缩放时，通过 IPC 广播 dpi-changed（携带当前
+  // 主屏 scaleFactor），渲染进程据此刷新 --ui-scale 并触发重排，无需重启客户端。
   try {
-    mainWindow.on('resized', () => {
-      try { __applyDesktopZoom(); } catch (_) {}
-    });
-    try { mainWindow.webContents.once('did-finish-load', () => { try { __applyDesktopZoom(); } catch (_) {} }); } catch (_) {}
+    const __broadcastDpi = () => {
+      try {
+        let sf = 1;
+        try { sf = screen.getPrimaryDisplay().scaleFactor; } catch (_) {}
+        BrowserWindow.getAllWindows().forEach((w) => {
+          try {
+            if (w && !w.isDestroyed() && w.webContents && !w.webContents.isDestroyed()) {
+              w.webContents.send('dpi-changed', { scaleFactor: sf });
+            }
+          } catch (_) {}
+        });
+      } catch (_) {}
+    };
+    const __onDisplayMetricsChanged = (_event, _display, changedMetrics) => {
+      try {
+        if (changedMetrics && changedMetrics.indexOf('scaleFactor') >= 0) __broadcastDpi();
+      } catch (_) {}
+    };
+    screen.on('display-metrics-changed', __onDisplayMetricsChanged);
+    screen.on('display-added', () => { try { __broadcastDpi(); } catch (_) {} });
+    screen.on('display-removed', () => { try { __broadcastDpi(); } catch (_) {} });
   } catch (_) {}
   // v2.15.86：抑制 Win11 DWM 边框（见 __suppressDwmBorder 定义）。窗口创建后立即同步设一次，
   // 边框色在窗口生命周期内持久，show 前设好即可，DWM 不会因 show 重置该属性。

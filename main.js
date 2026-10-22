@@ -103,7 +103,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.16.1';
+const APP_VERSION = '2.16.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5985,12 +5985,25 @@ function createMainWindow(partition, loadTarget) {
   // 未登录（无 loadTarget，load 本地连接页/登录页）时仍需显示，由 did-navigate 到 https /login 兜底显示。
   const __shortcutKeepHidden = !!__pendingFromShortcut && !!(loadTarget && loadTarget.href);
 
-  // v2.15.0：恢复上次窗口大小/位置（关闭/调整时存 settings.windowBounds），无有效记录用默认 1320x860
+  // v2.15.0：恢复上次窗口大小/位置（关闭/调整时存 settings.windowBounds），无有效记录用默认
+  // v2.16.2：默认窗口大小随主屏 workArea 自适应（宽度取 72%、clamp 1000~1600，高度按锁定比例 553/900+34 反推）。
+  // 屏幕分辨率变化时（保存的 workArea 与当前差异 >128px）弃用 savedBounds、用自适应默认重建。
+  let __primaryWA = { width: 1920, height: 1040 };
+  try {
+    const { screen } = require('electron');
+    const pa = screen.getPrimaryDisplay().workAreaSize;
+    __primaryWA = { width: pa.width, height: pa.height };
+  } catch (_) {}
+  const __defaultWinW = Math.round(Math.min(1600, Math.max(1000, __primaryWA.width * 0.72)));
+  const __defaultWinH = Math.round(__defaultWinW * 553 / 900) + 34;
   let savedBounds = null;
   try {
     const b = loadSettings().windowBounds;
     if (b && typeof b === 'object' && Number.isFinite(b.width) && Number.isFinite(b.height) && b.width >= 1024 && b.height >= 610) {
-      savedBounds = b;
+      // v2.16.2：旧记录无 waW/waH 视为未知（保留）；新记录若保存时工作区与当前差异 >128px（换屏/换分辨率）则弃用。
+      const __sameWA = !Number.isFinite(b.waW) || !Number.isFinite(b.waH)
+        || (Math.abs(b.waW - __primaryWA.width) <= 128 && Math.abs(b.waH - __primaryWA.height) <= 128);
+      if (__sameWA) savedBounds = b;
     }
   } catch (_) {}
 
@@ -6022,8 +6035,8 @@ function createMainWindow(partition, loadTarget) {
     } catch (_) {}
   }
   mainWindow = new BrowserWindow({
-    width: savedBounds ? savedBounds.width : 1320,
-    height: savedBounds ? savedBounds.height : 845,
+    width: savedBounds ? savedBounds.width : __defaultWinW,
+    height: savedBounds ? savedBounds.height : __defaultWinH,
     x: savedBounds && Number.isFinite(savedBounds.x) ? savedBounds.x : undefined,
     y: savedBounds && Number.isFinite(savedBounds.y) ? savedBounds.y : undefined,
     minWidth: 1000,
@@ -6118,7 +6131,10 @@ function createMainWindow(partition, loadTarget) {
     const __saveBounds = () => {
       try {
         if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !mainWindow.isFullScreen() && !mainWindow.isMaximized()) {
-          saveSettings({ windowBounds: mainWindow.getBounds() });
+          const __bounds = mainWindow.getBounds();
+          __bounds.waW = __primaryWA.width;
+          __bounds.waH = __primaryWA.height;
+          saveSettings({ windowBounds: __bounds });
         }
       } catch (_) {}
     };
@@ -6152,21 +6168,24 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resize', __ghostBurst);
     mainWindow.on('move', __ghostBurst);
   } catch (_) {}
-  // v2.15.98：用户要求桌面图标大小固定（参照 Windows 系统桌面在对应分辨率下的图标大小），
-  // 不随窗口缩放。移除 v2.15.87 引入的 setZoomFactor 整页等比缩放——setZoomFactor 会连带
-  // 缩放图标/文字/间距，无法只固定图标。飞牛桌面（cqfndesk.js）本就使用固定像素图标
-  // （桌面图标 144px、网格 100px 列），窗口缩放时飞牛只做「换列数」重排、图标大小不变，
-  // 这正是 Windows 桌面的行为（图标固定，仅可视区域增减）。--fnos-f 恒为 1，titlebar-inject
-  // 的反向补偿公式随之退化为恒定值，标题栏 36px 与四角 20px 圆角保持固定物理大小。
-  // 此处保留 did-finish-load / resized 触发，幂等地把 zoomFactor 与 --fnos-f 固定为 1，
-  // 防历史上任何非 1 状态残留。
+  // v2.16.2：用户要求飞牛主页面图标大小自适应——参照 Windows 系统桌面图标（约 40px），当前
+  // 1920×1080@100% 笔记本上飞牛桌面（cqfndesk.js）固定 52px 图标 / 144px 卡片 / 100px 网格列
+  // 明显偏大，用户确认整体缩放到 70%。
+  // 采用 page zoom（setZoomFactor）整页等比缩放：图标/文字/间距一起缩小，界面协调；缩放系数
+  // 用常量 __DESKTOP_SCALE（0.7），不随窗口缩放变化（区别于 v2.15.87 的随窗口缩放方案）。
+  // 不同 DPI 屏幕由 Chromium 的 deviceScaleFactor 自动处理（52px CSS 图标 × deviceScaleFactor
+  // 已让物理视觉大小跨 DPI 恒定），故此处无需按分辨率重算，统一 ×0.7 即实现「任何屏幕都同样
+  // 缩小 30%」，与 Windows 图标视觉恒定一致。
+  // --fnos-f 同步设为 __DESKTOP_SCALE，titlebar-inject 的反向补偿公式据此把标题栏 36px、四角
+  // 20px 圆角、标题栏让位 34px 全部还原成物理大小（不随页面缩放）。
+  const __DESKTOP_SCALE = 0.7;
   const __applyDesktopZoom = () => {
     try {
       if (!mainWindow || mainWindow.isDestroyed()) return;
       const wc = mainWindow.webContents;
       if (!wc || wc.isDestroyed()) return;
-      try { wc.setZoomFactor(1); } catch (_) {}
-      try { wc.executeJavaScript('(function(){try{document.documentElement.style.setProperty("--fnos-f",1);}catch(e){}})()').catch(() => {}); } catch (_) {}
+      try { wc.setZoomFactor(__DESKTOP_SCALE); } catch (_) {}
+      try { wc.executeJavaScript('(function(){try{document.documentElement.style.setProperty("--fnos-f",' + __DESKTOP_SCALE + ');}catch(e){}})()').catch(() => {}); } catch (_) {}
     } catch (_) {}
   };
   try {

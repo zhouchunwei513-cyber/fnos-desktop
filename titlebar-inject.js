@@ -810,6 +810,27 @@ module.exports = function injectTitleBar(ctx) {
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);
+      // v2.16.1: unify app/settings window scrollbars to the fnOS video (os-scrollbar) look:
+      // 8px, transparent track, 4px radius, semi-transparent thumb. App pages ship their own
+      // scrollbars (fnOS music hides them via *{scrollbar-width:none}; 3rd-party apps like
+      // 剪映 use a white track), so override here. The main window (fnOS desktop) is already
+      // os-scrollbar and is left untouched to keep its .scrollbar-none/.os-scrollbar-hidden intact.
+      // Thumb colour uses the theme var --semi-color-Scrollbar (dark=rgba(255,255,255,.12),
+      // light=rgba(grey,.16)); 3rd-party apps without the var fall back to the dark value.
+      if (__isAppWin || __isSettings) {
+        try {
+          const __scrollStyle = document.createElement('style');
+          __scrollStyle.setAttribute('data-fnos-scrollbar', '1');
+          __scrollStyle.textContent =
+            '*{scrollbar-width:auto !important;}' +
+            '::-webkit-scrollbar{width:8px !important;height:8px !important;}' +
+            '::-webkit-scrollbar-track{background:transparent !important;}' +
+            '::-webkit-scrollbar-thumb{background:var(--semi-color-Scrollbar, rgba(255,255,255,.12)) !important;border-radius:4px !important;}' +
+            '::-webkit-scrollbar-thumb:hover{background:var(--semi-color-Scrollbar-hover, rgba(255,255,255,.2)) !important;}' +
+            '::-webkit-scrollbar-corner{background:transparent !important;}';
+          (document.head || document.documentElement).appendChild(__scrollStyle);
+        } catch (_) {}
+      }
     } catch(_) {}
     // v2.15.52：应用网页自带 fixed 顶部标题栏落到内容区（UPS 电源管理等）修复。
     // 根因：body transform:translateY(34px) 创建 containing block，body 里 position:fixed 元素改以

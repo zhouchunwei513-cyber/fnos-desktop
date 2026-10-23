@@ -417,7 +417,13 @@ module.exports = function injectTitleBar(ctx) {
     const __barHeight = () => {
       try {
         const b = document.getElementById('fnos-titlebar');
-        const h = b ? Math.round(b.getBoundingClientRect().height) : 0;
+        if (!b) return 34;
+        // v2.17.15: prefer the inline height (34px / 36px). The bar carries
+        // zoom:calc(1/var(--fnos-f)), so getBoundingClientRect would report 34/f and any
+        // caller dividing by f again would double-compensate.
+        const inline = parseFloat(b.style.height);
+        if (isFinite(inline) && inline > 20 && inline < 120) return Math.round(inline);
+        const h = Math.round(b.getBoundingClientRect().height);
         return (h > 20 && h < 120) ? h : 34;
       } catch (_) { return 34; }
     };
@@ -590,7 +596,7 @@ module.exports = function injectTitleBar(ctx) {
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
         bar.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', (__isMainWin ? 'width:calc(100vw * var(--fnos-f, 1))' : 'right:0'), 'height:' + (__isMainWin ? '36px' : '34px'),
+          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__isMainWin ? '36px' : '34px'),
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
@@ -605,7 +611,9 @@ module.exports = function injectTitleBar(ctx) {
           '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease',
-          __isMainWin ? 'zoom:calc(1 / var(--fnos-f, 1))' : ''
+          // v2.17.15: every window type now cancels page zoom on the bar, so its
+          // pixels stay identical while only the page content zooms.
+          'zoom:calc(1 / var(--fnos-f, 1))'
         ].filter(Boolean).join(';');
 
         // v2.15.84: grey band at the top of the content area while the window geometry changes.
@@ -811,21 +819,21 @@ module.exports = function injectTitleBar(ctx) {
           // so the body box grows back to the full viewport and its bottom edge (and
           // therefore the 20px clip-path radius) lands below the window bottom -- the
           // top two corners look round while the bottom two are cut square.
-          'html>body{transform:translateY(34px) !important;overflow-y:auto !important;height:calc(100vh - 34px) !important;min-height:0 !important;max-height:calc(100vh - 34px) !important;box-sizing:border-box !important;clip-path:inset(0 round 20px) !important;padding-top:0 !important;margin:0 !important;}',
+          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin:0 !important;}',
           // v2.16.0: fixed-viewport SPA apps (Tailwind h-dvh / h-screen / min-h-dvh) size their
           // root to 100vh/dvh, ignoring the 34px titlebar. The body is already shrunk to
           // calc(100vh-34px), but a child at height:100vh still spans the full window, so its
           // bottom 34px overflows the body and is clipped (fnOS music: progress bar and the
           // bottom of "recently added" cut off, and the page's scrollbar-width:none hides the
           // scrollbar). Re-anchor viewport units to the visible area below the titlebar.
-          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px) !important;}',
-          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px) !important;}'
+          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}'
         ].join('');
         // v2.15.92: auth pages (/signin, /oauth, /login) are centered cards with overflow:hidden.
         // Skip body shift + overflow-y:auto injection to avoid extra scrollbars.
         const __authPath = (typeof location !== 'undefined' && location.pathname) ? String(location.pathname) : '';
         if (__authPath.indexOf('/signin') >= 0 || __authPath.indexOf('/oauth') >= 0 || __authPath.indexOf('/login') >= 0) {
-          __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}html>body{clip-path:inset(0 round 20px) !important;}';
+          __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}html>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}';
         }
       } else {
         // 主窗口（透明 + webview 飞牛桌面）：body 下移 34px 给标题栏让位（顶部透出桌面壁纸），
@@ -1329,8 +1337,9 @@ module.exports = function injectTitleBar(ctx) {
     const __setupZoomControls = () => {
       try {
         const __zv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
-        const __isMain = __zv.indexOf('--fnos-shell') >= 0 && __zv.indexOf('--fnos-app-window') < 0 && __zv.indexOf('--fnos-live-window') < 0;
-        if (!__isMain) return;
+        const __isAppWin = __zv.indexOf('--fnos-app-window') >= 0 || __zv.indexOf('--fnos-live-window') >= 0;
+        const __isShell = __zv.indexOf('--fnos-shell') >= 0 && !__isAppWin;
+        if (!__isAppWin && !__isShell) return;
         if (typeof window === 'undefined' || window.top !== window) return;
         let wf = null;
         try { wf = require('electron').webFrame; } catch (_) {}
@@ -1382,10 +1391,10 @@ module.exports = function injectTitleBar(ctx) {
               }
             };
             const bh = __barHeight();
-            set('transform', 'translateY(' + bh + 'px)');
-            set('height', 'calc(100vh - ' + bh + 'px)');
+            set('transform', 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
+            set('height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
             set('min-height', '0');
-            set('max-height', 'calc(100vh - ' + bh + 'px)');
+            set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
             set('box-sizing', 'border-box');
             set('overflow-y', 'auto');
             set('margin', '0');

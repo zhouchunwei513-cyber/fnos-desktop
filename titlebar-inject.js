@@ -593,6 +593,7 @@ module.exports = function injectTitleBar(ctx) {
           // box-sizing:border-box 使内容盒仍为 35px，标题栏按钮/菜单垂直位置与 v2.15.73 完全一致。
           // v2.15.80: the 1px border-bottom was painted rgb(3,6,16), the same colour as the gradient tail, so it never read as a border but did form a hard 1px band where the bar meets the content - the dark line under the titlebar. Transparent keeps the box geometry identical (border-box, content box still 35px, buttons unmoved) while letting the bar gradient show through that 1px, so the edge is continuous and the seam is still covered.
           'border-bottom:' + (__isMainWin ? '1px solid transparent' : 'none'),
+          (__isMainWin ? 'box-shadow:0 3px 0 0 rgb(3,6,16)' : ''),
           '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease',

@@ -1334,11 +1334,10 @@ module.exports = function injectTitleBar(ctx) {
                 b.style.setProperty(k, v, 'important');
               }
             };
-            const bh = __barHeight();
-            set('transform', 'translateY(' + bh + 'px)');
-            set('height', 'calc(100vh - ' + bh + 'px)');
+            set('transform', 'none');
+            set('height', '100%');
             set('min-height', '0');
-            set('max-height', 'calc(100vh - ' + bh + 'px)');
+            set('max-height', 'none');
             set('box-sizing', 'border-box');
             set('overflow-y', 'auto');
             set('margin', '0');

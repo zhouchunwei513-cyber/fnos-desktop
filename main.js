@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.7';
+const APP_VERSION = '2.17.8';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -13022,6 +13022,25 @@ app.on('before-quit', () => {
     BrowserWindow.getAllWindows().forEach((w) => {
       try { if (!w.isDestroyed()) w.removeAllListeners(); } catch (_) {}
     });
+  } catch (_) {}
+  // v2.17.8：退出兜底（论坛反馈「开了 docker 后主程序无法退出」）。
+  // 日志实证：docker 应用（Next Terminal /access 页）长时间跑实时画面，渲染端每 10~20 秒报
+  // "A VideoFrame was garbage collected without being closed"，进程随后被 kill（render-process-gone
+  // reason=killed exitCode=1，isHome=true）。此后 app.quit() 关窗要等渲染进程应答，而该进程已不响应，
+  // Electron 会永久等待 —— 用户看到的就是"点了退出、进程留在后台不退"。
+  // 修复分两层：①主动 destroy（跳过渲染端 beforeunload 协商，宿主 close 监听已在上面的
+  // removeAllListeners 里摘掉，不会误触发"隐藏到托盘"）；②1500ms 硬超时兜底 app.exit(0)，
+  // 保证无论渲染进程怎么卡进程都退出。正常路径窗口销毁后进程立即结束，定时器不会执行到。
+  try {
+    setTimeout(() => {
+      try {
+        BrowserWindow.getAllWindows().forEach((w) => { try { if (!w.isDestroyed()) w.destroy(); } catch (_) {} });
+      } catch (_) {}
+    }, 0);
+    setTimeout(() => {
+      try { dlog && dlog('warn', 'app.quit.hard-exit', { ms: 1500 }); } catch (_) {}
+      try { app.exit(0); } catch (_) {}
+    }, 1500);
   } catch (_) {}
 });
 

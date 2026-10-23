@@ -840,7 +840,17 @@ module.exports = function injectTitleBar(ctx) {
           '[class~="text-[14px]"]{font-size:calc(14px * var(--ui-scale, 1)) !important;}' +
           '[class~="leading-[18px]"]{line-height:calc(18px * var(--ui-scale, 1)) !important;}' +
           '[class~="gap-[10px]"]{gap:calc(10px * var(--ui-scale, 1)) !important;}' +
-          '[class~="pt-[22px]"]{padding-top:calc(22px * var(--ui-scale, 1)) !important;}'
+          '[class~="pt-[22px]"]{padding-top:calc(22px * var(--ui-scale, 1)) !important;}' +
+          // v2.17.8：主窗口也会承载 Docker/第三方应用（appwin.open.fnos-domain-in-main 把
+          // *.fnos.net 应用降级到主窗打开，日志实测 Next Terminal、MoonTV 都走这条路）。
+          // 这时主窗里的页面是固定视口 SPA（Tailwind h-screen / h-dvh / min-h-dvh），它们把根节点
+          // 撑到 100vh，无视已经下移的 34px 标题栏：根节点底部多出 34px 被 clip-path 裁掉，表现为
+          // "页面显示不全"（内容底部/播放条/侧栏被切）。应用窗分支的 v2.16.0 补偿此前只覆盖
+          // --fnos-app-window，主窗分支漏了，故在此补齐同一套规则，让 in-main 应用与外开应用窗
+          // 得到完全一致的几何；同时补 overflow-y 让超出内容内部滚动而不是被硬裁。
+          'html>body{overflow-y:auto !important;}' +
+          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}' +
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);
@@ -916,36 +926,45 @@ module.exports = function injectTitleBar(ctx) {
     // 回到 y=0，被 fnos-desktop bar（z-index 更高）覆盖，只保留一层标题栏。
     if (typeof process !== 'undefined' && Array.isArray(process.argv) && (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-live-window') >= 0)) {
       try {
+        // v2.17.8：页面自带 fixed 顶部标题栏「按实际高度」精确补偿。
+        // v2.15.52 起用固定 translate(0,-34px) 把页面自己的顶栏拉到 y<0 交给 Electron bar 覆盖，
+        // 但那只够藏 34px。页面顶栏实际 44~64px（UPS「仪表盘」顶栏、MoonTV logo+导航条），多出的
+        // 10~30px 露在标题栏下方，看起来就是「窗口上边沿下面还有一条被切掉一半的标题栏」；页面顶栏
+        // 只有二十来像素时又反过来在标题栏上方留一条页面色横带。两种错位都源自补偿量 != 顶栏高度。
+        // 现改为补偿元素自身的 getBoundingClientRect().height：任意高度都完整移出视口顶部，
+        // 标题栏区域只保留一层（Electron bar），页面正文统一从 y=34 开始，全窗口形态一致。
         const __compFixedTop = (el) => {
           try {
-            if (!el || el.nodeType !== 1 || el.getAttribute('data-fnos-fixed-comp')) return;
+            if (!el || el.nodeType !== 1) return;
             const cs = getComputedStyle(el);
             if (cs.position !== 'fixed') return;
-            if (parseFloat(cs.top) === 0 && parseFloat(cs.bottom) !== 0) {
-              el.setAttribute('data-fnos-fixed-comp', '1');
-              el.style.setProperty('translate', '0 -34px', 'important');
-            }
+            const __top = parseFloat(cs.top), __bot = parseFloat(cs.bottom);
+            if (__top !== 0 || __bot === 0) return; // 只认吸附顶部、且未同时贴底
+            const __h = Math.round(el.getBoundingClientRect().height);
+            // 只接管「像标题栏」的高度：满屏 fixed 遮罩也可能是 top:0（bottom:auto、height:100vh），
+            // 若按自身高度补偿会把整页移出视口。120px 上限足以覆盖各种顶栏（实测 34~64px）。
+            if (!__h || __h <= 0 || __h > 120) return;
+            if (el.getAttribute('data-fnos-fixed-comp') === String(__h)) return; // 高度未变则跳过
+            el.setAttribute('data-fnos-fixed-comp', String(__h));
+            el.style.setProperty('translate', '0 -' + __h + 'px', 'important');
           } catch (_) {}
         };
         const __scanFixedTop = () => {
           try { const all = document.querySelectorAll('body *'); for (let i = 0; i < all.length; i++) __compFixedTop(all[i]); } catch (_) {}
         };
         __scanFixedTop();
+        // DOM 变化 / 窗口尺寸变化时合并重扫（300ms 节流）——顶栏高度随宽度断点变化，必须重算
+        let __compT = 0;
+        const __queueComp = () => {
+          if (__compT) return;
+          __compT = setTimeout(() => { __compT = 0; __scanFixedTop(); }, 300);
+        };
         try {
-          const __fmo = new MutationObserver((muts) => {
-            for (let i = 0; i < muts.length; i++) {
-              const added = muts[i].addedNodes;
-              for (let j = 0; j < added.length; j++) {
-                const n = added[j];
-                if (n && n.nodeType === 1) {
-                  __compFixedTop(n);
-                  if (n.querySelectorAll) { const c = n.querySelectorAll('*'); for (let k = 0; k < c.length; k++) __compFixedTop(c[k]); }
-                }
-              }
-            }
-          });
+          const __fmo = new MutationObserver(__queueComp);
           __fmo.observe(document.documentElement || document, { childList: true, subtree: true });
         } catch (_) {}
+        try { window.addEventListener('resize', __queueComp, { passive: true }); } catch (_) {}
+        try { window.addEventListener('load', __queueComp, { once: true }); } catch (_) {}
       } catch (_) {}
     }
 

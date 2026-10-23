@@ -592,7 +592,7 @@ module.exports = function injectTitleBar(ctx) {
           // 吸收 Windows 高分 DPI 下窗口缩放产生的小数亚像素抗锯齿，根治间歇性灰线。
           // box-sizing:border-box 使内容盒仍为 35px，标题栏按钮/菜单垂直位置与 v2.15.73 完全一致。
           // v2.15.80: the 1px border-bottom was painted rgb(3,6,16), the same colour as the gradient tail, so it never read as a border but did form a hard 1px band where the bar meets the content - the dark line under the titlebar. Transparent keeps the box geometry identical (border-box, content box still 35px, buttons unmoved) while letting the bar gradient show through that 1px, so the edge is continuous and the seam is still covered.
-          'border-bottom:' + (__isMainWin ? '1px solid transparent' : 'none'),
+          'border-bottom:none',
           '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease',
@@ -627,6 +627,16 @@ module.exports = function injectTitleBar(ctx) {
         // window moves, clears ~260ms after release) -- i.e. the cover painting over the first rows
         // of real content, not a DWM seam. With the 1:1 geometry and __ghostBurst re-committing the
         // layer, the seam it guards is at most 1px, so the cover is shrunk to exactly that 1px.
+        // v2.17.7: two separate 1px dark rows were left under the bar. Frame-by-frame scan of the
+        // v2.17.6 recording (585f/23.439fps/1920x1072, frosted bar): y=241 is the blurred bar
+        // (rgb(170,107,84) BGR) and y=242 drops to rgb(98,83,99) -- the row where bar's
+        // border-bottom sits. An alpha-0 border still occupies the border box and Chromium only
+        // applies backdrop-filter to the content box, so that 1px showed the unblurred dark content
+        // instead of the blurred bar: that is the hairline. Border removed (content box 35->36px,
+        // buttons shift 0.5px, invisible) so the blurred backdrop now reaches the very edge.
+        // The resize cover goes to height 0 as well: the DWM seam it guarded no longer exists
+        // (215 sampled frames, zero neutral-grey rows), and in frosted mode the dark cover was
+        // bleeding through the translucent bar as a second 1px line while dragging.
         // v2.15.84 also swaps the html::before pseudo element for a real div: a page style reset can
         // neutralise pseudo elements, an element with an inline style cannot be overridden.
         try {
@@ -635,7 +645,7 @@ module.exports = function injectTitleBar(ctx) {
             if (!__rcEl) {
               __rcEl = document.createElement('div');
               __rcEl.id = 'fnos-resize-cover';
-              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:1px;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
+              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:0;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
               (document.documentElement || document.body).appendChild(__rcEl);
             }
             if (!window.__fnosResizeCover) {

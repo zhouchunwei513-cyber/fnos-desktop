@@ -1320,6 +1320,53 @@ module.exports = function injectTitleBar(ctx) {
     // （UPS「状态监控/仪表盘」头部、飞牛桌面管理工具壁纸铺满窗口即此形态）。
     // 改用内联 !important 直设（优先级高于任何样式表）+ 变化自愈 + 兜底巡检，
     // 保证任何窗口形态下内容区上边沿都落在标题栏底边，标题栏区域独占、不被内容背景侵入。
+    // v2.17.14: browser-style zoom for the main window.
+    // Only the page content zooms; the titlebar keeps its pixel size because it carries
+    // zoom:calc(1 / var(--fnos-f)) and its width carries calc(100vw * var(--fnos-f)).
+    // __fnos-f tracks the live zoomFactor, so both stay pixel-identical at any zoom.
+    // Ctrl + wheel / Ctrl + (+ - 0) are handled here because menu accelerators do not fire
+    // on a frameless window with a hidden menu bar.
+    const __setupZoomControls = () => {
+      try {
+        const __zv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        const __isMain = __zv.indexOf('--fnos-shell') >= 0 && __zv.indexOf('--fnos-app-window') < 0 && __zv.indexOf('--fnos-live-window') < 0;
+        if (!__isMain) return;
+        if (typeof window === 'undefined' || window.top !== window) return;
+        let wf = null;
+        try { wf = require('electron').webFrame; } catch (_) {}
+        if (!wf || typeof wf.setZoomFactor !== 'function') return;
+        const ZMIN = 0.5, ZMAX = 2.5, ZSTEP = 1.1;
+        const zclamp = (v) => Math.max(ZMIN, Math.min(ZMAX, Math.round(v * 1000) / 1000));
+        const zsync = () => {
+          try {
+            const zf = wf.getZoomFactor() || 1;
+            const cur = parseFloat(document.documentElement.style.getPropertyValue('--fnos-f')) || 1;
+            if (Math.abs(cur - zf) > 0.001) document.documentElement.style.setProperty('--fnos-f', String(zf));
+          } catch (_) {}
+        };
+        const zset = (f) => { try { wf.setZoomFactor(zclamp(f)); } catch (_) {} zsync(); };
+        try {
+          window.addEventListener('wheel', (e) => {
+            if (!e.ctrlKey) return;
+            try { e.preventDefault(); zset((wf.getZoomFactor() || 1) * (e.deltaY < 0 ? ZSTEP : 1 / ZSTEP)); } catch (_) {}
+          }, { passive: false, capture: true });
+        } catch (_) {}
+        try {
+          window.addEventListener('keydown', (e) => {
+            if (!e.ctrlKey || e.altKey || e.metaKey) return;
+            try {
+              const k = e.key;
+              if (k === '=' || k === '+' || k === 'Add') { e.preventDefault(); zset((wf.getZoomFactor() || 1) * ZSTEP); }
+              else if (k === '-' || k === '_' || k === 'Subtract') { e.preventDefault(); zset((wf.getZoomFactor() || 1) / ZSTEP); }
+              else if (k === '0') { e.preventDefault(); zset(1); }
+            } catch (_) {}
+          }, { capture: true });
+        } catch (_) {}
+        zsync();
+        setInterval(zsync, 120);
+      } catch (_) {}
+    };
+
     const __ensureContentOffset = () => {
       try {
         const __app = (typeof process !== 'undefined' && Array.isArray(process.argv)) &&
@@ -1358,7 +1405,7 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     };
 
-    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); } catch (_) {} };
+    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

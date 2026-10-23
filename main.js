@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.13';
+const APP_VERSION = '2.17.14';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6875,9 +6875,15 @@ function buildMenuTemplate() {
         { label: '强制刷新', accelerator: 'Ctrl+F5',
           click: withWebContents((wc) => wc.reloadIgnoringCache()) },
         { type: 'separator' },
-        { role: 'resetZoom', label: '重置缩放' },
-        { role: 'zoomIn', label: '放大' },
-        { role: 'zoomOut', label: '缩小' },
+        // v2.17.14: browser-style percentage zoom. Explicit accelerators because menu
+        // accelerators do not fire on this frameless window; the renderer also listens to
+        // Ctrl + wheel / Ctrl + (+ - 0) itself. The titlebar cancels the zoom via --fnos-f.
+        { label: '重置缩放', accelerator: 'CommandOrControl+0',
+          click: withWebContents((wc) => { try { wc.setZoomFactor(1); } catch (_) {} }) },
+        { label: '放大', accelerator: 'CommandOrControl+=',
+          click: withWebContents((wc) => { try { wc.setZoomFactor(Math.min(2.5, Math.max(0.5, (wc.getZoomFactor() || 1) * 1.1))); } catch (_) {} }) },
+        { label: '缩小', accelerator: 'CommandOrControl+-',
+          click: withWebContents((wc) => { try { wc.setZoomFactor(Math.min(2.5, Math.max(0.5, (wc.getZoomFactor() || 1) / 1.1))); } catch (_) {} }) },
         { type: 'separator' },
         { label: '全屏 / 退出全屏', accelerator: 'F11',
           click: withWebContents((_wc, win) => win.setFullScreen(!win.isFullScreen())) },

@@ -926,14 +926,19 @@ module.exports = function injectTitleBar(ctx) {
     // 回到 y=0，被 fnos-desktop bar（z-index 更高）覆盖，只保留一层标题栏。
     if (typeof process !== 'undefined' && Array.isArray(process.argv) && (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-live-window') >= 0)) {
       try {
-        // v2.17.8：页面自带 fixed 顶部标题栏「按实际高度」精确补偿。
-        // v2.15.52 起用固定 translate(0,-34px) 把页面自己的顶栏拉到 y<0 交给 Electron bar 覆盖，
-        // 但那只够藏 34px。页面顶栏实际 44~64px（UPS「仪表盘」顶栏、MoonTV logo+导航条），多出的
-        // 10~30px 露在标题栏下方，看起来就是「窗口上边沿下面还有一条被切掉一半的标题栏」；页面顶栏
-        // 只有二十来像素时又反过来在标题栏上方留一条页面色横带。两种错位都源自补偿量 != 顶栏高度。
-        // 现改为补偿元素自身的 getBoundingClientRect().height：任意高度都完整移出视口顶部，
-        // 标题栏区域只保留一层（Electron bar），页面正文统一从 y=34 开始，全窗口形态一致。
+        // v2.17.9：撤销「把页面自带 fixed 顶栏上移藏进标题栏」的补偿。
+        // v2.15.52 起就把页面 fixed top:0 的顶栏整条 translateY 上移，让 Electron bar 覆盖它，
+        // 目的是消除「两层标题栏」；v2.17.8 又把补偿量改成顶栏实际高度（44~64px）。
+        // 但页面顶栏承载的是业务内容（UPS「状态监控 / 仪表盘」标题、MoonTV logo+导航条），
+        // 整条移出视口后页面正文顶部被顶到 y=0：① 正文头部 34px 被 bar 遮住不可见；
+        // ② bar 是半透明 rgba + backdrop-filter:blur，被藏起来的顶栏和正文仍会透上来，
+        //    视觉上就是「标题栏内嵌在内容区里」——即用户反馈的形态。
+        // 规范要求标题栏底边 = 内容区上边沿、内容不得被标题栏覆盖，故不再上移：
+        // body 已 translateY(34px)，页面顶栏与正文自然从 y=34（bar 下沿）开始渲染。
+        // 保留开关，个别纯装饰顶栏如确需隐藏可置 true。
+        const FNOS_LIFT_PAGE_HEADER = false;
         const __compFixedTop = (el) => {
+          if (!FNOS_LIFT_PAGE_HEADER) return;
           try {
             if (!el || el.nodeType !== 1) return;
             const cs = getComputedStyle(el);

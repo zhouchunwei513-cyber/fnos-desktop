@@ -621,6 +621,12 @@ module.exports = function injectTitleBar(ctx) {
         // full-height dark red band that reads as a black bar under the titlebar (frame-by-frame
         // scan of the user's recording: 30px tall, rgb(15,4,4)). Keep only a 4px seam cover in
         // body's own backdrop colour #05060a.
+        // v2.17.6: that 4px cover was itself the bar the user kept seeing. Frame-by-frame scan of
+        // the v2.17.5 recording (645f/26.677fps/1732x1110) finds a 4px dark band sitting exactly at
+        // body's top edge (video y=240..243, core rgb(5,5,6), full width, appears only while the
+        // window moves, clears ~260ms after release) -- i.e. the cover painting over the first rows
+        // of real content, not a DWM seam. With the 1:1 geometry and __ghostBurst re-committing the
+        // layer, the seam it guards is at most 1px, so the cover is shrunk to exactly that 1px.
         // v2.15.84 also swaps the html::before pseudo element for a real div: a page style reset can
         // neutralise pseudo elements, an element with an inline style cannot be overridden.
         try {
@@ -629,7 +635,7 @@ module.exports = function injectTitleBar(ctx) {
             if (!__rcEl) {
               __rcEl = document.createElement('div');
               __rcEl.id = 'fnos-resize-cover';
-              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:4px;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
+              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:1px;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
               (document.documentElement || document.body).appendChild(__rcEl);
             }
             if (!window.__fnosResizeCover) {

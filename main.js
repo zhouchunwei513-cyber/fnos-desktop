@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.16';
+const APP_VERSION = '2.17.17';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2556,6 +2556,18 @@ function mergeHistoryStore(raw) {
 }
 
 // ---------------------- User Agent ----------------------
+// v2.17.17: the FN Connect relay only serves the NAS when the request carries a
+// Referer from fnos.net. Without it the relay replies 302 -> https://fnos.net/{fnid},
+// which that page then re-lists as the best candidate, producing an endless ping-pong.
+// Every navigation we start towards a *.fnos.net relay host therefore carries it.
+function fnosReferrerFor(u) {
+  try {
+    const h = new URL(u).hostname || '';
+    if (/(^|\.)fnos\.net$/i.test(h) && !/^fnos\.net$/i.test(h)) return 'https://fnos.net/';
+  } catch (_) {}
+  return undefined;
+}
+
 function getNasUA() {
   return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 }
@@ -4412,7 +4424,10 @@ function __appLoadTarget(win, url, embedStyle) {
       url = __uT28;
     }
   } catch (_) {}
-  return win.loadURL(url, { userAgent: getNasUA() });
+  const __rfApp = fnosReferrerFor(url);
+  const __optsApp = { userAgent: getNasUA() };
+  if (__rfApp) __optsApp.httpReferrer = __rfApp;
+  return win.loadURL(url, __optsApp);
 }
 
 function createAppWindow(url, opts = {}) {
@@ -6347,8 +6362,15 @@ function createMainWindow(partition, loadTarget) {
           try {
             const __deadHost = new URL(__nst.lastTarget).hostname;
             if (__deadHost) {
-              __nst.dead[__deadHost] = __nowTs;
-              dlog && dlog('warn', 'fnid.target-runaway', { host: __deadHost, back: __curKey.slice(0, 120) });
+              // v2.17.17: a FN Connect relay host is never blacklisted — relay is the
+              // only transport the user wants. A relay 302 loop is simply retried (now
+              // carrying a fnos.net Referer) until the round cap stops it.
+              if (/(^|\.)fnos\.net$/i.test(__deadHost)) {
+                dlog && dlog('warn', 'fnid.relay-loop', { host: __deadHost, back: __curKey.slice(0, 120) });
+              } else {
+                __nst.dead[__deadHost] = __nowTs;
+                dlog && dlog('warn', 'fnid.target-runaway', { host: __deadHost, back: __curKey.slice(0, 120) });
+              }
             }
           } catch (_) {}
           __nst.lastTarget = '';
@@ -6430,7 +6452,10 @@ function createMainWindow(partition, loadTarget) {
                   __nst.lastAt = Date.now();
                   __nst.count = (__nst.count || 0) + 1;
                   dlog && dlog('info', 'fnid.auto-navigate', { from: __cur.slice(0, 120), to: pick.slice(0, 140), candidates: valid.length, total: arr.length, attempts: __attempts, round: __nst.count });
-                  mainWindow.loadURL(pick, { userAgent: getNasUA() }).catch(() => {});
+                  const __rfPick = fnosReferrerFor(pick);
+                  const __optsPick = { userAgent: getNasUA() };
+                  if (__rfPick) __optsPick.httpReferrer = __rfPick;
+                  mainWindow.loadURL(pick, __optsPick).catch(() => {});
                 } else if (__attempts >= 12) {
                   clearInterval(__timer);
                   dlog && dlog('warn', 'fnid.auto-navigate.no-candidate', { attempts: __attempts, json: String(json || '').slice(0, 300) });
@@ -6453,7 +6478,10 @@ function createMainWindow(partition, loadTarget) {
     currentOrigin = loadTarget.origin || '';
     lastConnectHref = loadTarget.href;
     safeSetTitle(APP_NAME);
-    mainWindow.loadURL(loadTarget.href, { userAgent: getNasUA() }).catch(() => showConnectPage());
+    const __rfNav = fnosReferrerFor(loadTarget.href);
+    const __optsNav = { userAgent: getNasUA() };
+    if (__rfNav) __optsNav.httpReferrer = __rfNav;
+    mainWindow.loadURL(loadTarget.href, __optsNav).catch(() => showConnectPage());
   } else {
     showConnectPage();
   }

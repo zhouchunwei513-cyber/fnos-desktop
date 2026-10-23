@@ -1308,7 +1308,51 @@ module.exports = function injectTitleBar(ctx) {
     }
 
     
-    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } } catch (_) {} };
+    // v2.17.10：内容区让位强制保障 —— 标题栏底边 = 内容区上边沿。
+    // build() 里靠 <style> 注入的 html>body{transform:translateY(34px)}，在部分应用页面会被
+    // 页面自身的 html/body 样式（同特异性但后加载）或运行时内联样式压过，内容仍从窗口顶铺满，
+    // 标题栏浮在内容画布顶部 34px 之上 —— 这就是规范禁止的「标题栏绘制在内容画布内部」
+    // （UPS「状态监控/仪表盘」头部、飞牛桌面管理工具壁纸铺满窗口即此形态）。
+    // 改用内联 !important 直设（优先级高于任何样式表）+ 变化自愈 + 兜底巡检，
+    // 保证任何窗口形态下内容区上边沿都落在标题栏底边，标题栏区域独占、不被内容背景侵入。
+    const __ensureContentOffset = () => {
+      try {
+        const __app = (typeof process !== 'undefined' && Array.isArray(process.argv)) &&
+          (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-live-window') >= 0);
+        if (!__app) return;
+        const apply = () => {
+          try {
+            const b = document.body; if (!b) return;
+            // 值未变就不写，避免 setProperty 触发 MutationObserver 形成自激循环
+            const set = (k, v) => {
+              if (b.style.getPropertyValue(k) !== v || b.style.getPropertyPriority(k) !== 'important') {
+                b.style.setProperty(k, v, 'important');
+              }
+            };
+            set('transform', 'translateY(34px)');
+            set('height', 'calc(100vh - 34px)');
+            set('min-height', '0');
+            set('max-height', 'calc(100vh - 34px)');
+            set('box-sizing', 'border-box');
+            set('overflow-y', 'auto');
+            set('margin', '0');
+          } catch (_) {}
+        };
+        apply();
+        // 页面脚本重置 body 内联样式时立即补回（apply 幂等，不会引发循环）
+        try {
+          const mo = new MutationObserver(() => { apply(); });
+          mo.observe(document.body, { attributes: true, attributeFilter: ['style'] });
+        } catch (_) {}
+        // SPA 重建 body / 换根时的兜底巡检
+        try {
+          let __n = 0;
+          const __iv = setInterval(() => { try { apply(); if (++__n > 300) clearInterval(__iv); } catch (_) {} }, 2000);
+        } catch (_) {}
+      } catch (_) {}
+    };
+
+    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

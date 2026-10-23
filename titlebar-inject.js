@@ -593,7 +593,6 @@ module.exports = function injectTitleBar(ctx) {
           // box-sizing:border-box 使内容盒仍为 35px，标题栏按钮/菜单垂直位置与 v2.15.73 完全一致。
           // v2.15.80: the 1px border-bottom was painted rgb(3,6,16), the same colour as the gradient tail, so it never read as a border but did form a hard 1px band where the bar meets the content - the dark line under the titlebar. Transparent keeps the box geometry identical (border-box, content box still 35px, buttons unmoved) while letting the bar gradient show through that 1px, so the edge is continuous and the seam is still covered.
           'border-bottom:' + (__isMainWin ? '1px solid transparent' : 'none'),
-          (__isMainWin ? 'box-shadow:0 3px 0 0 rgb(3,6,16)' : ''),
           '-webkit-app-region:drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease',
@@ -616,6 +615,12 @@ module.exports = function injectTitleBar(ctx) {
         // covered, and only while the geometry is actually changing. The cover colour is #120606,
         // the dark red-black the desktop wallpaper itself starts with on this machine, so the flash
         // reads as part of the content top rather than as a bar.
+        // v2.17.5: with the zoom factor removed (v2.17.0) body matches the window 1:1, so the DWM
+        // backdrop that lands before the new frame only shows as a 1-3px seam at body's top edge --
+        // not the ~30px band the zoom-0.7 era produced. A 34px #120606 cover was then painting a
+        // full-height dark red band that reads as a black bar under the titlebar (frame-by-frame
+        // scan of the user's recording: 30px tall, rgb(15,4,4)). Keep only a 4px seam cover in
+        // body's own backdrop colour #05060a.
         // v2.15.84 also swaps the html::before pseudo element for a real div: a page style reset can
         // neutralise pseudo elements, an element with an inline style cannot be overridden.
         try {
@@ -624,7 +629,7 @@ module.exports = function injectTitleBar(ctx) {
             if (!__rcEl) {
               __rcEl = document.createElement('div');
               __rcEl.id = 'fnos-resize-cover';
-              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:34px;background:#120606;z-index:2147483645;pointer-events:none;display:none;';
+              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:4px;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
               (document.documentElement || document.body).appendChild(__rcEl);
             }
             if (!window.__fnosResizeCover) {

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.15';
+const APP_VERSION = '2.17.16';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6325,12 +6325,42 @@ function createMainWindow(partition, loadTarget) {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         const __cur = mainWindow.webContents.getURL() || '';
         // 仅处理 fnos.net/{fnid} 检测页
-        const __fnidMatch = /^https:\/\/fnos\.net\/([A-Za-z0-9_-]+)\/?$/i.exec(__cur);
+        // v2.17.16: accept trailing slash and query/hash, then normalise before the
+        // idempotency check -- otherwise "/dashuaibi888" and "/dashuaibi888/" count as
+        // two different pages and each one triggers another auto-navigate.
+        const __fnidMatch = /^https:\/\/fnos\.net\/([A-Za-z0-9_-]+)\/*(?:[?#].*)?$/i.exec(__cur);
         if (!__fnidMatch) return;
-        if (global.__fnidAutoNavDone === __cur) return; // 每个检测页 URL 只自动跳转一次
-        global.__fnidAutoNavDone = __cur;
         const __fnid = __fnidMatch[1];
-        dlog && dlog('info', 'fnid.detect-page', { url: __cur.slice(0, 120), fnid: __fnid });
+        const __normKey = (u) => {
+          try { const x = new URL(u); return x.origin + x.pathname.replace(/\/+$/, ''); } catch (_) { return String(u || ''); }
+        };
+        const __curKey = __normKey(__cur);
+        const __nst = (global.__fnidNavState = global.__fnidNavState || { lastKey: '', lastTarget: '', lastAt: 0, count: 0, dead: {} });
+        if (!__nst.dead) __nst.dead = {};
+        // v2.17.16: FN Connect relay 302 loop guard.
+        // https://{fnid}.fnos.net answers 302 -> https://fnos.net/{fnid}/ whenever the
+        // relay cannot serve the request; that page then ranks the very same relay as the
+        // best candidate again, so the window bounces forever. If we jumped out and came
+        // straight back (15s), blacklist that host and let the next round pick another.
+        const __nowTs = Date.now();
+        if (__nst.lastTarget && __nst.lastAt && (__nowTs - __nst.lastAt) < 15000) {
+          try {
+            const __deadHost = new URL(__nst.lastTarget).hostname;
+            if (__deadHost) {
+              __nst.dead[__deadHost] = __nowTs;
+              dlog && dlog('warn', 'fnid.target-runaway', { host: __deadHost, back: __curKey.slice(0, 120) });
+            }
+          } catch (_) {}
+          __nst.lastTarget = '';
+          __nst.lastKey = ''; // allow an immediate re-pick with the dead host excluded
+        }
+        if (__nst.lastKey === __curKey) return; // each candidate page auto-navigates once
+        __nst.lastKey = __curKey;
+        if ((__nst.count || 0) >= 3) {
+          dlog && dlog('warn', 'fnid.auto-navigate.give-up', { url: __curKey.slice(0, 120), dead: Object.keys(__nst.dead) });
+          return;
+        }
+        dlog && dlog('info', 'fnid.detect-page', { url: __cur.slice(0, 120), fnid: __fnid, dead: Object.keys(__nst.dead) });
 
         // 备案/政务链接黑名单：检测页 footer 固定出现的链接，绝不是 NAS 访问地址
         const __isBadLink = (u) => {
@@ -6371,6 +6401,7 @@ function createMainWindow(partition, loadTarget) {
             try {
               if (__isBadLink(u)) continue;
               const h = new URL(u).hostname || '';
+              if (__nst.dead[h]) continue; // v2.17.16: proven dead (302 back to the picker)
               let score = 0;
               if (h === `${__fnid}.fnos.net`) score += 130;
               else if (h === 'fnos.net' || h.endsWith('.fnos.net')) score += 100;
@@ -6395,7 +6426,10 @@ function createMainWindow(partition, loadTarget) {
                 const pick = __pickBest(valid);
                 if (pick && mainWindow && !mainWindow.isDestroyed()) {
                   clearInterval(__timer);
-                  dlog && dlog('info', 'fnid.auto-navigate', { from: __cur.slice(0, 120), to: pick.slice(0, 140), candidates: valid.length, total: arr.length, attempts: __attempts });
+                  __nst.lastTarget = pick;
+                  __nst.lastAt = Date.now();
+                  __nst.count = (__nst.count || 0) + 1;
+                  dlog && dlog('info', 'fnid.auto-navigate', { from: __cur.slice(0, 120), to: pick.slice(0, 140), candidates: valid.length, total: arr.length, attempts: __attempts, round: __nst.count });
                   mainWindow.loadURL(pick, { userAgent: getNasUA() }).catch(() => {});
                 } else if (__attempts >= 12) {
                   clearInterval(__timer);
@@ -8364,6 +8398,7 @@ function switchAccount(targetOrigin) {
     // return，卡在 fnos.net 无法跳转到 NAS（用户反馈"切换账号后无法跳转"的根因）。
     if (target.origin === 'https://fnos.net' || /^https:\/\/fnos\.net\//i.test(String(target.href || ''))) {
       global.__fnidAutoNavDone = '';
+      global.__fnidNavState = { lastKey: '', lastTarget: '', lastAt: 0, count: 0, dead: {} };
       fnosLog('info', 'account', 'FNID 切换：已重置 auto-nav 防重标记', { origin: target.origin });
     }
 

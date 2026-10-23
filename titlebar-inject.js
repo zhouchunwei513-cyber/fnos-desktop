@@ -412,6 +412,15 @@ module.exports = function injectTitleBar(ctx) {
     let AUTO_HIDE = TB.autoHide;
 
     const root = () => document.documentElement || document.body || document;
+    // v2.17.11: titlebar actual height (CSS px). Offset and push-down both use it,
+    // so a page that grows the bar cannot leave content still covered.
+    const __barHeight = () => {
+      try {
+        const b = document.getElementById('fnos-titlebar');
+        const h = b ? Math.round(b.getBoundingClientRect().height) : 0;
+        return (h > 20 && h < 120) ? h : 34;
+      } catch (_) { return 34; }
+    };
 
     // v2.4.9（反馈 8 两种窗口模式自动适配）：内嵌窗形态宿主窗标记（主进程 additionalArguments
     // 传入），命中时渲染 fnOS 内嵌窗样式标题栏（logo+标题+↻↗—□✕），而非跳出窗的 ☰+系统钮样式。
@@ -926,32 +935,28 @@ module.exports = function injectTitleBar(ctx) {
     // 回到 y=0，被 fnos-desktop bar（z-index 更高）覆盖，只保留一层标题栏。
     if (typeof process !== 'undefined' && Array.isArray(process.argv) && (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-live-window') >= 0)) {
       try {
-        // v2.17.9：撤销「把页面自带 fixed 顶栏上移藏进标题栏」的补偿。
-        // v2.15.52 起就把页面 fixed top:0 的顶栏整条 translateY 上移，让 Electron bar 覆盖它，
-        // 目的是消除「两层标题栏」；v2.17.8 又把补偿量改成顶栏实际高度（44~64px）。
-        // 但页面顶栏承载的是业务内容（UPS「状态监控 / 仪表盘」标题、MoonTV logo+导航条），
-        // 整条移出视口后页面正文顶部被顶到 y=0：① 正文头部 34px 被 bar 遮住不可见；
-        // ② bar 是半透明 rgba + backdrop-filter:blur，被藏起来的顶栏和正文仍会透上来，
-        //    视觉上就是「标题栏内嵌在内容区里」——即用户反馈的形态。
-        // 规范要求标题栏底边 = 内容区上边沿、内容不得被标题栏覆盖，故不再上移：
-        // body 已 translateY(34px)，页面顶栏与正文自然从 y=34（bar 下沿）开始渲染。
-        // 保留开关，个别纯装饰顶栏如确需隐藏可置 true。
-        const FNOS_LIFT_PAGE_HEADER = false;
+        // v2.17.11: page-owned fixed top bar is pushed DOWN below the titlebar.
+        // v2.15.52 used to lift it up and hide it under the bar (page body then ran
+        // into y=0 and got covered), v2.17.9 stopped moving it at all. UPS-style pages
+        // keep such a bar inside a transform/filter ancestor, so the body offset cannot
+        // carry it and it stays at y=0 under the titlebar. Rule: if it still lands inside
+        // the titlebar band, push it down by the bar height; skip bars already below.
         const __compFixedTop = (el) => {
-          if (!FNOS_LIFT_PAGE_HEADER) return;
           try {
             if (!el || el.nodeType !== 1) return;
             const cs = getComputedStyle(el);
             if (cs.position !== 'fixed') return;
             const __top = parseFloat(cs.top), __bot = parseFloat(cs.bottom);
-            if (__top !== 0 || __bot === 0) return; // 只认吸附顶部、且未同时贴底
-            const __h = Math.round(el.getBoundingClientRect().height);
-            // 只接管「像标题栏」的高度：满屏 fixed 遮罩也可能是 top:0（bottom:auto、height:100vh），
-            // 若按自身高度补偿会把整页移出视口。120px 上限足以覆盖各种顶栏（实测 34~64px）。
+            if (!isFinite(__top) || __top < 0 || __top > 40) return;
+            if (__bot === 0) return;
+            const r = el.getBoundingClientRect();
+            const __h = Math.round(r.height);
             if (!__h || __h <= 0 || __h > 120) return;
-            if (el.getAttribute('data-fnos-fixed-comp') === String(__h)) return; // 高度未变则跳过
-            el.setAttribute('data-fnos-fixed-comp', String(__h));
-            el.style.setProperty('translate', '0 -' + __h + 'px', 'important');
+            const bh = __barHeight();
+            if (r.top >= bh - 2) return;
+            const want = '0 ' + bh + 'px';
+            if (el.style.getPropertyValue('translate') === want && el.style.getPropertyPriority('translate') === 'important') return;
+            el.style.setProperty('translate', want, 'important');
           } catch (_) {}
         };
         const __scanFixedTop = () => {
@@ -1329,10 +1334,11 @@ module.exports = function injectTitleBar(ctx) {
                 b.style.setProperty(k, v, 'important');
               }
             };
-            set('transform', 'translateY(34px)');
-            set('height', 'calc(100vh - 34px)');
+            const bh = __barHeight();
+            set('transform', 'translateY(' + bh + 'px)');
+            set('height', 'calc(100vh - ' + bh + 'px)');
             set('min-height', '0');
-            set('max-height', 'calc(100vh - 34px)');
+            set('max-height', 'calc(100vh - ' + bh + 'px)');
             set('box-sizing', 'border-box');
             set('overflow-y', 'auto');
             set('margin', '0');

@@ -1578,49 +1578,151 @@ module.exports = function injectTitleBar(ctx) {
         }
       } catch (_) {}
     };
-    // v2.17.41（用户反馈：主程序 ESC 恢复窗口后，标题栏的最小化/最大化/关闭消失）——退出全屏
-    // 的还原必须是整套复位，不能只 removeProperty('display')：全屏链路还动过 transform /
-    // opacity / pointer-events / width，任何一项残留都会把右侧按钮组挤出可视区（bar 是
-    // position:fixed + width:calc(100vw * --fnos-f)，宽度算错时按钮就飞到窗口外）。
-    // 最后再做一次可用性校验，按钮确实不在可视区就整条标题栏重建，保证一定恢复。
-    const __fsRestoreUI = (rebuild) => {
+    // v2.17.42（用户反馈：主程序 / 应用窗口 ESC 退出全屏后，标题栏的最小化、最大化、关闭
+    // 三个按钮消失，点「视图 → 强制刷新」就恢复）——两条硬结论：
+    //   1) 强制刷新能恢复 ⇒ 是运行时 DOM/几何状态坏了，重建标题栏就是有效解；
+    //   2) v2.17.41 只在 getBoundingClientRect() 越界时才重建，可实测"按钮看不见"时 rect
+    //      照样上报正常（被上层元素盖住、被 body 的 overflow 裁掉，都不改变 rect），于是重建
+    //      从来没触发过 —— 这就是上一版"修了但没修好"的地方。
+    // 现在把判据换成真实可点击性：elementFromPoint 打三个按钮中心点，命中的元素不在标题栏
+    // 里就认定按钮已经不可用，直接重建。另加一条几何自纠：bar 的 zoom 是 calc()，部分
+    // Chromium 版本对 calc 的 zoom 不生效，此时 width:calc(100vw * --fnos-f) 会让 bar 比窗口
+    // 更宽、右侧按钮被 body 的 overflow 裁掉（现象正是"左边 ☰ 还在、右边三个按钮没了"）。
+    let __fsRebuildAt = 0;
+    const __fsProbe = () => {
+      const out = {};
       try {
-        const b = document.getElementById('fnos-titlebar');
-        if (b) {
-          b.style.removeProperty('display');
-          b.style.setProperty('transform', 'translateY(0)');
-          b.style.setProperty('opacity', '1');
-          b.style.setProperty('pointer-events', 'auto');
-          // 这里不写 width / zoom：主窗标题栏是 width:calc(100vw * --fnos-f)+zoom，应用窗标题栏
-          // 是 left:0;right:0 没有 width，盲设会把应用窗标题栏布局搞坏。
-        }
-        const hz = document.getElementById('fnos-titlebar-hotzone');
-        if (hz) hz.style.removeProperty('display');
-        const ds = document.getElementById('fnos-tb-dragstrip');
-        if (ds) ds.style.removeProperty('display');
-        const rc = document.getElementById('fnos-resize-cover');
-        if (rc) rc.style.removeProperty('display');
-        ['fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'].forEach((id) => {
+        out.vw = window.innerWidth; out.vh = window.innerHeight;
+        try { out.f = getComputedStyle(document.documentElement).getPropertyValue("--fnos-f").trim() || ""; } catch (_) {}
+        const bar = document.getElementById("fnos-titlebar");
+        if (!bar) { out.bar = null; return out; }
+        const rb = bar.getBoundingClientRect();
+        out.bar = [Math.round(rb.left), Math.round(rb.top), Math.round(rb.width), Math.round(rb.height)].join(",");
+        out.zoom = String(bar.style.zoom || "");
+        const cs = getComputedStyle(bar);
+        out.cs = [cs.display, cs.opacity, cs.visibility, cs.pointerEvents].join("|");
+        out.btn = [];
+        ["fnos-tb-menu", "fnos-tb-min", "fnos-tb-max", "fnos-tb-close"].forEach((id) => {
           const x = document.getElementById(id);
-          if (!x) return;
-          x.style.removeProperty('display');
-          x.style.removeProperty('visibility');
-          x.style.removeProperty('opacity');
-          const p = x.parentElement;
-          if (p && p.style) { p.style.removeProperty('display'); p.style.removeProperty('width'); }
+          if (!x) { out.btn.push(id + ":none"); return; }
+          const r = x.getBoundingClientRect();
+          let hit = "?";
+          try {
+            const el = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+            hit = el ? ((el.tagName || "").toLowerCase() + (el.id ? "#" + el.id : "")) : "null";
+          } catch (_) {}
+          out.btn.push(id + ":" + [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)].join(",") + "@" + hit);
         });
-        if (!rebuild) return;
-        const probe = document.getElementById('fnos-tb-min') || document.getElementById('fnos-tb-max') || document.getElementById('fnos-tb-close');
-        if (!probe) return;
-        const r = probe.getBoundingClientRect();
+      } catch (_) {}
+      return out;
+    };
+    // 标题栏按钮是否真的可用：可见 + 尺寸合理 + 在视口内 + 中心点命中标题栏自身
+    const __fsOk = () => {
+      try {
+        const bar = document.getElementById("fnos-titlebar");
+        if (!bar) return false;
+        const cs = getComputedStyle(bar);
+        if (cs.display === "none" || cs.visibility === "hidden") return false;
+        // 自动隐藏模式下 bar 平时就收起（translateY(-100%) + opacity:0），那是用户要的效果，
+        // 不能当成故障；此时只校验 DOM 与尺寸，不做可见性判定。
+        const __autoHideOn = (typeof AUTO_HIDE !== "undefined") && AUTO_HIDE;
+        if (!__autoHideOn && parseFloat(cs.opacity) < 0.9) return false;
+        const ids = EMBED ? ["fnos-tb-close"] : ["fnos-tb-min", "fnos-tb-max", "fnos-tb-close"];
         const vw = window.innerWidth;
-        if (r.width >= 8 && r.height >= 8 && r.left >= 0 && r.right <= vw + 2) return;
-        const bar = document.getElementById('fnos-titlebar');
-        const hot = document.getElementById('fnos-titlebar-hotzone');
+        for (let i = 0; i < ids.length; i++) {
+          const x = document.getElementById(ids[i]);
+          if (!x) return false;
+          const r = x.getBoundingClientRect();
+          if (r.width < 8 || r.height < 8) return false;
+          if (r.left < -1 || r.right > vw + 2) return false;
+          const el = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+          if (!el) return false;
+          if (!el.closest || !el.closest("#fnos-titlebar")) return false;
+        }
+        try { sessionStorage.removeItem("fnos-fs-reload"); } catch (_) {}
+        return true;
+      } catch (_) { return false; }
+    };
+    const __fsRebuild = (why) => {
+      try {
+        const now = Date.now();
+        if (now - __fsRebuildAt < 700) return false;
+        __fsRebuildAt = now;
+        // 关键：先摘掉全屏态属性再重建。html[data-fnos-fs="1"] #fnos-titlebar{display:none !important} 这条规则按 id 命中，属性不清掉的话新 bar 一样被藏起来，重建等于白做 —— 这正是 v2.17.41
+        // 重建兜底没生效的原因之一（用户点「视图 → 强制刷新」能好，因为刷新把属性一起清了）。
+        try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
+        window.__fnosFsOn = false;
+        __fsBody(false);
+        const bar = document.getElementById("fnos-titlebar");
+        const hot = document.getElementById("fnos-titlebar-hotzone");
         try { if (hot && hot.parentNode) hot.parentNode.removeChild(hot); } catch (_) {}
         try { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); } catch (_) {}
         try { if (EMBED) buildEmbed(); else build(); } catch (_) {}
-        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar', ev: 'fs-restore-rebuild' }); } catch (_) {}
+        try { ipcRenderer.send("fnos:media-log", { stage: "titlebar", ev: "fs-restore-rebuild", why: String(why || ""), detail: JSON.stringify(__fsProbe()) }); } catch (_) {}
+        return true;
+      } catch (_) { return false; }
+    };
+    const __fsRestoreUI = (rebuild) => {
+      try {
+        const b = document.getElementById("fnos-titlebar");
+        if (b) {
+          b.style.removeProperty("display");
+          b.style.removeProperty("visibility");
+          b.style.setProperty("transform", "translateY(0)");
+          b.style.setProperty("opacity", "1");
+          b.style.setProperty("pointer-events", "auto");
+          // 这里不写 width / zoom：主窗标题栏是 width:calc(100vw * --fnos-f)+zoom，应用窗标题栏
+          // 是 left:0;right:0 没有 width，盲设会把应用窗标题栏布局搞坏。
+        }
+        const hz = document.getElementById("fnos-titlebar-hotzone");
+        if (hz) {
+          hz.style.removeProperty("display");
+          hz.style.removeProperty("opacity");
+          hz.style.setProperty("pointer-events", "auto");
+        }
+        const ds = document.getElementById("fnos-tb-dragstrip");
+        if (ds) ds.style.removeProperty("display");
+        const rc = document.getElementById("fnos-resize-cover");
+        if (rc) { rc.style.removeProperty("display"); rc.style.setProperty("pointer-events", "none"); }
+        ["fnos-tb-min", "fnos-tb-max", "fnos-tb-close"].forEach((id) => {
+          const x = document.getElementById(id);
+          if (!x) return;
+          x.style.removeProperty("display");
+          x.style.removeProperty("visibility");
+          x.style.removeProperty("opacity");
+          x.style.removeProperty("transform");
+          const p = x.parentElement;
+          if (p && p.style) { p.style.removeProperty("display"); p.style.removeProperty("width"); }
+        });
+        if (!rebuild) return;
+        try { if (document.visibilityState !== "visible") return; } catch (_) {}
+        if (__fsOk()) { window.__fnosFsMiss = 0; return; }
+        window.__fnosFsMiss = (window.__fnosFsMiss || 0) + 1;
+        // 现场快照先落日志，再动手修：万一这一版还没修好，这份 params 能直接指出被谁盖住。
+        try { ipcRenderer.send("fnos:media-log", { stage: "titlebar", ev: "tb-miss", n: window.__fnosFsMiss, detail: JSON.stringify(__fsProbe()) }); } catch (_) {}
+        __fsRebuild("not-ok");
+        // v2.17.42：重建两次仍然不可用，说明坏的不是标题栏 DOM 而是页面级残留（用户实测
+        // 「点视图 → 强制刷新就恢复」）。这里替用户把这步做掉：先把残留属性/内联样式清干净，
+        // 再给一次重建机会；只有连续 4 次失败（约覆盖 3 秒）才真的 reload，避免把正在
+        // 播放视频 / 编辑中的页面无谓刷掉。
+        if (window.__fnosFsMiss >= 2) {
+          try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
+          try { window.__fnosFsOn = false; } catch (_) {}
+          __fsBody(false);
+          __fsBarStyle(false);
+        }
+        if (window.__fnosFsMiss >= 4) {
+          window.__fnosFsMiss = 0;
+          // 同一次运行里最多自动刷一次（sessionStorage 标记，刷新后若已恢复正常会在
+          // __fsOk() 成功分支里清掉），避免"判定本身失效 → 无限 reload"这种灾难。
+          let __once = false;
+          try { __once = sessionStorage.getItem("fnos-fs-reload") === "1"; } catch (_) { __once = true; }
+          if (!__once) {
+            try { sessionStorage.setItem("fnos-fs-reload", "1"); } catch (_) {}
+            try { ipcRenderer.send("fnos:media-log", { stage: "titlebar", ev: "fs-hard-reload" }); } catch (_) {}
+            setTimeout(() => { try { location.reload(); } catch (_) {} }, 260);
+          }
+        }
       } catch (_) {}
     };
     // v2.17.41：渲染层全屏状态自愈。transparent + frame:false 窗口在实测里丢过
@@ -1631,6 +1733,7 @@ module.exports = function injectTitleBar(ctx) {
       try {
         if (window.__fnosFsHeal) return;
         window.__fnosFsHeal = true;
+        if (__isSubFrame) return;
         try {
           const mo = new MutationObserver(() => {
             try { if (document.documentElement.getAttribute('data-fnos-fs') === '1') window.__fnosFsAt = Date.now(); } catch (_) {}
@@ -1693,6 +1796,7 @@ module.exports = function injectTitleBar(ctx) {
           window.__fnosFsOn = false;
           ipcRenderer.on('window:fullscreen-changed', (_e, d) => {
             try {
+              if (__isSubFrame) return;
               if (d && d.fullscreen) {
                 window.__fnosFsOn = true;
                 window.__fnosFsAt = Date.now();
@@ -1710,6 +1814,17 @@ module.exports = function injectTitleBar(ctx) {
                 // v2.17.41：刚退出全屏时渲染进程正被窗口尺寸变化占住，400ms / 1200ms 各复查一次
                 setTimeout(() => { try { if (!window.__fnosFsOn) __fsRestoreUI(true); } catch (_) {} }, 400);
                 setTimeout(() => { try { if (!window.__fnosFsOn) __fsRestoreUI(true); } catch (_) {} }, 1200);
+                // v2.17.42：第三次复查 + 一条探针日志。窗口从全屏回到窗口态时 DWM/合成器要
+                // 一两秒才把新帧铺稳，前两次可能都被旧帧误导，2400ms 这次才是终局判定。
+                // 探针把 bar/按钮的真实 rect、zoom、computedStyle、elementFromPoint 命中元素
+                // 一并写进主日志，万一还没修好，下一份日志能直接读出被谁盖住。
+                setTimeout(() => { try { if (!window.__fnosFsOn) __fsRestoreUI(true); } catch (_) {} }, 2400);
+                setTimeout(() => {
+                  try {
+                    if (window.__fnosFsOn) return;
+                    ipcRenderer.send("fnos:media-log", { stage: "titlebar", ev: "tb-probe", detail: JSON.stringify(__fsProbe()) });
+                  } catch (_) {}
+                }, 2600);
               }
             } catch (_) {}
           });
@@ -1717,6 +1832,18 @@ module.exports = function injectTitleBar(ctx) {
         }
       } catch (_) {}
     };
+    // v2.17.42（用户反馈：内嵌窗在主程序窗口内最大化后，右上角按钮全部失效；只要不动主程序
+    // 全屏 / ESC 就正常）——webContents.send 是广播到该 webContents 下所有 frame 的，主窗口
+    // 里的 appview iframe 也收到了 window:fullscreen-changed。它一旦在收到 fullscreen:true 之后
+    // 被重建、或错过了 fullscreen:false，就会永久带着 data-fnos-fs 与全屏样式跑：自己的标题栏
+    // 被 display:none 藏掉、按钮区被全屏态 layering 压住，最大化后就点不动。窗口级全屏只属于
+    // top frame，子 frame 一律不参与。
+    const __isSubFrame = (function () {
+      try { return window.top !== window.self; } catch (_) { return true; }
+    })();
+    if (__isSubFrame) {
+      try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
+    }
     const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();

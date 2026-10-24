@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.31';
+const APP_VERSION = '2.17.32';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -907,6 +907,24 @@ const lastMediaByWc = new Map(); // webContentsId -> { url, at }
 let lastAbortLogTs = 0; // v1.68.0：ERR_ABORTED 媒体日志节流时间戳（正常中止不刷屏）
 let menuRebuildTimer = null;
 let g_persistTimer = null;
+
+// v2.17.32：全屏/退全屏统一入口——先记住进入前的窗口外框，退出时据此还原
+// （Windows + 透明无边框窗上 setFullScreen(false) 的自动还原会被比例锁/系统恢复改形）。
+const __preFsBounds = new WeakMap();
+function __toggleFullScreenWin(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    if (win.isFullScreen()) { win.setFullScreen(false); return; }
+    try {
+      // 记录进入全屏前的形态：最大化态要还原成最大化，普通态还原成外框
+      __preFsBounds.set(win, {
+        bounds: win.isMaximized() ? win.getNormalBounds() : win.getBounds(),
+        max: win.isMaximized()
+      });
+    } catch (_) {}
+    win.setFullScreen(true);
+  } catch (_) {}
+}
 
 // v1.17.7：统一的窗口/页面对象存活校验，杜绝 "Object has been destroyed"
 function isAlive(win) {
@@ -4313,7 +4331,7 @@ function registerWindow(win, opts = {}) {
   });
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.key !== 'F11') return;
-    win.setFullScreen(!win.isFullScreen());
+    __toggleFullScreenWin(win);
     event.preventDefault();
   });
 
@@ -6147,6 +6165,8 @@ function createMainWindow(partition, loadTarget) {
   // v2.15.68：以【桌面画面】为基准锁 45:27.65，画面=内容区(getContentSize)减自绘标题栏34px，再反推外框。
   // 根因：v2.15.67 锁的是内容区(含标题栏)比例，但桌面画面(减标题栏34px)比例≠1.627→灰边。
   // 修：画面宽=内容区宽、画面高=内容区高-34，内容区高=round(内容区宽×553/900)+34、宽=round((内容区高-34)×900/553)。
+  // v2.17.32：全屏切换时间戳——全屏/退全屏瞬间的 resize 不能被比例锁改写尺寸
+  let __fsStamp = 0;
   let __lockAspect = false;
   const __aspectFix = (win) => {
     const [cw, ch] = win.getContentSize();
@@ -6168,6 +6188,7 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resized', () => {
       try {
         if (__lockAspect || mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
+        if (__fsStamp && Date.now() - __fsStamp < 600) return;
         const [nw, nh] = __aspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
         if (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) {
@@ -6194,6 +6215,7 @@ function createMainWindow(partition, loadTarget) {
   try {
     const __saveBounds = () => {
       try {
+        if (__fsStamp && Date.now() - __fsStamp < 600) return;
         if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !mainWindow.isFullScreen() && !mainWindow.isMaximized()) {
           const __bounds = mainWindow.getBounds();
           __bounds.waW = __primaryWA.width;
@@ -6205,6 +6227,69 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resized', __saveBounds);
     mainWindow.on('moved', __saveBounds);
     mainWindow.on('close', __saveBounds);
+  } catch (_) {}
+  // v2.17.32：全屏三项修复（用户反馈）
+  // 1) 之前全屏只是窗口变大：自绘标题栏没隐藏、body 仍下移 34px 并少 34px 高，四角圆角
+  //    还露桌面 → 观感"标题栏占顶部、底部不满"。现在把全屏态同步给渲染层，
+  //    titlebar-inject 收到后隐藏 fnos-titlebar、body 回满并去圆角。
+  // 2) 退出全屏按进入前记录的外框还原，避免被比例锁/系统恢复改成比例尺寸 + 位置跳到 (0,0)。
+  // 3) 主窗口此前从未注册 F11/ESC（只有应用窗注册过）；且菜单 F11 加速键与 before-input-event
+  //    双触发会互相抵消，故菜单项改 registerAccelerator:false，按键统一由这里处理。
+  try {
+    const __syncFsUI = (on) => {
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        mainWindow.webContents.send('window:fullscreen-changed', { fullscreen: !!on });
+      } catch (_) {}
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const __code = on ? 'document.documentElement.setAttribute("data-fnos-fs","1")'
+                          : 'document.documentElement.removeAttribute("data-fnos-fs")';
+        const __wc = mainWindow.webContents;
+        let __frames = [];
+        try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
+        if (!__frames.length) { try { __wc.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} return; }
+        // 主 frame + 子 frame（appview iframe 里的标题栏也要随之隐藏）都打上全屏标记
+        for (const __f of __frames) { try { __f.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} }
+      } catch (_) {}
+    };
+    mainWindow.on('enter-full-screen', () => {
+      __fsStamp = Date.now();
+      __syncFsUI(true);
+    });
+    mainWindow.on('leave-full-screen', () => {
+      __fsStamp = Date.now();
+      __syncFsUI(false);
+      const rec = __preFsBounds.get(mainWindow);
+      __preFsBounds.delete(mainWindow);
+      if (rec && rec.bounds && Number.isFinite(rec.bounds.width) && rec.bounds.width > 100) {
+        setTimeout(() => {
+          try {
+            if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFullScreen()) return;
+            if (rec.max) { mainWindow.maximize(); return; }
+            const pb = rec.bounds;
+            const cur = mainWindow.getBounds();
+            if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
+              mainWindow.setBounds(pb);
+            }
+          } catch (_) {}
+        }, 90);
+      }
+    });
+    mainWindow.webContents.on('did-finish-load', () => {
+      try { if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) __syncFsUI(true); } catch (_) {}
+    });
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (!input || input.type !== 'keyDown') return;
+      if (input.alt || input.control || input.meta || input.shift) return;
+      if (input.key === 'F11') {
+        event.preventDefault();
+        __toggleFullScreenWin(mainWindow);
+      } else if (input.key === 'Escape') {
+        if (mainWindow.isFullScreen()) { event.preventDefault(); mainWindow.setFullScreen(false); }
+        else if (mainWindow.isMaximized()) { event.preventDefault(); mainWindow.unmaximize(); }
+      }
+    });
   } catch (_) {}
   // v2.15.85：窗口几何变化时反复把窗口背景重置为全透明，赶走 DWM 的兜底灰。
   // 四段录屏逐帧实测：灰带恒定 rgb(67,67,67)，位置恒在「窗口顶 +34px」（即 body 顶部，
@@ -6987,8 +7072,8 @@ function buildMenuTemplate() {
         { label: '缩小', accelerator: 'CommandOrControl+-',
           click: withWebContents((wc) => { try { wc.setZoomFactor(Math.min(2.5, Math.max(0.5, (wc.getZoomFactor() || 1) / 1.1))); } catch (_) {} }) },
         { type: 'separator' },
-        { label: '全屏 / 退出全屏', accelerator: 'F11',
-          click: withWebContents((_wc, win) => win.setFullScreen(!win.isFullScreen())) },
+        { label: '全屏 / 退出全屏', accelerator: 'F11', registerAccelerator: false,
+          click: withWebContents((_wc, win) => __toggleFullScreenWin(win)) },
         ...(IS_DEV ? [{ type: 'separator' }, { role: 'toggleDevTools', label: '开发者工具' }] : []),
       ],
     },

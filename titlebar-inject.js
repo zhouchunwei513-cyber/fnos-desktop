@@ -1521,7 +1521,32 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     };
 
-    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
+    // v2.17.32：全屏态样式——全屏时隐藏自绘标题栏、body 回满、去掉 20px 圆角。
+    // 不加这段时窗口虽已 setFullScreen，顶部仍被 34px 标题栏占住、body 少 34px 高、
+    // 四角圆角还露桌面，用户观感就是"没有真正全屏"（标题栏占上、底边不满）。
+    const __setupFullscreen = () => {
+      try {
+        if (!document.getElementById('fnos-tb-fullscreen-style')) {
+          const st = document.createElement('style');
+          st.id = 'fnos-tb-fullscreen-style';
+          st.textContent = [
+            'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;}',
+            'html[data-fnos-fs="1"] #fnos-titlebar,html[data-fnos-fs="1"] #fnos-tb-dragstrip,html[data-fnos-fs="1"] #fnos-resize-cover{display:none !important;}'
+          ].join('\n');
+          (document.head || document.documentElement).appendChild(st);
+        }
+        if (!window.__fnosFsHooked) {
+          window.__fnosFsHooked = true;
+          ipcRenderer.on('window:fullscreen-changed', (_e, d) => {
+            try {
+              if (d && d.fullscreen) document.documentElement.setAttribute('data-fnos-fs', '1');
+              else document.documentElement.removeAttribute('data-fnos-fs');
+            } catch (_) {}
+          });
+        }
+      } catch (_) {}
+    };
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

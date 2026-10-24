@@ -453,11 +453,31 @@ module.exports = function injectTitleBar(ctx) {
           // 磨砂：带颜色底色（不透明度滑块控制深浅）+ backdrop 模糊（磨砂滑块）
           const a = TB.opacity / 100 * 0.72; // 磨砂模式底色最高约 72%
           bar.style.background = hexToRgba(TB.color, a);
-          const blur = Math.max(2, TB.blur);
+                    const __bl = Math.max(0, Math.min(40, Number(TB.blur) || 0));
+          const blur = Math.max(2, __bl);
           bar.style.backdropFilter = `blur(${blur}px) saturate(1.4)`;
           bar.style.webkitBackdropFilter = `blur(${blur}px) saturate(1.4)`;
+          // v2.17.26：Electron 透明窗是 WS_EX_LAYERED + NOREDIRECTIONBITMAP，DWM 的系统级
+          // blur-behind 未必生效；这里在 CSS 侧再合成一层【雾面质感】：底色 + 噪点颗粒 +
+          // 顶部高光 / 底部内阴影。磨砂程度越大 → 颗粒越密、内阴影越柔，滑块必然肉眼可见。
+          try {
+            const __noiseA = (0.06 + (__bl / 40) * 0.18).toFixed(3);
+            const __freq = (0.70 + (1 - __bl / 40) * 0.30).toFixed(2);
+            const __svg = '<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140">' +
+              '<filter id="fn"><feTurbulence type="fractalNoise" baseFrequency="' + __freq + '" numOctaves="3"/>' +
+              '<feColorMatrix type="saturate" values="0"/>' +
+              '<feComponentTransfer><feFuncA type="linear" slope="' + __noiseA + '"/></feComponentTransfer></filter>' +
+              '<rect width="140" height="140" filter="url(#fn)"/></svg>';
+            bar.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(__svg) + ')"';
+            bar.style.backgroundBlendMode = 'overlay';
+            const __hi = (0.05 + (__bl / 40) * 0.10).toFixed(3);
+            bar.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,' + __hi + '), inset 0 -1px 0 rgba(0,0,0,0.22)';
+          } catch (_) {}
         } else {
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
+          bar.style.backgroundImage = 'none';
+          bar.style.backgroundBlendMode = 'normal';
+          bar.style.boxShadow = 'none';
           const a = TB.opacity / 100;
           if (a > 0.001) {
             bar.style.background = hexToRgba(TB.color, a);

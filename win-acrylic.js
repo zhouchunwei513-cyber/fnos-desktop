@@ -124,7 +124,7 @@ module.exports = function createAcrylic(deps) {
     const on = material === 'frosted';
     const op = clampInt(opacity, 0, 100, 0);
     const bl = clampInt(blur, 0, 40, 12);
-    const tint = Math.min(0.85, (op / 100) * 0.62 + (bl / 40) * 0.2);
+    const tint = Math.min(0.5, (op / 100) * 0.35 + (bl / 40) * 0.12);
     return { on: on, tint: tint, color: String(color || '#3B82F6') };
   }
 

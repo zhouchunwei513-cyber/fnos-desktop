@@ -842,7 +842,15 @@ module.exports = function injectTitleBar(ctx) {
         // Skip body shift + overflow-y:auto injection to avoid extra scrollbars.
         const __authPath = (typeof location !== 'undefined' && location.pathname) ? String(location.pathname) : '';
         if (__authPath.indexOf('/signin') >= 0 || __authPath.indexOf('/oauth') >= 0 || __authPath.indexOf('/login') >= 0) {
-          __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}html>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}';
+          // v2.17.22: 认证页（NAS 账号授权登录）原来只挂了个 clip-path，body 不下移也不限高，
+          // 于是登录卡片按整窗居中、正落在标题栏下面，标题栏看起来「另一半」——和主程序/应用窗
+          // 的默认标题栏对不上；body 又是整窗高，卡片一超出就冒出侧边/底部滚动条。
+          // 现在与普通应用窗完全同一套几何：body 下移标题栏高度、高度扣掉标题栏、锁死溢出。
+          __padStyle.textContent = [
+            'html{overflow:hidden !important;' + __gifBg + '}',
+            'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;overflow:hidden !important;overflow-x:hidden !important;padding:0 !important;margin:0 !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}',
+            'html>body::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
+          ].join('');
         }
       } else {
         // 主窗口（透明 + webview 飞牛桌面）：body 下移 34px 给标题栏让位（顶部透出桌面壁纸），
@@ -1361,31 +1369,55 @@ module.exports = function injectTitleBar(ctx) {
         const zclamp = (v) => Math.max(ZMIN, Math.min(ZMAX, Math.round(v * 1000) / 1000));
         // v2.17.20: 缩放比持久化。key 按窗口身份区分：主窗口固定 shell；应用/直播窗口用
         // origin+pathname（SPA 内部路由变化不影响，启动时算一次），不同应用互不覆盖。
+        // v2.17.22: key 只取 pathname 的第一段。music 应用是真实导航（/music -> /music/login
+        // -> /music/settings），旧写法把整段 path 拼进 key，一导航就变成新 key、查不到已存值，
+        // 于是「启动时还原了、过一会又变大/变小」——实际是导航后重新按 1.0 起算。
         let zkey = 'shell';
         if (__isAppWin) {
           try {
-            const zp = String(location.pathname || '').replace(/\/+$/, '');
-            zkey = 'app:' + String(location.origin || '') + zp;
+            const seg = String(location.pathname || '').split('/').filter(Boolean)[0] || '';
+            zkey = 'app:' + String(location.origin || '') + (seg ? '/' + seg : '');
           } catch (_) { zkey = 'app'; }
         }
+        let __zTarget = 1;
         try {
-          const zsaved = ipcRenderer.sendSync('fnos:zoom-get', zkey);
-          if (zsaved && Math.abs(zsaved - 1) > 0.001) wf.setZoomFactor(zclamp(zsaved));
+          const zsaved = Number(ipcRenderer.sendSync('fnos:zoom-get', zkey)) || 0;
+          if (zsaved > 0) __zTarget = zclamp(zsaved);
         } catch (_) {}
-        let __zLast = null;
+        const zsave = (v) => { try { ipcRenderer.send('fnos:zoom-set', { key: zkey, factor: v }); } catch (_) {} };
+        let __zUserAt = 0;
+        let __zFixAt = 0;
+        try { if (Math.abs(__zTarget - 1) > 0.001) wf.setZoomFactor(__zTarget); } catch (_) {}
         const zsync = () => {
           try {
             const zf = wf.getZoomFactor() || 1;
-            const cur = parseFloat(document.documentElement.style.getPropertyValue('--fnos-f')) || 1;
-            if (Math.abs(cur - zf) > 0.001) document.documentElement.style.setProperty('--fnos-f', String(zf));
-            // 只在变化时写盘：滚轮/快捷键/菜单三条路径都会经过这里
-            if (__zLast === null || Math.abs(__zLast - zf) > 0.001) {
-              __zLast = zf;
-              try { ipcRenderer.send('fnos:zoom-set', { key: zkey, factor: zf }); } catch (_) {}
+            if (Math.abs(zf - __zTarget) > 0.001) {
+              if (Date.now() - __zUserAt < 1500) {
+                // 用户刚动过缩放：菜单「视图-放大/缩小」直接改 webContents，认下这个值
+                __zTarget = zclamp(zf);
+                zsave(__zTarget);
+              } else {
+                // v2.17.22: 页面自身或引擎把 zoom 重置了（音乐登录跳转后就会这样）。
+                // 这里恢复到用户设定的值且不写盘——旧实现把它当新值存了进去，于是
+                // 「过一会视图大小状态丢失」并被持久化成 1.0。400ms 节流，避免页面疯狂
+                // 重置时我们跟着疯狂回写。
+                if (Date.now() - __zFixAt > 400) {
+                  __zFixAt = Date.now();
+                  try { wf.setZoomFactor(__zTarget); } catch (_) {}
+                }
+              }
             }
+            const cur = parseFloat(document.documentElement.style.getPropertyValue('--fnos-f')) || 1;
+            if (Math.abs(cur - __zTarget) > 0.001) document.documentElement.style.setProperty('--fnos-f', String(__zTarget));
           } catch (_) {}
         };
-        const zset = (f) => { try { wf.setZoomFactor(zclamp(f)); } catch (_) {} zsync(); };
+        const zset = (f) => {
+          __zTarget = zclamp(f);
+          __zUserAt = Date.now();
+          try { wf.setZoomFactor(__zTarget); } catch (_) {}
+          zsave(__zTarget);
+          zsync();
+        };
         try {
           window.addEventListener('wheel', (e) => {
             if (!e.ctrlKey) return;
@@ -1467,7 +1499,10 @@ module.exports = function injectTitleBar(ctx) {
             //   c) body 溢出且内部没有任何可滚容器 → 保留 body 滚动，避免长页面滚不动。
             const __hasInner = __detectInnerScroll();
             const __bodyOver = b.scrollHeight > b.clientHeight + 8;
-            const __needBodyScroll = (!__hasInner) && __bodyOver;
+            // v2.17.22: 认证页（NAS 账号授权登录）不论溢出与否都不出滚动条——登录卡片居中
+            // 显示，滚动条只会让窗口右边/底部多一道灰边。
+            const __isAuthPage = /\/(signin|oauth|login)(\/|$|\?)/i.test(String(location.pathname || ''));
+            const __needBodyScroll = (!__isAuthPage) && (!__hasInner) && __bodyOver;
             if (__needBodyScroll) {
               set('overflow-y', 'auto');
               b.style.removeProperty('scrollbar-width');

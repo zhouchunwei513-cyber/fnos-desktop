@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.43';
+const APP_VERSION = '2.17.44';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5786,13 +5786,36 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
             clearTimeout(__preAuthFallbackTimer);
             if (!__preAuthDone) {
               __preAuthDone = true;
+              // v2.17.44：SPA 型裸路径应用（音乐 /music、视频 /v 等）加载后会客户端跳转到
+              // /xxx/login（history.pushState 不触发 did-navigate，__lastPreAuthUrl 停在旧值），
+              // 需实时读 getURL 才能拿到真实落点。
+              let __curRealUrl = '';
+              try { __curRealUrl = String(__preAuthWin.webContents.getURL() || ''); } catch (_) {}
               dlog && dlog('warn', 'appwin.preauth.timeout', {
                 app: __appLabel,
                 timeoutMs: 8000,
                 elapsedMs: Date.now() - __preAuthT0,
                 navSteps: __preAuthNavCount,
                 lastUrl: __lastPreAuthUrl.slice(0, 120),
+                realUrl: __curRealUrl.slice(0, 120),
               });
+              // v2.17.44：per-app OAuth 需交互式登录的应用（音乐/视频），隐藏窗口无法静默完成
+              // OAuth，会停在 /xxx/login。此时改走 appview?anchor 中转（主站 SSO 完整、与程序内
+              // 打开一致），避免 loadReal 裸路径再次停在登录页=「快捷图标启动不加载」。
+              // 直接 win.loadURL 绕过 __appLoadTarget 的 truth 改写（避免被改回裸路径死循环）。
+              const __anchor = __appName || '';
+              if (__anchor && !/\/appview(\?|$)/i.test(url) && /(\/login([\/?#]|$)|\/signin|\/oauth)/i.test(__curRealUrl)) {
+                try {
+                  const __appviewUrl = new URL(url).origin + '/appview?anchor=' + encodeURIComponent(__anchor);
+                  dlog && dlog('info', 'appwin.preauth.login-fallback', {
+                    app: __appLabel, anchor: __anchor,
+                    from: String(url).slice(0, 120), to: __appviewUrl.slice(0, 140),
+                  });
+                  try { win.loadURL(__appviewUrl, { userAgent: getNasUA() }).catch(() => {}); } catch (_) {}
+                  setTimeout(() => { try { if (!__preAuthWin.isDestroyed()) __preAuthWin.destroy(); } catch (_) {} }, 1000);
+                  return;
+                } catch (_) {}
+              }
               __loadRealUrl();
             }
           }, 8000);

@@ -1489,9 +1489,14 @@ module.exports = function injectTitleBar(ctx) {
             };
             const bh = __barHeight();
             // 标题栏下移补偿：body 整体下移，内容不被标题栏遮挡
-            set('transform', 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
-            set('height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
-            set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            // v2.17.41（用户反馈：应用按 F11 全屏后窗口上部留一条透明长方形）——这里的 inline
+            // !important 在层叠里压过任何样式表 !important，全屏样式表的 transform:none 根本
+            // 打不过它：全屏后 body 仍下移 34px、高度仍扣 34px，顶部 34px 没有任何内容，就透出
+            // 下层主窗口的标题栏。全屏态一律写满铺值，退出后自动回到 34px 补偿。
+            const __fsNow = (function () { try { return document.documentElement.getAttribute('data-fnos-fs') === '1'; } catch (_) { return false; } })();
+            set('transform', __fsNow ? 'none' : 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
+            set('height', __fsNow ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            set('max-height', __fsNow ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
             set('min-height', '0');
             set('box-sizing', 'border-box');
             // v2.17.20: 双滚动条根因——音乐/影视这类 Semi / Tailwind 布局，左右面板各自就有
@@ -1554,6 +1559,108 @@ module.exports = function injectTitleBar(ctx) {
         }
       } catch (_) {}
     };
+    // v2.17.41：全屏态 / 退出态的 body inline 显式落值。__ensureContentOffset 会周期性用
+    // inline !important 重写 body 几何，所以进/退全屏都必须把它一起对齐，否则会出现"全屏了
+    // 但 body 还下移 34px"（顶部透明长条）或"退出了但 body 还写满 100vh"。
+    const __fsBody = (on) => {
+      try {
+        const b = document.body; if (!b) return;
+        if (on) {
+          b.style.setProperty('transform', 'none', 'important');
+          b.style.setProperty('height', '100vh', 'important');
+          b.style.setProperty('max-height', '100vh', 'important');
+          b.style.setProperty('min-height', '0', 'important');
+        } else {
+          b.style.removeProperty('transform');
+          b.style.removeProperty('height');
+          b.style.removeProperty('max-height');
+          b.style.removeProperty('min-height');
+        }
+      } catch (_) {}
+    };
+    // v2.17.41（用户反馈：主程序 ESC 恢复窗口后，标题栏的最小化/最大化/关闭消失）——退出全屏
+    // 的还原必须是整套复位，不能只 removeProperty('display')：全屏链路还动过 transform /
+    // opacity / pointer-events / width，任何一项残留都会把右侧按钮组挤出可视区（bar 是
+    // position:fixed + width:calc(100vw * --fnos-f)，宽度算错时按钮就飞到窗口外）。
+    // 最后再做一次可用性校验，按钮确实不在可视区就整条标题栏重建，保证一定恢复。
+    const __fsRestoreUI = (rebuild) => {
+      try {
+        const b = document.getElementById('fnos-titlebar');
+        if (b) {
+          b.style.removeProperty('display');
+          b.style.setProperty('transform', 'translateY(0)');
+          b.style.setProperty('opacity', '1');
+          b.style.setProperty('pointer-events', 'auto');
+          // 这里不写 width / zoom：主窗标题栏是 width:calc(100vw * --fnos-f)+zoom，应用窗标题栏
+          // 是 left:0;right:0 没有 width，盲设会把应用窗标题栏布局搞坏。
+        }
+        const hz = document.getElementById('fnos-titlebar-hotzone');
+        if (hz) hz.style.removeProperty('display');
+        const ds = document.getElementById('fnos-tb-dragstrip');
+        if (ds) ds.style.removeProperty('display');
+        const rc = document.getElementById('fnos-resize-cover');
+        if (rc) rc.style.removeProperty('display');
+        ['fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'].forEach((id) => {
+          const x = document.getElementById(id);
+          if (!x) return;
+          x.style.removeProperty('display');
+          x.style.removeProperty('visibility');
+          x.style.removeProperty('opacity');
+          const p = x.parentElement;
+          if (p && p.style) { p.style.removeProperty('display'); p.style.removeProperty('width'); }
+        });
+        if (!rebuild) return;
+        const probe = document.getElementById('fnos-tb-min') || document.getElementById('fnos-tb-max') || document.getElementById('fnos-tb-close');
+        if (!probe) return;
+        const r = probe.getBoundingClientRect();
+        const vw = window.innerWidth;
+        if (r.width >= 8 && r.height >= 8 && r.left >= 0 && r.right <= vw + 2) return;
+        const bar = document.getElementById('fnos-titlebar');
+        const hot = document.getElementById('fnos-titlebar-hotzone');
+        try { if (hot && hot.parentNode) hot.parentNode.removeChild(hot); } catch (_) {}
+        try { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); } catch (_) {}
+        try { if (EMBED) buildEmbed(); else build(); } catch (_) {}
+        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar', ev: 'fs-restore-rebuild' }); } catch (_) {}
+      } catch (_) {}
+    };
+    // v2.17.41：渲染层全屏状态自愈。transparent + frame:false 窗口在实测里丢过
+    // leave-full-screen（日志 win=3/6/8 只有 ui enter、没有任何 ui leave），一旦丢失渲染层就
+    // 带着全屏样式退出——用户看到的就是"标题栏不见 + 20px 圆角变直角 + 顶部透明长条"。
+    // 这里不依赖主进程：仍认为在全屏、但视口已明显小于屏幕，连续两次即自行撤销。
+    const __fsSelfHeal = () => {
+      try {
+        if (window.__fnosFsHeal) return;
+        window.__fnosFsHeal = true;
+        try {
+          const mo = new MutationObserver(() => {
+            try { if (document.documentElement.getAttribute('data-fnos-fs') === '1') window.__fnosFsAt = Date.now(); } catch (_) {}
+          });
+          mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-fnos-fs'] });
+        } catch (_) {}
+        let miss = 0;
+        setInterval(() => {
+          try {
+            if (document.documentElement.getAttribute('data-fnos-fs') !== '1') { miss = 0; return; }
+            if (Date.now() - (window.__fnosFsAt || 0) < 2600) { miss = 0; return; }
+            const sw = (window.screen && window.screen.width) || 0;
+            const sh = (window.screen && window.screen.height) || 0;
+            if (!sw || !sh) return;
+            const small = (window.innerWidth < sw - 28) || (window.innerHeight < sh - 28);
+            if (!small) { miss = 0; return; }
+            miss++;
+            if (miss < 2) return;
+            miss = 0;
+            window.__fnosFsOn = false;
+            window.__fnosFsAt = 0;
+            document.documentElement.removeAttribute('data-fnos-fs');
+            __fsBarStyle(!!AUTO_HIDE);
+            __fsBody(false);
+            __fsRestoreUI(true);
+            try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar', ev: 'fs-selfheal-off' }); } catch (_) {}
+          } catch (_) {}
+        }, 700);
+      } catch (_) {}
+    };
     const __setupFullscreen = () => {
       try {
         if (!document.getElementById('fnos-tb-fullscreen-style')) {
@@ -1566,6 +1673,12 @@ module.exports = function injectTitleBar(ctx) {
             // 底色 + min-width:100vw：不碰 html（html 透明是圆角的铁律），正常窗口态的透明与 20px 圆角
             // 完全不受影响；background-image 不动，页面自带背景图仍优先。
             'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;min-width:100vw !important;background-color:#05060a !important;overflow-x:hidden !important;}',
+            // v2.17.41（用户反馈：主程序 F11 全屏后底部一条黑色长方形；应用全屏内容也不满铺）——
+            // 全屏时 body 已经是 100vh，但正常态给页面根容器打的 max-height:calc(100vh - 34px) 兜底
+            // 依然生效，把内容压到 1046，底部 34px 露出 body 的 #05060a 底色，就成了那条黑条。
+            // 全屏态必须把这些"扣掉标题栏 34px"的补偿全部放开。
+            'html[data-fnos-fs="1"]>body .h-screen,html[data-fnos-fs="1"]>body .h-dvh,html[data-fnos-fs="1"]>body .min-h-screen,html[data-fnos-fs="1"]>body .min-h-dvh{height:100vh !important;min-height:100vh !important;max-height:100vh !important;}',
+            'html[data-fnos-fs="1"]>body [class*="100vh"],html[data-fnos-fs="1"]>body [class*="100dvh"],html[data-fnos-fs="1"]>body [class*="h-screen"],html[data-fnos-fs="1"]>body [class*="h-dvh"],html[data-fnos-fs="1"]>body [class*="dvh"],html[data-fnos-fs="1"]>body [style*="100vh"],html[data-fnos-fs="1"]>body [style*="100dvh"],html[data-fnos-fs="1"]>body [style*="dvh"]{max-height:100vh !important;}',
             'html[data-fnos-fs="1"] #fnos-titlebar{z-index:2147483647 !important;}',
             // v2.17.36（用户要求）：删掉全屏时的"悬浮隐藏式标题栏"——全屏态标题栏与顶部热区
             // 一律 display:none，鼠标推到顶部也不会再滑出；退出全屏后自动恢复（选择器带 data-fnos-fs）
@@ -1582,16 +1695,25 @@ module.exports = function injectTitleBar(ctx) {
             try {
               if (d && d.fullscreen) {
                 window.__fnosFsOn = true;
+                window.__fnosFsAt = Date.now();
                 document.documentElement.setAttribute('data-fnos-fs', '1');
                 __fsBarStyle(true); // v2.17.36：进全屏即收起，且全屏态不再滑出（见样式表 display:none）
+                __fsBody(true);
               } else {
                 window.__fnosFsOn = false;
+                window.__fnosFsAt = 0;
                 document.documentElement.removeAttribute('data-fnos-fs');
+                __fsBody(false);
                 // 退出全屏：恢复成用户设置决定的状态（开了自动隐藏才收起，否则常驻）
                 __fsBarStyle(!!AUTO_HIDE);
+                __fsRestoreUI(false);
+                // v2.17.41：刚退出全屏时渲染进程正被窗口尺寸变化占住，400ms / 1200ms 各复查一次
+                setTimeout(() => { try { if (!window.__fnosFsOn) __fsRestoreUI(true); } catch (_) {} }, 400);
+                setTimeout(() => { try { if (!window.__fnosFsOn) __fsRestoreUI(true); } catch (_) {} }, 1200);
               }
             } catch (_) {}
           });
+          __fsSelfHeal();
         }
       } catch (_) {}
     };

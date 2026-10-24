@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.40';
+const APP_VERSION = '2.17.41';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1043,8 +1043,12 @@ function __syncFsUIFor(win, on) {
     const __code = on
       ? 'try{document.documentElement.setAttribute("data-fnos-fs","1");}catch(e){}'
         + 'try{var b=document.getElementById("fnos-titlebar");if(b){b.style.setProperty("display","none","important");}}catch(e){}'
+      // v2.17.41（用户反馈：ESC 恢复窗口后标题栏的最小化/最大化/关闭消失）——退出时只摘
+      // display 不够：全屏链路还动过 transform / opacity / pointer-events / width，任何一项
+      // 残留都会把右侧按钮组挤出可视区（bar 是 position:fixed + width:calc(100vw * --fnos-f)）。
       : 'try{document.documentElement.removeAttribute("data-fnos-fs");}catch(e){}'
-        + 'try{var b=document.getElementById("fnos-titlebar");if(b){b.style.removeProperty("display");}}catch(e){}';
+        + 'try{var b=document.getElementById("fnos-titlebar");if(b){b.style.removeProperty("display");b.style.setProperty("transform","translateY(0)");b.style.setProperty("opacity","1");b.style.setProperty("pointer-events","auto");}}catch(e){}'
+        + 'try{["fnos-tb-min","fnos-tb-max","fnos-tb-close"].forEach(function(id){var x=document.getElementById(id);if(x){x.style.removeProperty("display");x.style.removeProperty("visibility");x.style.removeProperty("opacity");var p=x.parentElement;if(p&&p.style){p.style.removeProperty("display");p.style.removeProperty("width");}}});}catch(e){}';
     const __wc = win.webContents;
     let __frames = [];
     try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
@@ -1099,6 +1103,40 @@ function __restoreFsBoundsFor(win) {
   }, 420);
 }
 const __fsUiAppliedMap = new WeakMap();
+// v2.17.41（用户反馈：应用窗口全屏后按 ESC 退出，标题栏消失、20px 圆角变直角）——
+// 实测日志 fnos-2026-10-24_1792851891898_1nia.log 里 win=3 / win=6 / win=8 只有
+// "[fullscreen] ... ui enter"、没有任何 "ui leave"：窗口确实退出了全屏（尺寸回到全屏前），
+// 但渲染层从没收到撤销指令，于是带着 data-fnos-fs 全屏样式继续跑——标题栏被 display:none
+// 永久隐藏、clip-path:none 让 R 角变直角、顶部留 34px 透明长条。这类 transparent +
+// frame:false 窗口的 leave-full-screen 与 isFullScreen() 一样不可靠，因此加一条独立于事件
+// 的状态自愈：仍认为在全屏，但 bounds 连续明显小于所在屏幕，就补一次退出同步。
+const __fsEnterAtMap = new WeakMap();
+let __fsAuditTimer = null;
+function __fsAuditStart() {
+  if (__fsAuditTimer) return;
+  __fsAuditTimer = setInterval(() => {
+    try {
+      const now = Date.now();
+      for (const w of BrowserWindow.getAllWindows()) {
+        try {
+          if (!w || w.isDestroyed() || !__isFsOn(w)) continue;
+          if (now - (__fsEnterAtMap.get(w) || 0) < 2600) { w.__fsSmallSince = 0; continue; }
+          const b = w.getBounds();
+          const d = screen.getDisplayMatching(b);
+          const fb = d.bounds;
+          const small = (b.width < fb.width - 24) || (b.height < fb.height - 24);
+          if (!small) { w.__fsSmallSince = 0; continue; }
+          if (!w.__fsSmallSince) { w.__fsSmallSince = now; continue; }
+          if (now - w.__fsSmallSince < 1100) continue;
+          w.__fsSmallSince = 0;
+          try { fnosLog('warn', 'fullscreen', 'audit-leave win=' + w.id + ' b=' + [b.x, b.y, b.width, b.height].join(',') + ' d=' + fb.width + 'x' + fb.height); } catch (_) {}
+          __applyFsFor(w, false);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }, 700);
+  try { if (__fsAuditTimer.unref) __fsAuditTimer.unref(); } catch (_) {}
+}
 function __applyFsFor(win, on) {
   try {
     if (!win || win.isDestroyed()) return;
@@ -1106,6 +1144,9 @@ function __applyFsFor(win, on) {
     __fsStateMap.set(win, on);
     if (on === !!__fsUiAppliedMap.get(win)) return;
     __fsUiAppliedMap.set(win, on);
+    // v2.17.41：进入全屏记时间戳，供 __fsAuditStart 的自愈巡检跳过过渡期；首次调用即启动巡检。
+    try { if (on) __fsEnterAtMap.set(win, Date.now()); else win.__fsSmallSince = 0; } catch (_) {}
+    __fsAuditStart();
     try { fnosLog('info', 'fullscreen', 'ui ' + (on ? 'enter' : 'leave') + ' win=' + win.id); } catch (_) {}
     if (on) {
       __rememberFsBounds(win);
@@ -4534,13 +4575,17 @@ function registerWindow(win, opts = {}) {
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.key !== 'Escape') return;
     if (input.alt || input.control || input.meta || input.shift) return;
-    const exit = (hasFs) => {
-      if (hasFs) return;
-      if (__isFsOn(win)) __exitFullScreenWin(win);
-      else if (__maxOn(win)) __toggleMaxWin(win);
-    };
-    win.webContents.executeJavaScript('!!document.fullscreenElement', true)
-      .then(exit).catch(() => exit(false));
+    // v2.17.41（用户反馈：应用窗口全屏后按 ESC 退出，标题栏消失、20px 圆角变直角）——
+    // 旧实现只要 document.fullscreenElement 非空就直接 return，主进程完全不插手；而 ESC 又
+    // 已经 preventDefault，于是窗口由 Chromium 引擎自己退出全屏，leave-full-screen 在这类
+    // transparent + frame:false 窗口上并不触发（实测 win=3/6/8 只有 ui enter、没有 ui leave），
+    // 状态机永远卡在"全屏"，渲染层就带着全屏样式继续跑。现在无条件接管：先把页面级 HTML5
+    // 全屏退掉，再退我们自己的窗口级全屏。
+    try {
+      win.webContents.executeJavaScript('try{if(document.fullscreenElement){document.exitFullscreen().catch(function(){});}}catch(e){}', true).catch(() => {});
+    } catch (_) {}
+    if (__isFsOn(win)) __exitFullScreenWin(win);
+    else if (__maxOn(win)) __toggleMaxWin(win);
     event.preventDefault();
   });
   win.webContents.on('before-input-event', (event, input) => {

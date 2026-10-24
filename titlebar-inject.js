@@ -450,10 +450,11 @@ module.exports = function injectTitleBar(ctx) {
       try {
         if (!bar) return;
         if (TB.material === 'frosted') {
-          // v2.17.27：纯 CSS 磨砂。backdrop-filter 直接采样标题栏正下方的 #fnos-bg-layer
-          // （独立背景层，fixed 铺满整窗、永不下移），滑块值就是标准 CSS blur 半径（0 = 关闭）。
-          // 旧版的 feTurbulence 噪点 / 顶部高光 / 底部内阴影双层合成已全部移除——那套是为了
-          // 弥补 DWM 固定模糊半径的假效果，CSS 原生 blur 不需要。
+          // v2.17.28：纯 CSS 磨砂。backdrop-filter 采样标题栏正下方的页面自身背景——主窗改成
+          // padding-top 让位后，页面壁纸不再被 body 的 transform 推下去，天然铺到窗口 0px；
+          // 应用窗/主窗若壁纸确实被推下去了，由 __setupBgLayer 在 <html> 下补一层同款背景。
+          // 滑块值就是标准 CSS blur 半径（0 = 关闭）。旧版 feTurbulence 噪点 / 顶部高光 /
+          // 底部内阴影双层合成已全部移除——那套是为弥补 DWM 固定模糊半径的假效果，CSS 原生 blur 不需要。
           const a = TB.opacity / 100 * 0.72; // 磨砂模式底色最高约 72%
           bar.style.backgroundImage = 'none';
           bar.style.backgroundBlendMode = 'normal';
@@ -876,7 +877,7 @@ module.exports = function injectTitleBar(ctx) {
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。
           // 深色兜底后，即使有 1px 偏差也与标题栏同色，不再看得出灰条。
-          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}',
+          'html>body{transform:none !important;height:100vh !important;box-sizing:border-box !important;clip-path:inset(0 round 0 0 calc(20px / var(--fnos-f, 1)) calc(20px / var(--fnos-f, 1))) !important;padding-top:calc(34px / var(--fnos-f, 1)) !important;margin-top:0 !important;background:#05060a !important;}',
           // v2.17.0（DPI 方案 A）：飞牛桌面主页是远程 React SPA（cqfndesk），应用图标为 52px 位图，
           // 客户端无法改源码，只能注入覆盖：图标/卡片/文字/间距统一 x--ui-scale（0.8），图标 52->约 42px。
           // 选择器用 [class~="..."] 精确匹配 Tailwind token（规避 [ ] ! 转义），仅作用于主窗口主 frame。
@@ -1542,13 +1543,13 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     };
 
-    // v2.17.27：三层 DOM 分层 —— 背景层 / 内容层 / 标题栏。
-    // 旧方案（v2.17.24/25/26）把「背景 + 内容」打包在 body 里一起下移 34px，标题栏背后只剩
-    // 空 html，backdrop-filter 采不到任何像素，于是只能靠 DWM blur-behind 或噪点合成假装磨砂。
-    // 新方案把背景单独抽一层：#fnos-bg-layer 挂在 <html> 上、position:fixed、inset:0、永不下移，
-    // 铺满整个窗口（含标题栏正下方）——它才是标题栏 backdrop-filter 的采样源；body 仍按原逻辑
-    // 下移 34px 做「内容避让」，但页面背景被搬空交给 bg-layer，于是视觉上背景无缝延伸进标题栏、
-    // 内容依旧不被遮挡，两者彻底解耦。设置窗口、直播窗口不启用（几何布局保持原样）。
+    // v2.17.28：把页面背景"复制"进标题栏背后 —— html 级背景层，且绝不铺兜底纯色
+    // 为什么不能就地反向补偿壁纸元素：body 有 clip-path:inset(0 round 20px) 且已下移 34px，
+    // 它的裁剪上下文会把 body 内所有后代的顶部 34px 整块裁掉（fixed 后代同样逃不掉），
+    // 所以壁纸元素再怎么上移也露不到标题栏区。唯一稳的位置是挂到 <html> 下的背景层
+    // （z-index:-1，不被 body 裁剪），这也正是 v2.17.27 实测奏效的采样源。
+    // 教训：v2.17.27 探测失败时铺了一层"页面主色渐变"，主窗注入色是 #05060a，于是标题栏
+    // 背后多出一条纯黑长条 —— 现在探测失败就什么都不加（宁可透出桌面，也不铺纯色）。
     const __setupBgLayer = () => {
       try {
         const argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
@@ -1557,137 +1558,112 @@ module.exports = function injectTitleBar(ctx) {
         const isShell = argv.indexOf('--fnos-shell') >= 0 && !isApp;
         if (isLive) return; // 直播窗：布局不动
         if (!isShell && !isApp) return; // 设置窗：布局不动
+        if (document.querySelector('webview')) return; // 宿主页：壁纸在 guest 文档里
         const de = document.documentElement;
         const bd = document.body;
         if (!de || !bd) return;
         if (document.getElementById('fnos-bg-layer')) return;
-        // 宿主页（shell.html）：壁纸在 <webview> 内部，由 guest 文档自己生成背景层，宿主不再重复叠一层。
-        if (document.querySelector('webview')) return;
         const vw = Math.max(1, window.innerWidth || de.clientWidth || 0);
         const vh = Math.max(1, window.innerHeight || de.clientHeight || 0);
-        const isBig = (r) => !!r && r.width >= vw * 0.85 && r.height >= vh * 0.85;
-        const readBg = (cs) => {
-          const img = (cs && cs.backgroundImage) || '';
-          if (!img || img === 'none') return null;
-          if (img.indexOf('url(') < 0) return null;
-          return {
-            image: img,
-            color: (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)') ? cs.backgroundColor : '',
-            position: cs.backgroundPosition || '',
-            size: cs.backgroundSize || '',
-            repeat: cs.backgroundRepeat || '',
-            attachment: cs.backgroundAttachment || ''
-          };
+        // 阈值放宽到 70%/60%：壁纸容器常常带着 padding / 侧栏，实际盒子比视口略小
+        const isBig = (r) => !!r && r.width >= vw * 0.7 && r.height >= vh * 0.6;
+        const logWall = (stage, extra) => {
+          try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: stage }, extra || {})); } catch (_) {}
         };
-        // 1) body / html 自身的 background-image（最常见：壁纸写在 body 或 #app 根上）
-        let src = null;
-        try {
-          const bb = readBg(getComputedStyle(bd));
-          const hb = readBg(getComputedStyle(de));
-          if (bb) src = { kind: 'css', decl: bb, host: bd };
-          else if (hb) src = { kind: 'css', decl: hb, host: de };
-        } catch (_) {}
-        // 2) 广度优先找「覆盖视口」的壁纸元素（背景图 / <img>）
-        if (!src) {
+        const findWall = () => {
           const queue = [];
           for (let i = 0; i < bd.children.length; i++) queue.push(bd.children[i]);
           let guard = 0;
-          while (queue.length && guard < 900) {
+          while (queue.length && guard < 1500) {
             const el = queue.shift(); guard++;
             if (!el || el.nodeType !== 1) continue;
             const tag = el.tagName;
-            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'NOSCRIPT' || tag === 'TEMPLATE' || tag === 'IFRAME') continue;
             let r = null;
             try { r = el.getBoundingClientRect(); } catch (_) {}
-            if (tag === 'IMG') {
-              const u = el.currentSrc || el.src || '';
-              if (u && isBig(r) && !el.closest('a,button,[class*="avatar"],[class*="logo"],[class*="icon"]')) { src = { kind: 'img', url: u, host: el }; break; }
-              continue;
+            const big = isBig(r);
+            if (tag === 'IMG' || tag === 'VIDEO') {
+              const u = tag === 'IMG' ? (el.currentSrc || el.src || '') : (el.poster || el.currentSrc || el.src || '');
+              if (u && big && !el.closest('a,button,[class*="avatar"],[class*="logo"],[class*="icon"]')) {
+                return { kind: 'url', url: u, why: tag, el: el };
+              }
             }
-            if (isBig(r)) {
-              const d = readBg(getComputedStyle(el));
-              if (d) { src = { kind: 'css', decl: d, host: el }; break; }
-              for (let i = 0; i < el.children.length && i < 60; i++) queue.push(el.children[i]);
+            if (tag === 'CANVAS' && big) return { kind: 'canvas', el: el, why: 'CANVAS' };
+            if (big) {
+              let cs = null;
+              try { cs = getComputedStyle(el); } catch (_) {}
+              const bi = (cs && cs.backgroundImage) || '';
+              if (bi && bi !== 'none' && bi.indexOf('url(') >= 0) {
+                return {
+                  kind: 'css',
+                  image: bi,
+                  size: cs.backgroundSize || '',
+                  position: cs.backgroundPosition || '',
+                  repeat: cs.backgroundRepeat || '',
+                  why: 'bg:' + tag,
+                  el: el
+                };
+              }
+              const kids = el.children;
+              for (let i = 0; i < kids.length && i < 60; i++) queue.push(kids[i]);
             } else {
-              for (let i = 0; i < el.children.length && i < 12; i++) queue.push(el.children[i]);
+              const kids = el.children;
+              for (let i = 0; i < kids.length && i < 12; i++) queue.push(kids[i]);
             }
+          }
+          return null;
+        };
+        const hit = findWall();
+        if (hit) {
+          // 壁纸已经覆盖到窗口顶部（主窗改成 padding-top 后，fixed 壁纸不再被推下去）：
+          // 此时页面自己就是模糊源，绝不能再叠一层，否则 34px 处会出现两份壁纸错位。
+          let topY = 99;
+          try { topY = hit.el.getBoundingClientRect().top; } catch (_) {}
+          if (topY <= 2) {
+            logWall('titlebar.wall-native', { why: hit.why, top: Math.round(topY) });
+            return;
           }
         }
-        const __clearAncestorBg = (el) => {
-          let n = 0;
-          let cur = el ? el : null;
-          while (cur && cur !== de && n < 14) {
-            n++;
-            try {
-              const cs = getComputedStyle(cur);
-              const bc = cs.backgroundColor || '';
-              const bi = cs.backgroundImage || '';
-              if (bi && bi !== 'none' && bi.indexOf('url(') >= 0 && cur !== (src && src.host)) {
-                cur.style.setProperty('background-image', 'none', 'important');
-              }
-              const m = /rgba?\(([^)]+)\)/.exec(bc);
-              if (m) {
-                const pp = m[1].split(',').map(Number);
-                const al = pp.length > 3 ? pp[3] : 1;
-                if (al >= 0.98) cur.style.setProperty('background-color', 'transparent', 'important');
-              }
-            } catch (_) {}
-            cur = cur.parentElement;
+        if (!hit) {
+          window.__fnosBgRetry = (window.__fnosBgRetry || 0) + 1;
+          logWall('titlebar.wall-miss', { n: window.__fnosBgRetry, vw: vw, vh: vh });
+          if (window.__fnosBgRetry <= 10) setTimeout(() => { try { __setupBgLayer(); } catch (_) {} }, 1500);
+          return;
+        }
+        if (hit.kind === 'canvas') {
+          // 动态壁纸（canvas）：无法实时复制，只能取一帧静态快照；失败就放弃，绝不铺纯色
+          let url = '';
+          try { url = hit.el.toDataURL('image/png'); } catch (_) {}
+          if (!url || url.length < 32) {
+            logWall('titlebar.wall-skip', { why: 'canvas-empty' });
+            return;
           }
-        };
+          hit.kind = 'url';
+          hit.url = url;
+        }
         const layer = document.createElement('div');
         layer.id = 'fnos-bg-layer';
         layer.setAttribute('aria-hidden', 'true');
-        // z-index:-1：落在 body 内容之下、html 背景之上。body 有 transform 会自成层叠上下文，
-        // 所以下移后的页面完整盖在背景层上，只有标题栏那 34px 露出背景层。
+        // 顶部两角保持直角（与标题栏一致，别学 v2.15.47 把标题栏顶角裁圆），只给下两角圆角
         const base = 'position:fixed !important;left:0 !important;top:0 !important;' +
           'width:' + vw + 'px !important;height:' + vh + 'px !important;' +
           'margin:0 !important;padding:0 !important;border:0 !important;' +
           'z-index:-1 !important;pointer-events:none !important;overflow:hidden !important;' +
           'background-repeat:no-repeat !important;background-position:center center !important;' +
           'background-size:cover !important;transform:none !important;' +
-          'border-radius:calc(20px / var(--fnos-f, 1)) !important;';
-        if (src && src.kind === 'css') {
-          const d = src.decl;
-          layer.style.cssText = base +
-            'background-image:' + d.image + ' !important;' +
-            (d.size ? 'background-size:' + d.size + ' !important;' : '') +
-            (d.position ? 'background-position:' + d.position + ' !important;' : '') +
-            (d.repeat ? 'background-repeat:' + d.repeat + ' !important;' : '') +
-            (d.attachment ? 'background-attachment:' + d.attachment + ' !important;' : '') +
-            (d.color ? 'background-color:' + d.color + ' !important;' : 'background-color:transparent !important;');
-          // 源头背景搬空：否则「下移 34px 后的原位背景」会和背景层在 34px 处错位成双份。
-          try { src.host.style.setProperty('background-image', 'none', 'important'); } catch (_) {}
-        } else if (src && src.kind === 'img') {
-          const u = String(src.url).replace(/"/g, '\\"') ;
+          'border-radius:0 0 calc(20px / var(--fnos-f, 1)) calc(20px / var(--fnos-f, 1)) !important;';
+        if (hit.kind === 'url') {
+          const u = String(hit.url).replace(/"/g, '%22');
           layer.style.cssText = base + 'background-image:url("' + u + '") !important;';
-          try { src.host.style.setProperty('visibility', 'hidden', 'important'); } catch (_) {}
         } else {
-          // 兜底：页面主色渐变，保证标题栏背后永远有东西可模糊，不会出现空洞。
-          let c1 = '#0b1220';
-          const c2 = '#060910';
-          try {
-            const bc = getComputedStyle(bd).backgroundColor || '';
-            if (bc && bc !== 'rgba(0, 0, 0, 0)' && bc !== 'transparent') c1 = bc;
-          } catch (_) {}
-          layer.style.cssText = base + 'background-image:linear-gradient(160deg,' + c1 + ' 0%,' + c2 + ' 100%) !important;';
-          try {
-            window.__fnosBgRetry = (window.__fnosBgRetry || 0) + 1;
-            if (window.__fnosBgRetry <= 5) {
-              setTimeout(() => {
-                try {
-                  const old = document.getElementById('fnos-bg-layer');
-                  if (old && old.parentNode) old.parentNode.removeChild(old);
-                  __setupBgLayer();
-                } catch (_) {}
-              }, 1200 * window.__fnosBgRetry);
-            }
-          } catch (_) {}
+          layer.style.cssText = base +
+            'background-image:' + hit.image + ' !important;' +
+            (hit.size ? 'background-size:' + hit.size + ' !important;' : '') +
+            (hit.position ? 'background-position:' + hit.position + ' !important;' : '') +
+            (hit.repeat ? 'background-repeat:' + hit.repeat + ' !important;' : '');
         }
-        // 把背景层以上的不透明底色搬空：否则 body / 容器的不透明背景会把背景层整块盖住，
-        // 壁纸就只剩标题栏那 34px 一条。只清「几乎不透明」的纯色底，半透明蒙层保留原样。
-        if (src && src.host) { try { __clearAncestorBg(src.host); } catch (_) {} }
         try { de.insertBefore(layer, bd); } catch (_) { de.insertBefore(layer, de.firstChild); }
+        logWall('titlebar.wall-ok', { why: hit.why, cls: String((hit.el && hit.el.className) || '').slice(0, 60) });
         // fixed + px 尺寸，避免 zoom / 缩放因子下 100vw 与真实视口不一致；resize 时同步。
         let bgT = 0;
         window.addEventListener('resize', () => {
@@ -1701,6 +1677,8 @@ module.exports = function injectTitleBar(ctx) {
         });
       } catch (_) {}
     };
+
+
     const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __setupBgLayer(); __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();

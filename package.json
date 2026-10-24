@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "2.17.26",
+  "version": "2.17.27",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -29,7 +29,6 @@
     "asar": true,
     "files": [
       "main.js",
-      "win-acrylic.js",
       "mpv-player.js",
       "mpv-surface.js",
       "mpv-helper.js",

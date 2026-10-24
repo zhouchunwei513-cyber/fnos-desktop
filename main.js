@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.26';
+const APP_VERSION = '2.17.27';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -8791,25 +8791,6 @@ ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
   }
 });
 
-// ===== v2.17.25：系统级毛玻璃（Windows DWM blur-behind）=====
-// 旧布局（body 下移 34px、内容不被标题栏遮挡）下，标题栏背后是空 html，CSS backdrop-filter
-// 在透明窗里没有模糊源，磨砂滑块必然无效 —— 只能由系统给窗口开 blur-behind 出毛玻璃。
-// 原理与实现见 win-acrylic.js 顶部注释。
-let __acrylic = null;
-try {
-  __acrylic = require('./win-acrylic')({
-    app: app,
-    BrowserWindow: BrowserWindow,
-    cp: cp,
-    dlog: dlog,
-    clampInt: clampInt,
-    getSettings: () => loadSettings(),
-    resolvePsExe: __resolvePsExe,
-  });
-} catch (e) {
-  try { dlog('warn', 'titlebar.acrylic', { initFail: String((e && e.message) || e).slice(0, 200) }); } catch (_) {}
-}
-
 // v2.17.24：标题栏设置的实时预览通道（不落盘）。设置页拖动滑块/切材质/改颜色时调用，
 // 主进程只把样式对象广播给所有渲染进程，titlebar-inject 立即套用，达到「所见即所得」。
 // 持久化仍由 settings:set-ui-options + 「保存界面设置」按钮完成。
@@ -8824,8 +8805,6 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
     for (const wc of require('electron').webContents.getAllWebContents()) {
       try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
     }
-    // v2.17.25：系统毛玻璃同步预览（不落盘）
-    if (__acrylic) { try { __acrylic.applyFromPayload(tbPayload); } catch (_) {} }
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err?.message || '预览失败' };
@@ -8865,8 +8844,6 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // v1.58：广播【完整标题栏样式对象】（autoHide+material+opacity+blur+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
     const tbPayload = { autoHide: tbAutoHide, material: tbMaterial, opacity: tbOpacity, blur: tbBlur, color: tbColor };
-    // v2.17.25：系统毛玻璃（落盘后套用到所有窗口）
-    if (__acrylic) { try { __acrylic.applyFromPayload(tbPayload); } catch (_) {} }
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);

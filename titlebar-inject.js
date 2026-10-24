@@ -450,29 +450,23 @@ module.exports = function injectTitleBar(ctx) {
       try {
         if (!bar) return;
         if (TB.material === 'frosted') {
-          // 磨砂：带颜色底色（不透明度滑块控制深浅）+ backdrop 模糊（磨砂滑块）
+          // v2.17.27：纯 CSS 磨砂。backdrop-filter 直接采样标题栏正下方的 #fnos-bg-layer
+          // （独立背景层，fixed 铺满整窗、永不下移），滑块值就是标准 CSS blur 半径（0 = 关闭）。
+          // 旧版的 feTurbulence 噪点 / 顶部高光 / 底部内阴影双层合成已全部移除——那套是为了
+          // 弥补 DWM 固定模糊半径的假效果，CSS 原生 blur 不需要。
           const a = TB.opacity / 100 * 0.72; // 磨砂模式底色最高约 72%
+          bar.style.backgroundImage = 'none';
+          bar.style.backgroundBlendMode = 'normal';
+          bar.style.boxShadow = 'none';
           bar.style.background = hexToRgba(TB.color, a);
-                    const __bl = Math.max(0, Math.min(40, Number(TB.blur) || 0));
-          const blur = Math.max(2, __bl);
-          bar.style.backdropFilter = `blur(${blur}px) saturate(1.4)`;
-          bar.style.webkitBackdropFilter = `blur(${blur}px) saturate(1.4)`;
-          // v2.17.26：Electron 透明窗是 WS_EX_LAYERED + NOREDIRECTIONBITMAP，DWM 的系统级
-          // blur-behind 未必生效；这里在 CSS 侧再合成一层【雾面质感】：底色 + 噪点颗粒 +
-          // 顶部高光 / 底部内阴影。磨砂程度越大 → 颗粒越密、内阴影越柔，滑块必然肉眼可见。
-          try {
-            const __noiseA = (0.06 + (__bl / 40) * 0.18).toFixed(3);
-            const __freq = (0.70 + (1 - __bl / 40) * 0.30).toFixed(2);
-            const __svg = '<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140">' +
-              '<filter id="fn"><feTurbulence type="fractalNoise" baseFrequency="' + __freq + '" numOctaves="3"/>' +
-              '<feColorMatrix type="saturate" values="0"/>' +
-              '<feComponentTransfer><feFuncA type="linear" slope="' + __noiseA + '"/></feComponentTransfer></filter>' +
-              '<rect width="140" height="140" filter="url(#fn)"/></svg>';
-            bar.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(__svg) + ')"';
-            bar.style.backgroundBlendMode = 'overlay';
-            const __hi = (0.05 + (__bl / 40) * 0.10).toFixed(3);
-            bar.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,' + __hi + '), inset 0 -1px 0 rgba(0,0,0,0.22)';
-          } catch (_) {}
+          const __bl = Math.max(0, Math.min(40, Number(TB.blur) || 0));
+          if (__bl >= 0.5) {
+            bar.style.backdropFilter = `blur(${__bl}px)`;
+            bar.style.webkitBackdropFilter = `blur(${__bl}px)`;
+          } else {
+            bar.style.backdropFilter = 'none';
+            bar.style.webkitBackdropFilter = 'none';
+          }
         } else {
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
           bar.style.backgroundImage = 'none';
@@ -1548,7 +1542,166 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     };
 
-    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
+    // v2.17.27：三层 DOM 分层 —— 背景层 / 内容层 / 标题栏。
+    // 旧方案（v2.17.24/25/26）把「背景 + 内容」打包在 body 里一起下移 34px，标题栏背后只剩
+    // 空 html，backdrop-filter 采不到任何像素，于是只能靠 DWM blur-behind 或噪点合成假装磨砂。
+    // 新方案把背景单独抽一层：#fnos-bg-layer 挂在 <html> 上、position:fixed、inset:0、永不下移，
+    // 铺满整个窗口（含标题栏正下方）——它才是标题栏 backdrop-filter 的采样源；body 仍按原逻辑
+    // 下移 34px 做「内容避让」，但页面背景被搬空交给 bg-layer，于是视觉上背景无缝延伸进标题栏、
+    // 内容依旧不被遮挡，两者彻底解耦。设置窗口、直播窗口不启用（几何布局保持原样）。
+    const __setupBgLayer = () => {
+      try {
+        const argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        const isLive = argv.indexOf('--fnos-live-window') >= 0;
+        const isApp = argv.indexOf('--fnos-app-window') >= 0 || isLive;
+        const isShell = argv.indexOf('--fnos-shell') >= 0 && !isApp;
+        if (isLive) return; // 直播窗：布局不动
+        if (!isShell && !isApp) return; // 设置窗：布局不动
+        const de = document.documentElement;
+        const bd = document.body;
+        if (!de || !bd) return;
+        if (document.getElementById('fnos-bg-layer')) return;
+        // 宿主页（shell.html）：壁纸在 <webview> 内部，由 guest 文档自己生成背景层，宿主不再重复叠一层。
+        if (document.querySelector('webview')) return;
+        const vw = Math.max(1, window.innerWidth || de.clientWidth || 0);
+        const vh = Math.max(1, window.innerHeight || de.clientHeight || 0);
+        const isBig = (r) => !!r && r.width >= vw * 0.85 && r.height >= vh * 0.85;
+        const readBg = (cs) => {
+          const img = (cs && cs.backgroundImage) || '';
+          if (!img || img === 'none') return null;
+          if (img.indexOf('url(') < 0) return null;
+          return {
+            image: img,
+            color: (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)') ? cs.backgroundColor : '',
+            position: cs.backgroundPosition || '',
+            size: cs.backgroundSize || '',
+            repeat: cs.backgroundRepeat || '',
+            attachment: cs.backgroundAttachment || ''
+          };
+        };
+        // 1) body / html 自身的 background-image（最常见：壁纸写在 body 或 #app 根上）
+        let src = null;
+        try {
+          const bb = readBg(getComputedStyle(bd));
+          const hb = readBg(getComputedStyle(de));
+          if (bb) src = { kind: 'css', decl: bb, host: bd };
+          else if (hb) src = { kind: 'css', decl: hb, host: de };
+        } catch (_) {}
+        // 2) 广度优先找「覆盖视口」的壁纸元素（背景图 / <img>）
+        if (!src) {
+          const queue = [];
+          for (let i = 0; i < bd.children.length; i++) queue.push(bd.children[i]);
+          let guard = 0;
+          while (queue.length && guard < 900) {
+            const el = queue.shift(); guard++;
+            if (!el || el.nodeType !== 1) continue;
+            const tag = el.tagName;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
+            let r = null;
+            try { r = el.getBoundingClientRect(); } catch (_) {}
+            if (tag === 'IMG') {
+              const u = el.currentSrc || el.src || '';
+              if (u && isBig(r) && !el.closest('a,button,[class*="avatar"],[class*="logo"],[class*="icon"]')) { src = { kind: 'img', url: u, host: el }; break; }
+              continue;
+            }
+            if (isBig(r)) {
+              const d = readBg(getComputedStyle(el));
+              if (d) { src = { kind: 'css', decl: d, host: el }; break; }
+              for (let i = 0; i < el.children.length && i < 60; i++) queue.push(el.children[i]);
+            } else {
+              for (let i = 0; i < el.children.length && i < 12; i++) queue.push(el.children[i]);
+            }
+          }
+        }
+        const __clearAncestorBg = (el) => {
+          let n = 0;
+          let cur = el ? el : null;
+          while (cur && cur !== de && n < 14) {
+            n++;
+            try {
+              const cs = getComputedStyle(cur);
+              const bc = cs.backgroundColor || '';
+              const bi = cs.backgroundImage || '';
+              if (bi && bi !== 'none' && bi.indexOf('url(') >= 0 && cur !== (src && src.host)) {
+                cur.style.setProperty('background-image', 'none', 'important');
+              }
+              const m = /rgba?\(([^)]+)\)/.exec(bc);
+              if (m) {
+                const pp = m[1].split(',').map(Number);
+                const al = pp.length > 3 ? pp[3] : 1;
+                if (al >= 0.98) cur.style.setProperty('background-color', 'transparent', 'important');
+              }
+            } catch (_) {}
+            cur = cur.parentElement;
+          }
+        };
+        const layer = document.createElement('div');
+        layer.id = 'fnos-bg-layer';
+        layer.setAttribute('aria-hidden', 'true');
+        // z-index:-1：落在 body 内容之下、html 背景之上。body 有 transform 会自成层叠上下文，
+        // 所以下移后的页面完整盖在背景层上，只有标题栏那 34px 露出背景层。
+        const base = 'position:fixed !important;left:0 !important;top:0 !important;' +
+          'width:' + vw + 'px !important;height:' + vh + 'px !important;' +
+          'margin:0 !important;padding:0 !important;border:0 !important;' +
+          'z-index:-1 !important;pointer-events:none !important;overflow:hidden !important;' +
+          'background-repeat:no-repeat !important;background-position:center center !important;' +
+          'background-size:cover !important;transform:none !important;' +
+          'border-radius:calc(20px / var(--fnos-f, 1)) !important;';
+        if (src && src.kind === 'css') {
+          const d = src.decl;
+          layer.style.cssText = base +
+            'background-image:' + d.image + ' !important;' +
+            (d.size ? 'background-size:' + d.size + ' !important;' : '') +
+            (d.position ? 'background-position:' + d.position + ' !important;' : '') +
+            (d.repeat ? 'background-repeat:' + d.repeat + ' !important;' : '') +
+            (d.attachment ? 'background-attachment:' + d.attachment + ' !important;' : '') +
+            (d.color ? 'background-color:' + d.color + ' !important;' : 'background-color:transparent !important;');
+          // 源头背景搬空：否则「下移 34px 后的原位背景」会和背景层在 34px 处错位成双份。
+          try { src.host.style.setProperty('background-image', 'none', 'important'); } catch (_) {}
+        } else if (src && src.kind === 'img') {
+          const u = String(src.url).replace(/"/g, '\\"') ;
+          layer.style.cssText = base + 'background-image:url("' + u + '") !important;';
+          try { src.host.style.setProperty('visibility', 'hidden', 'important'); } catch (_) {}
+        } else {
+          // 兜底：页面主色渐变，保证标题栏背后永远有东西可模糊，不会出现空洞。
+          let c1 = '#0b1220';
+          const c2 = '#060910';
+          try {
+            const bc = getComputedStyle(bd).backgroundColor || '';
+            if (bc && bc !== 'rgba(0, 0, 0, 0)' && bc !== 'transparent') c1 = bc;
+          } catch (_) {}
+          layer.style.cssText = base + 'background-image:linear-gradient(160deg,' + c1 + ' 0%,' + c2 + ' 100%) !important;';
+          try {
+            window.__fnosBgRetry = (window.__fnosBgRetry || 0) + 1;
+            if (window.__fnosBgRetry <= 5) {
+              setTimeout(() => {
+                try {
+                  const old = document.getElementById('fnos-bg-layer');
+                  if (old && old.parentNode) old.parentNode.removeChild(old);
+                  __setupBgLayer();
+                } catch (_) {}
+              }, 1200 * window.__fnosBgRetry);
+            }
+          } catch (_) {}
+        }
+        // 把背景层以上的不透明底色搬空：否则 body / 容器的不透明背景会把背景层整块盖住，
+        // 壁纸就只剩标题栏那 34px 一条。只清「几乎不透明」的纯色底，半透明蒙层保留原样。
+        if (src && src.host) { try { __clearAncestorBg(src.host); } catch (_) {} }
+        try { de.insertBefore(layer, bd); } catch (_) { de.insertBefore(layer, de.firstChild); }
+        // fixed + px 尺寸，避免 zoom / 缩放因子下 100vw 与真实视口不一致；resize 时同步。
+        let bgT = 0;
+        window.addEventListener('resize', () => {
+          try {
+            clearTimeout(bgT);
+            bgT = setTimeout(() => {
+              layer.style.setProperty('width', Math.max(1, window.innerWidth || de.clientWidth || 0) + 'px', 'important');
+              layer.style.setProperty('height', Math.max(1, window.innerHeight || de.clientHeight || 0) + 'px', 'important');
+            }, 120);
+          } catch (_) {}
+        });
+      } catch (_) {}
+    };
+    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __setupBgLayer(); __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

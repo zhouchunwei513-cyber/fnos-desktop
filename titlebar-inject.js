@@ -827,7 +827,15 @@ module.exports = function injectTitleBar(ctx) {
           // bottom of "recently added" cut off, and the page's scrollbar-width:none hides the
           // scrollbar). Re-anchor viewport units to the visible area below the titlebar.
           'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
-          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}'
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
+          // v2.17.20: 上面只认 .h-screen/.h-dvh/.min-h-screen 这几个精确类名，而 Semi / Tailwind
+          // 应用常用任意值写法（h-[100dvh]、h-[100vh]、min-h-[100vh]），命中不了就比 body 高出
+          // 标题栏那 34px，撑出额外滚动条。这里按 class 子串补一层 max-height 兜底：只限上限，
+          // 写了更大 min-height 的元素按 CSS 规则仍以 min-height 为准，不会被误裁。
+          'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
+          // v2.17.20: webkit 侧把 body 自身滚动条轨道压到 0（是否启用由脚本按需挂
+          // scrollbar-width，见 __ensureContentOffset），避免残留 1px 轨道。
+          'html>body.fnos-no-body-scroll::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
         ].join('');
         // v2.15.92: auth pages (/signin, /oauth, /login) are centered cards with overflow:hidden.
         // Skip body shift + overflow-y:auto injection to avoid extra scrollbars.
@@ -1346,11 +1354,30 @@ module.exports = function injectTitleBar(ctx) {
         if (!wf || typeof wf.setZoomFactor !== 'function') return;
         const ZMIN = 0.5, ZMAX = 2.5, ZSTEP = 1.1;
         const zclamp = (v) => Math.max(ZMIN, Math.min(ZMAX, Math.round(v * 1000) / 1000));
+        // v2.17.20: 缩放比持久化。key 按窗口身份区分：主窗口固定 shell；应用/直播窗口用
+        // origin+pathname（SPA 内部路由变化不影响，启动时算一次），不同应用互不覆盖。
+        let zkey = 'shell';
+        if (__isAppWin) {
+          try {
+            const zp = String(location.pathname || '').replace(/\/+$/, '');
+            zkey = 'app:' + String(location.origin || '') + zp;
+          } catch (_) { zkey = 'app'; }
+        }
+        try {
+          const zsaved = ipcRenderer.sendSync('fnos:zoom-get', zkey);
+          if (zsaved && Math.abs(zsaved - 1) > 0.001) wf.setZoomFactor(zclamp(zsaved));
+        } catch (_) {}
+        let __zLast = null;
         const zsync = () => {
           try {
             const zf = wf.getZoomFactor() || 1;
             const cur = parseFloat(document.documentElement.style.getPropertyValue('--fnos-f')) || 1;
             if (Math.abs(cur - zf) > 0.001) document.documentElement.style.setProperty('--fnos-f', String(zf));
+            // 只在变化时写盘：滚轮/快捷键/菜单三条路径都会经过这里
+            if (__zLast === null || Math.abs(__zLast - zf) > 0.001) {
+              __zLast = zf;
+              try { ipcRenderer.send('fnos:zoom-set', { key: zkey, factor: zf }); } catch (_) {}
+            }
           } catch (_) {}
         };
         const zset = (f) => { try { wf.setZoomFactor(zclamp(f)); } catch (_) {} zsync(); };
@@ -1381,6 +1408,25 @@ module.exports = function injectTitleBar(ctx) {
         const __app = (typeof process !== 'undefined' && Array.isArray(process.argv)) &&
           (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-live-window') >= 0);
         if (!__app) return;
+        // v2.17.20: 页面是否自带滚动容器（决定 body 要不要自己出滚动条）。轻量扫描一次后缓存，
+        // 上限 1500 个元素，只在应用窗口里跑。
+        let __innerScroll = null;
+        const __detectInnerScroll = () => {
+          try {
+            const b = document.body;
+            if (!b) return false;
+            const els = b.querySelectorAll('*');
+            const n = Math.min(els.length, 1500);
+            for (let i = 0; i < n; i++) {
+              const el = els[i];
+              if (!el || el.clientHeight < 120) continue;
+              if (el.scrollHeight <= el.clientHeight + 8) continue;
+              const oy = getComputedStyle(el).overflowY;
+              if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return true;
+            }
+          } catch (_) {}
+          return false;
+        };
         const apply = () => {
           try {
             const b = document.body; if (!b) return;
@@ -1397,6 +1443,15 @@ module.exports = function injectTitleBar(ctx) {
             set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
             set('box-sizing', 'border-box');
             set('overflow-y', 'auto');
+            // v2.17.20: 双滚动条根因——音乐/影视这类 Semi / Tailwind 布局，左右面板各自就有
+            // overflow-y:auto 的滚动容器，body 再出一条滚动条就成了并排两条（用户实测：
+            // 飞牛音乐放大视图后左导航与主内容区各一条）。检测到内部已有可滚动容器时，只把
+            // body 自己那条藏掉（scrollbar-width:none 只隐藏滚动条，滚轮/键盘滚动能力保留），
+            // 没有内部滚动容器的普通长页面仍然保留 body 滚动条。
+            if (__innerScroll === null) __innerScroll = __detectInnerScroll();
+            if (__innerScroll) set('scrollbar-width', 'none');
+            else b.style.removeProperty('scrollbar-width');
+            try { b.classList.toggle('fnos-no-body-scroll', !!__innerScroll); } catch (_) {}
             set('margin', '0');
           } catch (_) {}
         };
@@ -1409,7 +1464,7 @@ module.exports = function injectTitleBar(ctx) {
         // SPA 重建 body / 换根时的兜底巡检
         try {
           let __n = 0;
-          const __iv = setInterval(() => { try { apply(); if (++__n > 300) clearInterval(__iv); } catch (_) {} }, 2000);
+          const __iv = setInterval(() => { try { if (__n % 5 === 0) __innerScroll = __detectInnerScroll(); apply(); if (++__n > 300) clearInterval(__iv); } catch (_) {} }, 2000);
         } catch (_) {}
       } catch (_) {}
     };

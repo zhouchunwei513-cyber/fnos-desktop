@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.19';
+const APP_VERSION = '2.17.20';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2063,6 +2063,33 @@ ipcMain.on('window-close', (e) => {
 // 可能被系统拖拽消息环影响而失灵）。renderer 在顶部热区 mousedown(左键) 时调用 startDrag。
 ipcMain.on('window-drag', (e) => {
   try { const w = hostWindowFromSender(e && e.sender); if (w && !w.isDestroyed()) w.startDrag(); } catch (_) {}
+});
+// v2.17.20: 视图缩放持久化。此前 Ctrl+滚轮 / 菜单「视图-放大/缩小」只改内存里的
+// zoomFactor，关掉主程序或应用窗口后全部丢失（用户实测：调好的视图大小保存不了）。
+// 这里按「窗口身份」落到 userData/zoom-state.json：主窗口固定 key=shell，应用/直播
+// 窗口用 origin+pathname，不同应用互不覆盖。渲染侧通过 sendSync 读取初始值。
+const __ZOOM_FILE = path.join(app.getPath('userData'), 'zoom-state.json');
+function __zoomAll() {
+  try { const o = JSON.parse(fs.readFileSync(__ZOOM_FILE, 'utf-8')); return (o && typeof o === 'object') ? o : {}; } catch (_) { return {}; }
+}
+function __zoomPut(k, f) {
+  try {
+    const key = String(k || '');
+    if (!key || key === 'undefined') return;
+    const v = Math.max(0.5, Math.min(2.5, Number(f) || 1));
+    const o = __zoomAll();
+    if (Math.abs(Number(o[key] || 1) - v) < 0.0005) return;
+    o[key] = v;
+    try { fs.mkdirSync(path.dirname(__ZOOM_FILE), { recursive: true }); } catch (_) {}
+    fs.writeFileSync(__ZOOM_FILE, JSON.stringify(o, null, 2), 'utf-8');
+    dlog('info', 'zoom.persist', { key: key, factor: v });
+  } catch (_) {}
+}
+ipcMain.on('fnos:zoom-get', (e, key) => {
+  try { const o = __zoomAll(); e.returnValue = Number(o[String(key || '')] || 0) || 0; } catch (_) { e.returnValue = 0; }
+});
+ipcMain.on('fnos:zoom-set', (e, d) => {
+  try { if (d && d.key) __zoomPut(d.key, d.factor); } catch (_) {}
 });
 // v1.48.0：无边框标题栏的「☰ 菜单」按钮——弹出与原系统菜单栏完全一致的应用菜单
 // （文件/下载/编辑/视图/工具/设置/帮助），内容与逻辑复用 buildMenuTemplate，零改动。

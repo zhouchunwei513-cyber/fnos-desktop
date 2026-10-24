@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.20';
+const APP_VERSION = '2.17.21';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4323,9 +4323,11 @@ function registerWindow(win, opts = {}) {
 const APP_UI_INJECT_CSS = [
   // v2.0.0：全局 iOS27 液态玻璃效果注入
   'html,body{overscroll-behavior:none;}',
-  '::-webkit-scrollbar{width:10px;height:10px;}',
+  // v2.17.21: 与应用窗口统一滚动条（titlebar-inject）对齐：8px 宽、4px 圆角。
+  // 此前这里是 10px/6px，与另一套 8px/4px 并存，同一个应用里会出现两种粗细的滚动条。
+  '::-webkit-scrollbar{width:8px;height:8px;}',
   '::-webkit-scrollbar-track{background:transparent;}',
-  '::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:6px;}',
+  '::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:4px;}',
   '::-webkit-scrollbar-thumb:hover{background:rgba(140,150,170,.65);}',
   // 侧边栏液态玻璃效果
   'aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar,',

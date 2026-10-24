@@ -833,6 +833,7 @@ module.exports = function injectTitleBar(ctx) {
           // 标题栏那 34px，撑出额外滚动条。这里按 class 子串补一层 max-height 兜底：只限上限，
           // 写了更大 min-height 的元素按 CSS 规则仍以 min-height 为准，不会被误裁。
           'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
+          'html>body [style*="100vh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
           // v2.17.20: webkit 侧把 body 自身滚动条轨道压到 0（是否启用由脚本按需挂
           // scrollbar-width，见 __ensureContentOffset），避免残留 1px 轨道。
           'html>body.fnos-no-body-scroll::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
@@ -932,8 +933,12 @@ module.exports = function injectTitleBar(ctx) {
         try {
           const __scrollStyle = document.createElement('style');
           __scrollStyle.setAttribute('data-fnos-scrollbar', '1');
+          // v2.17.21: 这里原本还有一行 *{scrollbar-width:auto !important;}，是给飞牛音乐「强制
+          // 显示滚动条」用的，但它把应用自己的 *{scrollbar-width:none} 一起推翻了 —— 音乐页面
+          // 用的是 Semi 自绘滚动条，于是原生条 + 自绘条并排成了两条（用户红框实测）。去掉这行，
+          // 由「滚动条尺寸/配色」本身来统一外观：声明了 scrollbar-width 的应用保留自己的决定，
+          // 没声明的（第三方白轨道如剪映）仍然吃到下面这套 8px 透明轨道 + 4px 圆角。
           __scrollStyle.textContent =
-            '*{scrollbar-width:auto !important;}' +
             '::-webkit-scrollbar{width:8px !important;height:8px !important;}' +
             '::-webkit-scrollbar-track{background:transparent !important;}' +
             '::-webkit-scrollbar-thumb{background:var(--semi-color-Scrollbar, rgba(255,255,255,.12)) !important;border-radius:4px !important;}' +
@@ -1411,21 +1416,30 @@ module.exports = function injectTitleBar(ctx) {
         // v2.17.20: 页面是否自带滚动容器（决定 body 要不要自己出滚动条）。轻量扫描一次后缓存，
         // 上限 1500 个元素，只在应用窗口里跑。
         let __innerScroll = null;
+        let __scanAt = 0;
         const __detectInnerScroll = () => {
+          // 结果缓存 1.2s：MutationObserver 会高频调 apply，但首帧 React 还没挂载完，
+          // 缓存太久会把 false 钉死，缓存太短又白扫。1.2s 兼顾两者。
+          const now = Date.now();
+          if (__innerScroll !== null && now - __scanAt < 1200) return __innerScroll;
+          __scanAt = now;
+          let hit = false;
           try {
             const b = document.body;
-            if (!b) return false;
-            const els = b.querySelectorAll('*');
-            const n = Math.min(els.length, 1500);
-            for (let i = 0; i < n; i++) {
-              const el = els[i];
-              if (!el || el.clientHeight < 120) continue;
-              if (el.scrollHeight <= el.clientHeight + 8) continue;
-              const oy = getComputedStyle(el).overflowY;
-              if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return true;
+            if (b) {
+              const els = b.querySelectorAll('*');
+              const n = Math.min(els.length, 1500);
+              for (let i = 0; i < n; i++) {
+                const el = els[i];
+                if (!el || el.clientHeight < 80) continue;
+                if (el.scrollHeight <= el.clientHeight + 8) continue;
+                const oy = getComputedStyle(el).overflowY;
+                if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') { hit = true; break; }
+              }
             }
           } catch (_) {}
-          return false;
+          __innerScroll = hit;
+          return hit;
         };
         const apply = () => {
           try {
@@ -1442,16 +1456,26 @@ module.exports = function injectTitleBar(ctx) {
             set('min-height', '0');
             set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
             set('box-sizing', 'border-box');
-            set('overflow-y', 'auto');
             // v2.17.20: 双滚动条根因——音乐/影视这类 Semi / Tailwind 布局，左右面板各自就有
             // overflow-y:auto 的滚动容器，body 再出一条滚动条就成了并排两条（用户实测：
             // 飞牛音乐放大视图后左导航与主内容区各一条）。检测到内部已有可滚动容器时，只把
             // body 自己那条藏掉（scrollbar-width:none 只隐藏滚动条，滚轮/键盘滚动能力保留），
             // 没有内部滚动容器的普通长页面仍然保留 body 滚动条。
-            if (__innerScroll === null) __innerScroll = __detectInnerScroll();
-            if (__innerScroll) set('scrollbar-width', 'none');
-            else b.style.removeProperty('scrollbar-width');
-            try { b.classList.toggle('fnos-no-body-scroll', !!__innerScroll); } catch (_) {}
+            // v2.17.21: body 只在「确实没有别人能滚」的时候才自己出滚动条。三种情况：
+            //   a) 页面内部已有滚动容器（音乐/影视的左右面板）→ body 关掉，只剩内部那一条；
+            //   b) body 内容本来就没溢出 → body 关掉（留着也是空轨道）；
+            //   c) body 溢出且内部没有任何可滚容器 → 保留 body 滚动，避免长页面滚不动。
+            const __hasInner = __detectInnerScroll();
+            const __bodyOver = b.scrollHeight > b.clientHeight + 8;
+            const __needBodyScroll = (!__hasInner) && __bodyOver;
+            if (__needBodyScroll) {
+              set('overflow-y', 'auto');
+              b.style.removeProperty('scrollbar-width');
+            } else {
+              set('overflow-y', 'hidden');
+              set('scrollbar-width', 'none');
+            }
+            try { b.classList.toggle('fnos-no-body-scroll', !__needBodyScroll); } catch (_) {}
             set('margin', '0');
           } catch (_) {}
         };
@@ -1464,7 +1488,7 @@ module.exports = function injectTitleBar(ctx) {
         // SPA 重建 body / 换根时的兜底巡检
         try {
           let __n = 0;
-          const __iv = setInterval(() => { try { if (__n % 5 === 0) __innerScroll = __detectInnerScroll(); apply(); if (++__n > 300) clearInterval(__iv); } catch (_) {} }, 2000);
+          const __iv = setInterval(() => { try { apply(); if (++__n > 300) clearInterval(__iv); } catch (_) {} }, 2000);
         } catch (_) {}
       } catch (_) {}
     };

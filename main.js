@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.17';
+const APP_VERSION = '2.17.18';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -9601,9 +9601,53 @@ ${iconPs}
 $sc.Save()
 `;
 
-    const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    // v2.17.18: 原实现按名字调 powershell，依赖 PATH。Administrator 精简系统 / 被改过
+    // PATH 的机器上 System32\WindowsPowerShell\v1.0 不在 PATH，spawnSync 直接 ENOENT
+    // （用户实测：桌面路径与 vbs 都正常，仅最后一步建 .lnk 失败）。改为先解析绝对路径，
+    // 仍失败则退到 wscript + 临时 VBS：WScript.Shell.CreateShortcut 同样能写 .lnk，且
+    // wscript.exe 是系统必备组件，不依赖 PATH。
+    const __psExe = (() => {
+      try {
+        const __root = String(process.env.SystemRoot || process.env.windir || 'C:\\Windows');
+        const __cands = [
+          path.join(__root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+          path.join(__root, 'Sysnative', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        ];
+        for (const c of __cands) { try { if (fs.existsSync(c)) return c; } catch (_) {} }
+      } catch (_) {}
+      return 'powershell';
+    })();
+    const result = cp.spawnSync(__psExe, ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    let __shortcutOk = !!(result && result.status === 0);
+    if (!__shortcutOk) {
+      fnosLog('warn', 'shortcut.path', 'shortcut.ps-fallback', { psExe: __psExe, err: String((result && (result.stderr || result.error)) || '').slice(0, 300) });
+      try {
+        const __q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+        const __iconForVbs = (icoPath && fs.existsSync(icoPath)) ? icoPath : (exePath + ',0');
+        const __vbsText = [
+          'Set ws = CreateObject("WScript.Shell")',
+          'Set sc = ws.CreateShortcut(' + __q(lnkPath) + ')',
+          'sc.TargetPath = ' + __q(__wscript),
+          'sc.Arguments = ' + __q(__lnkArgs),
+          'sc.WorkingDirectory = ' + __q(path.dirname(exePath)),
+          'sc.Description = ' + __q('FNOS 应用: ' + String(appName || '')),
+          'sc.IconLocation = ' + __q(__iconForVbs),
+          'sc.Save()'
+        ].join('\r\n');
+        const __mk = path.join(app.getPath('temp'), 'fnos-mklnk-' + process.pid + '.vbs');
+        fs.writeFileSync(__mk, __vbsText + '\r\n', 'utf8');
+        const __ws2 = path.join(String(process.env.SystemRoot || process.env.windir || 'C:\\Windows'), 'System32', 'wscript.exe');
+        const r2 = cp.spawnSync(fs.existsSync(__ws2) ? __ws2 : 'wscript.exe', ['//B', '//Nologo', __mk], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+        try { fs.unlinkSync(__mk); } catch (_) {}
+        const __exists = (() => { try { return fs.existsSync(lnkPath); } catch (_) { return false; } })();
+        fnosLog('info', 'shortcut.path', 'shortcut.vbs-fallback', { lnk: __exists, status: r2 && r2.status, err: String((r2 && (r2.stderr || r2.error)) || '').slice(0, 300) });
+        if (__exists) __shortcutOk = true;
+      } catch (e2) {
+        fnosLog('error', 'shortcut.path', 'shortcut.vbs-fallback.error', { err: String((e2 && e2.message) || e2).slice(0, 300) });
+      }
+    }
 
-    if (result.status === 0) {
+    if (__shortcutOk) {
       fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath, icoPath, launchUrl, appId, appName });
       // 需求 2.1 结果反馈弹窗：成功提示"桌面快捷方式已生成"
       return { success: true, msg: '桌面快捷方式已生成', data: { path: lnkPath } };
@@ -9612,6 +9656,8 @@ $sc.Save()
       fnosLog('error', 'ipc', '快捷方式创建失败', { lnkPath, appId, appName, stderr: __errText.slice(0, 500) });
       // 需求 2.1/2.6-3：失败区分错误原因（权限不足 → 对应提示，渲染进程据此弹窗）
       let __msg = __errText.slice(0, 300) || '创建失败';
+      // v2.17.18: 底层 spawnSync/ENOENT 报错不再原样弹给用户
+      if (/spawnSync[\s\S]*ENOENT|ENOENT/i.test(__errText)) __msg = '创建失败：未能调用系统组件（PowerShell / WScript），请检查系统环境后重试';
       if (/拒绝访问|access\s*is\s*denied|0x80070005|EPERM|EACCES|unauthorized/i.test(__errText)) {
         __msg = '权限不足：无法写入桌面快捷方式，请以管理员权限重试';
       }

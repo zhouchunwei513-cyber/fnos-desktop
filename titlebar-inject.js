@@ -1629,12 +1629,14 @@ module.exports = function injectTitleBar(ctx) {
         if (!__autoHideOn && parseFloat(cs.opacity) < 0.9) return false;
         const ids = EMBED ? ["fnos-tb-close"] : ["fnos-tb-min", "fnos-tb-max", "fnos-tb-close"];
         const vw = window.innerWidth;
+        const rb = bar.getBoundingClientRect();
         for (let i = 0; i < ids.length; i++) {
           const x = document.getElementById(ids[i]);
           if (!x) return false;
           const r = x.getBoundingClientRect();
           if (r.width < 8 || r.height < 8) return false;
           if (r.left < -1 || r.right > vw + 2) return false;
+          if (r.top < rb.top - 3 || r.top > rb.top + rb.height + 3) return false;
           const el = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
           if (!el) return false;
           if (!el.closest || !el.closest("#fnos-titlebar")) return false;
@@ -1667,6 +1669,7 @@ module.exports = function injectTitleBar(ctx) {
         const b = document.getElementById("fnos-titlebar");
         if (b) {
           b.style.removeProperty("display");
+          b.style.setProperty("display", "flex");
           b.style.removeProperty("visibility");
           b.style.setProperty("transform", "translateY(0)");
           b.style.setProperty("opacity", "1");
@@ -1683,16 +1686,13 @@ module.exports = function injectTitleBar(ctx) {
         const ds = document.getElementById("fnos-tb-dragstrip");
         if (ds) ds.style.removeProperty("display");
         const rc = document.getElementById("fnos-resize-cover");
-        if (rc) { rc.style.removeProperty("display"); rc.style.setProperty("pointer-events", "none"); }
+        if (rc) { rc.style.setProperty("display", "none"); rc.style.setProperty("pointer-events", "none"); }
         ["fnos-tb-min", "fnos-tb-max", "fnos-tb-close"].forEach((id) => {
           const x = document.getElementById(id);
           if (!x) return;
-          x.style.removeProperty("display");
-          x.style.removeProperty("visibility");
-          x.style.removeProperty("opacity");
           x.style.removeProperty("transform");
           const p = x.parentElement;
-          if (p && p.style) { p.style.removeProperty("display"); p.style.removeProperty("width"); }
+          if (p && p.style) { p.style.removeProperty("width"); }
         });
         if (!rebuild) return;
         try { if (document.visibilityState !== "visible") return; } catch (_) {}

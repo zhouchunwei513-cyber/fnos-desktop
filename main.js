@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.42';
+const APP_VERSION = '2.17.43';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1047,8 +1047,8 @@ function __syncFsUIFor(win, on) {
       // display 不够：全屏链路还动过 transform / opacity / pointer-events / width，任何一项
       // 残留都会把右侧按钮组挤出可视区（bar 是 position:fixed + width:calc(100vw * --fnos-f)）。
       : 'try{document.documentElement.removeAttribute("data-fnos-fs");}catch(e){}'
-        + 'try{var b=document.getElementById("fnos-titlebar");if(b){b.style.removeProperty("display");b.style.setProperty("transform","translateY(0)");b.style.setProperty("opacity","1");b.style.setProperty("pointer-events","auto");}}catch(e){}'
-        + 'try{["fnos-tb-min","fnos-tb-max","fnos-tb-close"].forEach(function(id){var x=document.getElementById(id);if(x){x.style.removeProperty("display");x.style.removeProperty("visibility");x.style.removeProperty("opacity");x.style.removeProperty("transform");var p=x.parentElement;if(p&&p.style){p.style.removeProperty("display");p.style.removeProperty("width");}}});}catch(e){}'
+        + 'try{var b=document.getElementById("fnos-titlebar");if(b){b.style.removeProperty("display");b.style.setProperty("display","flex");b.style.setProperty("transform","translateY(0)");b.style.setProperty("opacity","1");b.style.setProperty("pointer-events","auto");}}catch(e){}'
+        + 'try{["fnos-tb-min","fnos-tb-max","fnos-tb-close"].forEach(function(id){var x=document.getElementById(id);if(x){x.style.removeProperty("transform");var p=x.parentElement;if(p&&p.style){p.style.removeProperty("width");}}});}catch(e){}'
         // v2.17.42：顶部热区与 resize 覆盖层也一起复位。热区是全屏态用来接管顶部鼠标的，一旦带着 pointer-events:auto 留在窗口顶部，退出全屏后主窗右上角按钮、以及内嵌窗最大化后
         // 自己的标题栏按钮都会被它吃掉点击（用户反馈"按钮全部失效"）。resize 覆盖层只负责拉边，
         // 永远不该抢点击。

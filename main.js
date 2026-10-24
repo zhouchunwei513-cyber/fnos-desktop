@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.38';
+const APP_VERSION = '2.17.39';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -944,7 +944,6 @@ const __fsStateMap = new WeakMap(); // win -> 是否处于（我们发起的）�
 function __isFsOn(win) {
   try { return !!__fsStateMap.get(win); } catch (_) { return false; }
 }
-let __fsExitHook = null; // 用户主动退出后由主窗口闭包接管：摘标记 + 还原外框
 function __exitFullScreenWin(win) {
   try {
     if (!win || win.isDestroyed()) return;
@@ -952,7 +951,7 @@ function __exitFullScreenWin(win) {
     if (__fsThrottled()) return;
     __fsStateMap.set(win, false);
     win.setFullScreen(false);
-    try { if (__fsExitHook) __fsExitHook(win); } catch (_) {}
+    try { __applyFsFor(win, false); } catch (_) {}
   } catch (_) {}
 }
 function __toggleFullScreenWin(win) {
@@ -1023,6 +1022,110 @@ function __toggleMaxWin(win) {
     __maxInfo.set(win, { on: true, pre, pseudo: false });
     try { win.maximize(); } catch (_) {}
     __maxClampLater(win);
+  } catch (_) {}
+}
+
+// v2.17.39：全屏/最大化 UI 逻辑泛化——主窗口与应用窗口（含嵌入窗）共用同一套状态机。
+// 此前全屏 UI 同步（隐藏标题栏/去圆角/body 回满）、退出还原尺寸、最大化 workArea 校正
+// 全部写死在 mainWindow 闭包里，应用窗口（影视/音乐/相册等跳出窗 + 嵌入窗）进入全屏后
+// 标题栏不隐藏、退出后尺寸不还原、最大化压任务栏。这里参数化 win，供 registerWindow 统一接线。
+function __syncFsUIFor(win, on) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send('window:fullscreen-changed', { fullscreen: !!on });
+  } catch (_) {}
+  try {
+    if (!win || win.isDestroyed()) return;
+    const __code = on ? 'document.documentElement.setAttribute("data-fnos-fs","1")'
+                      : 'document.documentElement.removeAttribute("data-fnos-fs")';
+    const __wc = win.webContents;
+    let __frames = [];
+    try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
+    if (!__frames.length) { try { __wc.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} return; }
+    for (const __f of __frames) { try { __f.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} }
+  } catch (_) {}
+}
+function __focusRendererFor(win) {
+  try { if (win && !win.isDestroyed()) win.webContents.focus(); } catch (_) {}
+  setTimeout(() => { try { if (win && !win.isDestroyed()) win.webContents.focus(); } catch (_) {} }, 120);
+}
+function __isFsGeometryFor(win) {
+  try {
+    const b = win.getBounds();
+    const d = screen.getDisplayMatching(b);
+    return b.width >= d.bounds.width - 2 && b.height >= d.bounds.height - 2;
+  } catch (_) { return false; }
+}
+function __restoreFsBoundsFor(win) {
+  const rec = __preFsBounds.get(win);
+  __preFsBounds.delete(win);
+  if (!rec || !rec.bounds || !(rec.bounds.width > 100)) return;
+  const pb = rec.bounds;
+  let n = 0;
+  const step = () => {
+    n++;
+    try {
+      if (!win || win.isDestroyed()) return;
+      if (__isFsGeometryFor(win)) { if (n < 15) setTimeout(step, 100); return; }
+      if (rec.max) {
+        const dwa = screen.getDisplayMatching(pb).workArea;
+        __maxInfo.set(win, { on: true, pre: pb, pseudo: true });
+        win.setBounds({ x: dwa.x, y: dwa.y, width: dwa.width, height: dwa.height });
+        return;
+      }
+      const cur = win.getBounds();
+      if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
+        win.setBounds(pb);
+      }
+    } catch (_) {}
+  };
+  setTimeout(step, 60);
+  setTimeout(() => {
+    try {
+      if (!win || win.isDestroyed() || __isFsGeometryFor(win) || rec.max) return;
+      const cur = win.getBounds();
+      if (Math.abs(cur.width - pb.width) > 2 || Math.abs(cur.height - pb.height) > 2
+        || Math.abs(cur.x - pb.x) > 2 || Math.abs(cur.y - pb.y) > 2) {
+        win.setBounds(pb);
+      }
+    } catch (_) {}
+  }, 420);
+}
+const __fsUiAppliedMap = new WeakMap();
+function __applyFsFor(win, on) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    on = !!on;
+    __fsStateMap.set(win, on);
+    if (on === !!__fsUiAppliedMap.get(win)) return;
+    __fsUiAppliedMap.set(win, on);
+    try { fnosLog('info', 'fullscreen', 'ui ' + (on ? 'enter' : 'leave') + ' win=' + win.id); } catch (_) {}
+    if (on) {
+      __rememberFsBounds(win);
+      __fsGuardUntil = Date.now() + 1000;
+      __syncFsUIFor(win, true);
+      __focusRendererFor(win);
+    } else {
+      __fsGuardUntil = Date.now() + 1600;
+      __syncFsUIFor(win, false);
+      __restoreFsBoundsFor(win);
+    }
+  } catch (_) {}
+}
+function __onWindowMaximize(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const st = __maxInfo.get(win);
+    if (!st || !st.on) {
+      __maxInfo.set(win, { on: true, pre: win.getNormalBounds(), pseudo: false });
+      __maxClampLater(win);
+    }
+  } catch (_) {}
+}
+function __onWindowUnmaximize(win) {
+  try {
+    const st = __maxInfo.get(win);
+    if (st && st.on && !st.pseudo) __maxInfo.set(win, { on: false, pre: null, pseudo: false });
   } catch (_) {}
 }
 
@@ -4435,6 +4538,18 @@ function registerWindow(win, opts = {}) {
     event.preventDefault();
   });
 
+  // v2.17.39：全屏/最大化事件统一接线——主窗口与应用窗口（含嵌入窗）共用同一套状态机
+  //（enter/leave 全屏同步 UI + 退出还原尺寸；maximize/unmaximize 走 workArea 校正）。
+  win.on('enter-full-screen', () => __applyFsFor(win, true));
+  win.on('leave-full-screen', () => __applyFsFor(win, false));
+  win.on('maximize', () => __onWindowMaximize(win));
+  win.on('unmaximize', () => __onWindowUnmaximize(win));
+  win.on('focus', () => { try { if (__isFsOn(win)) win.webContents.focus(); } catch (_) {} });
+  win.webContents.on('did-finish-load', () => {
+    try { __fsUiAppliedMap.delete(win); } catch (_) {}
+    try { if (__isFsOn(win)) __syncFsUIFor(win, true); } catch (_) {}
+  });
+
   // 关闭行为：主窗口弹托盘/退出选择；子窗口直接关闭
   win.on('close', (e) => {
     if (entry.isHome && !app.isQuitting && !isSwitchingPartition) {
@@ -6351,130 +6466,9 @@ function createMainWindow(partition, loadTarget) {
   //      改为状态机：enter/leave 事件 + resize 事件双路探测 isFullScreen()，变化才应用（幂等），
   //      还原带重试与二次校正；标题栏也不再 display:none（改为悬浮），不会因标记残留而彻底消失。
   try {
-    const __syncFsUI = (on) => {
-      try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        mainWindow.webContents.send('window:fullscreen-changed', { fullscreen: !!on });
-      } catch (_) {}
-      try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        const __code = on ? 'document.documentElement.setAttribute("data-fnos-fs","1")'
-                          : 'document.documentElement.removeAttribute("data-fnos-fs")';
-        const __wc = mainWindow.webContents;
-        let __frames = [];
-        try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
-        if (!__frames.length) { try { __wc.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} return; }
-        // 主 frame + 子 frame（appview iframe 里的标题栏也要随之切换）都打上全屏标记
-        for (const __f of __frames) { try { __f.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} }
-      } catch (_) {}
-    };
-    // 进入全屏后让渲染层重新拿到键盘焦点：菜单/快捷键进入时焦点会跑到 BrowserWindow，
-    // 没有焦点 webContents 就收不到 before-input-event，表现为"按 ESC 没反应，点一下页面才行"。
-    const __focusRenderer = () => {
-      try { mainWindow.webContents.focus(); } catch (_) {}
-      setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.focus(); } catch (_) {} }, 120);
-    };
-    // 退出全屏后按记录还原外框。重试最多 800ms（等系统真正退出全屏态），
-    // 再在 420ms 后做一次二次校正（防止比例锁/系统恢复在此后又改了尺寸）。
-    // 判断"窗口此刻是否仍是整屏大小"。只用于还原前决定要不要继续等，
-    // 绝不用于推断"用户退出了全屏"（该窗口 isFullScreen() 恒 false，推断必误判）。
-    const __isFsGeometry = () => {
-      try {
-        const b = mainWindow.getBounds();
-        const d = screen.getDisplayMatching(b);
-        return b.width >= d.bounds.width - 2 && b.height >= d.bounds.height - 2;
-      } catch (_) { return false; }
-    };
-    const __restoreFsBounds = () => {
-      const rec = __preFsBounds.get(mainWindow);
-      __preFsBounds.delete(mainWindow);
-      if (!rec || !rec.bounds || !(rec.bounds.width > 100)) return;
-      const pb = rec.bounds;
-      let n = 0;
-      const step = () => {
-        n++;
-        try {
-          if (!mainWindow || mainWindow.isDestroyed()) return;
-          if (__isFsGeometry()) { if (n < 15) setTimeout(step, 100); return; }
-          if (rec.max) {
-            const dwa = screen.getDisplayMatching(pb).workArea;
-            __maxInfo.set(mainWindow, { on: true, pre: pb, pseudo: true });
-            mainWindow.setBounds({ x: dwa.x, y: dwa.y, width: dwa.width, height: dwa.height });
-            return;
-          }
-          const cur = mainWindow.getBounds();
-          if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
-            mainWindow.setBounds(pb);
-          }
-        } catch (_) {}
-      };
-      setTimeout(step, 60);
-      setTimeout(() => {
-        try {
-          if (!mainWindow || mainWindow.isDestroyed() || __isFsGeometry() || rec.max) return;
-          const cur = mainWindow.getBounds();
-          if (Math.abs(cur.width - pb.width) > 2 || Math.abs(cur.height - pb.height) > 2
-            || Math.abs(cur.x - pb.x) > 2 || Math.abs(cur.y - pb.y) > 2) {
-            mainWindow.setBounds(pb);
-          }
-        } catch (_) {}
-      }, 420);
-    };
-    // v2.17.35（用户明确要求：只有按 ESC、或从悬浮标题栏菜单点「退出全屏」才允许退出全屏）
-    // 日志证据：每次 "apply enter" 之后固定约 1.88s 必出现 "apply leave probe"，间隔高度一致。
-    // 链路 = enter 之后系统还会再发一次 resize → 该窗口（transparent + roundedCorners:false）
-    // 上 isFullScreen() 恒为 false → resize 探测把"仍在全屏"判成"已退出" → 1.5s 抑制期一过
-    // 就执行还原（setBounds / maximize）把全屏踢掉。用户"动一下鼠标"只是触发了那次 resize。
-    // 定论：全屏状态只由【用户操作 + enter/leave 事件】维护，不再用 isFullScreen()/resize 反推。
-    let __fsUiApplied = false;
-    const __applyFs = (on) => {
-      try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        on = !!on;
-        __fsStateMap.set(mainWindow, on);
-        if (on === __fsUiApplied) return;
-        __fsUiApplied = on;
-        try { fnosLog('info', 'fullscreen', 'ui ' + (on ? 'enter' : 'leave')); } catch (_) {}
-        if (on) {
-          __rememberFsBounds(mainWindow); // 非入口路径（页面 / 系统触发）进来的兜底记录
-          __fsGuardUntil = Date.now() + 1000;
-          __syncFsUI(true);
-          __focusRenderer();
-        } else {
-          __fsGuardUntil = Date.now() + 1600;
-          __syncFsUI(false);
-          __restoreFsBounds();
-        }
-      } catch (_) {}
-    };
-    // 用户主动退出（ESC / F11 / 菜单项）→ 模块级函数回调这里，负责摘标记 + 还原外框
-    __fsExitHook = (w) => { try { if (w && w !== mainWindow) return; } catch (_) {} __applyFs(false); };
-    mainWindow.on('maximize', () => {
-      try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        const st = __maxInfo.get(mainWindow);
-        if (!st || !st.on) {
-          // 系统入口：还原基准取 getNormalBounds（此时已是最大化态）
-          __maxInfo.set(mainWindow, { on: true, pre: mainWindow.getNormalBounds(), pseudo: false });
-          __maxClampLater(mainWindow);
-        }
-      } catch (_) {}
-    });
-    mainWindow.on('unmaximize', () => {
-      try {
-        const st = __maxInfo.get(mainWindow);
-        if (st && st.on && !st.pseudo) __maxInfo.set(mainWindow, { on: false, pre: null, pseudo: false });
-      } catch (_) {}
-    });
-    mainWindow.on('enter-full-screen', () => __applyFs(true));
-    mainWindow.on('leave-full-screen', () => __applyFs(false));
-    // 刻意不监听 'resize' 推断全屏状态——那正是"动一下鼠标就退出全屏"的根源。
-    // 主窗口重获焦点时若仍在全屏，确保渲染层拿焦点（ESC 才收得到）
-    mainWindow.on('focus', () => { try { if (__isFsOn(mainWindow)) mainWindow.webContents.focus(); } catch (_) {} });
-    mainWindow.webContents.on('did-finish-load', () => {
-      try { __fsUiApplied = false; } catch (_) {}
-      try { if (__isFsOn(mainWindow)) __syncFsUI(true); } catch (_) {}
-    });
+    // v2.17.39：全屏/最大化 UI 逻辑已泛化为模块级 __applyFsFor/__syncFsUIFor/__restoreFsBoundsFor/
+    // __onWindowMaximize/__onWindowUnmaximize，由 registerWindow 对主窗口与应用窗口统一接线。
+    // 此处仅保留主窗口特有的 webview guest 按键接线（__fsKeyHandler/__wireFsKeys）。
     // 统一按键处理：同一份函数挂到主 wc 与所有 guest wc（<webview>）。
     const __fsKeyHandler = (event, input) => {
       try {

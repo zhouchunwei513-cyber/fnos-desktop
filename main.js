@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.39';
+const APP_VERSION = '2.17.40';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1036,8 +1036,15 @@ function __syncFsUIFor(win, on) {
   } catch (_) {}
   try {
     if (!win || win.isDestroyed()) return;
-    const __code = on ? 'document.documentElement.setAttribute("data-fnos-fs","1")'
-                      : 'document.documentElement.removeAttribute("data-fnos-fs")';
+    // v2.17.40：除设 data-fnos-fs 属性外，直接对标题栏元素写入 inline !important 的 display。
+    // 实测（用户录屏）：进入全屏后 #fnos-titlebar 仍留在顶部、body 20px 圆角也还在，说明只靠
+    // 属性 + 渲染层样式表这条路在该窗口上没落地（属性与样式可能被全屏过渡时序吞掉）。
+    // 这里把隐藏动作直接落到 DOM inline 上，与样式表双保险；退出时逐项 removeProperty 还原。
+    const __code = on
+      ? 'try{document.documentElement.setAttribute("data-fnos-fs","1");}catch(e){}'
+        + 'try{var b=document.getElementById("fnos-titlebar");if(b){b.style.setProperty("display","none","important");}}catch(e){}'
+      : 'try{document.documentElement.removeAttribute("data-fnos-fs");}catch(e){}'
+        + 'try{var b=document.getElementById("fnos-titlebar");if(b){b.style.removeProperty("display");}}catch(e){}';
     const __wc = win.webContents;
     let __frames = [];
     try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
@@ -1105,6 +1112,10 @@ function __applyFsFor(win, on) {
       __fsGuardUntil = Date.now() + 1000;
       __syncFsUIFor(win, true);
       __focusRendererFor(win);
+      // v2.17.40：全屏过渡期渲染进程正被窗口尺寸变化占住，首帧的 executeJavaScript 可能落在过渡中途。
+      // 幂等重发两次（仍是全屏态才发），保证标题栏隐藏与 body 回满一定落地。
+      setTimeout(() => { try { if (!win.isDestroyed() && __isFsOn(win)) __syncFsUIFor(win, true); } catch (_) {} }, 700);
+      setTimeout(() => { try { if (!win.isDestroyed() && __isFsOn(win)) __syncFsUIFor(win, true); } catch (_) {} }, 1500);
     } else {
       __fsGuardUntil = Date.now() + 1600;
       __syncFsUIFor(win, false);

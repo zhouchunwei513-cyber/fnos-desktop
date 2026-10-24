@@ -882,7 +882,14 @@ module.exports = function injectTitleBar(ctx) {
           // 得到完全一致的几何；同时补 overflow-y 让超出内容内部滚动而不是被硬裁。
           'html>body{overflow-y:auto !important;}' +
           'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}' +
-          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}'
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}' +
+          // v2.17.40（用户反馈：内嵌窗最大化后底部显示不出来）——主窗分支此前只覆盖 .h-screen/.h-dvh
+          // 这两个精确类名，缺应用窗 v2.17.20 那套 [class*="100vh"] 子串兜底。飞牛桌面里的内嵌窗最大化
+          // 时用任意值写法（h-[100vh]/h-[100dvh]）或 inline style 把容器撑到整个视口，而 body 已经下移
+          // 34px，容器底部就超出 body 底边 34px 被 clip-path 裁掉（副标题/播放条/底栏被切一半）。
+          // 补同两条 max-height 上限规则，让内嵌窗最大化后完整落在主程序窗口内容区内。
+          'html>body [class*="100vh"],html>body [class*="100dvh"],html>body [class*="h-screen"],html>body [class*="h-dvh"],html>body [class*="dvh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}' +
+          'html>body [style*="100vh"],html>body [style*="100dvh"],html>body [style*="dvh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);
@@ -1553,7 +1560,12 @@ module.exports = function injectTitleBar(ctx) {
           const st = document.createElement('style');
           st.id = 'fnos-tb-fullscreen-style';
           st.textContent = [
-            'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;}',
+            // v2.17.40（用户反馈：全屏画面透出下层桌面）——此前全屏态只有几何规则，而应用窗口的 body
+            // 正常态本来透明（要透出桌面壁纸给标题栏看），全屏后页面根容器若不满铺（Lucky 这类固定尺寸
+            // 登录页），透明区域就把下层主程序桌面/桌面图标/系统监控面板整个透出来。只在全屏态补不透明
+            // 底色 + min-width:100vw：不碰 html（html 透明是圆角的铁律），正常窗口态的透明与 20px 圆角
+            // 完全不受影响；background-image 不动，页面自带背景图仍优先。
+            'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;min-width:100vw !important;background-color:#05060a !important;overflow-x:hidden !important;}',
             'html[data-fnos-fs="1"] #fnos-titlebar{z-index:2147483647 !important;}',
             // v2.17.36（用户要求）：删掉全屏时的"悬浮隐藏式标题栏"——全屏态标题栏与顶部热区
             // 一律 display:none，鼠标推到顶部也不会再滑出；退出全屏后自动恢复（选择器带 data-fnos-fs）

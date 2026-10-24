@@ -530,7 +530,11 @@ module.exports = function injectTitleBar(ctx) {
         bar.style.pointerEvents = 'auto';
         // v2.15.43: 自动隐藏调出后 -webkit-app-region:drag 的拖拽区域可能因 transform 过渡失效，
         // 强制 no-drag→drag 重注册拖拽区域，恢复可拖动
-        if (AUTO_HIDE || window.__fnosFsOn) {
+        if (window.__fnosFsOn) {
+          // v2.17.35：全屏态标题栏一律 no-drag。drag 区会让 Windows 把整屏窗口"拖出全屏"，
+          // 而用户要求全屏只能由 ESC / 菜单「退出全屏」结束，所以全屏时不再注册拖拽区。
+          bar.style.setProperty('-webkit-app-region', 'no-drag');
+        } else if (AUTO_HIDE) {
           bar.style.setProperty('-webkit-app-region', 'no-drag');
           void bar.offsetHeight; // 强制同步 reflow，确保 no-drag 先生效
           bar.style.setProperty('-webkit-app-region', 'drag');
@@ -1550,7 +1554,9 @@ module.exports = function injectTitleBar(ctx) {
           st.textContent = [
             'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;}',
             'html[data-fnos-fs="1"] #fnos-titlebar{z-index:2147483647 !important;}',
-            'html[data-fnos-fs="1"] #fnos-tb-dragstrip,html[data-fnos-fs="1"] #fnos-resize-cover{display:none !important;}'
+            'html[data-fnos-fs="1"] #fnos-tb-dragstrip,html[data-fnos-fs="1"] #fnos-resize-cover{display:none !important;}',
+            // v2.17.35：全屏态整个标题栏（含热区与子元素）强制 no-drag，禁止出现可拖动区
+            'html[data-fnos-fs="1"] #fnos-titlebar,html[data-fnos-fs="1"] #fnos-titlebar *,html[data-fnos-fs="1"] #fnos-titlebar-hotzone{-webkit-app-region:no-drag !important;}'
           ].join('\n');
           (document.head || document.documentElement).appendChild(st);
         }

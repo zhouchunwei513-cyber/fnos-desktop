@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.34';
+const APP_VERSION = '2.17.35';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -926,7 +926,7 @@ function __fsThrottled() {
 function __rememberFsBounds(win) {
   try {
     if (!win || win.isDestroyed() || __preFsBounds.has(win)) return;
-    if (win.isFullScreen()) return; // 已在全屏态：此时 bounds 是全屏尺寸，不能当还原基准
+    if (__isFsOn(win)) return; // 已在全屏态：此时 bounds 是全屏尺寸，不能当还原基准
     const max = win.isMaximized();
     const b = max ? win.getNormalBounds() : win.getBounds();
     try {
@@ -937,24 +937,36 @@ function __rememberFsBounds(win) {
     __preFsBounds.set(win, { bounds: b, max });
   } catch (_) {}
 }
-// v2.17.34：用户主动退出全屏的时刻（ESC / F11 / 菜单）——探测到的退出要据此豁免过渡期抑制，
-// 否则刚进全屏就按 ESC 会被当成"过渡期假象"压掉，表现为 ESC 失灵。
-let __fsUserExitAt = 0;
+// v2.17.35：全屏状态改为【自维护】，不再读 win.isFullScreen()。
+// 实测（用户日志）：本窗口（transparent + roundedCorners:false）上 isFullScreen() 恒为 false，
+// 于是任何基于它的判断都会把"已经全屏"当成"没全屏"，退出流程被误触发。
+const __fsStateMap = new WeakMap(); // win -> 是否处于（我们发起的）全屏
+function __isFsOn(win) {
+  try { return !!__fsStateMap.get(win); } catch (_) { return false; }
+}
+let __fsExitHook = null; // 用户主动退出后由主窗口闭包接管：摘标记 + 还原外框
 function __exitFullScreenWin(win) {
   try {
     if (!win || win.isDestroyed()) return;
-    if (!win.isFullScreen()) return;
+    if (!__isFsOn(win)) return;
     if (__fsThrottled()) return;
-    __fsUserExitAt = Date.now();
+    __fsStateMap.set(win, false);
     win.setFullScreen(false);
+    try { if (__fsExitHook) __fsExitHook(win); } catch (_) {}
   } catch (_) {}
 }
 function __toggleFullScreenWin(win) {
   try {
     if (!win || win.isDestroyed()) return;
     if (__fsThrottled()) return;
-    if (win.isFullScreen()) { __fsUserExitAt = Date.now(); win.setFullScreen(false); return; }
+    if (__isFsOn(win)) {
+      __fsStateMap.set(win, false);
+      win.setFullScreen(false);
+      try { if (__fsExitHook) __fsExitHook(win); } catch (_) {}
+      return;
+    }
     __rememberFsBounds(win);
+    __fsStateMap.set(win, true);
     win.setFullScreen(true);
   } catch (_) {}
 }
@@ -4355,7 +4367,7 @@ function registerWindow(win, opts = {}) {
     if (input.alt || input.control || input.meta || input.shift) return;
     const exit = (hasFs) => {
       if (hasFs) return;
-      if (win.isFullScreen()) win.setFullScreen(false);
+      if (__isFsOn(win)) __exitFullScreenWin(win);
       else if (win.isMaximized()) win.unmaximize();
     };
     win.webContents.executeJavaScript('!!document.fullscreenElement', true)
@@ -6220,7 +6232,7 @@ function createMainWindow(partition, loadTarget) {
     // 现改为只等 'resized'（拖动结束后一次性事件）校正一次，与应用窗口行为一致。
     mainWindow.on('resized', () => {
       try {
-        if (__lockAspect || mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
+        if (__lockAspect || mainWindow.isMaximized() || __isFsOn(mainWindow)) return;
         if (Date.now() < __fsGuardUntil) return;
         const [nw, nh] = __aspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
@@ -6249,7 +6261,7 @@ function createMainWindow(partition, loadTarget) {
     const __saveBounds = () => {
       try {
         if (Date.now() < __fsGuardUntil) return;
-        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !mainWindow.isFullScreen() && !mainWindow.isMaximized()) {
+        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !__isFsOn(mainWindow) && !mainWindow.isMaximized()) {
           const __bounds = mainWindow.getBounds();
           __bounds.waW = __primaryWA.width;
           __bounds.waH = __primaryWA.height;
@@ -6300,6 +6312,15 @@ function createMainWindow(partition, loadTarget) {
     };
     // 退出全屏后按记录还原外框。重试最多 800ms（等系统真正退出全屏态），
     // 再在 420ms 后做一次二次校正（防止比例锁/系统恢复在此后又改了尺寸）。
+    // 判断"窗口此刻是否仍是整屏大小"。只用于还原前决定要不要继续等，
+    // 绝不用于推断"用户退出了全屏"（该窗口 isFullScreen() 恒 false，推断必误判）。
+    const __isFsGeometry = () => {
+      try {
+        const b = mainWindow.getBounds();
+        const d = screen.getDisplayMatching(b);
+        return b.width >= d.bounds.width - 2 && b.height >= d.bounds.height - 2;
+      } catch (_) { return false; }
+    };
     const __restoreFsBounds = () => {
       const rec = __preFsBounds.get(mainWindow);
       __preFsBounds.delete(mainWindow);
@@ -6310,7 +6331,7 @@ function createMainWindow(partition, loadTarget) {
         n++;
         try {
           if (!mainWindow || mainWindow.isDestroyed()) return;
-          if (mainWindow.isFullScreen()) { if (n < 8) setTimeout(step, 100); return; }
+          if (__isFsGeometry()) { if (n < 8) setTimeout(step, 100); return; }
           if (rec.max) { if (!mainWindow.isMaximized()) mainWindow.maximize(); return; }
           const cur = mainWindow.getBounds();
           if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
@@ -6321,7 +6342,7 @@ function createMainWindow(partition, loadTarget) {
       setTimeout(step, 60);
       setTimeout(() => {
         try {
-          if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFullScreen() || rec.max) return;
+          if (!mainWindow || mainWindow.isDestroyed() || __isFsGeometry() || rec.max) return;
           const cur = mainWindow.getBounds();
           if (Math.abs(cur.width - pb.width) > 2 || Math.abs(cur.height - pb.height) > 2
             || Math.abs(cur.x - pb.x) > 2 || Math.abs(cur.y - pb.y) > 2) {
@@ -6330,39 +6351,23 @@ function createMainWindow(partition, loadTarget) {
         } catch (_) {}
       }, 420);
     };
-    // 幂等状态机：只有 isFullScreen() 真的变了才动。事件与 resize 双路喂进来，
-    // 任何一路丢失都不影响最终一致性。
-    let __fsApplied = false;
-    let __fsAppliedAt = 0;
-    let __fsPendingExit = null;
-    const __applyFs = (on, fromProbe) => {
+    // v2.17.35（用户明确要求：只有按 ESC、或从悬浮标题栏菜单点「退出全屏」才允许退出全屏）
+    // 日志证据：每次 "apply enter" 之后固定约 1.88s 必出现 "apply leave probe"，间隔高度一致。
+    // 链路 = enter 之后系统还会再发一次 resize → 该窗口（transparent + roundedCorners:false）
+    // 上 isFullScreen() 恒为 false → resize 探测把"仍在全屏"判成"已退出" → 1.5s 抑制期一过
+    // 就执行还原（setBounds / maximize）把全屏踢掉。用户"动一下鼠标"只是触发了那次 resize。
+    // 定论：全屏状态只由【用户操作 + enter/leave 事件】维护，不再用 isFullScreen()/resize 反推。
+    let __fsUiApplied = false;
+    const __applyFs = (on) => {
       try {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         on = !!on;
-        if (on === __fsApplied) return;
-        // v2.17.34（用户实测「点菜单全屏，闪一下，全屏不了」的根因）：
-        // 进入全屏有过渡期——Windows 会先取消最大化/改尺寸，再真正全屏。这期间 resize 与
-        // leave-full-screen 会短暂报 isFullScreen()===false。v2.17.33 把这当成"用户退出"，
-        // 立刻还原外框（最大化态的还原就是 maximize()），而 maximize() 会取消全屏 →
-        // 刚进的全屏被打掉，观感就是"闪一下又回来"。
-        // 现在：探测到的退出，在进入后 1.5s 内一律压住（用户主动退出 800ms 内例外放行），
-        // 并挂一次迟到复检，万一真是系统级退出也不会漏掉状态同步。
-        if (!on && fromProbe
-          && Date.now() - __fsAppliedAt < 1500
-          && Date.now() - __fsUserExitAt > 800) {
-          setTimeout(() => {
-            try {
-              if (!mainWindow || mainWindow.isDestroyed()) return;
-              if (__fsApplied && !mainWindow.isFullScreen()) __applyFs(false, true);
-            } catch (_) {}
-          }, 1650);
-          return;
-        }
-        __fsApplied = on;
-        __fsAppliedAt = Date.now();
-        try { fnosLog('info', 'fullscreen', 'apply ' + (on ? 'enter' : 'leave') + (fromProbe ? ' probe' : ' direct')); } catch (_) {}
+        __fsStateMap.set(mainWindow, on);
+        if (on === __fsUiApplied) return;
+        __fsUiApplied = on;
+        try { fnosLog('info', 'fullscreen', 'ui ' + (on ? 'enter' : 'leave')); } catch (_) {}
         if (on) {
-          __rememberFsBounds(mainWindow); // 非入口路径（页面/系统触发）进来的兜底记录
+          __rememberFsBounds(mainWindow); // 非入口路径（页面 / 系统触发）进来的兜底记录
           __fsGuardUntil = Date.now() + 1000;
           __syncFsUI(true);
           __focusRenderer();
@@ -6373,40 +6378,16 @@ function createMainWindow(partition, loadTarget) {
         }
       } catch (_) {}
     };
-    // 退出要"确认"两次：过渡期的 false 是假象，隔 220ms 再看一眼，仍非全屏才算真退出。
-    const __fsConfirmExit = () => {
-      if (__fsPendingExit) return;
-      __fsPendingExit = setTimeout(() => {
-        __fsPendingExit = null;
-        try {
-          if (!mainWindow || mainWindow.isDestroyed()) return;
-          if (mainWindow.isFullScreen()) return; // 又回到全屏，忽略
-          __applyFs(false, true);
-        } catch (_) {}
-      }, 220);
-    };
-    mainWindow.on('enter-full-screen', () => {
-      try { if (__fsPendingExit) { clearTimeout(__fsPendingExit); __fsPendingExit = null; } } catch (_) {}
-      __applyFs(true);
-    });
-    mainWindow.on('leave-full-screen', () => __applyFs(false, true));
-    mainWindow.on('resize', () => {
-      try {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        if (mainWindow.isFullScreen()) {
-          if (__fsPendingExit) { clearTimeout(__fsPendingExit); __fsPendingExit = null; }
-          __applyFs(true, true);
-          return;
-        }
-        if (!__fsApplied) return;
-        __fsConfirmExit();
-      } catch (_) {}
-    });
-    // 主窗口被点回来/重获焦点时，若仍在全屏，确保渲染层拿焦点（ESC 才收得到）
-    mainWindow.on('focus', () => { try { if (mainWindow.isFullScreen()) mainWindow.webContents.focus(); } catch (_) {} });
+    // 用户主动退出（ESC / F11 / 菜单项）→ 模块级函数回调这里，负责摘标记 + 还原外框
+    __fsExitHook = (w) => { try { if (w && w !== mainWindow) return; } catch (_) {} __applyFs(false); };
+    mainWindow.on('enter-full-screen', () => __applyFs(true));
+    mainWindow.on('leave-full-screen', () => __applyFs(false));
+    // 刻意不监听 'resize' 推断全屏状态——那正是"动一下鼠标就退出全屏"的根源。
+    // 主窗口重获焦点时若仍在全屏，确保渲染层拿焦点（ESC 才收得到）
+    mainWindow.on('focus', () => { try { if (__isFsOn(mainWindow)) mainWindow.webContents.focus(); } catch (_) {} });
     mainWindow.webContents.on('did-finish-load', () => {
-      try { __fsApplied = mainWindow.isFullScreen(); __fsAppliedAt = 0; } catch (_) {}
-      try { if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) __syncFsUI(true); } catch (_) {}
+      try { __fsUiApplied = false; } catch (_) {}
+      try { if (__isFsOn(mainWindow)) __syncFsUI(true); } catch (_) {}
     });
     // 统一按键处理：同一份函数挂到主 wc 与所有 guest wc（<webview>）。
     const __fsKeyHandler = (event, input) => {
@@ -6417,7 +6398,7 @@ function createMainWindow(partition, loadTarget) {
           event.preventDefault();
           __toggleFullScreenWin(mainWindow);
         } else if (input.key === 'Escape') {
-          if (mainWindow.isFullScreen()) { event.preventDefault(); __exitFullScreenWin(mainWindow); }
+          if (__isFsOn(mainWindow)) { event.preventDefault(); __exitFullScreenWin(mainWindow); }
           else if (mainWindow.isMaximized()) { event.preventDefault(); mainWindow.unmaximize(); }
         }
       } catch (_) {}

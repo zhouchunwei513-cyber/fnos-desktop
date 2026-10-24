@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.18';
+const APP_VERSION = '2.17.19';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5988,7 +5988,7 @@ function __suppressDwmBorder(win) {
       "Add-Type -TypeDefinition $src;" +
       "$v=-2;" +
       "[FDWM]::DwmSetWindowAttribute([IntPtr]" + hwnd + ",34,[ref]$v,4)|Out-Null;";
-    cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 8000, windowsHide: true });
+    cp.spawnSync(__resolvePsExe(), ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 8000, windowsHide: true });
   } catch (_) {}
 }
 
@@ -7789,11 +7789,11 @@ try {
 } catch { exit 1 }
 `;
     // v2.5.5 r21：超时 8s→15s（550KB 大图 8s 超时实锤）+失败重试一次+错误详情留痕（问题7）
-    let r = cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    let r = cp.spawnSync(__resolvePsExe(), ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
     let out = null;
     const __take = () => { try { if (fs.existsSync(outP)) { const b = fs.readFileSync(outP); if (b.length > 100) return b; } } catch (_) {} return null; };
     if (r && r.status === 0) out = __take();
-    if (!out) { try { r = cp.spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true }); if (r && r.status === 0) out = __take(); } catch (_) {} }
+    if (!out) { try { r = cp.spawnSync(__resolvePsExe(), ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true }); if (r && r.status === 0) out = __take(); } catch (_) {} }
     if (!out) { try { fnosLog('warn', 'icon.decode', 'wic run failed', { status: r ? r.status : null, signal: r ? String(r.signal || '') : '', err: String((r && r.stderr) || '').slice(0, 160) }); } catch (_) {} }
     try { fs.unlinkSync(inP); } catch (_) {}
     try { fs.unlinkSync(outP); } catch (_) {}
@@ -9066,6 +9066,56 @@ ipcMain.handle('get-installed-apps', async () => {
 // 与 FPK 应用快捷方式同链：.lnk → wscript 触发器（秒开 loopback /launch）→程序未运行回落
 // 冷启动 exe --launch-app=__fnos.live__；/launch、__handleSecondInstance、
 // launchSubAppFromArgs 三处识别保留 ID 直达内置直播窗（live.html），全程不弹主界面。
+// v2.17.19: 原先多处按命令名 spawnSync('powershell', ...)，能否执行完全取决于 PATH。
+// Administrator 精简系统 / 被第三方软件改过 PATH 的机器上 System32\WindowsPowerShell\v1.0
+// 不在 PATH，spawnSync 直接 ENOENT（v2.17.18 已修应用快捷方式，但电视直播快捷方式走的是
+// 另一条链路，同样中招）。这里统一解析绝对路径，解析不到才回落命令名。
+let __psExeCache = '';
+function __resolvePsExe() {
+  if (__psExeCache) return __psExeCache;
+  try {
+    const root = String(process.env.SystemRoot || process.env.windir || 'C:\\Windows');
+    const cands = [
+      path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      path.join(root, 'Sysnative', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    ];
+    for (const c of cands) {
+      try { if (fs.existsSync(c)) { __psExeCache = c; return c; } } catch (_) {}
+    }
+  } catch (_) {}
+  __psExeCache = 'powershell';
+  return __psExeCache;
+}
+
+// PowerShell 完全不可用时用 wscript + 临时 VBS 建 .lnk：WScript.Shell.CreateShortcut
+// 与 PowerShell 的 -ComObject WScript.Shell 是同一个 COM 接口，而 wscript.exe 是系统
+// 必备组件、不依赖 PATH。成功以 lnkPath 真实存在为准（status=0 不足以证明写成功）。
+function __lnkViaWscript(o) {
+  try {
+    const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const lines = [
+      'Set ws = CreateObject("WScript.Shell")',
+      'Set sc = ws.CreateShortcut(' + q(o.lnkPath) + ')',
+      'sc.TargetPath = ' + q(o.target),
+      'sc.Arguments = ' + q(o.args || ''),
+      'sc.WorkingDirectory = ' + q(o.workDir || ''),
+      'sc.Description = ' + q(o.desc || '')
+    ];
+    if (o.icon) lines.push('sc.IconLocation = ' + q(o.icon));
+    lines.push('sc.Save()');
+    const tmp = path.join(app.getPath('temp'), 'fnos-mklnk-' + process.pid + '-' + Date.now() + '.vbs');
+    fs.writeFileSync(tmp, lines.join('\r\n') + '\r\n', 'utf8');
+    const wsExe = path.join(String(process.env.SystemRoot || process.env.windir || 'C:\\Windows'), 'System32', 'wscript.exe');
+    const r = cp.spawnSync(fs.existsSync(wsExe) ? wsExe : 'wscript.exe', ['//B', '//Nologo', tmp], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    let ok = false;
+    try { ok = fs.existsSync(o.lnkPath); } catch (_) {}
+    return { ok, status: r && r.status, err: String((r && (r.stderr || r.error)) || '').slice(0, 300) };
+  } catch (e) {
+    return { ok: false, status: -1, err: String((e && e.message) || e).slice(0, 300) };
+  }
+}
+
 async function __createLiveShortcut(name) {
   try {
     const appName = String(name || '电视直播').trim() || '电视直播';
@@ -9119,8 +9169,22 @@ $sc.Description = 'FNOS 电视直播播放器'
 ${iconPs}
 $sc.Save()
 `;
-    const result = cp.spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
-    if (result.status === 0) {
+    const result = cp.spawnSync(__resolvePsExe(), ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    let __liveOk = !!(result && result.status === 0);
+    if (__liveOk) { try { __liveOk = fs.existsSync(lnkPath); } catch (_) { __liveOk = false; } }
+    if (!__liveOk) {
+      const __fb = __lnkViaWscript({
+        lnkPath,
+        target: __wscript,
+        args: __lnkArgs,
+        workDir: path.dirname(exePath),
+        desc: 'FNOS 电视直播播放器',
+        icon: (icoPath && fs.existsSync(icoPath)) ? icoPath : (exePath + ',0')
+      });
+      fnosLog('warn', 'shortcut.path', 'live-shortcut.vbs-fallback', { lnk: __fb.ok, status: __fb.status, err: __fb.err });
+      if (__fb.ok) __liveOk = true;
+    }
+    if (__liveOk) {
       fnosLog('info', 'ipc', '电视直播快捷方式创建成功', { lnkPath, icoPath });
       return { success: true, msg: '桌面快捷方式已生成', data: { path: lnkPath } };
     }
@@ -9129,6 +9193,9 @@ $sc.Save()
     let __msg = __errText.slice(0, 300) || '创建失败';
     if (/拒绝访问|access\s*is\s*denied|0x80070005|EPERM|EACCES|unauthorized/i.test(__errText)) {
       __msg = '权限不足：无法写入桌面快捷方式，请以管理员权限重试';
+    }
+    if (/spawnSync[\s\S]*ENOENT|ENOENT/i.test(__errText)) {
+      __msg = '创建失败：未能调用系统组件（PowerShell / WScript），请检查系统环境后重试';
     }
     return { success: false, msg: __msg, data: null };
   } catch (e) {
@@ -9619,6 +9686,7 @@ $sc.Save()
     })();
     const result = cp.spawnSync(__psExe, ['-NoProfile', '-Command', ps], { encoding: 'utf-8', timeout: 15000, windowsHide: true });
     let __shortcutOk = !!(result && result.status === 0);
+    if (__shortcutOk) { try { __shortcutOk = fs.existsSync(lnkPath); } catch (_) { __shortcutOk = false; } }
     if (!__shortcutOk) {
       fnosLog('warn', 'shortcut.path', 'shortcut.ps-fallback', { psExe: __psExe, err: String((result && (result.stderr || result.error)) || '').slice(0, 300) });
       try {

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.36';
+const APP_VERSION = '2.17.37';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -927,8 +927,8 @@ function __rememberFsBounds(win) {
   try {
     if (!win || win.isDestroyed() || __preFsBounds.has(win)) return;
     if (__isFsOn(win)) return; // 已在全屏态：此时 bounds 是全屏尺寸，不能当还原基准
-    const max = win.isMaximized();
-    const b = max ? win.getNormalBounds() : win.getBounds();
+    const max = __maxOn(win);
+    const b = max ? (__maxPre(win) || win.getNormalBounds()) : win.getBounds();
     try {
       // 尺寸已经贴近屏幕工作区（Windows 会先把窗口撑满再通知）时同样不可信
       const wa = screen.getPrimaryDisplay().workAreaSize;
@@ -964,6 +964,65 @@ function __toggleFullScreenWin(win) {
     __rememberFsBounds(win);
     __fsStateMap.set(win, true);
     win.setFullScreen(true);
+  } catch (_) {}
+}
+// v2.17.37（用户要求：最大化 ≠ 全屏，最大化要保留标题栏、底部必须在任务栏之上）：
+// 本窗口是 transparent + frame:false（Windows 上即 WS_POPUP 系），原生 maximize() 会把窗口
+// 一直铺到屏幕最底部、压住任务栏。这里自维护最大化状态并做 overflow 校正：
+//   优先用原生 maximize（保留贴边动画/拖动还原等系统手感）；若发现窗口越过 workArea，
+//   立刻退化为 setBounds(workArea) 的等价铺满，保证底部落在任务栏上方。
+const __maxInfo = new WeakMap(); // win -> { on, pre: 还原用 bounds, pseudo: 是否已退化为手工铺满 }
+function __maxOn(win) {
+  try { const s = __maxInfo.get(win); return !!(s && s.on); } catch (_) { return false; }
+}
+function __maxPre(win) {
+  try { const s = __maxInfo.get(win); return s && s.pre ? s.pre : null; } catch (_) { return null; }
+}
+function __maxClampLater(win) {
+  setTimeout(() => {
+    try {
+      if (!win || win.isDestroyed()) return;
+      const st = __maxInfo.get(win);
+      if (!st || !st.on || st.pseudo) return;
+      const b = win.getBounds();
+      const wa = screen.getDisplayMatching(b).workArea;
+      const over = (b.y + b.height > wa.y + wa.height + 1) || (b.height > wa.height + 1)
+        || (b.x < wa.x - 1) || (b.x + b.width > wa.x + wa.width + 1);
+      try {
+        fnosLog('info', 'window', 'max check ' + (over ? 'overflow' : 'ok')
+          + ' b=' + [b.x, b.y, b.width, b.height].join(',')
+          + ' wa=' + [wa.x, wa.y, wa.width, wa.height].join(','));
+      } catch (_) {}
+      if (!over) return;
+      __maxInfo.set(win, { on: true, pre: st.pre, pseudo: true });
+      try { win.unmaximize(); } catch (_) {}
+      setTimeout(() => {
+        try {
+          if (!win.isDestroyed()) win.setBounds({ x: wa.x, y: wa.y, width: wa.width, height: wa.height });
+        } catch (_) {}
+      }, 40);
+    } catch (_) {}
+  }, 260);
+}
+function __toggleMaxWin(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const st = __maxInfo.get(win);
+    if (st && st.on) {
+      __maxInfo.set(win, { on: false, pre: null, pseudo: false });
+      try { win.unmaximize(); } catch (_) {}
+      const pb = st.pre;
+      if (pb) {
+        setTimeout(() => {
+          try { if (!win.isDestroyed()) win.setBounds(pb); } catch (_) {}
+        }, 40);
+      }
+      return;
+    }
+    const pre = win.getBounds();
+    __maxInfo.set(win, { on: true, pre, pseudo: false });
+    try { win.maximize(); } catch (_) {}
+    __maxClampLater(win);
   } catch (_) {}
 }
 
@@ -2112,7 +2171,7 @@ ipcMain.on('window-maximize', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
     if (!w || w.isDestroyed()) return;
-    if (w.isMaximized()) w.unmaximize(); else w.maximize();
+    __toggleMaxWin(w);
   } catch (_) {}
 });
 ipcMain.on('window-close', (e) => {
@@ -2164,7 +2223,7 @@ ipcMain.on('app-popup-menu', (e) => {
 ipcMain.on('window-is-maximized', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
-    if (w && !w.isDestroyed()) e.sender.send('window-maximized-state', { maximized: w.isMaximized() });
+    if (w && !w.isDestroyed()) e.sender.send('window-maximized-state', { maximized: __maxOn(w) });
   } catch (_) {}
 });
 
@@ -4364,7 +4423,7 @@ function registerWindow(win, opts = {}) {
     const exit = (hasFs) => {
       if (hasFs) return;
       if (__isFsOn(win)) __exitFullScreenWin(win);
-      else if (win.isMaximized()) win.unmaximize();
+      else if (__maxOn(win)) __toggleMaxWin(win);
     };
     win.webContents.executeJavaScript('!!document.fullscreenElement', true)
       .then(exit).catch(() => exit(false));
@@ -6228,7 +6287,7 @@ function createMainWindow(partition, loadTarget) {
     // 现改为只等 'resized'（拖动结束后一次性事件）校正一次，与应用窗口行为一致。
     mainWindow.on('resized', () => {
       try {
-        if (__lockAspect || mainWindow.isMaximized() || __isFsOn(mainWindow)) return;
+        if (__lockAspect || __maxOn(mainWindow) || __isFsOn(mainWindow)) return;
         if (Date.now() < __fsGuardUntil) return;
         const [nw, nh] = __aspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
@@ -6257,7 +6316,7 @@ function createMainWindow(partition, loadTarget) {
     const __saveBounds = () => {
       try {
         if (Date.now() < __fsGuardUntil) return;
-        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !__isFsOn(mainWindow) && !mainWindow.isMaximized()) {
+        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !__isFsOn(mainWindow) && !__maxOn(mainWindow)) {
           const __bounds = mainWindow.getBounds();
           __bounds.waW = __primaryWA.width;
           __bounds.waH = __primaryWA.height;
@@ -6328,7 +6387,12 @@ function createMainWindow(partition, loadTarget) {
         try {
           if (!mainWindow || mainWindow.isDestroyed()) return;
           if (__isFsGeometry()) { if (n < 15) setTimeout(step, 100); return; }
-          if (rec.max) { if (!mainWindow.isMaximized()) mainWindow.maximize(); return; }
+          if (rec.max) {
+            const dwa = screen.getDisplayMatching(pb).workArea;
+            __maxInfo.set(mainWindow, { on: true, pre: pb, pseudo: true });
+            mainWindow.setBounds({ x: dwa.x, y: dwa.y, width: dwa.width, height: dwa.height });
+            return;
+          }
           const cur = mainWindow.getBounds();
           if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
             mainWindow.setBounds(pb);
@@ -6376,6 +6440,23 @@ function createMainWindow(partition, loadTarget) {
     };
     // 用户主动退出（ESC / F11 / 菜单项）→ 模块级函数回调这里，负责摘标记 + 还原外框
     __fsExitHook = (w) => { try { if (w && w !== mainWindow) return; } catch (_) {} __applyFs(false); };
+    mainWindow.on('maximize', () => {
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const st = __maxInfo.get(mainWindow);
+        if (!st || !st.on) {
+          // 系统入口：还原基准取 getNormalBounds（此时已是最大化态）
+          __maxInfo.set(mainWindow, { on: true, pre: mainWindow.getNormalBounds(), pseudo: false });
+          __maxClampLater(mainWindow);
+        }
+      } catch (_) {}
+    });
+    mainWindow.on('unmaximize', () => {
+      try {
+        const st = __maxInfo.get(mainWindow);
+        if (st && st.on && !st.pseudo) __maxInfo.set(mainWindow, { on: false, pre: null, pseudo: false });
+      } catch (_) {}
+    });
     mainWindow.on('enter-full-screen', () => __applyFs(true));
     mainWindow.on('leave-full-screen', () => __applyFs(false));
     // 刻意不监听 'resize' 推断全屏状态——那正是"动一下鼠标就退出全屏"的根源。
@@ -6395,7 +6476,7 @@ function createMainWindow(partition, loadTarget) {
           __toggleFullScreenWin(mainWindow);
         } else if (input.key === 'Escape') {
           if (__isFsOn(mainWindow)) { event.preventDefault(); __exitFullScreenWin(mainWindow); }
-          else if (mainWindow.isMaximized()) { event.preventDefault(); mainWindow.unmaximize(); }
+          else if (__maxOn(mainWindow)) { event.preventDefault(); __toggleMaxWin(mainWindow); }
         }
       } catch (_) {}
     };
@@ -9131,7 +9212,7 @@ ipcMain.handle('shell:minimize', () => {
 ipcMain.handle('shell:toggle-maximize', () => {
   try {
     if (!mainWindow) return;
-    if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize();
+    __toggleMaxWin(mainWindow);
   } catch (_) {}
 });
 ipcMain.handle('shell:close', () => {

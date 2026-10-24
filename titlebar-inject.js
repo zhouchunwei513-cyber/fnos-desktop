@@ -530,7 +530,7 @@ module.exports = function injectTitleBar(ctx) {
         bar.style.pointerEvents = 'auto';
         // v2.15.43: 自动隐藏调出后 -webkit-app-region:drag 的拖拽区域可能因 transform 过渡失效，
         // 强制 no-drag→drag 重注册拖拽区域，恢复可拖动
-        if (AUTO_HIDE) {
+        if (AUTO_HIDE || window.__fnosFsOn) {
           bar.style.setProperty('-webkit-app-region', 'no-drag');
           void bar.offsetHeight; // 强制同步 reflow，确保 no-drag 先生效
           bar.style.setProperty('-webkit-app-region', 'drag');
@@ -539,7 +539,8 @@ module.exports = function injectTitleBar(ctx) {
     }
     function hide(bar) {
       try {
-        if (!AUTO_HIDE) return;
+        // v2.17.33：全屏态强制悬浮——用户没开自动隐藏时也要能收起（鼠标移到顶部再出现）
+        if (!AUTO_HIDE && !window.__fnosFsOn) return;
         if (forceShow) return;   // 主进程判定鼠标在顶部带，保持显示
         if (bar.__menuOpen) return;
         bar.style.transform = 'translateY(-100%)';
@@ -549,7 +550,7 @@ module.exports = function injectTitleBar(ctx) {
     }
     function scheduleHide(bar, ms) {
       try {
-        if (!AUTO_HIDE) return;
+        if (!AUTO_HIDE && !window.__fnosFsOn) return;
         if (bar.__hideTimer) clearTimeout(bar.__hideTimer);
         bar.__hideTimer = setTimeout(() => { bar.__hideTimer = null; hide(bar); }, ms || 600);
         if (bar.__hideTimer.unref) bar.__hideTimer.unref();
@@ -1521,9 +1522,26 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     };
 
-    // v2.17.32：全屏态样式——全屏时隐藏自绘标题栏、body 回满、去掉 20px 圆角。
-    // 不加这段时窗口虽已 setFullScreen，顶部仍被 34px 标题栏占住、body 少 34px 高、
-    // 四角圆角还露桌面，用户观感就是"没有真正全屏"（标题栏占上、底边不满）。
+    // v2.17.32：全屏态样式——全屏时让 body 回满、去掉 20px 圆角（不加这段时窗口虽已
+    // setFullScreen，顶部仍被 36px 标题栏占住、body 少 34px 高、四角圆角还露桌面）。
+    // v2.17.33：标题栏不再 display:none（那样全屏后退不出时它会永久消失、窗口无法拖动），
+    // 改为"悬浮"：默认收起，鼠标移到窗口顶部 34px 内滑出，移开 450ms 自动收回 —— 复用
+    // build() 里已有的 AUTO_HIDE 显隐链路，只是全屏态强制启用，不改用户设置。
+    const __fsBarStyle = (hidden) => {
+      try {
+        const b = document.getElementById('fnos-titlebar');
+        if (!b) return;
+        if (hidden) {
+          b.style.transform = 'translateY(-100%)';
+          b.style.opacity = '0';
+          b.style.pointerEvents = 'none';
+        } else {
+          b.style.transform = 'translateY(0)';
+          b.style.opacity = '1';
+          b.style.pointerEvents = 'auto';
+        }
+      } catch (_) {}
+    };
     const __setupFullscreen = () => {
       try {
         if (!document.getElementById('fnos-tb-fullscreen-style')) {
@@ -1531,16 +1549,26 @@ module.exports = function injectTitleBar(ctx) {
           st.id = 'fnos-tb-fullscreen-style';
           st.textContent = [
             'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;}',
-            'html[data-fnos-fs="1"] #fnos-titlebar,html[data-fnos-fs="1"] #fnos-tb-dragstrip,html[data-fnos-fs="1"] #fnos-resize-cover{display:none !important;}'
+            'html[data-fnos-fs="1"] #fnos-titlebar{z-index:2147483647 !important;}',
+            'html[data-fnos-fs="1"] #fnos-tb-dragstrip,html[data-fnos-fs="1"] #fnos-resize-cover{display:none !important;}'
           ].join('\n');
           (document.head || document.documentElement).appendChild(st);
         }
         if (!window.__fnosFsHooked) {
           window.__fnosFsHooked = true;
+          window.__fnosFsOn = false;
           ipcRenderer.on('window:fullscreen-changed', (_e, d) => {
             try {
-              if (d && d.fullscreen) document.documentElement.setAttribute('data-fnos-fs', '1');
-              else document.documentElement.removeAttribute('data-fnos-fs');
+              if (d && d.fullscreen) {
+                window.__fnosFsOn = true;
+                document.documentElement.setAttribute('data-fnos-fs', '1');
+                __fsBarStyle(true); // 刚进全屏先收起，鼠标到顶部再滑出
+              } else {
+                window.__fnosFsOn = false;
+                document.documentElement.removeAttribute('data-fnos-fs');
+                // 退出全屏：恢复成用户设置决定的状态（开了自动隐藏才收起，否则常驻）
+                __fsBarStyle(!!AUTO_HIDE);
+              }
             } catch (_) {}
           });
         }

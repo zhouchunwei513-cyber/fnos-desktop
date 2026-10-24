@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.32';
+const APP_VERSION = '2.17.33';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -910,18 +910,47 @@ let g_persistTimer = null;
 
 // v2.17.32：全屏/退全屏统一入口——先记住进入前的窗口外框，退出时据此还原
 // （Windows + 透明无边框窗上 setFullScreen(false) 的自动还原会被比例锁/系统恢复改形）。
+// v2.17.33：加 350ms 防抖 + 共享守卫时间戳。键盘（主 wc / webview guest / 应用窗）、菜单项、
+// 窗口行为回调都可能同时报到，双触发会让「进全屏→立刻退全屏」互相抵消，表现为按键没反应。
 const __preFsBounds = new WeakMap();
+let __fsToggleAt = 0;
+let __fsGuardUntil = 0; // 全屏切换后的窗口期内，比例锁与 bounds 持久化都不许改尺寸
+function __fsThrottled() {
+  const now = Date.now();
+  if (now - __fsToggleAt < 350) return true;
+  __fsToggleAt = now;
+  return false;
+}
+// 记录进入全屏前的形态：最大化态要还原成最大化，普通态还原成外框。
+// 只记一次——切换路径可能有多个（菜单/按键/系统），重复记录会把全屏后的 bounds 当成基准。
+function __rememberFsBounds(win) {
+  try {
+    if (!win || win.isDestroyed() || __preFsBounds.has(win)) return;
+    if (win.isFullScreen()) return; // 已在全屏态：此时 bounds 是全屏尺寸，不能当还原基准
+    const max = win.isMaximized();
+    const b = max ? win.getNormalBounds() : win.getBounds();
+    try {
+      // 尺寸已经贴近屏幕工作区（Windows 会先把窗口撑满再通知）时同样不可信
+      const wa = screen.getPrimaryDisplay().workAreaSize;
+      if (b && wa && b.width >= wa.width - 8 && b.height >= wa.height - 8) return;
+    } catch (_) {}
+    __preFsBounds.set(win, { bounds: b, max });
+  } catch (_) {}
+}
+function __exitFullScreenWin(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    if (!win.isFullScreen()) return;
+    if (__fsThrottled()) return;
+    win.setFullScreen(false);
+  } catch (_) {}
+}
 function __toggleFullScreenWin(win) {
   try {
     if (!win || win.isDestroyed()) return;
+    if (__fsThrottled()) return;
     if (win.isFullScreen()) { win.setFullScreen(false); return; }
-    try {
-      // 记录进入全屏前的形态：最大化态要还原成最大化，普通态还原成外框
-      __preFsBounds.set(win, {
-        bounds: win.isMaximized() ? win.getNormalBounds() : win.getBounds(),
-        max: win.isMaximized()
-      });
-    } catch (_) {}
+    __rememberFsBounds(win);
     win.setFullScreen(true);
   } catch (_) {}
 }
@@ -6165,8 +6194,8 @@ function createMainWindow(partition, loadTarget) {
   // v2.15.68：以【桌面画面】为基准锁 45:27.65，画面=内容区(getContentSize)减自绘标题栏34px，再反推外框。
   // 根因：v2.15.67 锁的是内容区(含标题栏)比例，但桌面画面(减标题栏34px)比例≠1.627→灰边。
   // 修：画面宽=内容区宽、画面高=内容区高-34，内容区高=round(内容区宽×553/900)+34、宽=round((内容区高-34)×900/553)。
-  // v2.17.32：全屏切换时间戳——全屏/退全屏瞬间的 resize 不能被比例锁改写尺寸
-  let __fsStamp = 0;
+  // v2.17.32/2.17.33：全屏切换窗口期由模块级 __fsGuardUntil 控制（供入口函数与还原逻辑共享），
+  // 全屏/退全屏瞬间及其后的还原 setBounds 都不能被比例锁改写尺寸
   let __lockAspect = false;
   const __aspectFix = (win) => {
     const [cw, ch] = win.getContentSize();
@@ -6188,7 +6217,7 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resized', () => {
       try {
         if (__lockAspect || mainWindow.isMaximized() || mainWindow.isFullScreen()) return;
-        if (__fsStamp && Date.now() - __fsStamp < 600) return;
+        if (Date.now() < __fsGuardUntil) return;
         const [nw, nh] = __aspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
         if (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) {
@@ -6215,7 +6244,7 @@ function createMainWindow(partition, loadTarget) {
   try {
     const __saveBounds = () => {
       try {
-        if (__fsStamp && Date.now() - __fsStamp < 600) return;
+        if (Date.now() < __fsGuardUntil) return;
         if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !mainWindow.isFullScreen() && !mainWindow.isMaximized()) {
           const __bounds = mainWindow.getBounds();
           __bounds.waW = __primaryWA.width;
@@ -6229,12 +6258,18 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('close', __saveBounds);
   } catch (_) {}
   // v2.17.32：全屏三项修复（用户反馈）
-  // 1) 之前全屏只是窗口变大：自绘标题栏没隐藏、body 仍下移 34px 并少 34px 高，四角圆角
-  //    还露桌面 → 观感"标题栏占顶部、底部不满"。现在把全屏态同步给渲染层，
-  //    titlebar-inject 收到后隐藏 fnos-titlebar、body 回满并去圆角。
+  // 1) 全屏时把全屏态同步给渲染层，titlebar-inject 据此让 body 回满、去圆角、标题栏改悬浮。
   // 2) 退出全屏按进入前记录的外框还原，避免被比例锁/系统恢复改成比例尺寸 + 位置跳到 (0,0)。
-  // 3) 主窗口此前从未注册 F11/ESC（只有应用窗注册过）；且菜单 F11 加速键与 before-input-event
-  //    双触发会互相抵消，故菜单项改 registerAccelerator:false，按键统一由这里处理。
+  // 3) 菜单 F11 改 registerAccelerator:false，按键统一由 before-input-event 处理
+  //    （本项目无边框窗口上菜单 accelerator 历史上就不触发，见"视图-缩放"注释）。
+  // v2.17.33 用户实测反馈修复：
+  //   a) 按 ESC 必须先点一下页面才生效——主页面里有 <webview>（飞牛影视 guest）等子 webContents，
+  //      焦点落在它们身上时主 webContents 的 before-input-event 收不到键盘。改为把同一个处理函数
+  //      挂到主 wc + 全部 guest wc（did-attach-webview + 启动时枚举），并在进入全屏后主动让渲染层拿焦点。
+  //   b) 退出全屏后尺寸不还原、标题栏消失不可拖动——原来只靠 leave-full-screen 单事件驱动，
+  //      该事件在透明无边框窗上可能因 DWM 时序不触发/晚触发，导致还原与"摘掉全屏标记"一起丢失。
+  //      改为状态机：enter/leave 事件 + resize 事件双路探测 isFullScreen()，变化才应用（幂等），
+  //      还原带重试与二次校正；标题栏也不再 display:none（改为悬浮），不会因标记残留而彻底消失。
   try {
     const __syncFsUI = (on) => {
       try {
@@ -6249,47 +6284,109 @@ function createMainWindow(partition, loadTarget) {
         let __frames = [];
         try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
         if (!__frames.length) { try { __wc.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} return; }
-        // 主 frame + 子 frame（appview iframe 里的标题栏也要随之隐藏）都打上全屏标记
+        // 主 frame + 子 frame（appview iframe 里的标题栏也要随之切换）都打上全屏标记
         for (const __f of __frames) { try { __f.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} }
       } catch (_) {}
     };
-    mainWindow.on('enter-full-screen', () => {
-      __fsStamp = Date.now();
-      __syncFsUI(true);
-    });
-    mainWindow.on('leave-full-screen', () => {
-      __fsStamp = Date.now();
-      __syncFsUI(false);
+    // 进入全屏后让渲染层重新拿到键盘焦点：菜单/快捷键进入时焦点会跑到 BrowserWindow，
+    // 没有焦点 webContents 就收不到 before-input-event，表现为"按 ESC 没反应，点一下页面才行"。
+    const __focusRenderer = () => {
+      try { mainWindow.webContents.focus(); } catch (_) {}
+      setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.focus(); } catch (_) {} }, 120);
+    };
+    // 退出全屏后按记录还原外框。重试最多 800ms（等系统真正退出全屏态），
+    // 再在 420ms 后做一次二次校正（防止比例锁/系统恢复在此后又改了尺寸）。
+    const __restoreFsBounds = () => {
       const rec = __preFsBounds.get(mainWindow);
       __preFsBounds.delete(mainWindow);
-      if (rec && rec.bounds && Number.isFinite(rec.bounds.width) && rec.bounds.width > 100) {
-        setTimeout(() => {
-          try {
-            if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFullScreen()) return;
-            if (rec.max) { mainWindow.maximize(); return; }
-            const pb = rec.bounds;
-            const cur = mainWindow.getBounds();
-            if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
-              mainWindow.setBounds(pb);
-            }
-          } catch (_) {}
-        }, 90);
-      }
-    });
+      if (!rec || !rec.bounds || !(rec.bounds.width > 100)) return;
+      const pb = rec.bounds;
+      let n = 0;
+      const step = () => {
+        n++;
+        try {
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          if (mainWindow.isFullScreen()) { if (n < 8) setTimeout(step, 100); return; }
+          if (rec.max) { if (!mainWindow.isMaximized()) mainWindow.maximize(); return; }
+          const cur = mainWindow.getBounds();
+          if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
+            mainWindow.setBounds(pb);
+          }
+        } catch (_) {}
+      };
+      setTimeout(step, 60);
+      setTimeout(() => {
+        try {
+          if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFullScreen() || rec.max) return;
+          const cur = mainWindow.getBounds();
+          if (Math.abs(cur.width - pb.width) > 2 || Math.abs(cur.height - pb.height) > 2
+            || Math.abs(cur.x - pb.x) > 2 || Math.abs(cur.y - pb.y) > 2) {
+            mainWindow.setBounds(pb);
+          }
+        } catch (_) {}
+      }, 420);
+    };
+    // 幂等状态机：只有 isFullScreen() 真的变了才动。事件与 resize 双路喂进来，
+    // 任何一路丢失都不影响最终一致性。
+    let __fsApplied = false;
+    const __applyFs = (on) => {
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        on = !!on;
+        if (on === __fsApplied) return;
+        __fsApplied = on;
+        if (on) {
+          __rememberFsBounds(mainWindow); // 非入口路径（页面/系统触发）进来的兜底记录
+          __fsGuardUntil = Date.now() + 1000;
+          __syncFsUI(true);
+          __focusRenderer();
+        } else {
+          __fsGuardUntil = Date.now() + 1600;
+          __syncFsUI(false);
+          __restoreFsBounds();
+        }
+      } catch (_) {}
+    };
+    mainWindow.on('enter-full-screen', () => __applyFs(true));
+    mainWindow.on('leave-full-screen', () => __applyFs(false));
+    mainWindow.on('resize', () => { try { __applyFs(mainWindow.isFullScreen()); } catch (_) {} });
+    // 主窗口被点回来/重获焦点时，若仍在全屏，确保渲染层拿焦点（ESC 才收得到）
+    mainWindow.on('focus', () => { try { if (mainWindow.isFullScreen()) mainWindow.webContents.focus(); } catch (_) {} });
     mainWindow.webContents.on('did-finish-load', () => {
+      try { __fsApplied = mainWindow.isFullScreen(); } catch (_) {}
       try { if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) __syncFsUI(true); } catch (_) {}
     });
-    mainWindow.webContents.on('before-input-event', (event, input) => {
-      if (!input || input.type !== 'keyDown') return;
-      if (input.alt || input.control || input.meta || input.shift) return;
-      if (input.key === 'F11') {
-        event.preventDefault();
-        __toggleFullScreenWin(mainWindow);
-      } else if (input.key === 'Escape') {
-        if (mainWindow.isFullScreen()) { event.preventDefault(); mainWindow.setFullScreen(false); }
-        else if (mainWindow.isMaximized()) { event.preventDefault(); mainWindow.unmaximize(); }
+    // 统一按键处理：同一份函数挂到主 wc 与所有 guest wc（<webview>）。
+    const __fsKeyHandler = (event, input) => {
+      try {
+        if (!input || input.type !== 'keyDown') return;
+        if (input.alt || input.control || input.meta || input.shift) return;
+        if (input.key === 'F11') {
+          event.preventDefault();
+          __toggleFullScreenWin(mainWindow);
+        } else if (input.key === 'Escape') {
+          if (mainWindow.isFullScreen()) { event.preventDefault(); __exitFullScreenWin(mainWindow); }
+          else if (mainWindow.isMaximized()) { event.preventDefault(); mainWindow.unmaximize(); }
+        }
+      } catch (_) {}
+    };
+    const __fsKeyWired = new Set();
+    const __wireFsKeys = (wc) => {
+      try {
+        if (!wc || wc.isDestroyed() || __fsKeyWired.has(wc.id)) return;
+        __fsKeyWired.add(wc.id);
+        wc.on('before-input-event', __fsKeyHandler);
+      } catch (_) {}
+    };
+    __wireFsKeys(mainWindow.webContents);
+    mainWindow.on('did-attach-webview', (_e, wc) => __wireFsKeys(wc));
+    try {
+      for (const wc of webContents.getAllWebContents()) {
+        try {
+          if (wc.hostWebContents && wc.hostWebContents.id === mainWindow.webContents.id) __wireFsKeys(wc);
+        } catch (_) {}
       }
-    });
+    } catch (_) {}
   } catch (_) {}
   // v2.15.85：窗口几何变化时反复把窗口背景重置为全透明，赶走 DWM 的兜底灰。
   // 四段录屏逐帧实测：灰带恒定 rgb(67,67,67)，位置恒在「窗口顶 +34px」（即 body 顶部，

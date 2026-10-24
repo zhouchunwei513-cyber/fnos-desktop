@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FNOS 桌面客户端 - 主进程 (v2.0.0)
  *
  * 核心设计：
@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.29';
+const APP_VERSION = '2.17.30';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -8660,10 +8660,8 @@ ipcMain.handle('settings:get', async () => {
     autoHideMenuBar: !!s.autoHideMenuBar,
     // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示（默认）
     titleBarAutoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
-    // v1.58：标题栏材质/不透明度/磨砂程度/颜色（标题栏颜色独立于界面主题色）
-    titleBarMaterial: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
+    // v1.58：标题栏不透明度/颜色（标题栏颜色独立于界面主题色）
     titleBarOpacity: clampInt(s.titleBarOpacity, 0, 100, 0),
-    titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 12),
     titleBarColor: String(s.titleBarColor || '#3B82F6'),
     themeColor: String(s.themeColor || '#4F6EF7'),
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
@@ -8791,15 +8789,13 @@ ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
   }
 });
 
-// v2.17.24：标题栏设置的实时预览通道（不落盘）。设置页拖动滑块/切材质/改颜色时调用，
+// v2.17.24：标题栏设置的实时预览通道（不落盘）。设置页拖动不透明度/改颜色时调用，
 // 主进程只把样式对象广播给所有渲染进程，titlebar-inject 立即套用，达到「所见即所得」。
 // 持久化仍由 settings:set-ui-options + 「保存界面设置」按钮完成。
 ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
   try {
     const tbPayload = {
-      material: opts?.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
       opacity: clampInt(opts?.titleBarOpacity, 0, 100, 0),
-      blur: clampInt(opts?.titleBarBlur, 0, 40, 12),
       color: String(opts?.titleBarColor || '#3B82F6'),
     };
     for (const wc of require('electron').webContents.getAllWebContents()) {
@@ -8814,36 +8810,28 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
 ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
   try {
     const autoHide = !!opts?.autoHideMenuBar;
-    // v1.54/v1.58：标题栏自动隐藏（默认 false=常驻）+ 材质/不透明度/磨砂/颜色
+    // v1.54/v1.58：标题栏自动隐藏（默认 false=常驻）+ 不透明度/颜色
     const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide === true);
-    const tbMaterial = opts?.titleBarMaterial === 'frosted' ? 'frosted' : (cachedSettings.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent');
     const tbOpacity = opts && opts.titleBarOpacity != null && Number.isFinite(Number(opts.titleBarOpacity))
       ? clampInt(opts.titleBarOpacity, 0, 100, 0)
       : clampInt(cachedSettings.titleBarOpacity, 0, 100, 0);
-    const tbBlur = opts && opts.titleBarBlur != null && Number.isFinite(Number(opts.titleBarBlur))
-      ? clampInt(opts.titleBarBlur, 0, 40, 12)
-      : clampInt(cachedSettings.titleBarBlur, 0, 40, 12);
     const tbColor = opts?.titleBarColor ? String(opts.titleBarColor) : String(cachedSettings.titleBarColor || '#3B82F6');
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
     saveSettings({
       autoHideMenuBar: autoHide,
       titleBarAutoHide: tbAutoHide,
-      titleBarMaterial: tbMaterial,
       titleBarOpacity: tbOpacity,
-      titleBarBlur: tbBlur,
       titleBarColor: tbColor,
       themeColor: accent,
     });
     cachedSettings.autoHideMenuBar = autoHide;
     cachedSettings.titleBarAutoHide = tbAutoHide;
-    cachedSettings.titleBarMaterial = tbMaterial;
     cachedSettings.titleBarOpacity = tbOpacity;
-    cachedSettings.titleBarBlur = tbBlur;
     cachedSettings.titleBarColor = tbColor;
     cachedSettings.themeColor = accent;
-    // v1.58：广播【完整标题栏样式对象】（autoHide+material+opacity+blur+color）
+    // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
-    const tbPayload = { autoHide: tbAutoHide, material: tbMaterial, opacity: tbOpacity, blur: tbBlur, color: tbColor };
+    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
@@ -8873,16 +8861,14 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
 ipcMain.on('settings:get-titlebar', (e) => {
   try {
     const s = loadSettings();
-    // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；返回完整材质/颜色样式
+    // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；返回不透明度/颜色样式
     e.returnValue = {
       autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
-      material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
       opacity: clampInt(s.titleBarOpacity, 0, 100, 0),
-      blur: clampInt(s.titleBarBlur, 0, 40, 12),
       color: String(s.titleBarColor || '#3B82F6'),
     };
   } catch (_) {
-    e.returnValue = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
+    e.returnValue = { autoHide: false, opacity: 0, color: '#3B82F6' };
   }
 });
 

@@ -257,44 +257,24 @@
           <span id="opt-titlebar-autohide-label" style="font-size:13px;color:var(--text-secondary,#aab0c0)">已关闭（标题栏常驻）</span>
         </label>
       </div>
-      <!-- v1.58：标题栏材质（透明/磨砂） -->
-      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
-        <div>
-          <div class="hotkey-title">标题栏材质</div>
-          <div class="hotkey-sub">透明：完全透出网页内容；磨砂：毛玻璃质感，由下方滑块调节</div>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button type="button" class="tb-mat-btn" id="tb-mat-transparent">透明</button>
-          <button type="button" class="tb-mat-btn" id="tb-mat-frosted">磨砂</button>
-        </div>
-      </div>
+
       <!-- v1.58：不透明度滑块 -->
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
           <div class="hotkey-title">标题栏不透明度</div>
-          <div class="hotkey-sub">0 为完全透明；数值越大底色越明显（磨砂材质下为毛玻璃底色深浅）</div>
+          <div class="hotkey-sub">0 为完全透明；数值越大标题栏底色越明显</div>
         </div>
         <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
           <input type="range" id="tb-opacity" min="0" max="100" value="0" class="tb-range" style="flex:1" />
           <span id="tb-opacity-val" class="tb-range-val">0%</span>
         </div>
       </div>
-      <!-- v1.58：磨砂程度滑块（仅磨砂材质生效） -->
-      <div class="color-picker-row" id="tb-blur-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
-        <div>
-          <div class="hotkey-title">磨砂程度</div>
-          <div class="hotkey-sub">仅磨砂材质生效（透明材质下自动置灰）；0 = 关闭模糊，数值即 CSS blur 半径，最大 40px</div>
-        </div>
-        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
-          <input type="range" id="tb-blur" min="0" max="40" value="12" class="tb-range" style="flex:1" />
-          <span id="tb-blur-val" class="tb-range-val">12px</span>
-        </div>
-      </div>
+
       <!-- v2.17.24：标题栏颜色改用标准取色器（系统拾色面板 + 十六进制色值 + Alpha），删除原 6 个预设色圈 -->
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
           <div class="hotkey-title">标题栏颜色</div>
-          <div class="hotkey-sub" id="tb-color-hint">磨砂材质下为毛玻璃底色；透明材质下为标题栏纯色底色</div>
+          <div class="hotkey-sub" id="tb-color-hint">标题栏底色（透明材质下为标题栏纯色底色）</div>
         </div>
         <div class="tb-color-tools">
           <label class="tb-color-pick" title="点击打开取色器（拾色面板）">

@@ -1,4 +1,4 @@
-/* global fnosSettings */
+﻿/* global fnosSettings */
 // 设置页：启动密码 + 快捷键自定义
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -327,14 +327,9 @@
 
   // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
   // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
-  const tbState = { material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
-  const tbMatTrans = document.getElementById('tb-mat-transparent');
-  const tbMatFrost = document.getElementById('tb-mat-frosted');
+  const tbState = { opacity: 0, color: '#3B82F6' };
   const tbOpacity = document.getElementById('tb-opacity');
   const tbOpacityVal = document.getElementById('tb-opacity-val');
-  const tbBlur = document.getElementById('tb-blur');
-  const tbBlurVal = document.getElementById('tb-blur-val');
-  const tbBlurRow = document.getElementById('tb-blur-row');
   const tbColorInput = document.getElementById('tb-color-input');
   const tbColorHex = document.getElementById('tb-color-hex');
   const tbColorPreview = document.getElementById('tb-color-preview');
@@ -362,9 +357,7 @@
       tbPreviewTimer = null;
       try {
         fnosSettings.previewTitleBar({
-          titleBarMaterial: tbState.material,
           titleBarOpacity: tbState.opacity,
-          titleBarBlur: tbState.blur,
           titleBarColor: tbState.color,
         });
       } catch (_) {}
@@ -372,15 +365,7 @@
   };
 
   const syncTbMaterialBtns = () => {
-    const frosted = tbState.material === 'frosted';
-    if (tbMatTrans) tbMatTrans.classList.toggle('active', !frosted);
-    if (tbMatFrost) tbMatFrost.classList.toggle('active', frosted);
-    // v2.17.24：磨砂程度只在磨砂材质下可用——透明材质整行置灰不可操作（不再整行隐藏）
-    if (tbBlurRow) tbBlurRow.classList.toggle('tb-disabled', !frosted);
-    if (tbBlur) tbBlur.disabled = !frosted;
-    if (tbColorHint) tbColorHint.textContent = frosted
-      ? '磨砂材质下为毛玻璃底色（深浅由不透明度控制）'
-      : '透明材质下为标题栏纯色底色';
+    if (tbColorHint) tbColorHint.textContent = '标题栏底色';
   };
   const syncTbSliders = () => {
     if (tbOpacity) tbOpacity.value = String(tbState.opacity);
@@ -388,8 +373,7 @@
     // 颜色区的 Alpha 与「标题栏不透明度」是同一个值，双向联动
     if (tbAlpha) tbAlpha.value = String(tbState.opacity);
     if (tbAlphaVal) tbAlphaVal.textContent = tbState.opacity + '%';
-    if (tbBlur) tbBlur.value = String(tbState.blur);
-    if (tbBlurVal) tbBlurVal.textContent = tbBlur.value + 'px';
+
   };
   const syncTbColor = () => {
     if (tbColorInput) tbColorInput.value = tbState.color;
@@ -405,11 +389,8 @@
   };
   const setTbOpacity = (v) => { tbState.opacity = clampInt(v, 0, 100, 0); syncTbSliders(); };
 
-  if (tbMatTrans) tbMatTrans.addEventListener('click', () => { tbState.material = 'transparent'; syncTbMaterialBtns(); tbPreview(); });
-  if (tbMatFrost) tbMatFrost.addEventListener('click', () => { tbState.material = 'frosted'; syncTbMaterialBtns(); tbPreview(); });
   if (tbOpacity) tbOpacity.addEventListener('input', () => { setTbOpacity(tbOpacity.value); tbPreview(); });
   if (tbAlpha) tbAlpha.addEventListener('input', () => { setTbOpacity(tbAlpha.value); tbPreview(); });
-  if (tbBlur) tbBlur.addEventListener('input', () => { tbState.blur = clampInt(tbBlur.value, 0, 40, 12); if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px'; tbPreview(); });
   if (tbColorInput) tbColorInput.addEventListener('input', () => { if (setTbColor(tbColorInput.value)) tbPreview(); });
   if (tbColorHex) {
     tbColorHex.addEventListener('input', () => { if (setTbColor(tbColorHex.value)) tbPreview(); });
@@ -421,9 +402,7 @@
     try {
       if (!info) return;
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
-      tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent';
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 0);
-      tbState.blur = clampInt(info.titleBarBlur, 0, 40, 12);
       tbState.color = hexNorm6(info.titleBarColor) || '#3B82F6';
       syncTbMaterialBtns(); syncTbSliders(); syncTbColor();
     } catch (_) {}
@@ -435,9 +414,7 @@
       try {
         const res = await fnosSettings.setUIOptions({
           titleBarAutoHide: !!(optTbAutoHide && optTbAutoHide.checked),
-          titleBarMaterial: tbState.material,
           titleBarOpacity: tbState.opacity,
-          titleBarBlur: tbState.blur,
           titleBarColor: tbState.color,
         });
         if (res && res.ok) {

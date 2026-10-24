@@ -1,4 +1,4 @@
-// titlebar-inject.js — 统一的无边框自定义标题栏注入
+﻿// titlebar-inject.js — 统一的无边框自定义标题栏注入
 // 被 preload.js / settings-preload.js / live-preload.js 复用，保证所有窗口标题栏一致。
 // 功能：顶部拖动热区、☰ 菜单、最小化/最大化/关闭（实心按钮）、自动隐藏（默认关闭）、
 //       ALT 键调出、设置实时更新、SPA 重渲染自愈。
@@ -398,14 +398,12 @@ module.exports = function injectTitleBar(ctx) {
     if (__SUB) return;
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
-    const TB = { autoHide: false, material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
+    const TB = { autoHide: false, opacity: 0, color: '#3B82F6' };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
       if (r && typeof r === 'object') {
         if (typeof r.autoHide === 'boolean') TB.autoHide = r.autoHide;
-        if (r.material === 'frosted' || r.material === 'transparent') TB.material = r.material;
         if (r.opacity != null) TB.opacity = Math.max(0, Math.min(100, Number(r.opacity) || 0));
-        if (r.blur != null) TB.blur = Math.max(0, Math.min(40, Number(r.blur) || 0));
         if (r.color) TB.color = String(r.color);
       }
     } catch (_) {}
@@ -445,49 +443,19 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) { return `rgba(0,0,0,${a})`; }
     }
 
+
+
     // 根据设置计算标题栏背景/模糊并应用；同时调整图标配色
     function applyStyle(bar) {
       try {
         if (!bar) return;
-        if (TB.material === 'frosted') {
-          // v2.17.28：纯 CSS 磨砂。backdrop-filter 采样标题栏正下方的页面自身背景——主窗改成
-          // padding-top 让位后，页面壁纸不再被 body 的 transform 推下去，天然铺到窗口 0px；
-          // 应用窗/主窗若壁纸确实被推下去了，由 __setupBgLayer 在 <html> 下补一层同款背景。
-          // 滑块值就是标准 CSS blur 半径（0 = 关闭）。旧版 feTurbulence 噪点 / 顶部高光 /
-          // 底部内阴影双层合成已全部移除——那套是为弥补 DWM 固定模糊半径的假效果，CSS 原生 blur 不需要。
-          const a = TB.opacity / 100 * 0.55; // v2.17.29: 72% -> 55%，底色太实会把模糊背景压成一块黑板
-          bar.style.backgroundImage = 'none';
-          bar.style.backgroundBlendMode = 'normal';
-          bar.style.boxShadow = 'none';
-          bar.style.background = hexToRgba(TB.color, a);
-          const __bl = Math.max(0, Math.min(40, Number(TB.blur) || 0));
-          if (__bl >= 0.5) {
-            bar.style.backdropFilter = `blur(${__bl}px)`;
-            bar.style.webkitBackdropFilter = `blur(${__bl}px)`;
-          } else {
-            bar.style.backdropFilter = 'none';
-            bar.style.webkitBackdropFilter = 'none';
-          }
-        } else {
+        {
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
-          bar.style.backgroundImage = 'none';
-          bar.style.backgroundBlendMode = 'normal';
-          bar.style.boxShadow = 'none';
           const a = TB.opacity / 100;
           if (a > 0.001) {
-            // v2.17.29：自定义底色不再刷成实心色板（那就是用户看到的"黑色长方形条"）。
-            // 底色压到 55% 以内并挂上同一份 blur，让标题栏背后透出页面自己的背景并被磨砂。
-            // Alpha 滑块仍按比例生效，只是封顶 55%——再高背景就透不出来，模糊等于白做。
-            const a2 = Math.min(a, 0.55);
-            bar.style.background = hexToRgba(TB.color, a2);
-            const __blT = Math.max(0, Math.min(40, Number(TB.blur) || 0));
-            if (__blT >= 0.5) {
-              bar.style.backdropFilter = `blur(${__blT}px)`;
-              bar.style.webkitBackdropFilter = `blur(${__blT}px)`;
-            } else {
-              bar.style.backdropFilter = 'none';
-              bar.style.webkitBackdropFilter = 'none';
-            }
+            bar.style.background = hexToRgba(TB.color, a);
+            bar.style.backdropFilter = 'none';
+            bar.style.webkitBackdropFilter = 'none';
           } else {
             // v2.15.69：设置窗口透明后标题栏透出桌面灰边，改深色渐变；主/应用窗口保持 transparent 透出下层
             var __argvS = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
@@ -502,7 +470,7 @@ module.exports = function injectTitleBar(ctx) {
         }
         // 底色较深时图标用白，较浅时图标用深色——保证对比
         // v2.15.14：opacity=0 默认走深色渐变 → 也用白图标
-        const darkBg = TB.material === 'frosted' || (TB.material === 'transparent' && (TB.opacity > 45 || TB.opacity <= 0.001));
+        const darkBg = (TB.opacity > 45 || TB.opacity <= 0.001);
         bar.__useDarkIcon = !darkBg; // true = 浅底用深图标
         const iconStroke = darkBg ? 'rgba(255,255,255,0.95)' : 'rgba(20,20,20,0.92)';
         const iconShadow = darkBg
@@ -512,6 +480,7 @@ module.exports = function injectTitleBar(ctx) {
           svg.querySelectorAll('path,line,rect').forEach((p) => { try { p.style.setProperty('stroke', iconStroke, 'important'); } catch (_) { p.setAttribute('stroke', iconStroke); } });
           svg.style.filter = iconShadow;
         });
+
       } catch (_) {}
     }
 
@@ -535,9 +504,7 @@ module.exports = function injectTitleBar(ctx) {
         try {
           if (val && typeof val === 'object') {
             if (typeof val.autoHide === 'boolean') { TB.autoHide = val.autoHide; AUTO_HIDE = val.autoHide; }
-            if (val.material === 'frosted' || val.material === 'transparent') TB.material = val.material;
             if (val.opacity != null) TB.opacity = Math.max(0, Math.min(100, Number(val.opacity) || 0));
-            if (val.blur != null) TB.blur = Math.max(0, Math.min(40, Number(val.blur) || 0));
             if (val.color) TB.color = String(val.color);
             const bar0 = document.getElementById('fnos-titlebar');
             if (bar0) {
@@ -844,11 +811,7 @@ module.exports = function injectTitleBar(ctx) {
           // so the body box grows back to the full viewport and its bottom edge (and
           // therefore the 20px clip-path radius) lands below the window bottom -- the
           // top two corners look round while the bottom two are cut square.
-          // v2.17.29: 直播窗保持 transform（用户要求布局不动），其余窗口改 padding-top，
-          // 让 fixed/absolute 的页面背景层延伸到标题栏底下成为模糊源。
-          (__isLiveWin
-            ? 'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin:0 !important;}'
-            : 'html>body{transform:none !important;overflow-y:auto !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:calc(34px / var(--fnos-f, 1)) !important;margin:0 !important;}'),
+          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin:0 !important;}',
           // v2.16.0: fixed-viewport SPA apps (Tailwind h-dvh / h-screen / min-h-dvh) size their
           // root to 100vh/dvh, ignoring the 34px titlebar. The body is already shrunk to
           // calc(100vh-34px), but a child at height:100vh still spans the full window, so its
@@ -877,7 +840,7 @@ module.exports = function injectTitleBar(ctx) {
           // 现在与普通应用窗完全同一套几何：body 下移标题栏高度、高度扣掉标题栏、锁死溢出。
           __padStyle.textContent = [
             'html{overflow:hidden !important;' + __gifBg + '}',
-            'html>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;box-sizing:border-box !important;overflow:hidden !important;overflow-x:hidden !important;padding:0 !important;margin:0 !important;padding-top:calc(34px / var(--fnos-f, 1)) !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}',
+            'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;overflow:hidden !important;overflow-x:hidden !important;padding:0 !important;margin:0 !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}',
             'html>body::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
           ].join('');
         }
@@ -891,7 +854,7 @@ module.exports = function injectTitleBar(ctx) {
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。
           // 深色兜底后，即使有 1px 偏差也与标题栏同色，不再看得出灰条。
-          'html>body{transform:none !important;height:100vh !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:calc(34px / var(--fnos-f, 1)) !important;margin-top:0 !important;background:#05060a !important;}',
+          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}',
           // v2.17.0（DPI 方案 A）：飞牛桌面主页是远程 React SPA（cqfndesk），应用图标为 52px 位图，
           // 客户端无法改源码，只能注入覆盖：图标/卡片/文字/间距统一 x--ui-scale（0.8），图标 52->约 42px。
           // 选择器用 [class~="..."] 精确匹配 Tailwind token（规避 [ ] ! 转义），仅作用于主窗口主 frame。
@@ -1512,27 +1475,12 @@ module.exports = function injectTitleBar(ctx) {
               }
             };
             const bh = __barHeight();
-            // v2.17.29：让位改用 padding-top。transform 会把 fixed/absolute 的页面背景层
-            // （壁纸、海报墙、根元素背景）连同内容一起推下去，标题栏后面就只剩空白/桌面，
-            // backdrop-filter 无从采样，只能看到一块纯色板。padding-top 只推普通流内容，
-            // fixed/absolute 的背景层照旧铺满 0..100vh，正好成为标题栏的模糊源。
-            // 直播窗保持旧 transform 方式（用户要求布局不动）。
-            const __isLive = (typeof process !== 'undefined' && Array.isArray(process.argv)) &&
-              process.argv.indexOf('--fnos-live-window') >= 0;
-            if (__isLive) {
-              set('transform', 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
-              set('height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
-              set('min-height', '0');
-              set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
-              set('box-sizing', 'border-box');
-            } else {
-              set('transform', 'none');
-              set('padding-top', 'calc(' + bh + 'px / var(--fnos-f, 1))');
-              set('height', '100vh');
-              set('min-height', '0');
-              set('max-height', '100vh');
-              set('box-sizing', 'border-box');
-            }
+            // 标题栏下移补偿：body 整体下移，内容不被标题栏遮挡
+            set('transform', 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
+            set('height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            set('min-height', '0');
+            set('box-sizing', 'border-box');
             // v2.17.20: 双滚动条根因——音乐/影视这类 Semi / Tailwind 布局，左右面板各自就有
             // overflow-y:auto 的滚动容器，body 再出一条滚动条就成了并排两条（用户实测：
             // 飞牛音乐放大视图后左导航与主内容区各一条）。检测到内部已有可滚动容器时，只把
@@ -1573,196 +1521,7 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     };
 
-    // v2.17.28：把页面背景"复制"进标题栏背后 —— html 级背景层，且绝不铺兜底纯色
-    // 为什么不能就地反向补偿壁纸元素：body 有 clip-path:inset(0 round 20px) 且已下移 34px，
-    // 它的裁剪上下文会把 body 内所有后代的顶部 34px 整块裁掉（fixed 后代同样逃不掉），
-    // 所以壁纸元素再怎么上移也露不到标题栏区。唯一稳的位置是挂到 <html> 下的背景层
-    // （z-index:-1，不被 body 裁剪），这也正是 v2.17.27 实测奏效的采样源。
-    // 教训：v2.17.27 探测失败时铺了一层"页面主色渐变"，主窗注入色是 #05060a，于是标题栏
-    // 背后多出一条纯黑长条 —— 现在探测失败就什么都不加（宁可透出桌面，也不铺纯色）。
-    const __setupBgLayer = () => {
-      try {
-        const argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
-        const isLive = argv.indexOf('--fnos-live-window') >= 0;
-        const isApp = argv.indexOf('--fnos-app-window') >= 0 || isLive;
-        const isShell = argv.indexOf('--fnos-shell') >= 0 && !isApp;
-        if (isLive) return; // 直播窗：布局不动
-        if (!isShell && !isApp) return; // 设置窗：布局不动
-        if (document.querySelector('webview')) return; // 宿主页：壁纸在 guest 文档里
-        const de = document.documentElement;
-        const bd = document.body;
-        if (!de || !bd) return;
-        if (document.getElementById('fnos-bg-layer')) return;
-        const vw = Math.max(1, window.innerWidth || de.clientWidth || 0);
-        const vh = Math.max(1, window.innerHeight || de.clientHeight || 0);
-        // 阈值放宽到 70%/60%：壁纸容器常常带着 padding / 侧栏，实际盒子比视口略小
-        const isBig = (r) => !!r && r.width >= vw * 0.7 && r.height >= vh * 0.6;
-        const logWall = (stage, extra) => {
-          try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: stage }, extra || {})); } catch (_) {}
-        };
-        const findWall = () => {
-          const queue = [];
-          for (let i = 0; i < bd.children.length; i++) queue.push(bd.children[i]);
-          let guard = 0;
-          while (queue.length && guard < 1500) {
-            const el = queue.shift(); guard++;
-            if (!el || el.nodeType !== 1) continue;
-            const tag = el.tagName;
-            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'NOSCRIPT' || tag === 'TEMPLATE' || tag === 'IFRAME') continue;
-            let r = null;
-            try { r = el.getBoundingClientRect(); } catch (_) {}
-            const big = isBig(r);
-            if (tag === 'IMG' || tag === 'VIDEO') {
-              const u = tag === 'IMG' ? (el.currentSrc || el.src || '') : (el.poster || el.currentSrc || el.src || '');
-              if (u && big && !el.closest('a,button,[class*="avatar"],[class*="logo"],[class*="icon"]')) {
-                return { kind: 'url', url: u, why: tag, el: el };
-              }
-            }
-            if (tag === 'CANVAS' && big) return { kind: 'canvas', el: el, why: 'CANVAS' };
-            if (big) {
-              let cs = null;
-              try { cs = getComputedStyle(el); } catch (_) {}
-              const bi = (cs && cs.backgroundImage) || '';
-              const bgc = (cs && cs.backgroundColor) || '';
-              const hasImg = !!bi && bi !== 'none';
-              // v2.17.29: 渐变/纯色也算真实背景。此前只认 url() 图片，登录页这种只有深色渐变底的
-              // 页面探测不到，标题栏后面就空着。顺序很重要：图片（含渐变 background-image）优先，
-              // 纯色只在第二遍 __wallAllowColor=true 时才接受，免得抢在真壁纸前面取到一个色块。
-              const hasCol = !!bgc && bgc !== 'transparent' && bgc.indexOf('rgba(0, 0, 0, 0)') < 0;
-              if (hasImg || (hasCol && __wallAllowColor)) {
-                return {
-                  kind: 'css',
-                  image: hasImg ? bi : 'none',
-                  color: hasCol ? bgc : 'transparent',
-                  size: cs.backgroundSize || '',
-                  position: cs.backgroundPosition || '',
-                  repeat: cs.backgroundRepeat || '',
-                  why: (hasImg ? 'bg:' : 'bgc:') + tag,
-                  el: el
-                };
-              }
-              const kids = el.children;
-              for (let i = 0; i < kids.length && i < 60; i++) queue.push(kids[i]);
-            } else {
-              const kids = el.children;
-              for (let i = 0; i < kids.length && i < 12; i++) queue.push(kids[i]);
-            }
-          }
-          return null;
-        };
-        let __wallAllowColor = false; // 第二遍才允许纯色背景
-        let hit = findWall();
-        if (!hit) {
-          __wallAllowColor = true;
-          hit = findWall();
-        }
-        if (hit) {
-          // 壁纸已经覆盖到窗口顶部（主窗改成 padding-top 后，fixed 壁纸不再被推下去）：
-          // 此时页面自己就是模糊源，绝不能再叠一层，否则 34px 处会出现两份壁纸错位。
-          let topY = 99;
-          try { topY = hit.el.getBoundingClientRect().top; } catch (_) {}
-          if (topY <= 2) {
-            logWall('titlebar.wall-native', { why: hit.why, top: Math.round(topY) });
-            return;
-          }
-        }
-        if (!hit) {
-          window.__fnosBgRetry = (window.__fnosBgRetry || 0) + 1;
-          logWall('titlebar.wall-miss', { n: window.__fnosBgRetry, vw: vw, vh: vh });
-          if (window.__fnosBgRetry <= 10) setTimeout(() => { try { __setupBgLayer(); } catch (_) {} }, 1500);
-          return;
-        }
-        if (hit.kind === 'canvas') {
-          // 动态壁纸（canvas）：无法实时复制，只能取一帧静态快照；失败就放弃，绝不铺纯色
-          let url = '';
-          try { url = hit.el.toDataURL('image/png'); } catch (_) {}
-          if (!url || url.length < 32) {
-            logWall('titlebar.wall-skip', { why: 'canvas-empty' });
-            return;
-          }
-          hit.kind = 'url';
-          hit.url = url;
-        }
-        const layer = document.createElement('div');
-        layer.id = 'fnos-bg-layer';
-        layer.setAttribute('aria-hidden', 'true');
-        // 顶部两角保持直角（与标题栏一致，别学 v2.15.47 把标题栏顶角裁圆），只给下两角圆角
-        const base = 'position:fixed !important;left:0 !important;top:0 !important;' +
-          'width:' + vw + 'px !important;height:' + vh + 'px !important;' +
-          'margin:0 !important;padding:0 !important;border:0 !important;' +
-          'z-index:-1 !important;pointer-events:none !important;overflow:hidden !important;' +
-          'background-repeat:no-repeat !important;background-position:center center !important;' +
-          'background-size:cover !important;transform:none !important;' +
-          'border-radius:0 0 calc(20px / var(--fnos-f, 1)) calc(20px / var(--fnos-f, 1)) !important;';
-        if (hit.kind === 'url') {
-          const u = String(hit.url).replace(/"/g, '%22');
-          layer.style.cssText = base + 'background-image:url("' + u + '") !important;';
-        } else {
-          layer.style.cssText = base +
-            'background-color:' + (hit.color || 'transparent') + ' !important;' +
-            'background-image:' + hit.image + ' !important;' +
-            (hit.size ? 'background-size:' + hit.size + ' !important;' : '') +
-            (hit.position ? 'background-position:' + hit.position + ' !important;' : '') +
-            (hit.repeat ? 'background-repeat:' + hit.repeat + ' !important;' : '');
-        }
-        try { de.insertBefore(layer, bd); } catch (_) { de.insertBefore(layer, de.firstChild); }
-        logWall('titlebar.wall-ok', { why: hit.why, cls: String((hit.el && hit.el.className) || '').slice(0, 60) });
-        // fixed + px 尺寸，避免 zoom / 缩放因子下 100vw 与真实视口不一致；resize 时同步。
-        let bgT = 0;
-        window.addEventListener('resize', () => {
-          try {
-            clearTimeout(bgT);
-            bgT = setTimeout(() => {
-              layer.style.setProperty('width', Math.max(1, window.innerWidth || de.clientWidth || 0) + 'px', 'important');
-              layer.style.setProperty('height', Math.max(1, window.innerHeight || de.clientHeight || 0) + 'px', 'important');
-            }, 120);
-          } catch (_) {}
-        });
-      } catch (_) {}
-    };
-
-
-    // v2.17.29：内容让位改用 padding-top 后，fixed/absolute 的页面背景层会自然延伸到标题栏
-    // 底下（这正是我们要的模糊源），但页面顶部那类"贴顶工具栏"（fixed/absolute、贴着 top、
-    // 高度不超过 130px 的窄条）也会跟着钻进标题栏被遮住。这里只把这类窄条往下推标题栏高度，
-    // 铺满型背景层（高度接近视口）不受影响。
-    const __shiftTopToolbars = () => {
-      try {
-        try {
-          const __av = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
-          if (__av.indexOf('--fnos-live-window') >= 0) return; // 直播窗布局不动
-        } catch (_) {}
-        const de = document.documentElement;
-        const bd = document.body;
-        if (!de || !bd) return;
-        const vw = Math.max(1, window.innerWidth || de.clientWidth || 0);
-        let all = null;
-        try { all = bd.querySelectorAll('*'); } catch (_) { return; }
-        const n = Math.min(all.length, 2000);
-        for (let i = 0; i < n; i++) {
-          const el = all[i];
-          if (!el || el.nodeType !== 1) continue;
-          if (el.id === 'fnos-titlebar' || el.id === 'fnos-bg-layer') continue;
-          if (el.__fnosBarShifted) continue;
-          let r = null;
-          try { r = el.getBoundingClientRect(); } catch (_) {}
-          if (!r || r.height <= 8 || r.height > 130) continue;
-          if (r.width < vw * 0.5) continue;
-          if (r.top > 4) continue;
-          let cs = null;
-          try { cs = getComputedStyle(el); } catch (_) {}
-          const pos = (cs && cs.position) || '';
-          if (pos !== 'fixed' && pos !== 'absolute') continue;
-          el.__fnosBarShifted = true;
-          try {
-            let top = parseFloat(cs.top);
-            if (!isFinite(top)) top = 0;
-            el.style.setProperty('top', (top + 34) + 'px', 'important');
-          } catch (_) {}
-        }
-      } catch (_) {}
-    };
-    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __setupBgLayer(); __ensureContentOffset(); __shiftTopToolbars(); setTimeout(() => { try { __shiftTopToolbars(); } catch (_) {} }, 2200); __setupZoomControls(); } catch (_) {} };
+    const start = () => { try { if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

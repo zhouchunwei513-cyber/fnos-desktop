@@ -445,17 +445,77 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) { return `rgba(0,0,0,${a})`; }
     }
 
+    // v2.17.24：磨砂材质要真的糊出东西来，标题栏背后必须【有内容】。
+    // 旧几何把 body 整体下移 34px（内容不被标题栏遮挡），于是标题栏那一条背后是空的
+    // html —— 透明窗口里就是桌面，backdrop-filter 没有可模糊的源，磨砂滑块怎么拖都是
+    // 一片透亮，这就是用户看到的“选了磨砂但没效果”。
+    // 磨砂模式改为 overlay 形态：body 不再下移、占满整窗，内容延伸到标题栏底下，
+    // 标题栏浮在内容之上做 backdrop 模糊 → 真毛玻璃，且滑块 px 越大糊得越狠。
+    // 切回透明材质时立刻还原下移几何（内容不被遮挡，与旧版完全一致）。
+    // 只作用于主窗口 / 应用窗口；设置窗、直播窗保持原几何（它们标题栏背后是自身底色，
+    // 改成 overlay 反而会把自身头部内容压到标题栏底下）。
+    function __applyTbOverlay() {
+      try {
+        const b = document.body; if (!b) return;
+        const argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        const isLive = argv.indexOf('--fnos-live-window') >= 0;
+        const isApp = argv.indexOf('--fnos-app-window') >= 0 || isLive;
+        const isMain = argv.indexOf('--fnos-shell') >= 0 && !isApp;
+        if (!isMain && !isApp) return;
+        if (isLive) return;
+        const f = 'var(--fnos-f, 1)';
+        const on = TB.material === 'frosted';
+        const set = (k, v) => {
+          try {
+            if (b.style.getPropertyValue(k) !== v || b.style.getPropertyPriority(k) !== 'important') {
+              b.style.setProperty(k, v, 'important');
+            }
+          } catch (_) {}
+        };
+        if (on) {
+          set('transform', 'none');
+          set('height', '100vh');
+          set('max-height', '100vh');
+          set('min-height', '0');
+        } else {
+          set('transform', 'translateY(calc(34px / ' + f + '))');
+          set('height', 'calc(100vh - 34px / ' + f + ')');
+          set('max-height', 'calc(100vh - 34px / ' + f + ')');
+          set('min-height', '0');
+        }
+        try { b.classList.toggle('fnos-tb-frosted', on); } catch (_) {}
+        // v2.17.24：磨砂 overlay 时页面里那些「高度减 34px」的补偿规则也要跟着回满，
+        // 否则 h-screen / 100vh 类元素会矮一截，底部空出一条。透明材质下这条样式失效。
+        try {
+          let st = document.getElementById('fnos-tb-frosted-style');
+          if (!st) {
+            st = document.createElement('style');
+            st.id = 'fnos-tb-frosted-style';
+            st.textContent = [
+              'html>body.fnos-tb-frosted .h-screen,html>body.fnos-tb-frosted .h-dvh{height:100vh !important;}',
+              'html>body.fnos-tb-frosted .min-h-screen,html>body.fnos-tb-frosted .min-h-dvh{min-height:100vh !important;}',
+              'html>body.fnos-tb-frosted [class*="100vh"],html>body.fnos-tb-frosted [class*="h-screen"],html>body.fnos-tb-frosted [class*="h-dvh"]{max-height:100vh !important;}',
+              'html>body.fnos-tb-frosted [style*="100vh"]{max-height:100vh !important;}'
+            ].join('');
+          }
+          const head = document.head || document.documentElement;
+          if (head && st.parentNode !== head) head.appendChild(st);
+        } catch (_) {}
+      } catch (_) {}
+    }
+
     // 根据设置计算标题栏背景/模糊并应用；同时调整图标配色
     function applyStyle(bar) {
       try {
         if (!bar) return;
         if (TB.material === 'frosted') {
-          // 磨砂：带颜色底色（不透明度滑块控制深浅）+ backdrop 模糊（磨砂滑块）
-          const a = TB.opacity / 100 * 0.72; // 磨砂模式底色最高约 72%
+          // v2.17.24：磨砂 = 半透明底色（不透明度控制深浅，上限 72%）+ backdrop 模糊
+          // （磨砂程度 px，0 = 完全不模糊）。saturate 提亮饱和，视觉上更接近系统 acrylic。
+          const a = TB.opacity / 100 * 0.72;
+          const blur = Math.max(0, Number(TB.blur) || 0);
           bar.style.background = hexToRgba(TB.color, a);
-          const blur = Math.max(2, TB.blur);
-          bar.style.backdropFilter = `blur(${blur}px) saturate(1.4)`;
-          bar.style.webkitBackdropFilter = `blur(${blur}px) saturate(1.4)`;
+          bar.style.backdropFilter = blur > 0 ? `blur(${blur}px) saturate(1.6)` : 'none';
+          bar.style.webkitBackdropFilter = blur > 0 ? `blur(${blur}px) saturate(1.6)` : 'none';
         } else {
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
           const a = TB.opacity / 100;
@@ -487,6 +547,8 @@ module.exports = function injectTitleBar(ctx) {
           svg.querySelectorAll('path,line,rect').forEach((p) => { try { p.style.setProperty('stroke', iconStroke, 'important'); } catch (_) { p.setAttribute('stroke', iconStroke); } });
           svg.style.filter = iconShadow;
         });
+        // v2.17.24：材质切换后同步 body 几何（磨砂 overlay / 透明下移）
+        __applyTbOverlay();
       } catch (_) {}
     }
 
@@ -1483,10 +1545,18 @@ module.exports = function injectTitleBar(ctx) {
               }
             };
             const bh = __barHeight();
-            set('transform', 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
-            set('height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            // v2.17.24：磨砂材质用 overlay 几何（body 不下移，内容延伸到标题栏底下，
+            // 标题栏才能 backdrop 模糊出内容）。透明材质仍是原来的下移补偿。
+            if (TB.material === 'frosted') {
+              set('transform', 'none');
+              set('height', '100vh');
+              set('max-height', '100vh');
+            } else {
+              set('transform', 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
+              set('height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+              set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            }
             set('min-height', '0');
-            set('max-height', 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
             set('box-sizing', 'border-box');
             // v2.17.20: 双滚动条根因——音乐/影视这类 Semi / Tailwind 布局，左右面板各自就有
             // overflow-y:auto 的滚动容器，body 再出一条滚动条就成了并排两条（用户实测：

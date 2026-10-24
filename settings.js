@@ -326,6 +326,7 @@
   }
 
   // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
+  // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
   const tbState = { material: 'transparent', opacity: 0, blur: 12, color: '#3B82F6' };
   const tbMatTrans = document.getElementById('tb-mat-transparent');
   const tbMatFrost = document.getElementById('tb-mat-frosted');
@@ -334,26 +335,86 @@
   const tbBlur = document.getElementById('tb-blur');
   const tbBlurVal = document.getElementById('tb-blur-val');
   const tbBlurRow = document.getElementById('tb-blur-row');
-  const tbColorDots = [...document.querySelectorAll('.tb-color-dot')];
+  const tbColorInput = document.getElementById('tb-color-input');
+  const tbColorHex = document.getElementById('tb-color-hex');
+  const tbColorPreview = document.getElementById('tb-color-preview');
+  const tbAlpha = document.getElementById('tb-alpha');
+  const tbAlphaVal = document.getElementById('tb-alpha-val');
+  const tbColorHint = document.getElementById('tb-color-hint');
+
+  // #RGB / #RRGGBB / #RRGGBBAA 都收，统一归一成 #RRGGBB（Alpha 交给不透明度滑块，避免两个口径打架）
+  const hexOk = (h) => /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(String(h || '').trim());
+  const hexNorm6 = (h) => {
+    let t = String(h || '').trim();
+    if (t.charAt(0) !== '#') t = '#' + t;
+    if (!hexOk(t)) return '';
+    let body = t.slice(1);
+    if (body.length === 3) body = body.split('').map((c) => c + c).join('');
+    if (body.length === 8) body = body.slice(0, 6);
+    return '#' + body.toUpperCase();
+  };
+
+  // 任何一项改动都立刻广播到所有窗口做实时预览（不落盘；点「保存界面设置」才持久化）
+  let tbPreviewTimer = null;
+  const tbPreview = () => {
+    if (tbPreviewTimer) return;
+    tbPreviewTimer = setTimeout(() => {
+      tbPreviewTimer = null;
+      try {
+        fnosSettings.previewTitleBar({
+          titleBarMaterial: tbState.material,
+          titleBarOpacity: tbState.opacity,
+          titleBarBlur: tbState.blur,
+          titleBarColor: tbState.color,
+        });
+      } catch (_) {}
+    }, 40);
+  };
 
   const syncTbMaterialBtns = () => {
-    if (tbMatTrans) tbMatTrans.classList.toggle('active', tbState.material !== 'frosted');
-    if (tbMatFrost) tbMatFrost.classList.toggle('active', tbState.material === 'frosted');
-    // 磨砂程度滑块仅磨砂材质可见
-    if (tbBlurRow) tbBlurRow.hidden = tbState.material !== 'frosted';
+    const frosted = tbState.material === 'frosted';
+    if (tbMatTrans) tbMatTrans.classList.toggle('active', !frosted);
+    if (tbMatFrost) tbMatFrost.classList.toggle('active', frosted);
+    // v2.17.24：磨砂程度只在磨砂材质下可用——透明材质整行置灰不可操作（不再整行隐藏）
+    if (tbBlurRow) tbBlurRow.classList.toggle('tb-disabled', !frosted);
+    if (tbBlur) tbBlur.disabled = !frosted;
+    if (tbColorHint) tbColorHint.textContent = frosted
+      ? '磨砂材质下为毛玻璃底色（深浅由不透明度控制）'
+      : '透明材质下为标题栏纯色底色';
   };
   const syncTbSliders = () => {
-    if (tbOpacity) { tbOpacity.value = String(tbState.opacity); if (tbOpacityVal) tbOpacityVal.textContent = tbState.opacity + '%'; }
-    if (tbBlur) { tbBlur.value = String(tbState.blur); if (tbBlurVal) tbBlurVal.textContent = tbBlur.value + 'px'; }
+    if (tbOpacity) tbOpacity.value = String(tbState.opacity);
+    if (tbOpacityVal) tbOpacityVal.textContent = tbState.opacity + '%';
+    // 颜色区的 Alpha 与「标题栏不透明度」是同一个值，双向联动
+    if (tbAlpha) tbAlpha.value = String(tbState.opacity);
+    if (tbAlphaVal) tbAlphaVal.textContent = tbState.opacity + '%';
+    if (tbBlur) tbBlur.value = String(tbState.blur);
+    if (tbBlurVal) tbBlurVal.textContent = tbBlur.value + 'px';
   };
-  const syncTbColorDots = () => {
-    tbColorDots.forEach((d) => { d.classList.toggle('active', (d.getAttribute('data-color') || '').toLowerCase() === tbState.color.toLowerCase()); });
+  const syncTbColor = () => {
+    if (tbColorInput) tbColorInput.value = tbState.color;
+    if (tbColorHex && document.activeElement !== tbColorHex) tbColorHex.value = tbState.color;
+    if (tbColorPreview) tbColorPreview.style.background = tbState.color;
   };
-  if (tbMatTrans) tbMatTrans.addEventListener('click', () => { tbState.material = 'transparent'; syncTbMaterialBtns(); });
-  if (tbMatFrost) tbMatFrost.addEventListener('click', () => { tbState.material = 'frosted'; syncTbMaterialBtns(); });
-  if (tbOpacity) tbOpacity.addEventListener('input', () => { tbState.opacity = clampInt(tbOpacity.value, 0, 100, 0); if (tbOpacityVal) tbOpacityVal.textContent = tbState.opacity + '%'; });
-  if (tbBlur) tbBlur.addEventListener('input', () => { tbState.blur = clampInt(tbBlur.value, 0, 40, 12); if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px'; });
-  tbColorDots.forEach((d) => d.addEventListener('click', () => { tbState.color = d.getAttribute('data-color') || '#3B82F6'; syncTbColorDots(); }));
+  const setTbColor = (c) => {
+    const n = hexNorm6(c);
+    if (!n) return false;
+    tbState.color = n;
+    syncTbColor();
+    return true;
+  };
+  const setTbOpacity = (v) => { tbState.opacity = clampInt(v, 0, 100, 0); syncTbSliders(); };
+
+  if (tbMatTrans) tbMatTrans.addEventListener('click', () => { tbState.material = 'transparent'; syncTbMaterialBtns(); tbPreview(); });
+  if (tbMatFrost) tbMatFrost.addEventListener('click', () => { tbState.material = 'frosted'; syncTbMaterialBtns(); tbPreview(); });
+  if (tbOpacity) tbOpacity.addEventListener('input', () => { setTbOpacity(tbOpacity.value); tbPreview(); });
+  if (tbAlpha) tbAlpha.addEventListener('input', () => { setTbOpacity(tbAlpha.value); tbPreview(); });
+  if (tbBlur) tbBlur.addEventListener('input', () => { tbState.blur = clampInt(tbBlur.value, 0, 40, 12); if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px'; tbPreview(); });
+  if (tbColorInput) tbColorInput.addEventListener('input', () => { if (setTbColor(tbColorInput.value)) tbPreview(); });
+  if (tbColorHex) {
+    tbColorHex.addEventListener('input', () => { if (setTbColor(tbColorHex.value)) tbPreview(); });
+    tbColorHex.addEventListener('blur', () => { if (!hexOk(tbColorHex.value)) tbColorHex.value = tbState.color; });
+  }
 
   // 载入当前设置填充界面
   fnosSettings.getSettings().then((info) => {
@@ -363,11 +424,10 @@
       tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent';
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 0);
       tbState.blur = clampInt(info.titleBarBlur, 0, 40, 12);
-      tbState.color = String(info.titleBarColor || '#3B82F6');
-      syncTbMaterialBtns(); syncTbSliders(); syncTbColorDots();
+      tbState.color = hexNorm6(info.titleBarColor) || '#3B82F6';
+      syncTbMaterialBtns(); syncTbSliders(); syncTbColor();
     } catch (_) {}
   }).catch(() => {});
-
   const optSave = document.getElementById('opt-save');
   if (optSave) {
     optSave.addEventListener('click', async () => {

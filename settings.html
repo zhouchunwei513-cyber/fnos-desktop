@@ -280,29 +280,32 @@
         </div>
       </div>
       <!-- v1.58：磨砂程度滑块（仅磨砂材质生效） -->
-      <div class="color-picker-row" id="tb-blur-row" hidden style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+      <div class="color-picker-row" id="tb-blur-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
           <div class="hotkey-title">磨砂程度</div>
-          <div class="hotkey-sub">仅磨砂材质生效，数值越大背景模糊越强</div>
+          <div class="hotkey-sub">仅磨砂材质生效（透明材质下自动置灰），数值越大背景模糊越强</div>
         </div>
         <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
           <input type="range" id="tb-blur" min="0" max="40" value="12" class="tb-range" style="flex:1" />
           <span id="tb-blur-val" class="tb-range-val">12px</span>
         </div>
       </div>
-      <!-- v1.58：标题栏颜色 -->
+      <!-- v2.17.24：标题栏颜色改用标准取色器（系统拾色面板 + 十六进制色值 + Alpha），删除原 6 个预设色圈 -->
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
           <div class="hotkey-title">标题栏颜色</div>
-          <div class="hotkey-sub">标题栏底色色调</div>
+          <div class="hotkey-sub" id="tb-color-hint">磨砂材质下为毛玻璃底色；透明材质下为标题栏纯色底色</div>
         </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap" id="tb-color-dots">
-          <button type="button" class="accent-dot tb-color-dot" data-color="#3B82F6" style="background:#3B82F6" title="蓝"></button>
-          <button type="button" class="accent-dot tb-color-dot" data-color="#8B5CF6" style="background:#8B5CF6" title="紫"></button>
-          <button type="button" class="accent-dot tb-color-dot" data-color="#EC4899" style="background:#EC4899" title="粉"></button>
-          <button type="button" class="accent-dot tb-color-dot" data-color="#10B981" style="background:#10B981" title="绿"></button>
-          <button type="button" class="accent-dot tb-color-dot" data-color="#F59E0B" style="background:#F59E0B" title="橙"></button>
-          <button type="button" class="accent-dot tb-color-dot" data-color="#06B6D4" style="background:#06B6D4" title="青"></button>
+        <div class="tb-color-tools">
+          <label class="tb-color-pick" title="点击打开取色器（拾色面板）">
+            <input type="color" id="tb-color-input" value="#3B82F6" />
+            <span class="tb-color-preview" id="tb-color-preview"></span>
+          </label>
+          <input type="text" id="tb-color-hex" class="hotkey-input tb-hex-input" value="#3B82F6" maxlength="9" placeholder="#RRGGBB" spellcheck="false" title="支持 #RRGGBB 或 #RRGGBBAA" />
+          <div class="tb-alpha-wrap" title="颜色透明度（Alpha），与上方「标题栏不透明度」联动">
+            <input type="range" id="tb-alpha" min="0" max="100" value="0" class="tb-range tb-alpha-range" />
+            <span id="tb-alpha-val" class="tb-range-val">0%</span>
+          </div>
         </div>
       </div>
       <div class="setup-actions" style="margin-top:14px">

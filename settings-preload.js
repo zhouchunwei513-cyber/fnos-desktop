@@ -36,6 +36,14 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
       titleBarColor: opts?.titleBarColor ? String(opts.titleBarColor) : undefined,
     }),
+  // v2.17.24：标题栏材质/颜色实时预览（只广播，不落盘；保存仍走 setUIOptions）
+  previewTitleBar: (opts) =>
+    ipcRenderer.invoke('settings:preview-titlebar', {
+      titleBarMaterial: opts?.titleBarMaterial ? String(opts.titleBarMaterial) : undefined,
+      titleBarOpacity: opts?.titleBarOpacity != null ? Number(opts.titleBarOpacity) : undefined,
+      titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
+      titleBarColor: opts?.titleBarColor ? String(opts.titleBarColor) : undefined,
+    }),
   setAccentColor: (color) =>
     ipcRenderer.invoke('settings:set-accent-color', String(color || '#5865F2')),
   // 直播源基地址/线路配置（非代理；仅保留源配置）

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.23';
+const APP_VERSION = '2.17.24';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -8788,6 +8788,26 @@ ipcMain.handle('settings:set-url-rewrites', async (_e, list) => {
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+// v2.17.24：标题栏设置的实时预览通道（不落盘）。设置页拖动滑块/切材质/改颜色时调用，
+// 主进程只把样式对象广播给所有渲染进程，titlebar-inject 立即套用，达到「所见即所得」。
+// 持久化仍由 settings:set-ui-options + 「保存界面设置」按钮完成。
+ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
+  try {
+    const tbPayload = {
+      material: opts?.titleBarMaterial === 'frosted' ? 'frosted' : 'transparent',
+      opacity: clampInt(opts?.titleBarOpacity, 0, 100, 0),
+      blur: clampInt(opts?.titleBarBlur, 0, 40, 12),
+      color: String(opts?.titleBarColor || '#3B82F6'),
+    };
+    for (const wc of require('electron').webContents.getAllWebContents()) {
+      try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || '预览失败' };
   }
 });
 

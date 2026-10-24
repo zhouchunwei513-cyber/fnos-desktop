@@ -237,8 +237,33 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* 标题栏颜色点略小，保持一行 */
+/* 标题栏颜色点略小，保持一行（v2.17.24 起预设色圈已删除，保留类名兼容旧缓存） */
 .tb-color-dot { width: 30px; height: 30px; }
+
+/* v2.17.24：标题栏取色器（系统拾色面板 + 十六进制 + Alpha），替换原 6 个预设色圈 */
+.tb-color-tools { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.tb-color-pick {
+  position: relative; width: 34px; height: 34px; border-radius: 9px;
+  flex: 0 0 34px; cursor: pointer; overflow: hidden;
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.28);
+}
+.tb-color-pick:hover { border-color: rgba(255,255,255,.42); }
+.tb-color-pick input[type="color"] {
+  position: absolute; left: -8px; top: -8px; width: 52px; height: 52px;
+  opacity: 0; border: 0; padding: 0; cursor: pointer;
+}
+.tb-color-preview { position: absolute; inset: 0; pointer-events: none; background: #3B82F6; }
+.tb-hex-input {
+  width: 104px; flex: 0 0 104px; text-align: center;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12.5px; letter-spacing: .5px; padding: 0 6px; height: 34px;
+}
+.tb-alpha-wrap { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.tb-alpha-range { width: 78px; flex: 0 0 78px; }
+.tb-alpha-wrap .tb-range-val { flex: 0 0 40px; }
+/* 磨砂程度在透明材质下置灰不可操作 */
+.tb-disabled { opacity: .4; pointer-events: none; filter: grayscale(.35); }
 
 /* v1.16.2：统一 select 玻璃样式，避免出现系统原生白色下拉菜单 */
 select,

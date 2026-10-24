@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.22';
+const APP_VERSION = '2.17.23';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4169,7 +4169,15 @@ function registerWindow(win, opts = {}) {
         overrideBrowserWindowOptions: {
           width: 1024, height: 720,
           minWidth: 640, minHeight: 480,
-          backgroundColor: '#0b0d12',
+          // v2.17.23: about:blank 弹窗（飞牛音乐的 NAS 账号授权登录框走这条路）改成与
+          // createAppWindow 完全相同的窗体质感：透明窗 + 全透明底色 + roundedCorners:false。
+          // 原来这里是不透明窗（backgroundColor:'#0b0d12'），而 titlebar-inject 因为拿不到
+          // --fnos-app-window 旗标把它判成「设置窗」分支：html 不透明、body 铺 #05060a，
+          // 于是标题栏那条透明栏透出的就是窗口底色——一条黑色横条，和影视（走
+          // createAppWindow，透明窗 + 应用窗分支）的透明标题栏完全两个样子。
+          transparent: true,
+          backgroundColor: '#00000000',
+          roundedCorners: false,
           autoHideMenuBar: true,
           frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
           icon: ICON_PATH,
@@ -4180,6 +4188,9 @@ function registerWindow(win, opts = {}) {
             contextIsolation: true, webviewTag: true,
             nodeIntegration: false,
             sandbox: false, // v1.56：preload 需 require 本地 titlebar-inject
+            // v2.17.23: 与 createAppWindow 同款旗标。缺了它 titlebar-inject 走设置窗分支，
+            // 标题栏/body 几何与尺寸补偿全对不上（这是音乐授权窗与影视不一致的根因）。
+            additionalArguments: ['--fnos-shell', '--fnos-app-window'],
             webSecurity: true,
             allowRunningInsecureContent: true,
             backgroundThrottling: false,

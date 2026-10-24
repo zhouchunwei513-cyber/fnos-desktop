@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.35';
+const APP_VERSION = '2.17.36';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -959,12 +959,8 @@ function __toggleFullScreenWin(win) {
   try {
     if (!win || win.isDestroyed()) return;
     if (__fsThrottled()) return;
-    if (__isFsOn(win)) {
-      __fsStateMap.set(win, false);
-      win.setFullScreen(false);
-      try { if (__fsExitHook) __fsExitHook(win); } catch (_) {}
-      return;
-    }
+    // v2.17.36（用户要求）：全屏态只有 ESC 能退出——F11 与菜单项在全屏态一律不做任何事
+    if (__isFsOn(win)) return;
     __rememberFsBounds(win);
     __fsStateMap.set(win, true);
     win.setFullScreen(true);
@@ -6331,7 +6327,7 @@ function createMainWindow(partition, loadTarget) {
         n++;
         try {
           if (!mainWindow || mainWindow.isDestroyed()) return;
-          if (__isFsGeometry()) { if (n < 8) setTimeout(step, 100); return; }
+          if (__isFsGeometry()) { if (n < 15) setTimeout(step, 100); return; }
           if (rec.max) { if (!mainWindow.isMaximized()) mainWindow.maximize(); return; }
           const cur = mainWindow.getBounds();
           if (cur.width !== pb.width || cur.height !== pb.height || cur.x !== pb.x || cur.y !== pb.y) {
@@ -7202,7 +7198,7 @@ function buildMenuTemplate() {
         { label: '缩小', accelerator: 'CommandOrControl+-',
           click: withWebContents((wc) => { try { wc.setZoomFactor(Math.min(2.5, Math.max(0.5, (wc.getZoomFactor() || 1) / 1.1))); } catch (_) {} }) },
         { type: 'separator' },
-        { label: '全屏 / 退出全屏', accelerator: 'F11', registerAccelerator: false,
+        { label: '全屏', accelerator: 'F11', registerAccelerator: false,
           click: withWebContents((_wc, win) => __toggleFullScreenWin(win)) },
         ...(IS_DEV ? [{ type: 'separator' }, { role: 'toggleDevTools', label: '开发者工具' }] : []),
       ],

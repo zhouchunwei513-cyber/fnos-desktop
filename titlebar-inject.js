@@ -524,6 +524,7 @@ module.exports = function injectTitleBar(ctx) {
     let forceShow = false; // v1.63：主进程光标轮询判定"鼠标在宿主顶部带"时强制显示
     function show(bar) {
       try {
+        if (window.__fnosFsOn) return; // v2.17.36：全屏态不出标题栏（只有 ESC 能退出全屏）
         if (bar.__hideTimer) { clearTimeout(bar.__hideTimer); bar.__hideTimer = null; }
         bar.style.transform = 'translateY(0)';
         bar.style.opacity = '1';
@@ -1554,7 +1555,9 @@ module.exports = function injectTitleBar(ctx) {
           st.textContent = [
             'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;}',
             'html[data-fnos-fs="1"] #fnos-titlebar{z-index:2147483647 !important;}',
-            'html[data-fnos-fs="1"] #fnos-tb-dragstrip,html[data-fnos-fs="1"] #fnos-resize-cover{display:none !important;}',
+            // v2.17.36（用户要求）：删掉全屏时的"悬浮隐藏式标题栏"——全屏态标题栏与顶部热区
+            // 一律 display:none，鼠标推到顶部也不会再滑出；退出全屏后自动恢复（选择器带 data-fnos-fs）
+            'html[data-fnos-fs="1"] #fnos-titlebar,html[data-fnos-fs="1"] #fnos-titlebar-hotzone,html[data-fnos-fs="1"] #fnos-tb-dragstrip,html[data-fnos-fs="1"] #fnos-resize-cover{display:none !important;}',
             // v2.17.35：全屏态整个标题栏（含热区与子元素）强制 no-drag，禁止出现可拖动区
             'html[data-fnos-fs="1"] #fnos-titlebar,html[data-fnos-fs="1"] #fnos-titlebar *,html[data-fnos-fs="1"] #fnos-titlebar-hotzone{-webkit-app-region:no-drag !important;}'
           ].join('\n');
@@ -1568,7 +1571,7 @@ module.exports = function injectTitleBar(ctx) {
               if (d && d.fullscreen) {
                 window.__fnosFsOn = true;
                 document.documentElement.setAttribute('data-fnos-fs', '1');
-                __fsBarStyle(true); // 刚进全屏先收起，鼠标到顶部再滑出
+                __fsBarStyle(true); // v2.17.36：进全屏即收起，且全屏态不再滑出（见样式表 display:none）
               } else {
                 window.__fnosFsOn = false;
                 document.documentElement.removeAttribute('data-fnos-fs');

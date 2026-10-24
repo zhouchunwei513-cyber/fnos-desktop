@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.30';
+const APP_VERSION = '2.17.31';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4516,7 +4516,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // registry 识别的应用直达网关真实入口。
   const __urlCandidates = [];
   try {
-    const __origR21 = (() => { try { return String(loadSettings().origin || '').replace(/\/+$/, ''); } catch (_) { return ''; } })();
+    const __origR21 = (() => { try { return String(__liveOriginBase() || loadSettings().origin || '').replace(/\/+$/, ''); } catch (_) { return ''; } })();
     const __mAnchor21 = /\/appview\?anchor=([^&#]+)/i.exec(String(url || ''));
     const __mRoute21 = /\/app\/([^/?#]+)/i.exec(String(url || ''));
     if (__origR21 && /^https?:/i.test(__origR21)) {
@@ -9904,7 +9904,9 @@ function __startLaunchServer() {
             __launchDedupe.set(appId, __nowL);
           } catch (_) {}
           let nas = '';
-          try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {}
+          // v2.17.31：基准取运行时实际 origin（FNID 域名与真实登录域不同，跨域会丢 Cookie）
+          try { nas = __liveOriginBase(); } catch (_) {}
+          if (!nas) { try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {} }
           const u = __resolveLaunchUrl(appId, nas);
           if (u && /^https?:/i.test(u)) {
             // v2.4.17 r15d：快捷方式 HTTP 入口统一收口——窗口类型标记直开对应形态窗
@@ -9931,7 +9933,7 @@ function __startLaunchServer() {
       try {
         __launchPort = __launchHttpServer.address().port;
         __launchToken = require('crypto').randomBytes(24).toString('hex');
-        fs.writeFileSync(__LAUNCH_ENDPOINT_FILE(), [String(__launchPort), String(__launchToken), String(process.execPath), String((loadSettings() && loadSettings().origin) || '')].join('\r\n'), 'utf-8');
+        fs.writeFileSync(__LAUNCH_ENDPOINT_FILE(), [String(__launchPort), String(__launchToken), String(process.execPath), String(__liveOriginBase() || (loadSettings() && loadSettings().origin) || '')].join('\r\n'), 'utf-8');
         require('./logger.js').log('info', 'launch', 'launch.http listen', { params: { port: __launchPort } }, __RUN_MODE);
       } catch (_) {}
     });
@@ -10379,7 +10381,9 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
     while (id.length > 1 && id.charAt(id.length - 1) === '/') id = id.slice(0, -1);
     id = id.slice(0, 200);
     let origin = '';
-    try { const st = loadSettings(); origin = String((st && st.origin) || '').replace(/\/+$/, ''); } catch (_) {}
+    // v2.17.31：origin 用运行时实际地址（FNID 域名与真实登录域不同 → 跨域丢 Cookie）
+    try { origin = __liveOriginBase(); } catch (_) {}
+    if (!origin) { try { const st = loadSettings(); origin = String((st && st.origin) || '').replace(/\/+$/, ''); } catch (_) {} }
     if (!origin) { try { origin = new URL(String(appUrl || realUrl || '')).origin; } catch (_) { origin = ''; } }
     let target = '';
     // v2.5.2 r18：入口分流修正（r18 实测：v2.5.1 无条件构造 appview?anchor 覆盖清单/探测真实
@@ -10396,6 +10400,8 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
       } catch (_) { return false; }
     };
     let cand = __validEntry(appUrl) ? String(appUrl) : (__validEntry(realUrl) ? String(realUrl) : '');
+    // v2.17.31：清单/预设里可能残留旧 origin（FNID 域名），按运行时 origin 归一化
+    try { if (cand) cand = __liveOriginFixUrl(cand); } catch (_) {}
     if (!cand) {
       try { const fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (fe && __validEntry(fe.url)) cand = String(fe.url); } catch (_) {}
     }
@@ -10571,6 +10577,52 @@ function __rootUrlFallback(u, name) {
   } catch (_) {}
   return u;
 }
+// v2.17.31：运行时真实基准地址——论坛反馈「主程序内打开应用正常、桌面快捷方式打开只有
+// 标题栏/一直加载失败」根因：FNID 连接时 settings.origin 存的是 FNID 域名
+// （如 https://fnos.net），而主窗口实际被重定向到内网 http://192.168.50.46:5666，
+// 登录 Cookie 只在该域下。快捷方式链路继续用 settings.origin 拼 URL
+// （https://fnos.net/v、https://fnos.net/appview?anchor=xxx）→ 跨域无 Cookie →
+// 弹登录页/一直加载失败。基准优先级：主窗口当前 URL > lastConnectHref > settings.origin。
+function __liveOriginBase() {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+      const u = String(mainWindow.webContents.getURL() || '');
+      if (/^https?:\/\//i.test(u)) return new URL(u).origin;
+    }
+  } catch (_) {}
+  try {
+    const lh = String(lastConnectHref || '');
+    if (/^https?:\/\//i.test(lh)) return new URL(lh).origin;
+  } catch (_) {}
+  try {
+    const s = loadSettings();
+    let o = String((s && s.origin) || '').trim();
+    if (o) { if (!/^https?:/i.test(o)) o = 'http://' + o; return String(new URL(o).origin); }
+  } catch (_) {}
+  return '';
+}
+// v2.17.31：URL origin 归一化——历史清单/窗口类型预设里按旧 settings.origin 拼出的地址
+// （host 与旧 origin 相同）统一替换为运行时实际 origin；独立服务地址（端口不同）不动。
+function __liveOriginFixUrl(u) {
+  try {
+    const s = String(u || '');
+    if (!/^https?:/i.test(s)) return s;
+    const live = __liveOriginBase();
+    if (!live) return s;
+    let oldO = '';
+    try { const st = loadSettings(); oldO = String((st && st.origin) || '').replace(/\/+$/, ''); } catch (_) {}
+    if (!oldO) return s;
+    let oldHost = '';
+    try { oldHost = new URL(/^https?:/i.test(oldO) ? oldO : 'http://' + oldO).host; } catch (_) { return s; }
+    const pu = new URL(s);
+    if (String(pu.host || '') !== String(oldHost)) return s;
+    const lu = new URL(live);
+    if (lu.host === pu.host) return s;
+    const out = lu.protocol + '//' + lu.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+    try { fnosLog('info', 'launch', 'url.origin-fix31', { from: s.slice(0, 120), to: out.slice(0, 140) }); } catch (_) {}
+    return out;
+  } catch (_) { return String(u || ''); }
+}
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
@@ -10580,7 +10632,9 @@ function __resolveLaunchUrl(raw, nasAddr) {
   if (/^https?:\/\//i.test(appName)) {
     try {
       const __stR = loadSettings();
-      const __origR = String((__stR && __stR.origin) || '').trim();
+      let __origR = '';
+      try { __origR = String(__liveOriginBase() || '').trim(); } catch (_) {}
+      if (!__origR) __origR = String((__stR && __stR.origin) || '').trim();
       if (__origR) {
         const __oR = new URL(/^https?:/i.test(__origR) ? __origR : 'http://' + __origR);
         const __bR = new URL(appName);
@@ -10598,7 +10652,7 @@ function __resolveLaunchUrl(raw, nasAddr) {
   try {
     const fe = __fpkLookupSync(appName);
     if (fe && fe.url && /^https?:\/\//i.test(fe.url)) {
-      const __ru2 = __rootUrlFallback(fe.url, appName);
+      const __ru2 = __rootUrlFallback(__liveOriginFixUrl(fe.url), appName);
       try { dlog && dlog('info', 'shortcut.url.fpk-cache', { name: String(appName).slice(0, 80), url: String(__ru2).slice(0, 140) }); } catch (_) {}
       return __ru2;
     }
@@ -10607,10 +10661,12 @@ function __resolveLaunchUrl(raw, nasAddr) {
   try {
     const mf = readManifest();
     const entry = mf && Array.isArray(mf.apps) ? mf.apps.find(a => a && (a.appId === appName || a.name === appName || a.url === appName)) : null;
-    if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return __rootUrlFallback(entry.url, appName);
+    if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return __rootUrlFallback(__liveOriginFixUrl(entry.url), appName);
   } catch (_) {}
   // 4) appname → appview?anchor（飞牛系统应用统一入口，服务端/客户端会补端口归一化）
   let base = String(nasAddr || '').trim().replace(/\/+$/, '');
+  // v2.17.31：nasAddr 可能是 FNID 域名（settings.origin），统一以运行时实际 origin 为基准
+  try { const __lo31 = __liveOriginBase(); if (__lo31) base = __lo31; } catch (_) {}
   if (base) {
     if (!/^https?:/i.test(base)) base = 'http://' + base;
     // v2.3.6: 旧快捷方式 --nas=host 丢端口（创建时 nasAddress 未带端口），appview 会打到

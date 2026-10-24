@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.37';
+const APP_VERSION = '2.17.38';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5485,21 +5485,19 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           try { dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'external-app', urlOrigin: __urlOrigin, nasOrigin: __nasOrigin }); } catch (_) {}
         }
       } catch (_) {}
-      // v2.2.2：主窗口已登录（当前 URL 已是主页而非 /login）时跳过 PreAuth——
-      // 认证 cookie 已在共享 partition 中，直接 load 应用 URL 即可进入，
-      // 无需再跑一遍 OAuth（否则已登录用户打开影视/音乐等非 appview 应用仍会
-      // 白等 3 秒 force-login + 8 秒超时，表现为快捷方式/应用打开非常慢）。
+      // v2.2.2：主窗口已登录（当前 URL 已是主页而非 /login）时，理论上认证 cookie 已在共享
+      // partition 中；但对影视/音乐等「裸路径」应用，其 per-app OAuth 认证 cookie 并不会随主站
+      // 登录自动建立。v2.17.38 修复：已登录不再无条件跳过 PreAuth——必须同时命中 OAuth 缓存
+      // （该 origin 近期已完成过 OAuth）才真正跳过，否则应用首次打开会被重定向到 /xxx/login
+      // 卡住加载失败（快捷图标启动应用实锤）。
       let __alreadyLoggedIn = false;
       try {
         const __mainUrl = (mainWindow && !mainWindow.isDestroyed()) ? (mainWindow.webContents.getURL() || '') : '';
         const __mp = String(__mainUrl).toLowerCase();
         __alreadyLoggedIn = /^https?:/i.test(__mp) && __mp.indexOf('/login') !== 0 && !/\/login([\/?#]|$)/.test(__mp);
-        if (__alreadyLoggedIn) {
-          dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'already-logged-in', mainUrl: String(__mainUrl).slice(0, 100) });
-        }
       } catch (_) {}
 
-      let __shouldPreAuth = !__isAppview && !__isExternalApp && !__alreadyLoggedIn && typeof url === 'string';
+      let __shouldPreAuth = !__isAppview && !__isExternalApp && typeof url === 'string';
       // v2.1.17: 检查 PreAuth 缓存
       try {
         if (__shouldPreAuth) {
@@ -5516,6 +5514,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           }
         }
       } catch (_) {}
+      // v2.17.38：主窗口已登录但该 origin 无 OAuth 缓存（应用首次打开）→ 仍需 PreAuth 完成
+      // per-app OAuth 认证。
+      if (__shouldPreAuth && __alreadyLoggedIn) {
+        dlog && dlog('info', 'appwin.preauth.first-oauth', { app: __appLabel, reason: 'logged-in-no-cache', url: String(url).slice(0, 120) });
+      }
       if (__shouldPreAuth) {
         try {
           const __preAuthT0 = Date.now();
@@ -5613,22 +5616,28 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
             }
           }, 8000);
 
-          // v2.1.17: 如果 3 秒内 SPA 没有重定向到登录页，强制导航到 /login
+          // v2.17.38: 3 秒后若仍在应用路径（服务端未 302 到登录页），说明应用可直接访问、
+          // 无需 per-app OAuth（如相册 /p）。此前 v2.1.17 会强制跳 /login，导致这类应用被
+          // 误判为需要 OAuth 而白等 8 秒超时；现改为直接判完成并写缓存，避免无谓等待。
           const __preAuthFallbackTimer = setTimeout(() => {
             try {
               if (!__preAuthDone && __preAuthNavCount <= 1) {
                 const __curUrl = __preAuthWin.webContents.getURL();
                 const __curObj = new URL(__curUrl);
-                // 如果还在应用路径下（没进入 OAuth 流程），强制跳转 /login
+                // 如果还在应用路径下（没进入 OAuth 流程），说明无需 OAuth，直接完成
                 if (!__curUrl.includes('/login') && !__curUrl.includes('/signin') && !__curUrl.includes('/oauth')) {
-                  const __loginUrl = __curObj.origin + '/login';
-                  dlog && dlog('info', 'appwin.preauth.force-login', {
+                  __preAuthDone = true;
+                  dlog && dlog('info', 'appwin.preauth.direct', {
                     app: __appLabel,
-                    from: __curUrl.slice(0, 120),
-                    to: __loginUrl,
+                    url: __curUrl.slice(0, 120),
                     elapsedMs: Date.now() - __preAuthT0,
                   });
-                  __preAuthWin.loadURL(__loginUrl, { userAgent: getNasUA() }).catch(() => {});
+                  try {
+                    const __cacheOrigin = new URL(url).origin;
+                    __preAuthCache.set(__cacheOrigin, { ts: Date.now(), navSteps: 0 });
+                  } catch (_) {}
+                  clearTimeout(__preAuthTimeout);
+                  __loadRealUrl();
                 }
               }
             } catch (_) {}

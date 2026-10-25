@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.18.3';
+const APP_VERSION = '2.18.4';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -766,81 +766,110 @@ function compareVersions(a, b) {
 }
 
 async function checkGitLatestTag() {
-  // v1.10.5:
-  //  - 使用 Electron net 模块（默认遵循系统代理，开了 Clash/v2ray 等会自动走代理）
-  //  - 超时延长到 25 秒（GitHub API 国内偶尔慢）
-  //  - 失败时自动重试 1 次
-  //  - 显式调用 session.defaultSession.resolveProxy，确保走系统代理
+  // v2.18.4: 双通道并行竞速，解决「浏览器能打开 GitHub 但检查更新报连不上」的误判。
+  //   通道 A: https://api.github.com/repos/OWNER/REPO/releases/latest （能拿 release notes，
+  //           但 api.github.com 在国内被污染/阻塞的概率远高于主站）
+  //   通道 B: https://github.com/OWNER/REPO/releases/latest 的 302 Location （主站域名，
+  //           浏览器能打开时这里通常也能通，代价是拿不到 notes）
+  // 两路 Promise.any 竞速，先成功者胜出；两路都失败才判定失败，并在弹框里给浏览器兜底。
+  // 已删除 resolveProxy 探测：它的返回值只用于打印日志，却没有任何超时保护，
+  // 代理/PAC 不回调时会把整条链路挂死（v2.18.3 实测仍会误报超时）。
   const ses = session.defaultSession;
 
-  async function onceAttempt() {
-    return await new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (fn, v) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        try { r.abort(); } catch (_) {}
-        fn(v);
-      };
-      const timer = setTimeout(() => {
-        finish(reject, new Error('连接 GitHub 超时（8 秒）'));
-      }, 8000);
-
-      const r = net.request({
-        method: 'GET',
-        url: RELEASES_API,
-        redirect: 'follow',
-        session: ses, // 显式使用 defaultSession，走系统代理
-        credentials: 'omit',
-        useSessionCookies: false,
-        cache: 'no-store',
-      });
+  // 统一请求器：3xx 只读 headers 立即返回；2xx 读完 body 再返回；超时才 abort。
+  function __req(url, timeoutMs, accept) {
+    return new Promise((resolve, reject) => {
+      let r = null;
+      let timer = null;
+      let aborted = false;
+      const host = (() => { try { return new URL(url).host; } catch (_) { return 'github'; } })();
+      const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+      timer = setTimeout(() => {
+        aborted = true;
+        clearTimer();
+        try { if (r) r.abort(); } catch (_) {}
+        reject(new Error(`${host} 无响应（${Math.round(timeoutMs / 1000)} 秒）`));
+      }, timeoutMs);
+      try {
+        r = net.request({
+          method: 'GET',
+          url,
+          redirect: 'manual',
+          session: ses,
+          credentials: 'omit',
+          useSessionCookies: false,
+          cache: 'no-store',
+        });
+      } catch (e) { clearTimer(); reject(e); return; }
       r.setHeader('User-Agent', `FNOS-Desktop/${APP_VERSION}`);
-      r.setHeader('Accept', 'application/vnd.github+json');
-      const chunks = [];
-      r.on('data', (c) => chunks.push(c));
-      r.on('end', () => {
-        try {
-          const body = Buffer.concat(chunks).toString('utf8');
-          const data = JSON.parse(body);
-          if (data && data.tag_name) {
-            finish(resolve, {
-              tag: String(data.tag_name).replace(/^v/i, ''),
-              name: data.name || data.tag_name,
-              notes: data.body || '',
-              html_url: data.html_url || RELEASES_PAGE,
-            });
-          } else if (data && data.message) {
-            finish(reject, new Error(String(data.message)));
-          } else {
-            finish(reject, new Error('未检查到发布版本'));
-          }
-        } catch (e) { finish(reject, e); }
+      r.setHeader('Accept', accept);
+      r.on('response', (res) => {
+        const code = res.statusCode || 0;
+        const h = res.headers || {};
+        const rawLoc = h.location || h.Location || '';
+        const loc = Array.isArray(rawLoc) ? (rawLoc[0] || '') : String(rawLoc || '');
+        if (code >= 300 && code < 400) {
+          clearTimer();
+          resolve({ code, loc, body: '' });
+          return;
+        }
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          clearTimer();
+          resolve({ code, loc, body: Buffer.concat(chunks).toString('utf8') });
+        });
+        res.on('error', (e) => { clearTimer(); reject(e); });
       });
-      r.on('error', (err) => finish(reject, err));
+      r.on('error', (err) => {
+        if (aborted) return;
+        clearTimer();
+        reject(err);
+      });
       r.end();
     });
   }
 
-  // 解析系统代理（仅用于诊断，真正的代理使用由 Electron net 自动处理）
-  let proxyInfo = 'direct';
-  try {
-    proxyInfo = await Promise.race([
-      new Promise((resolve) => {
-        try { ses.resolveProxy(RELEASES_API, (p) => resolve(p || 'direct')); } catch (_) { resolve('direct'); }
-      }),
-      new Promise((resolve) => setTimeout(() => resolve('direct'), 1500)),
-    ]);
-  } catch (_) {}
-  console.log(`[update] using proxy: ${proxyInfo}`);
+  const __tagFrom = (s) => {
+    const m = String(s || '').match(/\/releases\/tag\/(v?[^/?#"'\s<]+)/i);
+    return m ? decodeURIComponent(m[1]).replace(/^v/i, '') : '';
+  };
 
+  async function __viaApi(timeoutMs) {
+    const { code, body } = await __req(RELEASES_API, timeoutMs, 'application/vnd.github+json');
+    if (code < 200 || code >= 300) throw new Error(`api.github.com 返回 HTTP ${code}`);
+    let data = null;
+    try { data = JSON.parse(body); } catch (_) { throw new Error('api.github.com 返回内容无法解析'); }
+    if (!data || !data.tag_name) throw new Error('api.github.com 返回中没有版本号');
+    return {
+      tag: String(data.tag_name).replace(/^v/i, ''),
+      name: data.name || data.tag_name,
+      notes: data.body || '',
+      html_url: data.html_url || RELEASES_PAGE,
+      via: 'api',
+    };
+  }
+
+  async function __viaHtml(timeoutMs) {
+    const { code, loc, body } = await __req(RELEASES_PAGE, timeoutMs, 'text/html');
+    const tagFromLoc = __tagFrom(loc);
+    if (tagFromLoc) return { tag: tagFromLoc, name: 'v' + tagFromLoc, notes: '', html_url: RELEASES_PAGE, via: 'html' };
+    if (code >= 200 && code < 300) {
+      const tagFromBody = __tagFrom(body);
+      if (tagFromBody) return { tag: tagFromBody, name: 'v' + tagFromBody, notes: '', html_url: RELEASES_PAGE, via: 'html' };
+      throw new Error('github.com 页面中没有版本号');
+    }
+    throw new Error(`github.com 返回 HTTP ${code}`);
+  }
+
+  const __ms = 9000;
   try {
-    return await onceAttempt();
-  } catch (e1) {
-    console.warn('[update] first attempt failed:', e1?.message, '— retrying...');
-    await new Promise((r) => setTimeout(r, 600));
-    return await onceAttempt();
+    return await Promise.any([__viaApi(__ms), __viaHtml(__ms)]);
+  } catch (agg) {
+    const errs = (agg && agg.errors) ? agg.errors : [agg];
+    const brief = errs.map((e) => (e && e.message) ? String(e.message) : 'unknown').join('；');
+    try { require('./logger.js').log('warn', 'update', 'check.fail', { params: { detail: brief.slice(0, 300) } }); } catch (_) {}
+    throw new Error(brief || '网络请求失败');
   }
 }
 
@@ -906,11 +935,11 @@ async function checkForUpdates(interactive = true, parentOverride = null) {
     try { if (checkingWin && !checkingWin.isDestroyed()) checkingWin.close(); } catch (_) {}
     checkingWin = null;
   };
-  const __guardTimer = interactive ? setTimeout(() => { try { closeChecking(); } catch (_) {} }, 24000) : null;
+  const __guardTimer = interactive ? setTimeout(() => { try { closeChecking(); } catch (_) {} }, 14000) : null;
   try {
     const info = await Promise.race([
       checkGitLatestTag(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('检查更新超时（20 秒）')), 20000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('检查更新超时（11 秒）')), 11000)),
     ]);
     closeChecking();
     const latest = info.tag.replace(/^v/i, '');
@@ -948,10 +977,16 @@ async function checkForUpdates(interactive = true, parentOverride = null) {
     if (interactive) {
       const w = __pickParent();
       if (w) {
-        await glassErrorBox('检查更新失败',
-          `无法连接到 GitHub：\n${err?.message || err}\n\n` +
-          `如果你正在使用代理软件，请确认其处于"系统代理"或"TUN 模式"；` +
-          `也可以稍后重试，或直接访问：\n${RELEASES_PAGE}`);
+        const { response } = await glassMessageBox(w, {
+          type: 'error',
+          title: '检查更新失败',
+          detail: `已并行尝试 api.github.com 与 github.com 两个通道，均未成功。\n\n原因：${err && err.message ? err.message : err}\n\n如果你能在浏览器里打开 GitHub，点「用浏览器查看」可直接查看最新版本；若使用了代理，切到全局或 TUN 模式后重试。`,
+          buttons: ['用浏览器查看', '关闭'],
+          defaultId: 0,
+          cancelId: 1,
+          width: 520,
+        });
+        if (response === 0) shell.openExternal(RELEASES_PAGE).catch(() => {});
       }
     }
   }

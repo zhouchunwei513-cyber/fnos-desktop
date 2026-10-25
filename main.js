@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.50';
+const APP_VERSION = '2.17.51';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6271,13 +6271,15 @@ function __restoreMainHome(reason, force) {
         } catch (_) {}
       }, 800);
     }
-    // v2.17.50（论坛网友日志实锤）：主窗 F11 全屏后打开应用，主窗被 hideMainToBackground 隐藏到托盘；
-    // 从托盘唤回时 show()+setBounds 会把窗口恢复成普通尺寸（实测 1920x1080 屏上是 1702x1040），而状态机
-    // 仍认为它处于全屏（只有 ESC/F11 会改）。随后 __fsAuditStart 的巡检发现 bounds 远小于屏幕，就按
-    // 「用户退出全屏」执行 __applyFsFor(false)，表现就是「打开应用后主窗自己退出全屏」。日志形态：
-    // main.restore-home{reason:tray,wasVisible:false} → 若干秒后 audit-leave win=1 b=0,0,1702,1040 d=1920x1080。
-    // 这里在唤回后把全屏状态补回去：先 setFullScreen(true)，320ms 后仍不是全屏尺寸就用 display.bounds 兜底并
-    // 重新应用全屏 UI，保证在下一次 audit 判定（连续 1100ms）之前 bounds 已经回到全屏。
+    // v2.17.50（论坛网友日志）：主窗先被隐藏到托盘、之后从托盘唤回时，show()+setBounds 会把窗口恢复成
+    // 普通尺寸（实测 1920x1080 屏上是 1702x1040），而状态机仍认为它处于全屏（只有 ESC/F11 会改）。
+    // 随后 __fsAuditStart 的巡检发现 bounds 远小于屏幕，就按「用户退出全屏」执行 __applyFsFor(false)，
+    // 表现就是「主窗自己退出全屏」。注意：主程序内点应用（keepMain=true）不会隐藏主窗；会 hide 的只有
+    // 桌面快捷方式打开应用（second-instance / launch-server）、托盘「隐藏到托盘」与关闭到托盘。
+    // 日志形态：main.restore-home{reason:tray,wasVisible:false} → 若干秒后 audit-leave win=1
+    // b=0,0,1702,1040 d=1920x1080。这里在唤回后把全屏状态补回去：先 setFullScreen(true)，320ms 后仍不是
+    // 全屏尺寸就用 display.bounds 兜底并重新应用全屏 UI，保证在下一次 audit 判定（连续 1100ms）之前
+    // bounds 已经回到全屏。
     try {
       if (__isFsOn(mainWindow)) {
         setTimeout(() => {

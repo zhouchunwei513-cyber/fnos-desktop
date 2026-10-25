@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.52';
+const APP_VERSION = '2.17.53';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1112,6 +1112,20 @@ function __resyncFsUiForMain() {
     setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && __isFsOn(mainWindow)) __syncFsUIFor(mainWindow, true); } catch (_) {} }, 900);
   } catch (_) {}
 }
+// v2.17.53（论坛网友日志实锤：主窗 F11 全屏约 5 秒后打出 titlebar fs-selfheal-off，标题栏冒出来，
+// 但主进程仍全屏、任务栏/桌面都不露）—— 渲染层 __fsSelfHeal 拿 innerWidth/innerHeight 和
+// screen.width/height 比较来判断「是不是已经退出全屏」，可这两组单位不同：inner* 是 CSS 像素、
+// 受页面 zoom 影响（实测 zoom=1.21 时 innerWidth≈1587，screen=1920），判断恒成立，于是每 700ms
+// 必判一次 small、连续两次就撤销全屏样式。真值只有主进程知道，这里同步回一个权威答案：
+// 主进程说还在全屏，渲染层就不许自行撤销。
+ipcMain.on('win-fs-state', (e) => {
+  let on = 0;
+  try {
+    const w = hostWindowFromSender(e.sender);
+    if (w && !w.isDestroyed()) on = (__isFsOn(w) || w.isFullScreen()) ? 1 : 0;
+  } catch (_) {}
+  try { e.returnValue = on; } catch (_) {}
+});
 function __focusRendererFor(win) {
   try { if (win && !win.isDestroyed()) win.webContents.focus(); } catch (_) {}
   setTimeout(() => { try { if (win && !win.isDestroyed()) win.webContents.focus(); } catch (_) {} }, 120);

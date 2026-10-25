@@ -1894,6 +1894,12 @@ module.exports = function injectTitleBar(ctx) {
             if (!sw || !sh) return;
             const small = (window.innerWidth < sw - 28) || (window.innerHeight < sh - 28);
             if (!small) { miss = 0; return; }
+            // v2.17.53：inner* 是 CSS 像素（受页面 zoom 影响），screen 是物理像素，有缩放时上面的
+            // 比较恒成立，会把「仍在全屏」误判成「已退出全屏」。这里以主进程的真实全屏状态为准：
+            // 主进程说还在全屏，就不许撤销全屏样式（撤销的结果就是标题栏冒出来、圆角变直角）。
+            let __fsReal = 1;
+            try { __fsReal = ipcRenderer.sendSync('win-fs-state'); } catch (_) { __fsReal = 1; }
+            if (__fsReal === 1) { miss = 0; return; }
             miss++;
             if (miss < 2) return;
             miss = 0;

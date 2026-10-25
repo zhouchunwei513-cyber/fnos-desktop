@@ -745,18 +745,29 @@ module.exports = function injectTitleBar(ctx) {
         minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
         maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
         closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
-        bar.addEventListener('dblclick', (ev) => {
-          if (ev.target === bar || ev.target === hot) { try { ipcRenderer.send('window-maximize'); } catch (_) {} }
-        });
-
         // v1.62：原生拖拽兜底。-webkit-app-region:drag 在置顶嵌入 mpv 存在时可能失灵，
         // 这里在顶部热区/标题栏空白处左键 mousedown 主动调 startDrag；点按钮/☰ 时 target
         // 命中按钮（no-drag 区）不触发，避免影响点击。
+        // v2.17.45：双击标题栏最大化/还原。drag region 上 dblclick 事件被系统拖拽机制吞掉
+        // 不触发（旧 bar.addEventListener('dblclick') 实测无效），改为在 mousedown 里用两次
+        // 按下的时间/位置间隔自判双击：双击→window-maximize（__toggleMaxWin 已支持还原到
+        // 最大化前的 bounds）；单击→window-drag（拖拽）。
+        let __lastTbDown = 0, __lastTbDownX = 0, __lastTbDownY = 0;
         const startNativeDrag = (ev) => {
           try {
             if (ev.button !== 0) return;
             const t = ev.target;
             if (t && t.closest && t.closest('button, .fnos-tb-no-drag, #fnos-tb-min, #fnos-tb-max, #fnos-tb-close, #fnos-tb-menu')) return;
+            const __now = Date.now();
+            const __sx = ev.screenX || 0, __sy = ev.screenY || 0;
+            if (__now - __lastTbDown < 450 && Math.abs(__sx - __lastTbDownX) < 8 && Math.abs(__sy - __lastTbDownY) < 8) {
+              __lastTbDown = 0;
+              try { ipcRenderer.send('window-maximize'); } catch (_) {}
+              return;
+            }
+            __lastTbDown = __now;
+            __lastTbDownX = __sx;
+            __lastTbDownY = __sy;
             ipcRenderer.send('window-drag');
           } catch (_) {}
         };
@@ -1135,11 +1146,24 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(btns);
         root2.appendChild(bar);
         // 原生拖拽兜底（与普通标题栏同款）
+        // v2.17.45：双击标题栏最大化/还原（drag region 上 dblclick 不触发，改用 mousedown
+        // 时间/位置间隔自判双击）。
+        let __lastTbDown2 = 0, __lastTbDownX2 = 0, __lastTbDownY2 = 0;
         const startNativeDrag = (ev) => {
           try {
             if (ev.button !== 0) return;
             const t = ev.target;
             if (t && t.closest && t.closest('button')) return;
+            const __now = Date.now();
+            const __sx = ev.screenX || 0, __sy = ev.screenY || 0;
+            if (__now - __lastTbDown2 < 450 && Math.abs(__sx - __lastTbDownX2) < 8 && Math.abs(__sy - __lastTbDownY2) < 8) {
+              __lastTbDown2 = 0;
+              try { ipcRenderer.send('window-maximize'); } catch (_) {}
+              return;
+            }
+            __lastTbDown2 = __now;
+            __lastTbDownX2 = __sx;
+            __lastTbDownY2 = __sy;
             ipcRenderer.send('window-drag');
           } catch (_) {}
         };

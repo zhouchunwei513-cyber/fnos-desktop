@@ -874,8 +874,11 @@ module.exports = function injectTitleBar(ctx) {
         // v2.15.56：改用 body transform 下移 34px（而非 padding-top）——padding-top 无法约束 fixed 元素
         // 会钻到标题栏底下；transform 让全部内容（含 fixed）整体下移，标题栏独立顶部。
         // html 锁死滚动，body 单滚动（settings.css 配合）。
+        // v2.18.0：帮助窗/偏好设置窗的四角 R 角由 20px 收到 10px——与标题栏 bar 的
+        // border-radius:10px 同比例，顶部两角（bar）与底部两角（body）视觉统一。
+        // 主窗口 / 应用窗口仍走各自分支的 20px，不受影响。
         __padStyle.textContent = 'html{overflow:hidden !important;}' +
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}';
+          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;clip-path:inset(0 round 10px) !important;background:#05060a !important;}';
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [

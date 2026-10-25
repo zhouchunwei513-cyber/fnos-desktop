@@ -19,13 +19,16 @@
     'Noto Sans CJK SC', 'Helvetica Neue', system-ui, -apple-system, sans-serif;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+/* v2.18.0：html 保持透明，窗口四角 R 角才能露出桌面；
+ * body 保留深色底，圆角由 titlebar-inject 注入的 clip-path 绘制（与标题栏同比例）。 */
+html { background: transparent; }
 html, body {
   min-height: 100%;
   font-family: var(--font);
   color: var(--text);
-  background: #000;
   overflow-x: hidden;
 }
+body { background: #000; }
 
 .bg-wrap {
   position: fixed; inset: 0; z-index: -1;
@@ -134,6 +137,7 @@ html, body {
   color: #cfe0ff;
   margin: 16px 0 8px;
 }
+.card h3:first-of-type { margin-top: 4px; }
 .card p, .card li {
   font-size: 14px; line-height: 1.8;
   color: rgba(245,247,251,.82);
@@ -152,6 +156,7 @@ code {
   border-radius: 6px;
   font-size: 13px;
   font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  word-break: break-all;
 }
 .kbd {
   display: inline-block;
@@ -202,6 +207,32 @@ code {
   font-size: 13px; line-height: 1.7;
 }
 .tip b { color: #fff; }
+.tip.warn {
+  background: linear-gradient(135deg, rgba(240,180,41,.14), rgba(255,91,140,.10));
+  border-color: rgba(240,180,41,.32);
+  color: #fde9c2;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 13.5px;
+}
+.table th, .table td {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+  vertical-align: top;
+}
+.table th {
+  color: #cfe0ff;
+  font-weight: 700;
+  font-size: 13px;
+  background: rgba(255,255,255,.03);
+}
+.table td b { color: #fff; }
+.table tr:last-child td { border-bottom: 0; }
 
 .footer {
   text-align: center;
@@ -210,8 +241,6 @@ code {
   padding: 10px 0 40px;
   letter-spacing: 2px;
 }
-/* v1.70.0：帮助页深色滚动条，与设置页/主界面统一，
- * 避免深色背景上出现白色原生滚动条（此前被误认为"侧边栏没改"）。 */
 html::-webkit-scrollbar,
 body::-webkit-scrollbar {
   width: 10px;
@@ -277,8 +306,8 @@ body::-webkit-scrollbar-thumb:hover {
 
   <section class="card">
     <h2>软件简介</h2>
-    <p>FNOS 桌面客户端是飞牛私有云（fnOS）的<b>非官方第三方</b> Windows 桌面端。基于 Electron 22 构建，原生支持 Windows 7 SP1 x64 / Windows 10 / Windows 11，把飞牛 NAS 的文件、相册、影视、Docker 等所有应用收纳在一个独立客户端内，不跳系统浏览器，可锁定、可一键隐藏、可用内置 MPV 显卡硬解 4K 视频。</p>
-    <div class="tip">本软件<b>不收集、不上传、不转发</b>任何用户数据；无埋点、无崩溃上报、无静默下载。所有 NAS 密码使用系统 DPAPI + scrypt 加密保存在本机。</div>
+    <p>FNOS 桌面客户端是飞牛私有云（fnOS）的<b>非官方第三方</b> Windows 桌面端。基于 Electron 22 构建，原生支持 Windows 7 SP1 x64 / Windows 10 / Windows 11，把飞牛 NAS 的文件、相册、影视、Docker 等全部应用收进一个独立客户端，不跳系统浏览器；支持多账号、启动密码、一键隐藏，并内置 MPV 播放器做显卡硬解 4K。</p>
+    <div class="tip">本软件<b>不收集、不上传、不转发</b>任何用户数据；无埋点、无崩溃上报、无静默下载。NAS 登录信息与你设置的启动密码均保存在本机（密码经系统 DPAPI + scrypt 加密）。</div>
   </section>
 
   <section class="card">
@@ -286,188 +315,201 @@ body::-webkit-scrollbar-thumb:hover {
     <div class="step">
       <div class="step-num">1</div>
       <div class="step-body">
-        <b>在登录页输入服务器地址</b>
-        <p>支持三种形式：内网 IP（如 <code>192.168.1.10</code>）、域名加端口（如 <code>nas.example.com:5666</code>），或 FN ID（直接填写，例如 <code>abc123</code>，会自动跳转 <code>fnos.net</code>）。</p>
+        <b>在登录页填写服务器地址</b>
+        <p>支持三种形式：内网 IP（如 <code>192.168.1.10</code>）、域名加端口（如 <code>nas.example.com:5666</code>），或 FN ID（直接填写，例如 <code>abc123</code>，会自动跳转 <code>fnos.net</code>）。HTTP / HTTPS 均可，自签证书站点会弹确认框。</p>
       </div>
     </div>
     <div class="step">
       <div class="step-num">2</div>
       <div class="step-body">
-        <b>点击「登 录」</b>
-        <p>客户端会自动跳转到飞牛 fnOS 的登录页面，请输入你的飞牛账号密码。登录成功后，客户端会保持登录状态，下次打开无需重复登录。</p>
+        <b>登录飞牛账号</b>
+        <p>客户端会自动跳转到飞牛 fnOS 的登录页，输入你的 NAS 账号密码。登录成功后登录态会长期保持，下次打开无需重复登录。</p>
       </div>
     </div>
     <div class="step">
       <div class="step-num">3</div>
       <div class="step-body">
-        <b>在客户端内使用所有应用</b>
-        <p>文件、相册、Docker 等所有飞牛应用均在客户端内打开，不会外跳到系统浏览器。每个应用以独立窗口运行，可以通过菜单栏或托盘切换。</p>
+        <b>在客户端内使用全部应用</b>
+        <p>飞牛桌面上的文件、相册、影视、Docker 等应用点击后都在客户端内打开（每个应用是独立窗口），不会外跳到系统浏览器。</p>
       </div>
     </div>
-    <div class="tip">💡 历史地址会自动记录。输入框右侧的 ▾ 按钮可查看、切换或删除已连接过的服务器，每个服务器的登录状态独立保存。</div>
+    <div class="tip">💡 历史地址自动记录。输入框右侧的 ▾ 可查看、切换或删除连接过的服务器，每个服务器的登录状态互相独立。想同时挂多个 NAS，用 <b>文件 → 切换账号</b> 或 <b>设置 → 账号管理</b>。</div>
   </section>
 
   <section class="card">
-    <h2>菜单栏与快捷键</h2>
-    <div class="grid-2">
-      <div>
-        <h3>文件</h3>
-        <ul>
-          <li><b>返回 FNOS 主页</b>：主窗口回到服务器首页，已打开的应用可选择后台运行或关闭</li>
-          <li><b>切换窗口</b>：列出所有已打开的应用窗口，快速跳转</li>
-          <li><b>切换服务器</b>：返回登录页，可选择历史地址快速切换</li>
-          <li><b>锁定 FNOS / 一键隐藏</b>：仅在已设置启动密码时出现</li>
-        </ul>
-      </div>
-      <div>
-        <h3>下载（一级菜单）</h3>
-        <ul>
-          <li><b>下载任务</b>：列出所有正在后台下载的文件（带实时百分比）和最近完成的下载，点击可把进度窗口调到前台，或打开文件所在文件夹</li>
-        </ul>
-      </div>
-    </div>
-    <div class="grid-2">
-      <div>
-        <h3>视图</h3>
-        <ul>
-          <li><b>后退 / 前进</b>：页面历史导航</li>
-          <li><b>刷新 / 强制刷新</b>：F5 / Ctrl+F5</li>
-          <li><b>全屏</b>：F11，按 <span class="kbd">Esc</span> 退出全屏</li>
-          <li><b>缩放</b>：Ctrl + = / - / 0</li>
-        </ul>
-      </div>
-      <div>
-        <h3>工具（一级菜单）</h3>
-        <ul>
-          <li><b>用 MPV 打开当前视频（硬解）</b>：自动调用内置 MPV 播放器进行显卡硬解</li>
-          <li><b>系统终端（Ctrl+`）</b>：打开一个系统控制台窗口，工作目录自动定位到内置 MPV 所在目录，可直接粘贴运行 <code>mpv.exe &lt;视频地址&gt;</code> 等命令</li>
-          <li><b>MPV 安装目录</b>：在资源管理器中定位内置 mpv.exe</li>
-        </ul>
-      </div>
-    </div>
-    <div class="grid-2">
-      <div>
-        <h3>设置（一级菜单）</h3>
-        <ul>
-          <li><b>偏好设置…（Ctrl+,）</b>：打开设置窗口，可配置启动密码、全局快捷键、URL 重写、玻璃标题栏、主题色、菜单栏自动隐藏等</li>
-        </ul>
-      </div>
-      <div>
-        <h3>帮助</h3>
-        <ul>
-          <li><b>操作步骤帮助</b>：打开本页</li>
-          <li><b>关于 FNOS</b>：查看当前客户端版本号</li>
-        </ul>
-      </div>
-    </div>
+    <h2>主窗口与标题栏</h2>
+    <ul>
+      <li><b>标题栏按钮</b>：最左侧 <b>☰</b> 打开应用菜单；右侧依次为 <b>—</b> 最小化、<b>□</b> 最大化 / 还原、<b>✕</b> 关闭（关闭时会询问「隐藏到托盘」还是「退出程序」）。</li>
+      <li><b>拖动与双击</b>：按住标题栏空白处可拖动窗口；<b>双击标题栏</b> 在最大化与还原之间切换。</li>
+      <li><b>固定画面比例</b>：主窗口按 <b>45 : 27.65</b> 的画面比例锁定（已扣除标题栏高度），拖任意边缩放时自动保持比例，避免飞牛桌面被拉伸变形。</li>
+      <li><b>圆角窗口</b>：窗口四角为圆角（帮助页与偏好设置页与标题栏采用同比例圆角），无系统灰边。</li>
+      <li><b>全屏</b>：<span class="kbd">F11</span> 进入 / 退出全屏，<span class="kbd">Esc</span> 也可退出全屏（先退全屏，再退最大化）。</li>
+      <li><b>页面缩放</b>：<span class="kbd">Ctrl</span>+<span class="kbd">=</span> 放大、<span class="kbd">Ctrl</span>+<span class="kbd">-</span> 缩小、<span class="kbd">Ctrl</span>+<span class="kbd">0</span> 复位，也支持 <span class="kbd">Ctrl</span>+滚轮。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>菜单栏功能</h2>
+    <table class="table">
+      <tr><th style="width:88px">菜单</th><th>功能项</th></tr>
+      <tr>
+        <td><b>文件</b></td>
+        <td>
+          <b>返回 FNOS 主页</b>（Alt+H）· <b>切换账号</b>（多账号快速切换 / 登录其它账号）· <b>切换窗口</b>（列出所有后台应用窗口）· <b>锁定 FNOS</b>（仅设置启动密码后出现）· <b>一键隐藏 / 呼出</b> · <b>最小化</b> · <b>隐藏到托盘</b> · <b>关闭</b>
+        </td>
+      </tr>
+      <tr>
+        <td><b>下载</b></td>
+        <td><b>下载任务</b>：列出正在下载的文件（带实时百分比）与最近完成的下载，点击可调出进度窗口或打开所在文件夹</td>
+      </tr>
+      <tr>
+        <td><b>视图</b></td>
+        <td><b>返回上一页</b>（Alt+←）· <b>前进下一页</b>（Alt+→）· <b>刷新</b>（F5）· <b>强制刷新</b>（Ctrl+F5）· <b>重置缩放</b>（Ctrl+0）· <b>放大</b>（Ctrl+=）· <b>缩小</b>（Ctrl+-）· <b>全屏</b>（F11）</td>
+      </tr>
+      <tr>
+        <td><b>工具</b></td>
+        <td><b>📺 电视直播（原生播放器）</b>：打开内置电视直播窗口 · <b>🎬 用 MPV 嵌入播放当前视频</b>（Ctrl+Shift+P）：在飞牛影视页面原位用 MPV 硬解播放 · <b>🔗 复制当前窗口链接地址</b>（Ctrl+Shift+C）</td>
+      </tr>
+      <tr>
+        <td><b>设置</b></td>
+        <td><b>偏好设置…</b>（Ctrl+,）：打开设置窗口（启动密码、自启动、账号、快捷键、URL 重写、界面、直播、MPV 等）</td>
+      </tr>
+      <tr>
+        <td><b>帮助</b></td>
+        <td><b>操作步骤帮助</b>：打开本页 · <b>检查更新…</b>：检查 GitHub 上是否有新版，并显示当前版本与最新版本</td>
+      </tr>
+    </table>
     <h3>常用快捷键</h3>
     <p>
       <span class="kbd">Alt</span>+<span class="kbd">H</span> 返回主页 &nbsp;
-      <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">L</span> 切换服务器 &nbsp;
+      <span class="kbd">Alt</span>+<span class="kbd">←</span> / <span class="kbd">→</span> 前进后退 &nbsp;
       <span class="kbd">Ctrl</span>+<span class="kbd">,</span> 偏好设置 &nbsp;
       <span class="kbd">F5</span> 刷新 &nbsp;
       <span class="kbd">F11</span> 全屏 &nbsp;
-      <span class="kbd">Esc</span> 退出全屏 / 最大化
+      <span class="kbd">Esc</span> 退出全屏 &nbsp;
+      <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">P</span> MPV 播放 &nbsp;
+      <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">C</span> 复制链接
     </p>
     <p style="margin-top:8px;color:var(--muted);font-size:13px;">
-      全局快捷键（在 <b>设置</b> 中可自定义，默认）：
+      全局快捷键（可在 <b>设置 → 快捷键</b> 自定义，默认为）：
       <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">L</span> 锁定 FNOS；
-      <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">H</span> 一键隐藏（含托盘图标）。
+      <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">H</span> 一键隐藏 / 呼出。
     </p>
+  </section>
+
+  <section class="card">
+    <h2>启动密码 / 自动锁定 / 一键隐藏</h2>
+    <ul>
+      <li>在 <b>设置 → 启动密码</b> 中设置（至少 4 位）。密码以 <code>scrypt</code> + 随机盐哈希保存，<b>不保存明文</b>，并经系统 DPAPI 加密。</li>
+      <li>设置后每次启动 FNOS 会先弹出玻璃锁屏，输入正确密码才能进入。</li>
+      <li><b>锁定 FNOS</b>：菜单「文件 → 锁定 FNOS」/ 托盘恢复时需密码 / 全局快捷键 <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">L</span>（快捷键可改）。</li>
+      <li><b>无操作自动锁定</b>：在 <b>设置 → 启动密码</b> 下方可选 1 / 3 / 5 / 10 / 20 / 30 / 60 分钟，键鼠无操作达到时长后自动锁定并隐藏所有窗口；<b>全屏播放视频时不触发</b>。</li>
+      <li><b>一键隐藏</b>：所有窗口连同托盘图标一起消失，适合临时遮挡屏幕；再按同一快捷键即可恢复。</li>
+    </ul>
+    <h3>忘记启动密码怎么办？</h3>
+    <p>启动密码只存在本机且经 DPAPI 加密，<b>无法找回明文</b>。忘记时按下面步骤清除（只清启动密码，不动 NAS 登录信息）：</p>
+    <ul>
+      <li>1）先<b>完全退出 FNOS</b>（托盘右键 → 退出程序；若停在锁屏，可用任务管理器结束 FNOS 进程）。</li>
+      <li>2）按 <span class="kbd">Win</span>+<span class="kbd">R</span>，输入 <code>%APPDATA%\FNOS</code> 回车。</li>
+      <li>3）删除该目录下的 <code>settings.json</code>（建议先备份到桌面）。</li>
+      <li>4）重新打开 FNOS，启动密码即被清除，可进去后在设置里重新设置。</li>
+    </ul>
+    <div class="tip warn">删除 <code>settings.json</code> 会同时重置偏好设置（界面、快捷键、直播、MPV 等）。NAS 登录历史存在 <code>servers.json</code>，不受影响。</div>
+  </section>
+
+  <section class="card">
+    <h2>开机自启动 · 多账号 · 桌面快捷方式</h2>
+    <h3>开机自启动</h3>
+    <p><b>设置 → 开机自启动</b> 打开后，开机时飞牛在后台托盘常驻（不弹主界面），点桌面快捷方式即可快速打开，不必重新登录。</p>
+    <h3>多账号管理</h3>
+    <ul>
+      <li><b>设置 → 账号管理</b> 可查看所有已登录的 NAS 账号、切换当前账号、点「+ 登录其它账号」新增。</li>
+      <li>每个账号有独立的持久化会话分区，Cookie 与本地数据分别保存，互不影响。</li>
+      <li>也可以用 <b>文件 → 切换账号</b> 快速切换（当前账号前有 ● 标记）。</li>
+    </ul>
+    <h3>应用桌面快捷方式</h3>
+    <ul>
+      <li><b>设置 → 应用快捷方式创建</b> 列出 NAS 上已安装的应用，可为每个应用创建 Windows 桌面快捷方式；双击快捷方式由主程序代为打开对应应用（依赖主程序登录态）。</li>
+      <li>可选「打开应用后主程序：<b>隐藏到托盘</b> / 最小化到任务栏」，应用窗口仍正常显示。</li>
+      <li><b>设置 → 图标管理器（FPK API）</b>：填入 FPK 图标管理器地址和端口（默认 <code>18080</code>）并启用后，快捷方式与任务栏图标会优先使用 FPK 中的自定义图标。</li>
+    </ul>
   </section>
 
   <section class="card">
     <h2>下载文件到本地</h2>
     <ul>
-      <li>在飞牛文件应用中点下载后，会弹出客户端的「<b>另存为</b>」对话框，选择保存位置后开始下载。</li>
-      <li>下载进度窗口实时显示文件名、保存路径、进度条、百分比、<b>下载速度</b>、已下载 / 总大小和剩余时间（ETA）。</li>
-      <li><b>点进度窗口右上角的 × 不会取消下载</b>，窗口只是隐藏到后台，下载继续进行。</li>
-      <li><b>找回后台下载</b>：顶部菜单「<b>下载 → 下载任务</b>」会列出所有正在下载的文件（带实时百分比）和最近 8 条已完成记录；<b>系统托盘右键菜单</b>同样提供"正在下载（N）"和"最近完成的下载"两个子菜单。点击活跃项可调出对应进度窗口，点击已完成项可打开文件所在文件夹。</li>
-      <li>下载完成后系统通知区会弹出"下载完成"提示，进度窗口自动关闭；点击「<b>打开所在文件夹</b>」会在资源管理器中选中该文件。</li>
-      <li><b>取消下载</b>会先本地暂停、等待 1.5 秒再安全断开，不会向 NAS 发送任何删除请求，不影响 NAS 上的原文件。</li>
+      <li>在飞牛文件应用中点下载后，会弹出客户端的「<b>另存为</b>」对话框，选好位置开始下载。</li>
+      <li>下载进度窗口实时显示文件名、保存路径、进度条、百分比、<b>下载速度</b>、已下载 / 总大小与剩余时间（ETA）。</li>
+      <li><b>点进度窗口的 × 不会取消下载</b>，只是把窗口藏到后台，下载继续。</li>
+      <li><b>找回后台下载</b>：菜单「<b>下载 → 下载任务</b>」列出所有正在下载的文件与最近完成的记录；点活跃项调出进度窗口，点已完成项打开文件所在文件夹。</li>
+      <li>下载完成后会弹系统通知，进度窗口自动关闭；点「<b>打开所在文件夹</b>」可在资源管理器中选中该文件。</li>
+      <li><b>取消下载</b>会先本地暂停、等 1.5 秒再安全断开，不会向 NAS 发送删除请求，不影响 NAS 上的原文件。</li>
     </ul>
   </section>
 
   <section class="card">
-    <h2>启动密码 / 一键锁定 / 一键隐藏</h2>
+    <h2>内置 MPV 播放器（显卡硬解 · 原位播放）</h2>
     <ul>
-      <li>在 <b>设置 → 启动密码</b> 中设置 4 位以上密码。密码使用 <code>scrypt</code> + 随机盐哈希存储，<b>不保存明文</b>，并经系统 DPAPI 加密。</li>
-      <li>设置后，每次启动 FNOS 会弹出玻璃锁屏，<b>只显示密码输入框</b>，输入正确密码才能进入。</li>
-      <li><b>锁定 FNOS</b>：菜单或托盘项 / 全局快捷键 <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">L</span>。</li>
-      <li><b>一键隐藏</b>：所有窗口连同托盘图标一起消失，适合临时遮挡屏幕；再次按同一快捷键即可恢复。</li>
-    </ul>
-    <h3>忘记启动密码怎么办？</h3>
-    <p>启动密码仅保存在本机、经系统 DPAPI 加密，<b>无法找回明文</b>。忘记密码时按下面步骤重置（不会删除你的 NAS 登录信息与其它设置之外的数据，仅清除启动密码）：</p>
-    <ul>
-      <li>1）先<b>完全退出 FNOS</b>（托盘右键 → 退出；若停在锁屏界面，可在任务管理器里结束 FNOS 进程）。</li>
-      <li>2）按 <span class="kbd">Win</span>+<span class="kbd">R</span> 打开"运行"，输入 <code>%APPDATA%\FNOS</code> 回车，打开配置目录。</li>
-      <li>3）删除该目录下的 <code>settings.json</code> 文件（可先备份到桌面）。</li>
-      <li>4）重新打开 FNOS，启动密码即被清除，可进入后到 <b>设置 → 启动密码</b> 重新设置。</li>
-    </ul>
-    <div class="tip">说明：删除 <code>settings.json</code> 会同时重置偏好设置（主题、缓存档位、URL 重写等）；NAS 服务器登录历史保存在 <code>servers.json</code>，不受影响。</div>
-  </section>
-
-  <section class="card">
-    <h2>内置 MPV 播放器（显卡硬解 · 点开即看）</h2>
-    <ul>
-      <li>安装包已内置 <b>mpv.exe</b>（GPL 开源），无需另外下载。</li>
-      <li><b>自动接管</b>：飞牛影视里遇到网页播放器解不了的视频（<b>HEVC/H.265、10bit、4K、MKV</b> 等），客户端会自动抓取真实视频地址，在页面视频区<b>原位</b>调用内置 MPV 显卡硬解播放，不弹外部窗口；也可在播放页打开 <b>工具 → 用 MPV 打开当前视频（硬解）</b>手动接管。</li>
-      <li><b>中文界面</b>：MPV 的控制条（OSC）、右键菜单、对话框均已为<b>中文</b>。鼠标移到画面底部显示控制条，<b>右键</b>弹出菜单（字幕、音轨、画面、播放速度等）。</li>
-      <li><b>硬解低占用</b>：默认 d3d11va 显卡硬解 + d3d11 渲染，4K/HDR 更流畅、CPU 占用更低；可在 <b>设置 → MPV</b> 切换硬解方式与缓存档位。</li>
-      <li><b>长视频自动续播</b>：点播（MKV/电影）使用的是 NAS 生成的<b>时效签名链接</b>，播放一段时间后续传链接可能过期。MPV 会<b>自动重新获取新链接并从断点继续</b>，无需手动重播；<b>拖动进度条</b>若定位较慢也会自动重新取流并跳到你拖动的位置。</li>
-      <li><b>关闭 MPV</b>：点 MPV 画面右上角的 <b>×</b> 即可关闭播放器并回到网页（不会再自动重开）；换台 / 换电影时会自动切换到新节目。</li>
-      <li><b>播放日志</b>：MPV 的详细运行日志（HTTP 状态、重定向、断流与重连/重新取流记录）写在 <code>%APPDATA%\FNOS\fnos-mpv.log</code>；客户端诊断日志为 <code>%APPDATA%\FNOS\fnos-diag.log</code>，反馈问题时可一并提供。</li>
-      <li>如需手动操作，可点击菜单栏 <b>工具 → 系统终端</b>（快捷键 <span class="kbd">Ctrl</span>+<span class="kbd">`</span>），会自动打开一个已定位到 MPV 目录的控制台窗口，直接运行 <code>mpv.exe &lt;视频地址&gt;</code> 即可。</li>
+      <li>安装包已内置 <b>mpv.exe</b>（GPL 开源），无需另外下载；运行库随应用打包。</li>
+      <li><b>自动接管</b>：飞牛影视里遇到网页播放器解不了的视频（<b>HEVC/H.265、10bit、4K、MKV</b> 等），客户端会自动抓取真实视频地址，在页面视频区<b>原位</b>调用内置 MPV 显卡硬解，不弹外部窗口；也可在播放页用 <b>工具 → 用 MPV 嵌入播放当前视频</b>（Ctrl+Shift+P）手动接管。</li>
+      <li><b>中文界面</b>：MPV 的控制条（OSC）、右键菜单、对话框均为中文。鼠标移到画面底部显示控制条，<b>右键</b>弹出菜单（字幕、音轨、画面、倍速等）。</li>
+      <li><b>硬解与缓存</b>：<b>设置 → 兼容性播放器（MPV）</b> 可切换硬件解码（自动 / D3D11VA / DXVA2 / 关闭软解）与网络缓存档位（均衡 32MB·60s / 流畅 128MB·120s（4K 推荐）/ 超大 512MB·300s），也能关掉「解码失败时自动用 MPV 播放」只保留手动入口。</li>
+      <li><b>长视频自动续播</b>：点播（MKV / 电影）用的是 NAS 的<b>时效签名链接</b>，播久了会过期。MPV 会自动重新取流并从断点续播；拖进度条若定位慢也会自动重新取流并跳到你拖的位置。</li>
+      <li><b>全屏铺满整屏</b>：飞牛影视、电视直播进入全屏后，MPV 采用 <b>fullscreen 模式</b>由播放器自己接管窗口尺寸，铺满整个显示器（含任务栏区域），不再出现右侧 / 底部灰边错位。</li>
+      <li><b>圆角与关闭</b>：点播窗口四角为 20px 圆角（直播窗右上角圆角）；点 MPV 画面右上角的 <b>×</b> 可关闭播放器回到网页（不会自动重开），换台 / 换片时自动切到新节目。</li>
+      <li><b>播放日志</b>：<code>%APPDATA%\FNOS\fnos-mpv.log</code>（HTTP 状态、重定向、断流与重连 / 重新取流记录）。反馈问题时可一并提供。</li>
     </ul>
   </section>
 
   <section class="card">
-    <h2>内置电视直播（配合 XTE-IPTV）</h2>
+    <h2>内置电视直播</h2>
     <ul>
-      <li>客户端内置<b>电视直播</b>窗口，同样使用内置 MPV 内核播放，支持 <b>4K 高清直播</b>、HLS(m3u8)/FLV 等流，自动为媒体流注入跨域(CORS)头，换台即播。</li>
-      <li>直播流长时间运行遇到运营商断流/抖动时，MPV 会<b>自动重连</b>（最多 30 次）并在进程异常时<b>崩溃自愈续播</b>，保持画面不中断。</li>
-      <li><b>配合 XTE-IPTV</b>：内置直播的节目源可配合你自建的 <b>XTE-IPTV</b> 工具生成的直播订阅 / 播放列表使用，在直播窗口中填入订阅地址即可加载频道列表与节目单（EPG）。</li>
-      <li>飞牛影视网页内的直播频道也会自动用 MPV 接管播放。</li>
+      <li><b>工具 → 📺 电视直播（原生播放器）</b> 打开直播窗口，同样使用内置 MPV 内核，支持 <b>4K 高清直播</b>、HLS(m3u8) / FLV 等流，换台即播。</li>
+      <li><b>设置 → 直播与播放</b> 可配置：
+        <ul>
+          <li><b>NAS 直播基地址</b>（可填 XTE 网关，如 <code>http://192.168.1.10:34500</code>；留空用当前 NAS）</li>
+          <li><b>默认订阅线路</b>：内网 IPv4 / IPv6 DDNS / FRP 中转</li>
+          <li><b>EPG 节目单地址</b>：XMLTV 的 .xml / .xml.gz，多个用英文逗号分隔；留空自动读直播源 M3U 头里的 <code>x-tvg-url</code></li>
+          <li><b>直播缓冲秒数</b>：0–120 秒（默认 30），网络不稳时加大可减少卡顿</li>
+          <li><b>创建桌面快捷方式</b>：为电视直播生成 Windows 桌面快捷方式，双击直达直播窗口（程序已运行时秒开，不经过主界面）</li>
+        </ul>
+      </li>
+      <li><b>断流自愈</b>：直播长跑遇到运营商断流 / 抖动时 MPV 会自动重连（最多 30 次），播放进程异常也会崩溃自愈续播。</li>
+      <li>飞牛影视网页内的直播频道同样会自动用 MPV 接管播放。</li>
     </ul>
-  </section>
-
-  <section class="card">
-    <h2>多窗口与后台运行</h2>
-    <ul>
-      <li>在飞牛中打开的每个应用都在<b>独立窗口</b>中运行，可以同时使用多个应用。</li>
-      <li>点击主窗口关闭按钮时，可选择<b>「隐藏到托盘」</b>（所有窗口继续后台运行，适合下载、同步等长任务）或<b>「退出程序」</b>。</li>
-      <li>在系统托盘（任务栏右下角）<b>左键单击 FNOS 图标</b>显示所有窗口；<b>右键</b>打开菜单，可切换窗口、查看下载任务、退出程序。</li>
-      <li>选择「返回 FNOS 主页」时，如果还有其他应用窗口打开，会让你选择是<b>后台保留</b>还是<b>一并关闭</b>。</li>
-    </ul>
-  </section>
-
-  <section class="card">
-    <h2>外网访问与 URL 重写</h2>
-    <p>在 <b>设置 → 应用外网地址（URL 重写规则）</b> 中，可以把内网地址自动替换成外网地址。例如：</p>
-    <ul>
-      <li>匹配：<code>http://192.168.1.10:5666</code></li>
-      <li>替换为：<code>https://nas.example.com</code></li>
-    </ul>
-    <p>这样点应用卡片时会自动用外网地址打开，适合在外网环境下使用。</p>
   </section>
 
   <section class="card">
     <h2>界面个性化</h2>
     <ul>
-      <li><b>自动隐藏菜单栏（按 Alt 显示）</b>：设置中开启后，菜单栏平时隐藏，按 <span class="kbd">Alt</span> 临时呼出，最大化时更清爽。</li>
-      <li><b>玻璃标题栏（实验性）</b>：默认关闭，开启后使用 Windows 11 Mica/Acrylic 风格的标题栏。不影响任何现有功能，不喜欢可随时关闭。</li>
-      <li><b>主题色</b>：内置蓝、青、紫、粉、绿、橙 6 种标题栏配色。</li>
+      <li><b>自动隐藏标题栏</b>：开启后鼠标移到窗口顶部才显示标题栏，按 <span class="kbd">Alt</span> 也可临时呼出；关闭则标题栏常驻。所有窗口统一生效。</li>
+      <li><b>标题栏不透明度</b>：0 为完全透明，数值越大标题栏底色越明显。</li>
+      <li><b>标题栏颜色</b>：点击色块打开系统取色器，也可直接输入 <code>#RRGGBB</code> 或 <code>#RRGGBBAA</code>；右侧 Alpha 滑块与不透明度联动。</li>
+      <li>改完点「<b>保存界面设置</b>」即时生效。</li>
     </ul>
   </section>
 
   <section class="card">
-    <h2>直播 / 绿屏 / 授权问题</h2>
+    <h2>外网访问与 URL 重写</h2>
+    <p>在 <b>设置 → 应用外网地址（URL 重写）</b> 里可以把内网地址自动替换成外网地址。规则格式：<code>内网端口或路径片段 → 外网完整地址</code>，例如：</p>
     <ul>
-      <li><b>电视直播跨域</b>：客户端自动为 <code>m3u8 / ts / mp4 / mkv / flv / webm</code> 等媒体流注入 CORS 响应头，等效于 KNAS 浏览器插件，飞牛影视的直播频道可直接观看；业务 API 的跨域处理完全透传给 NAS，不做任何改写。</li>
-      <li><b>绿屏 / 花屏</b>：移除了导致 ARM / 集显设备绿屏的 COEP / CORP 头，并伪装 User-Agent 为桌面 Chrome，飞牛音乐、飞牛影视登录后不再绿屏。</li>
-      <li><b>NAS 账号授权无反应</b>：所有 OAuth 弹窗改为在客户端内以独立窗口打开，授权完成后自动回跳，不会再循环登录页。</li>
-      <li><b>投屏 / 媒体键</b>：保留 Chromium 原生的 MediaRouter、CastMediaRouteProvider、DialMediaRouteProvider、GlobalMediaControls、HardwareMediaKeyHandling，飞牛影视可正常投屏到 Chromecast / DLNA 设备，系统媒体面板和键盘多媒体键可控。</li>
-      <li><b>Win7 支持</b>：基于 Electron 22（Chromium 108，最后一个支持 Win7 的版本）打包，Win7 SP1 x64 可安装运行。</li>
+      <li>匹配：<code>http://192.168.1.10:5666</code></li>
+      <li>替换为：<code>https://nas.example.com</code></li>
+    </ul>
+    <p>这样在客户端里点应用卡片时会自动用外网地址打开，适合在外网环境下使用。留空表示不重写。</p>
+  </section>
+
+  <section class="card">
+    <h2>检查更新</h2>
+    <ul>
+      <li>菜单 <b>帮助 → 检查更新…</b> 会向 GitHub 查询本项目的最新 Release。</li>
+      <li>弹窗里会同时给出 <b>当前版本</b> 与 <b>最新版本</b> 两个版本号：
+        <ul>
+          <li>有新版本：按钮为「<b>前往下载</b>」与「<b>稍后</b>」。点「前往下载」用系统浏览器打开 GitHub Release 页面，由你自行下载安装包并安装（客户端不静默下载、不自动安装）。</li>
+          <li>已是最新：提示「当前版本：vX / 最新版本：vY / 已是最新版本」。</li>
+        </ul>
+      </li>
+      <li>客户端会跟随系统代理（Clash / v2ray 等的「系统代理」或 TUN 模式）访问 GitHub；若提示连接失败，先确认代理已开启，或稍后重试。</li>
     </ul>
   </section>
 
@@ -476,32 +518,67 @@ body::-webkit-scrollbar-thumb:hover {
     <h3>连接失败怎么办？</h3>
     <ul>
       <li>IP / 域名方式：确认 NAS 已开机、和电脑在同一网络、端口（默认 <code>5666</code>）正确。</li>
-      <li>FN ID 方式：确认 FN ID 拼写正确，电脑能访问外网（<code>fnos.net</code>）。</li>
-      <li>HTTPS 自签证书站点：在弹出的证书确认窗口选择继续即可。</li>
+      <li>FN ID 方式：确认 FN ID 拼写正确，且电脑能访问外网（<code>fnos.net</code>）。</li>
+      <li>HTTPS 自签证书站点：在弹出的证书确认窗口选择继续即可（仅对已知 NAS 来源放行）。</li>
     </ul>
     <h3>登录状态会失效吗？</h3>
-    <p>不会。每个服务器都有独立的持久化会话分区，Cookie 和本地数据加密保存在本机；关闭主窗口、隐藏到托盘、切换到其他服务器再切回来、或重启电脑后再次打开，该服务器的飞牛账号都会自动保持登录。只有在登录页历史列表里主动删除该服务器，或在飞牛页面里主动登出，才会清除对应服务器的登录状态。</p>
-    <h3>视频播放到一半中断 / 进度条拖不动？</h3>
-    <p>电影/MKV 走的是 NAS 生成的<b>时效签名链接</b>，播放较久后链接可能过期。新版内置 MPV 会<b>自动重新获取链接并从断点续播</b>，拖进度条卡住时也会自动重新取流并跳到目标位置，一般无需操作。若仍异常，可关闭 MPV 后用 <b>工具 → 用 MPV 打开当前视频</b> 重新接管，并把 <code>%APPDATA%\FNOS\fnos-mpv.log</code> 与 <code>fnos-diag.log</code> 反馈给作者。直播频道因分片实时刷新，不受此影响。</p>
+    <p>不会。每个账号有独立的持久化会话分区，Cookie 与本地数据加密保存在本机；关闭主窗口、隐藏到托盘、切换账号再切回、或重启电脑后再打开，都会自动保持登录。只有在登录页历史列表里主动删除该服务器，或在飞牛页面里主动登出，才会清除对应登录状态。</p>
+    <h3>视频播到一半中断 / 进度条拖不动？</h3>
+    <p>电影 / MKV 走的是 NAS 的<b>时效签名链接</b>，播久了链接会过期。新版内置 MPV 会自动重新取流并从断点续播，拖进度条卡住时也会自动重新取流并跳到目标位置，一般无需操作。若仍异常，可关闭 MPV 后用 <b>工具 → 用 MPV 嵌入播放当前视频</b> 重新接管，并把 <code>fnos-mpv.log</code> 与 <code>fnos-diag.log</code> 一起反馈。直播频道分片实时刷新，不受此影响。</p>
+    <h3>全屏后播放器错位 / 有灰边？</h3>
+    <p>从 v2.17.59 起，全屏改用 MPV 的 fullscreen 模式铺满整屏（含任务栏区域）。若仍看到灰边，请确认已升级到最新版（<b>帮助 → 检查更新…</b>），并在反馈时附上 <code>fnos-diag.log</code>（其中 <code>mpv.win.mismatch</code> 行会记录实际窗口尺寸）。</p>
+    <h3>绿屏 / 花屏 / 授权无反应？</h3>
+    <ul>
+      <li>已移除会导致 ARM / 集显设备绿屏的 COEP / CORP 头，并把 UA 伪装为桌面 Chrome，飞牛音乐、影视登录后不再绿屏。</li>
+      <li>NAS 账号授权（OAuth）改为在客户端内独立窗口打开，授权完成后自动回跳，不再循环登录页。</li>
+    </ul>
+    <h3>可以投屏 / 用媒体键吗？</h3>
+    <p>可以。保留了 Chromium 原生 MediaRouter、CastMediaRouteProvider、DialMediaRouteProvider、GlobalMediaControls、HardwareMediaKeyHandling，飞牛影视可投到 Chromecast / DLNA 设备，系统媒体面板和键盘多媒体键可控。</p>
     <h3>如何彻底退出？</h3>
-    <p>托盘右键 → <b>退出</b>，或在文件菜单里选退出。选「隐藏到托盘」程序仍会在后台运行。</p>
+    <p>托盘图标右键 → <b>退出程序</b>。选「隐藏到托盘」时程序仍在后台运行（下载、同步等长任务会继续）。</p>
     <h3>数据保存在哪里？</h3>
-    <p>所有设置和登录信息保存在 <code>%APPDATA%\FNOS</code>，使用系统 DPAPI 加密。卸载程序时不会删除此目录，重新安装后登录数据仍在。</p>
+    <p>设置与登录信息都在 <code>%APPDATA%\FNOS</code>，密码经系统 DPAPI 加密。卸载程序不会删除该目录，重装后登录数据仍在。</p>
     <h3>桌面 / 开始菜单图标还是旧的？</h3>
-    <p>安装程序会自动调用 <code>SHChangeNotify</code> 和 <code>ie4uinit -show</code> 刷新 Windows 图标缓存。极少数情况下如果仍未刷新，可在任务管理器里重启「Windows 资源管理器」，或注销重登一次即可。</p>
+    <p>安装程序会自动调用 <code>SHChangeNotify</code> 与 <code>ie4uinit -show</code> 刷新图标缓存。极少数情况下仍未刷新，可在任务管理器里重启「Windows 资源管理器」，或注销重登一次。</p>
+  </section>
+
+  <section class="card">
+    <h2>日志与问题反馈</h2>
+    <p>遇到异常时，把下面这些日志一起提供，定位会快很多（均在 <code>%APPDATA%\FNOS</code>）：</p>
+    <table class="table">
+      <tr><th style="width:210px">文件</th><th>内容</th></tr>
+      <tr><td><code>fnos-diag.log</code></td><td>客户端主诊断日志（窗口几何、全屏状态、MPV 窗口尺寸自校验等）</td></tr>
+      <tr><td><code>fnos-mpv.log</code></td><td>MPV 运行日志（HTTP 状态、重定向、断流重连 / 重新取流）</td></tr>
+      <tr><td><code>fnos-web.log</code></td><td>页面侧日志（媒体地址追踪、播放器接管）</td></tr>
+      <tr><td><code>fnos-live.log</code></td><td>电视直播窗口日志（订阅、换台、断流自愈）</td></tr>
+    </table>
+    <div class="tip">问题现象建议连同 <b>版本号</b>（本页页脚 / 帮助 → 检查更新 里可见）、<b>NAS 系统版本</b>、<b>复现步骤</b> 一起说明。</div>
   </section>
 
   <section class="card">
     <h2>开源与免责</h2>
     <ul>
       <li>开源仓库：<code>https://github.com/zhouchunwei513-cyber/fnos-desktop</code>，MIT 协议。</li>
-      <li>本项目为第三方社区作品，与飞牛（fnOS）官方没有隶属关系。"fnOS"及相关商标归其权利人所有。</li>
+      <li>本项目为第三方社区作品，与飞牛（fnOS）官方没有隶属关系；"fnOS"及相关商标归其权利人所有。</li>
     </ul>
   </section>
 
 </main>
 
-<div class="footer">FNOS CLIENT · 1.38.0</div>
+<div class="footer">FNOS CLIENT · <span id="ver-label">2.18.0</span></div>
+
+<script>
+/* v2.18.0：版本号由主进程 loadFile 的 query 传入（v=APP_VERSION），页脚自动跟随，不再手写死值。 */
+(function () {
+  try {
+    var m = /[?&]v=([^&]+)/.exec(String(location.search || ''));
+    if (m) {
+      var el = document.getElementById('ver-label');
+      if (el) el.textContent = decodeURIComponent(m[1]);
+    }
+  } catch (e) {}
+})();
+</script>
 
 </body>
 </html>

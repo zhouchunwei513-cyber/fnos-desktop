@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.59';
+const APP_VERSION = '2.18.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -853,13 +853,15 @@ async function checkForUpdates(interactive = true) {
       : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
     if (!parentWin) return;
     if (cmp > 0) {
-      const detail = (info.notes || '').trim().slice(0, 500);
+      const notes = (info.notes || '').trim().slice(0, 420);
+      // v2.18.0: 弹窗里明确列出「当前版本 / 最新版本」，让用户先看清差异再决定是否下载
+      const verLine = `当前版本：v${APP_VERSION}    最新版本：v${latest}`;
       const { response } = await glassMessageBox(parentWin, {
         type: 'info',
         title: `发现新版本 v${latest}`,
-        detail: detail
-          ? `${detail}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。`
-          : '点击「前往下载」将在浏览器中打开 GitHub Release 页面。',
+        detail: notes
+          ? `${verLine}\n\n${notes}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。`
+          : `${verLine}\n\n点击「前往下载」将在浏览器中打开 GitHub Release 页面。`,
         buttons: ['前往下载', '稍后'],
         defaultId: 0,
         cancelId: 1,
@@ -870,7 +872,7 @@ async function checkForUpdates(interactive = true) {
       await glassMessageBox(parentWin, {
         type: 'info',
         title: '已是最新版本',
-        detail: `当前版本 v${APP_VERSION} 已是最新版本。`,
+        detail: `当前版本：v${APP_VERSION}\n最新版本：v${latest}\n\n已是最新版本。`,
         buttons: ['确定'],
         defaultId: 0,
         cancelId: 0,
@@ -7690,7 +7692,12 @@ function buildMenuTemplate() {
             title: 'FNOS · 操作帮助',
             autoHideMenuBar: true,
             frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v1.54：无边框，preload 注入与主窗口同款标题栏
-            backgroundColor: '#0b0d12',
+            // v2.18.0: 帮助窗改为透明窗——窗口本体仍是矩形，四角 R 角由页面 clip-path 绘制。
+            // 帮助窗与偏好设置窗都走 titlebar-inject 的"设置窗口"分支，圆角半径与标题栏同比例。
+            // 原来的不透明底色会让四角露出窗口背景，圆角逻辑对不对都看不出来。
+            transparent: true,
+            roundedCorners: false,
+            backgroundColor: '#00000000',
             icon: ICON_PATH,
             parent: mainWindow || undefined,
             modal: false,
@@ -7702,8 +7709,12 @@ function buildMenuTemplate() {
             },
           });
           helpWin.setMenuBarVisibility(false);
-          helpWin.loadFile(HELP_PAGE).catch(() => {});
+          // v2.18.0: 把当前版本号传给帮助页，页脚版本号自动跟随 APP_VERSION，不再手写死值。
+          helpWin.loadFile(HELP_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
         }},
+        { type: 'separator' },
+        // v2.18.0: 菜单「检查更新」——复用既有 checkForUpdates()，弹窗显示当前版本与最新版本
+        { label: '检查更新…', click: () => { checkForUpdates(true); } },
       ],
     },
   ];

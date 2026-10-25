@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.46';
+const APP_VERSION = '2.17.47';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2342,10 +2342,65 @@ ipcMain.on('window-maximize', (e) => {
 ipcMain.on('window-close', (e) => {
   try { const w = hostWindowFromSender(e && e.sender); if (w && !w.isDestroyed()) w.close(); } catch (_) {}
 });
-// v1.62.0：无边框标题栏原生拖拽兜底（-webkit-app-region:drag 在置顶嵌入 mpv 存在时
-// 可能被系统拖拽消息环影响而失灵）。renderer 在顶部热区 mousedown(左键) 时调用 startDrag。
+// v1.62.0：无边框标题栏原生拖拽兜底 —— 历史遗留，w.startDrag() 从来不是 BrowserWindow 的方法
+// （Electron 只有 webContents.startDrag({file,icon})，那是拖文件），调用必抛 TypeError 被 catch 吞掉。
+// v2.17.47（用户反馈：主程序与程序内应用点标题栏都拖不动）：v2.17.46 把标题栏中部从
+// -webkit-app-region:drag 改成 no-drag 交互层后，这块区域彻底失去拖拽能力；而 drag 区域又被
+// 系统 move loop 接管、不派发 DOM 事件，做不到「既原生拖拽又用 DOM 判双击」。
+// 这里改成主进程真实拖动：renderer 按下发 win-drag-start（带起点 screenX/Y），移动发
+// win-drag-move（screenX/Y 与 setPosition 同为 DIP，可直接相减），松开发 win-drag-end。
+let __winDragState = null; // { win, ox, oy, sx, sy, lx, ly }
+ipcMain.on('win-drag-start', (e, p) => {
+  try {
+    const w = hostWindowFromSender(e && e.sender);
+    if (!w || w.isDestroyed() || !p) return;
+    if (__isFsOn(w)) return; // 全屏态标题栏已隐藏，不允许拖动
+    let b = w.getBounds();
+    // 最大化 / 伪最大化（r37 的 workArea 校正）窗口被拖动时，先还原到最大化前的 bounds，
+    // 再以鼠标为锚点重设位置——否则 setPosition 对最大化窗口无效，表现为「拖不动」。
+    if (__maxOn(w) || w.isMaximized()) {
+      const pb = __maxPre(w);
+      __maxInfo.set(w, { on: false, pre: null, pseudo: false });
+      try { w.unmaximize(); } catch (_) {}
+      const nb = pb || b;
+      const nx = Math.round((Number(p.sx) || 0) - nb.width / 2);
+      const ny = Math.round((Number(p.sy) || 0) - 18);
+      try { w.setBounds({ x: nx, y: ny, width: nb.width, height: nb.height }); } catch (_) {}
+      b = { x: nx, y: ny, width: nb.width, height: nb.height };
+    }
+    __winDragState = { win: w, ox: b.x, oy: b.y, sx: Number(p.sx) || 0, sy: Number(p.sy) || 0, lx: b.x, ly: b.y };
+    try { fnosLog('info', 'window', 'drag.start win=' + w.id + ' o=' + b.x + ',' + b.y); } catch (_) {}
+  } catch (_) {}
+});
+ipcMain.on('win-drag-move', (e, p) => {
+  try {
+    const d = __winDragState;
+    if (!d || !p || !d.win || d.win.isDestroyed()) return;
+    if (hostWindowFromSender(e && e.sender) !== d.win) return; // 多窗口时只认发起拖动的那个
+    const nx = Math.round(d.ox + (Number(p.sx) || 0) - d.sx);
+    const ny = Math.round(d.oy + (Number(p.sy) || 0) - d.sy);
+    if (nx === d.lx && ny === d.ly) return;
+    d.lx = nx; d.ly = ny;
+    d.win.setPosition(nx, ny);
+  } catch (_) {}
+});
+ipcMain.on('win-drag-end', (e) => {
+  try {
+    const d = __winDragState;
+    __winDragState = null;
+    if (d && d.win && !d.win.isDestroyed()) {
+      try { fnosLog('info', 'window', 'drag.end win=' + d.win.id + ' p=' + d.lx + ',' + d.ly); } catch (_) {}
+    }
+  } catch (_) {}
+});
+// 旧通道保留（drag region 区域的兜底调用点仍在），实现同 win-drag-*
 ipcMain.on('window-drag', (e) => {
-  try { const w = hostWindowFromSender(e && e.sender); if (w && !w.isDestroyed()) w.startDrag(); } catch (_) {}
+  try {
+    const w = hostWindowFromSender(e && e.sender);
+    if (!w || w.isDestroyed() || __isFsOn(w)) return;
+    const b = w.getBounds();
+    __winDragState = { win: w, ox: b.x, oy: b.y, sx: Number(screen.getCursorScreenPoint().x) || 0, sy: Number(screen.getCursorScreenPoint().y) || 0, lx: b.x, ly: b.y };
+  } catch (_) {}
 });
 // v2.17.20: 视图缩放持久化。此前 Ctrl+滚轮 / 菜单「视图-放大/缩小」只改内存里的
 // zoomFactor，关掉主程序或应用窗口后全部丢失（用户实测：调好的视图大小保存不了）。

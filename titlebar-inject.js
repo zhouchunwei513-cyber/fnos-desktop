@@ -782,14 +782,25 @@ module.exports = function injectTitleBar(ctx) {
         // move loop 接管、dblclick 不派发，v2.17.45 的 mousedown 时间戳双击判定因此失效——首次
         // mousedown 就 send('window-drag')，主进程 w.startDrag() 同步阻塞，第二次 mousedown 收不到）。
         // 改为普通可交互层：移动超 3px 才发起原生拖拽（纯点击/双击不被打断），dblclick 走 window-maximize。
+        // v2.17.47：上一版漏了主进程实现——window-drag 里调用的 w.startDrag() 不是 BrowserWindow
+        // 的 API，永远抛异常被 catch 吞掉，于是本层彻底不能拖（用户反馈：主程序和应用窗都拖不动）。
+        // 现在拖动改为主进程 setPosition 跟随鼠标（win-drag-start/move/end）。
         dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
         (function () {
           const W = window;
           W.__fnosDsDown = null;
+          // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时仍持续收到
+          // 移动事件（否则 Windows 停止投递 WM_MOUSEMOVE，拖动会中途卡住）。
+          dragStrip.addEventListener('pointerdown', function (e) {
+            try { dragStrip.setPointerCapture(e.pointerId); } catch (_) {}
+          });
           dragStrip.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
+            // v2.17.47：本层是 no-drag 交互层，原生 -webkit-app-region:drag 用不了，
+            // 改由主进程真实拖动（main.js win-drag-start/win-drag-move/win-drag-end）。
+            try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
           });
           dragStrip.addEventListener('dblclick', function (e) {
             W.__fnosDsDown = null; W.__fnosDsDrag = true;
@@ -798,17 +809,35 @@ module.exports = function injectTitleBar(ctx) {
           });
           if (!W.__fnosDsHooked) {
             W.__fnosDsHooked = true; W.__fnosDsDrag = false;
-            W.addEventListener('mousemove', function (e) {
-              if (!W.__fnosDsDown || W.__fnosDsDrag) return;
+            W.__fnosDsRaf = 0; W.__fnosDsPend = null;
+            const __fwd = function (e) {
+              if (!W.__fnosDsDown) return;
               if (e.buttons === 0) { W.__fnosDsDown = null; W.__fnosDsDrag = false; return; }
               try {
-                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) {
-                  W.__fnosDsDrag = true;
-                  ipcRenderer.send('window-drag');
+                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) W.__fnosDsDrag = true;
+                if (!W.__fnosDsDrag) return;
+                // 每次移动都把最新屏幕坐标交给主进程（rAF 合并，60fps 上限）
+                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0) };
+                if (!W.__fnosDsRaf) {
+                  W.__fnosDsRaf = (W.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
+                    W.__fnosDsRaf = 0;
+                    const p = W.__fnosDsPend;
+                    W.__fnosDsPend = null;
+                    if (!p) return;
+                    try { ipcRenderer.send('win-drag-move', p); } catch (_) {}
+                  });
                 }
               } catch (_) {}
-            }, true);
-            W.addEventListener('mouseup', function () { W.__fnosDsDown = null; W.__fnosDsDrag = false; }, true);
+            };
+            W.addEventListener('mousemove', __fwd, true);
+            W.addEventListener('pointermove', __fwd, true);
+            const __end = function () {
+              if (W.__fnosDsDown) { try { ipcRenderer.send('win-drag-end'); } catch (_) {} }
+              W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            };
+            W.addEventListener('mouseup', __end, true);
+            W.addEventListener('pointerup', __end, true);
+            W.addEventListener('pointercancel', __end, true);
           }
         })();
         bar.appendChild(dragStrip);
@@ -1175,14 +1204,25 @@ module.exports = function injectTitleBar(ctx) {
         // move loop 接管、dblclick 不派发，v2.17.45 的 mousedown 时间戳双击判定因此失效——首次
         // mousedown 就 send('window-drag')，主进程 w.startDrag() 同步阻塞，第二次 mousedown 收不到）。
         // 改为普通可交互层：移动超 3px 才发起原生拖拽（纯点击/双击不被打断），dblclick 走 window-maximize。
+        // v2.17.47：上一版漏了主进程实现——window-drag 里调用的 w.startDrag() 不是 BrowserWindow
+        // 的 API，永远抛异常被 catch 吞掉，于是本层彻底不能拖（用户反馈：主程序和应用窗都拖不动）。
+        // 现在拖动改为主进程 setPosition 跟随鼠标（win-drag-start/move/end）。
         dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
         (function () {
           const W = window;
           W.__fnosDsDown = null;
+          // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时仍持续收到
+          // 移动事件（否则 Windows 停止投递 WM_MOUSEMOVE，拖动会中途卡住）。
+          dragStrip.addEventListener('pointerdown', function (e) {
+            try { dragStrip.setPointerCapture(e.pointerId); } catch (_) {}
+          });
           dragStrip.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
+            // v2.17.47：本层是 no-drag 交互层，原生 -webkit-app-region:drag 用不了，
+            // 改由主进程真实拖动（main.js win-drag-start/win-drag-move/win-drag-end）。
+            try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
           });
           dragStrip.addEventListener('dblclick', function (e) {
             W.__fnosDsDown = null; W.__fnosDsDrag = true;
@@ -1191,17 +1231,35 @@ module.exports = function injectTitleBar(ctx) {
           });
           if (!W.__fnosDsHooked) {
             W.__fnosDsHooked = true; W.__fnosDsDrag = false;
-            W.addEventListener('mousemove', function (e) {
-              if (!W.__fnosDsDown || W.__fnosDsDrag) return;
+            W.__fnosDsRaf = 0; W.__fnosDsPend = null;
+            const __fwd = function (e) {
+              if (!W.__fnosDsDown) return;
               if (e.buttons === 0) { W.__fnosDsDown = null; W.__fnosDsDrag = false; return; }
               try {
-                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) {
-                  W.__fnosDsDrag = true;
-                  ipcRenderer.send('window-drag');
+                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) W.__fnosDsDrag = true;
+                if (!W.__fnosDsDrag) return;
+                // 每次移动都把最新屏幕坐标交给主进程（rAF 合并，60fps 上限）
+                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0) };
+                if (!W.__fnosDsRaf) {
+                  W.__fnosDsRaf = (W.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
+                    W.__fnosDsRaf = 0;
+                    const p = W.__fnosDsPend;
+                    W.__fnosDsPend = null;
+                    if (!p) return;
+                    try { ipcRenderer.send('win-drag-move', p); } catch (_) {}
+                  });
                 }
               } catch (_) {}
-            }, true);
-            W.addEventListener('mouseup', function () { W.__fnosDsDown = null; W.__fnosDsDrag = false; }, true);
+            };
+            W.addEventListener('mousemove', __fwd, true);
+            W.addEventListener('pointermove', __fwd, true);
+            const __end = function () {
+              if (W.__fnosDsDown) { try { ipcRenderer.send('win-drag-end'); } catch (_) {} }
+              W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            };
+            W.addEventListener('mouseup', __end, true);
+            W.addEventListener('pointerup', __end, true);
+            W.addEventListener('pointercancel', __end, true);
           }
         })();
         bar.appendChild(dragStrip);

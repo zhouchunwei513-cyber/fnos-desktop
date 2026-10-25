@@ -309,6 +309,22 @@ class MpvSurface {
     // v2.17.54：全屏期间不按内容区比例缩放 dipRect（全屏尺寸跨度大，缩放会污染视频区坐标，
     // 退出全屏就回不到原来的跟随）。全屏几何由 _computeScreenGeometry 直接给整屏。
     if (!this._isHostFs()) this._syncDipToResize();
+    // v2.17.59（用户第四次反馈"飞牛影视/电视直播全屏下 MPV 还是错位"）——
+    // v2.17.58 的 osd-dimensions 回执实锤：全屏时 mpv 真实窗口只有 1834x1032（= workArea 高 1032
+    // × 16:9），不是我们下发的 1920x1080。普通无边框窗口（--border=no）用 geometry 撑到显示器尺寸
+    // 会被 mpv/Windows 限制在 workArea（不含任务栏 48px），geometry 发多少次都撑不满、右侧/底部
+    // 留灰边。改用 mpv fullscreen 模式（set_property fullscreen），由 mpv 自行接管窗口尺寸、
+    // 覆盖整个显示器（含任务栏），这才是"全屏铺满桌面"的正解。
+    const fs = this._isHostFs();
+    if (fs !== !!this._mpvFsOn) {
+      this._mpvFsOn = fs;
+      try {
+        this.player.setFullscreen(fs);
+        this._emit('log', 'embed.fs.fullscreen ' + (fs ? 'on' : 'off'));
+      } catch (_) {}
+      try { this.player._lastGeoStr = ''; } catch (_) {}
+    }
+    if (fs) return; // 全屏交给 fullscreen 模式，不走 geometry 定位/尺寸审计
     // v2.17.57（用户反馈：飞牛影视/电视直播全屏时 MPV 还是错位）——
     // 本机 mpv 构建不支持 window-* 写入，定位只靠 set_property geometry 兜底；一旦有旧几何迟到
     // 覆盖掉新几何，player._lastGeoStr 仍记着"正确"的串，去抖会让后续轮询再也不重发，

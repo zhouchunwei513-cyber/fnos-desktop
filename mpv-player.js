@@ -1014,7 +1014,9 @@ class MpvPlayer extends EventEmitter {
     // 圆角形态：点播（飞牛影视电影/剧集）四角圆角；直播仅右上角圆角（其余三角直角，露出右上角窗口控制按钮区）；
     // 独立播放器保持直角。v2.15.96：直播由"直角"改为"仅右上角圆角"（用户要求）。
     let mode = 'none';
-    if (!this._standalone) { mode = this._isLive ? 'top-right' : 'all'; }
+    // v2.17.59：fullscreen 铺满整屏时四角是屏幕四角（直角），退出后按点播/直播形态恢复圆角
+    if (this._fsOn) { mode = 'none'; }
+    else if (!this._standalone) { mode = this._isLive ? 'top-right' : 'all'; }
     const scale = this._scaleFactor || 1;
     const d = Math.max(2, Math.round(40 * scale)); // 圆角直径（物理像素）：20px 半径 DIP * 2 * scale
     const halfD = Math.max(1, Math.round(d / 2)); // 圆角半径（物理像素），用于补直角的竖条/横条宽度
@@ -1198,6 +1200,25 @@ class MpvPlayer extends EventEmitter {
     const apply = () => { this.command(['set_property', 'ontop', on ? 'yes' : 'no']).catch(() => {}); };
     if (!this.connected) { this.once('ipc-ready', apply); return; }
     apply();
+  }
+
+  // v2.17.59：mpv fullscreen 模式开关。
+  // 全屏铺满桌面时，普通无边框窗口（--border=no）用 geometry 撑到显示器尺寸会被 mpv/Windows
+  // 限制在 workArea（不含任务栏），实测 v2.17.58 的 osd-dimensions 回执 1834x1032 而非 1920x1080
+  //（1032=1080-48 任务栏，1834=1032×16/9），画面右侧/底部留灰边错位。
+  // fullscreen 模式由 mpv 自行接管窗口尺寸、覆盖整个显示器（含任务栏），是"全屏铺满桌面"的正解。
+  setFullscreen(on) {
+    this._fsOn = !!on;
+    const apply = () => { this.command(['set_property', 'fullscreen', on ? 'yes' : 'no']).catch(() => {}); };
+    if (!this.connected) { this.once('ipc-ready', apply); return; }
+    apply();
+    if (on) {
+      // 进入 fullscreen：立即清圆角 RGN（旧圆角 RGN 会把铺满整屏的画面裁成左上角一块）
+      try { this._applyRoundedCorners(); } catch (_) {}
+    } else {
+      // 退出 fullscreen：窗口尺寸回落由 setGeometry 触发 _scheduleCorners 重裁，这里也补一次
+      this._scheduleCorners();
+    }
   }
 
   stop() {

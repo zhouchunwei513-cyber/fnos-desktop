@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.55';
+const APP_VERSION = '2.17.56';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1246,6 +1246,27 @@ function __applyFsFor(win, on) {
       // 幂等重发两次（仍是全屏态才发），保证标题栏隐藏与 body 回满一定落地。
       setTimeout(() => { try { if (!win.isDestroyed() && __isFsOn(win)) __syncFsUIFor(win, true); } catch (_) {} }, 700);
       setTimeout(() => { try { if (!win.isDestroyed() && __isFsOn(win)) __syncFsUIFor(win, true); } catch (_) {} }, 1500);
+      // v2.17.56（用户要求"识别到飞牛影视/电视直播窗口全屏时，MPV 播放器立即铺满整个 Windows 桌面"）
+      // 实测日志 fnos-2026-10-25_1792940517511_xefd.log：直播窗 14:55:40.941 打出 "ui enter win=2"，
+      // 但随后的 embed.align 一直是 content bounds 1280x820，直到 14:55:45.082 退出时才是 (0,0) ——
+      // 说明这些 transparent + frame:false 窗口上 setFullScreen(true) 会半失败：位置挪到屏幕左上、
+      // 尺寸没撑满。宿主不放大，MPV 再怎么写跟随也只能盖一个小矩形 = 用户看到的"错位、没铺满"。
+      // 这里在过渡期后补两次核查：仍认为在全屏、但窗口明显小于所在屏幕，就直接按整屏 bounds 补齐。
+      // 主窗口不在此列（实测 setFullScreen 正常、且带 45:27.65 比例锁），保持原样零影响。
+      if (win !== mainWindow && !(win.__isSettings)) {
+        const __forceFs = (tag) => {
+          try {
+            if (!win || win.isDestroyed() || !__isFsOn(win)) return;
+            const b = win.getBounds();
+            const fb = screen.getDisplayMatching(b).bounds;
+            if (b.width >= fb.width - 24 && b.height >= fb.height - 24) return;
+            win.setBounds({ x: fb.x, y: fb.y, width: fb.width, height: fb.height });
+            try { fnosLog('warn', 'fullscreen', 'fs.bounds.force ' + tag + ' win=' + win.id + ' from=' + [b.x, b.y, b.width, b.height].join(',') + ' to=' + [fb.x, fb.y, fb.width, fb.height].join(',')); } catch (_) {}
+          } catch (_) {}
+        };
+        setTimeout(() => __forceFs('t520'), 520);
+        setTimeout(() => __forceFs('t1400'), 1400);
+      }
     } else {
       __fsGuardUntil = Date.now() + 1600;
       __syncFsUIFor(win, false);

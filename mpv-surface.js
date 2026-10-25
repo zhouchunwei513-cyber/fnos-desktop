@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 // mpv-surface.js —— 应用内"视觉嵌入"播放层
 // 采用 fntv 同款：mpv 自己的原生窗口（无边框、置顶、自带 OSC、可拖动），
@@ -51,6 +51,8 @@ class MpvSurface {
     // v2.17.54：宿主窗口是否处于全屏（窗口级全屏或网页 HTML 全屏）。全屏时 mpv 铺满整屏，
     // 且不再做"标题栏 34px 下压"（全屏没有标题栏）；退出全屏自动回到按视频区跟随。
     this._hostFs = false;
+    // v2.17.56：每次进入全屏只打一条 embed.fs.geo（显示器 bounds vs 宿主内容区），便于定位偏差
+    this._fsGeoLogged = false;
     // v2.17.54：进入全屏前的视频区坐标/偏移快照。全屏期间 guest 会上报铺满视口的 rect，
     // 若不快照恢复，退出全屏后会停在全屏尺寸，直到下一次 reportRect 才纠正（表现为不还原）。
     this._fsSavedDip = null;
@@ -111,6 +113,7 @@ class MpvSurface {
       };
       this._fsExit = () => {
         this._hostFs = false;
+        this._fsGeoLogged = false;
         // 退出全屏：先回到全屏前的视频区（随后 guest reportRect 会按真实布局再校准）
         if (this._fsSavedDip) { this.dipRect = { x: this._fsSavedDip.x, y: this._fsSavedDip.y, width: this._fsSavedDip.width, height: this._fsSavedDip.height }; this._fsSavedDip = null; }
         if (this._fsSavedView) { this.viewOffset = { x: this._fsSavedView.x, y: this._fsSavedView.y }; this._fsSavedView = null; }
@@ -190,15 +193,34 @@ class MpvSurface {
     const win = this.parent;
     if (!win || win.isDestroyed()) return null;
     const cb = win.getContentBounds();      // 内容区屏幕 DIP 坐标
-    // v2.17.54：宿主全屏（窗口全屏 / 网页 HTML 全屏）时 mpv 铺满整个内容区（即整屏），
+    // v2.17.54：宿主全屏（窗口全屏 / 网页 HTML 全屏）时 mpv 铺满整屏，
     // 不做标题栏下压、不按视频区留边 —— 用户要求"飞牛影视全屏，MPV 也全屏并跟随"。
     // 退出全屏后本分支不再命中，自动回到按视频区 dipRect 跟随，即"恢复全屏前的跟随"。
+    // v2.17.56（用户要求"识别到飞牛影视/电视直播窗口全屏时，MPV 播放器立即铺满整个 Windows 桌面"）
+    // —— 原来这里取宿主 getContentBounds()：实测这些 transparent + frame:false 窗口上
+    // setFullScreen(true) 会半失败（位置挪到屏幕左上、尺寸没撑满），content bounds 仍是
+    // 1280x820 级别，于是 MPV 只盖一个小矩形 = 用户看到的"播放器和窗口错位、没铺满桌面"。
+    // 现改为直接取【宿主所在显示器的 bounds】（整屏，含任务栏），与宿主自身尺寸无关：
+    // 全屏一被识别到就立即铺满整个 Windows 桌面。
     if (!this._pip && this._isHostFs()) {
+      let db = null;
+      try {
+        const { screen } = require('electron');
+        db = screen.getDisplayMatching(win.getBounds()).bounds;
+      } catch (_) {}
+      const t = db || cb;
+      if (!this._fsGeoLogged) {
+        this._fsGeoLogged = true;
+        try {
+          this._emit('log', 'embed.fs.geo db=' + [t.x, t.y, t.width, t.height].join(',')
+            + ' cb=' + [cb.x, cb.y, cb.width, cb.height].join(','));
+        } catch (_) {}
+      }
       return {
-        x: Math.round(cb.x),
-        y: Math.round(cb.y),
-        width: Math.round(cb.width),
-        height: Math.round(cb.height)
+        x: Math.round(t.x),
+        y: Math.round(t.y),
+        width: Math.round(t.width),
+        height: Math.round(t.height)
       };
     }
     let x = cb.x + (off.x || 0) + (r.x || 0);

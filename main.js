@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.51';
+const APP_VERSION = '2.17.52';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1094,6 +1094,22 @@ function __syncFsUIFor(win, on) {
     try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
     if (!__frames.length) { try { __wc.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} return; }
     for (const __f of __frames) { try { __f.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} }
+  } catch (_) {}
+}
+
+// v2.17.52（用户录屏实锤：主窗 F11 全屏后点文件夹加载文件列表，标题栏重新冒出来）——
+// 全屏时标题栏靠 html 属性 data-fnos-fs=1 + #fnos-titlebar 的 inline display:none 藏掉；主窗在
+// 全屏态下发生整页导航（did-navigate / did-finish-load，DOM 重建）时，这两个标记随旧文档一起销毁，
+// 新文档的标题栏不再隐藏 → 视觉上“标题栏出来了”。但窗口本身仍是 setFullScreen（bounds 未变、底部
+// 无任务栏），只是全屏 UI 丢了。主窗原有导航回调（__appviewToPopout / __syncThemeFromMain /
+// consumePendingOpenApp 等）都没补全屏 UI，这里在导航后幂等补发（仍处于全屏态才发，非全屏不动）。
+function __resyncFsUiForMain() {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (!__isFsOn(mainWindow)) return;
+    __syncFsUIFor(mainWindow, true);
+    setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && __isFsOn(mainWindow)) __syncFsUIFor(mainWindow, true); } catch (_) {} }, 300);
+    setTimeout(() => { try { if (mainWindow && !mainWindow.isDestroyed() && __isFsOn(mainWindow)) __syncFsUIFor(mainWindow, true); } catch (_) {} }, 900);
   } catch (_) {}
 }
 function __focusRendererFor(win) {
@@ -6928,11 +6944,11 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.webContents.on('did-navigate', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
     mainWindow.webContents.on('did-navigate-in-page', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
     // v2.5.1 r17：主窗加载完成即同步昼夜主题（应用跳出窗跟随主程序）
-    mainWindow.webContents.on('did-finish-load', () => { try { __syncThemeFromMain(); } catch (_) {} });
+mainWindow.webContents.on('did-finish-load', () => { try { __syncThemeFromMain(); } catch (_) {} try { __resyncFsUiForMain(); } catch (_) {} });
   } catch (_) {}
   try {
     mainWindow.webContents.on('dom-ready', () => {
-      try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_) {}
+try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_) {} try { __resyncFsUiForMain(); } catch (_) {}
     });
     mainWindow.webContents.on('did-navigate', () => {
       try { consumePendingOpenApp(); startHomeScan(); tryOpenPendingApp(); applyHomeFpkIcons(); } catch (_) {}

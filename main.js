@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.53';
+const APP_VERSION = '2.17.54';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -12477,20 +12477,69 @@ function gatherCookiesForOrigin(originUrl) {
       const u = new URL(originUrl);
       const candidates = [session.defaultSession];
       try { if (SHARED_PARTITION) candidates.push(session.fromPartition(SHARED_PARTITION)); } catch (_) {}
+      // v2.17.54：补上"当前账号实际使用的分区"。v2.0.0 多账号后应用窗 cookie 存在
+      // persist:nas-{hash}，此前候选里没有它，只能从 defaultSession 拿到 osrt，
+      // 缺 ost / Trim-MC-token，media/range 于是被服务端当业务请求返回 JSON。
+      try { if (currentPartition) candidates.push(session.fromPartition(currentPartition)); } catch (_) {}
       try { candidates.push(session.fromPartition('persist:connect')); } catch (_) {}
       try {
         const hst = loadSettings();
         (hst.history || []).forEach((h) => { if (h && h.partition) { try { candidates.push(session.fromPartition(h.partition)); } catch (_) {} } });
       } catch (_) {}
+      // v2.17.54：再补所有存活 webContents 所属会话（应用窗/直播窗真正在用的分区，最权威）
+      try {
+        const allWc = require('electron').webContents.getAllWebContents();
+        for (const wc of allWc) {
+          try { const ses = wc && wc.session; if (ses && candidates.indexOf(ses) < 0) candidates.push(ses); } catch (_) {}
+        }
+      } catch (_) {}
       Promise.all(candidates.map((ses) => ses.cookies.get({ url: u.origin }).then((l) => l || []).catch(() => [])))
         .then((results) => {
+          // v2.17.54：合并所有会话的 Cookie（同名以后出现的为准），不再"取第一个非空会话就返回"。
+          // 旧逻辑只要 defaultSession 里有 osrt 就早退，把应用窗分区里的 ost / Trim-MC-token
+          // 丢掉，MPV 仅带 osrt 请求 /v/api/v1/media/range/<guid> → 服务端 200 + application/json
+          // （业务报错）→ mpv "Failed to recognize file format"，表现为"用 MPV 打开播不出画面"。
+          const map = new Map();
           for (const list of results) {
-            if (list && list.length) { resolve(list.map((c) => `${c.name}=${c.value}`).join('; ')); return; }
+            if (!list || !list.length) continue;
+            for (const c of list) { if (c && c.name) map.set(c.name, c.value); }
           }
-          resolve('');
+          if (!map.size) return resolve('');
+          resolve(Array.from(map.entries()).map(([k, v]) => k + '=' + v).join('; '));
         }).catch(() => resolve(''));
     } catch (_) { resolve(''); }
   });
+}
+
+// v2.17.54：MPV 取流前探活——把 media/range 的真实状态码 / Content-Type / 首段 body 记进日志。
+// 服务端回 200 + application/json 就说明鉴权或接口不对（mpv 侧只会报 Failed to recognize
+// file format，看不到原因）。读到 300 字节即 abort，不影响正常取流与带宽。
+function probeMediaRange(url, headers) {
+  try {
+    if (!url || !/^https?:/i.test(url)) return;
+    const { net } = require('electron');
+    const req = net.request({ method: 'GET', url, redirect: 'follow' });
+    try {
+      Object.keys(headers || {}).forEach((k) => { try { req.setHeader(k, String(headers[k])); } catch (_) {} });
+    } catch (_) {}
+    let done = false;
+    const report = (status, type, buf) => {
+      dlog('info', 'mpv.probe.range', { status: status, type: String(type || ''), head: String(buf || '').slice(0, 300).replace(/\s+/g, ' ') });
+    };
+    req.on('response', (res) => {
+      let buf = '';
+      const ctype = (res.headers && res.headers['content-type']) || '';
+      res.on('data', (chunk) => {
+        if (done) return;
+        if (buf.length < 300) buf += chunk.slice(0, 300).toString('utf8');
+        if (buf.length >= 300) { done = true; try { req.abort(); } catch (_) {} report(res.statusCode, ctype, buf); }
+      });
+      res.on('end', () => { if (!done) { done = true; report(res.statusCode, ctype, buf); } });
+      res.on('error', () => {});
+    });
+    req.on('error', (e) => { if (!done) { done = true; dlog('warn', 'mpv.probe.err', { msg: String((e && e.message) || e) }); } });
+    req.end();
+  } catch (_) {}
 }
 
 // 用 MPV 播放媒体地址（自动注入飞牛登录 Cookie / Referer / UA）
@@ -13261,7 +13310,11 @@ async function embedMpvPlay(hostWin, payload) {
 
   try {
     await surf.play(url, headers, { isLive: !!payload.isLive || payload.scope === 'live', title: payload.title || '' });
-    dlog('info', 'mpv.embed.ok', { host: hostId, hasCookie: !!headers['Cookie'], hasAuth: !!headers['Authorization'], isLive: !!payload.isLive || payload.scope === 'live' });
+    dlog('info', 'mpv.embed.ok', { host: hostId, hasCookie: !!headers['Cookie'], hasAuth: !!headers['Authorization'], isLive: !!payload.isLive || payload.scope === 'live',
+      // v2.17.54：只记 Cookie 名字（不记值），便于排查"缺 ost/Trim-MC-token"这类鉴权不全问题
+      cookieNames: String(headers['Cookie'] || '').split('; ').map((s) => String(s).split('=')[0]).filter(Boolean).join(',') });
+    // v2.17.54：播放前探一次真实响应，日志按需定位（见 probeMediaRange 注释）
+    try { probeMediaRange(payload.url, headers); } catch (_) {}
     try { broadcastMpvEmbedActive(hostWin); } catch (_) {}
     return { ok: true };
   } catch (err) {

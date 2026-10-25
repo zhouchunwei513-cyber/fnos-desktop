@@ -48,6 +48,13 @@ class MpvSurface {
     this._baseDip = null;
     // 画中画状态：小窗时脱离视频区几何跟随，固定右下角小尺寸、保持置顶、可自由拖动。
     this._pip = false;
+    // v2.17.54：宿主窗口是否处于全屏（窗口级全屏或网页 HTML 全屏）。全屏时 mpv 铺满整屏，
+    // 且不再做"标题栏 34px 下压"（全屏没有标题栏）；退出全屏自动回到按视频区跟随。
+    this._hostFs = false;
+    // v2.17.54：进入全屏前的视频区坐标/偏移快照。全屏期间 guest 会上报铺满视口的 rect，
+    // 若不快照恢复，退出全屏后会停在全屏尺寸，直到下一次 reportRect 才纠正（表现为不还原）。
+    this._fsSavedDip = null;
+    this._fsSavedView = null;
     this._pipSavedGeo = null;
     // 独立窗口画中画：保存进入小窗前 mpv 自身的窗口几何（屏幕 DIP），退出时精确还原
     this._pipSavedWin = null;
@@ -83,6 +90,53 @@ class MpvSurface {
       parentWin.on('show', this._showHandler);
       parentWin.on('focus', this._raiseMpv);
       parentWin.on('closed', this._closedHandler);
+      // v2.17.54：宿主 全屏/退出全屏/最大化/退出最大化 时立即重排。
+      // 此前只监听 move/resize/minimize/restore：全屏时 _computeScreenGeometry 仍按
+      // "标题栏 34px 下压"算，顶部留 34px 缺口、高度少 34px；且 dipRect 会被 resize
+      // 比例兜底污染，退出全屏后回不到原来的跟随 —— 表现为"飞牛影视全屏了 MPV 没跟"。
+      this._fsEnter = (html) => {
+        const wasFs = this._isHostFs();
+        if (html) this._hostFs = true; // 窗口级全屏不置标记，靠 win.isFullScreen() 实时判断，避免事件丢失后卡在全屏
+        if (!wasFs) {
+          this._fsSavedDip = { x: this.dipRect.x, y: this.dipRect.y, width: this.dipRect.width, height: this.dipRect.height };
+          this._fsSavedView = { x: this.viewOffset.x || 0, y: this.viewOffset.y || 0 };
+        }
+        try { this.player._lastGeoStr = ''; } catch (_) {}
+        this._applyGeometry();
+        this._raiseMpv();
+      };
+      this._fsExit = () => {
+        this._hostFs = false;
+        // 退出全屏：先回到全屏前的视频区（随后 guest reportRect 会按真实布局再校准）
+        if (this._fsSavedDip) { this.dipRect = { x: this._fsSavedDip.x, y: this._fsSavedDip.y, width: this._fsSavedDip.width, height: this._fsSavedDip.height }; this._fsSavedDip = null; }
+        if (this._fsSavedView) { this.viewOffset = { x: this._fsSavedView.x, y: this._fsSavedView.y }; this._fsSavedView = null; }
+        this._baseCbW = 0; this._baseCbH = 0; this._baseDip = null;
+        try { this.player._lastGeoStr = ''; } catch (_) {}
+        this._applyGeometry();
+        this._raiseMpv();
+      };
+      this._enterFsHandler = () => this._fsEnter(false);
+      this._leaveFsHandler = () => this._fsExit();
+      this._enterHtmlFsHandler = () => this._fsEnter(true);
+      this._leaveHtmlFsHandler = () => this._fsExit();
+      this._maximizeHandler = () => {
+        try { this.player._lastGeoStr = ''; } catch (_) {}
+        this._applyGeometry();
+        this._raiseMpv();
+      };
+      parentWin.on('enter-full-screen', this._enterFsHandler);
+      parentWin.on('leave-full-screen', this._leaveFsHandler);
+      parentWin.on('maximize', this._maximizeHandler);
+      parentWin.on('unmaximize', this._maximizeHandler);
+      // 网页层 HTML 全屏（飞牛播放器自带的全屏按钮）：窗口 bounds 不变，视频铺满视口，
+      // mpv 必须同步铺满。Electron 22 起事件挂在 webContents 上。
+      try {
+        const wc = parentWin.webContents;
+        if (wc) {
+          wc.on('enter-html-full-screen', this._enterHtmlFsHandler);
+          wc.on('leave-html-full-screen', this._leaveHtmlFsHandler);
+        }
+      } catch (_) {}
 
       // 轮询兜底：拖动/缩放窗口时 'move'/'resize' 事件在部分平台不连续触发，
       // 定时比对内容区位置，变化即重新定位，保证 mpv 窗口始终贴合视频区。
@@ -116,12 +170,33 @@ class MpvSurface {
   // 注意：mpv 是 DPI-aware 的独立窗口，--geometry/window-move/resize 都按【屏幕 DIP 逻辑坐标】
   //       解释（与 Electron getContentBounds 一致）。不要再乘 scaleFactor，否则在 125%/150%
   //       缩放的显示器上会出现放大错位（顶部黑条/越界）。
+  // v2.17.54：宿主是否处于全屏（事件缓存 + Electron 实时状态兜底）
+  _isHostFs() {
+    if (this._standalone) return false;
+    try {
+      const w = this.parent;
+      if (w && !w.isDestroyed() && typeof w.isFullScreen === 'function' && w.isFullScreen()) return true;
+    } catch (_) {}
+    return !!this._hostFs;
+  }
+
   _computeScreenGeometry() {
     const r = this.dipRect;
     const off = this.viewOffset;
     const win = this.parent;
     if (!win || win.isDestroyed()) return null;
     const cb = win.getContentBounds();      // 内容区屏幕 DIP 坐标
+    // v2.17.54：宿主全屏（窗口全屏 / 网页 HTML 全屏）时 mpv 铺满整个内容区（即整屏），
+    // 不做标题栏下压、不按视频区留边 —— 用户要求"飞牛影视全屏，MPV 也全屏并跟随"。
+    // 退出全屏后本分支不再命中，自动回到按视频区 dipRect 跟随，即"恢复全屏前的跟随"。
+    if (!this._pip && this._isHostFs()) {
+      return {
+        x: Math.round(cb.x),
+        y: Math.round(cb.y),
+        width: Math.round(cb.width),
+        height: Math.round(cb.height)
+      };
+    }
     let x = cb.x + (off.x || 0) + (r.x || 0);
     let y = cb.y + (off.y || 0) + (r.y || 0);
     let width = Math.max(160, r.width);
@@ -174,6 +249,10 @@ class MpvSurface {
       // 首帧就绪、mpv 窗口从离屏隐藏移回时，立即按当前视频区几何对齐（含 34px 标题栏下压），
       // 不必等 500ms 轮询，避免首帧短暂盖住悬浮标题栏。
       this.player.on('first-frame', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); } catch (_) {} });
+      // v2.17.54：换片/自动播放下一集（同一 mpv 进程 loadfile 重载）后强制重新对齐一次。
+      // 首帧前窗口会离屏隐藏（-32000）再 reveal，reveal 用的是最后一次下发的几何；
+      // 这里清掉去抖缓存并重算，避免换集瞬间跳到旧位置/旧尺寸（"丢失跟随"）。
+      this.player.on('loaded', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); this._raiseMpv(); } catch (_) {} });
       this._started = true;
     } catch (e) {
       this._emit('log', 'surface start failed: ' + (e && e.message));
@@ -191,7 +270,9 @@ class MpvSurface {
     // 播放器变小卡在左上角、不再跟随。这里与轮询守卫一致地跳过。
     const _w = this.parent;
     if (_w && !_w.isDestroyed() && (_w.isMinimized() || !_w.isVisible())) return;
-    this._syncDipToResize();
+    // v2.17.54：全屏期间不按内容区比例缩放 dipRect（全屏尺寸跨度大，缩放会污染视频区坐标，
+    // 退出全屏就回不到原来的跟随）。全屏几何由 _computeScreenGeometry 直接给整屏。
+    if (!this._isHostFs()) this._syncDipToResize();
     const geo = this._computeScreenGeometry();
     if (geo && this._started) {
       try {
@@ -479,6 +560,17 @@ class MpvSurface {
         this.parent.removeListener('show', this._showHandler);
         try { this.parent.removeListener('focus', this._raiseMpv); } catch (_) {}
         this.parent.removeListener('closed', this._closedHandler);
+        try { this.parent.removeListener('enter-full-screen', this._enterFsHandler); } catch (_) {}
+        try { this.parent.removeListener('leave-full-screen', this._leaveFsHandler); } catch (_) {}
+        try { this.parent.removeListener('maximize', this._maximizeHandler); } catch (_) {}
+        try { this.parent.removeListener('unmaximize', this._maximizeHandler); } catch (_) {}
+        try {
+          const wc = this.parent.webContents;
+          if (wc) {
+            wc.removeListener('enter-html-full-screen', this._enterHtmlFsHandler);
+            wc.removeListener('leave-html-full-screen', this._leaveHtmlFsHandler);
+          }
+        } catch (_) {}
       }
     } catch (_) {}
     try { this.player.stop(); } catch (_) {}

@@ -340,6 +340,52 @@ class MpvSurface {
         }
       } catch (_) {}
     }
+    if (geo && this._started) this._auditMpvWin(geo);
+  }
+
+  // v2.17.58（用户第三次反馈"飞牛影视/电视直播全屏下 MPV 还是错位"）——
+  // 此前所有修法都建立在"我们下发的 geometry 就是 mpv 窗口的真实尺寸"这个假设上，但日志里从来
+  // 没有 mpv 侧的回执：本机 mpv 构建 window-width/window-height 写入一律返回 -3（不支持），
+  // set_property geometry 只回 1（不保证已生效），所以 mpv 窗口到底多大、是否被
+  // keepaspect / DPI 截过，一直是黑盒。这里用只读属性 osd-dimensions 直接问 mpv 的真实像素尺寸，
+  // 与我们下发的不一致就清掉去抖缓存并立刻重下发（自愈），同时记一次 mpv.win.mismatch 供定位。
+  // 同一组 want/got 连续重试 3 次仍不收敛就停止重发（避免和 mpv 内部约束死斗），只保留日志。
+  _auditMpvWin(geo) {
+    try {
+      if (!geo || !this.player || typeof this.player.command !== 'function') return;
+      const now = Date.now();
+      if (this._winAuditTs && now - this._winAuditTs < 1200) return;
+      this._winAuditTs = now;
+      const want = {
+        x: Math.round(geo.x),
+        y: Math.round(geo.y),
+        width: Math.max(160, Math.round(geo.width)),
+        height: Math.max(90, Math.round(geo.height))
+      };
+      const wantKey = want.width + 'x' + want.height;
+      Promise.resolve(this.player.command(['get_property', 'osd-dimensions'])).then((d) => {
+        try {
+          const w = d && (d.w || d.width);
+          const h = d && (d.h || d.height);
+          if (!w || !h || w <= 0 || h <= 0) return;
+          if (Math.abs(w - want.width) <= 2 && Math.abs(h - want.height) <= 2) {
+            this._winAuditKey = '';
+            this._winAuditTries = 0;
+            return;
+          }
+          const key = wantKey + '>' + w + 'x' + h;
+          if (this._winAuditKey !== key) {
+            this._winAuditKey = key;
+            this._winAuditTries = 0;
+            this._emit('log', 'mpv.win.mismatch want=' + wantKey + ' got=' + w + 'x' + h + ' fs=' + (this._isHostFs() ? 1 : 0));
+          }
+          if ((this._winAuditTries || 0) >= 3) return;
+          this._winAuditTries = (this._winAuditTries || 0) + 1;
+          try { this.player._lastGeoStr = ''; } catch (_) {}
+          try { this.player.setGeometry(want); } catch (_) {}
+        } catch (_) {}
+      }).catch(() => {});
+    } catch (_) {}
   }
 
   // v2.15.89：resize 比例兜底——宿主窗口缩放时，若 guest 的 reportRect 尚未同步更新

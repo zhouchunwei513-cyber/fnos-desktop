@@ -757,7 +757,7 @@ module.exports = function injectTitleBar(ctx) {
           try {
             if (ev.button !== 0) return;
             const t = ev.target;
-            if (t && t.closest && t.closest('button, .fnos-tb-no-drag, #fnos-tb-min, #fnos-tb-max, #fnos-tb-close, #fnos-tb-menu')) return;
+            if (t && t.closest && t.closest('#fnos-tb-dragstrip, button, .fnos-tb-no-drag, #fnos-tb-min, #fnos-tb-max, #fnos-tb-close, #fnos-tb-menu')) return;
             const __now = Date.now();
             const __sx = ev.screenX || 0, __sy = ev.screenY || 0;
             if (__now - __lastTbDown < 450 && Math.abs(__sx - __lastTbDownX) < 8 && Math.abs(__sy - __lastTbDownY) < 8) {
@@ -778,8 +778,39 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(left);
         const dragStrip = document.createElement('div');
         dragStrip.id = 'fnos-tb-dragstrip';
-        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:drag;pointer-events:none;cursor:default;';
-        dragStrip.addEventListener('pointerdown', (e) => { try { e.preventDefault(); ipcRenderer.send('window-drag'); } catch (_) {} });
+        // v2.17.46：标题栏中部空白区不再用 -webkit-app-region:drag（drag 区的 mousedown 会被系统
+        // move loop 接管、dblclick 不派发，v2.17.45 的 mousedown 时间戳双击判定因此失效——首次
+        // mousedown 就 send('window-drag')，主进程 w.startDrag() 同步阻塞，第二次 mousedown 收不到）。
+        // 改为普通可交互层：移动超 3px 才发起原生拖拽（纯点击/双击不被打断），dblclick 走 window-maximize。
+        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
+        (function () {
+          const W = window;
+          W.__fnosDsDown = null;
+          dragStrip.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) return;
+            W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
+            W.__fnosDsDrag = false;
+          });
+          dragStrip.addEventListener('dblclick', function (e) {
+            W.__fnosDsDown = null; W.__fnosDsDrag = true;
+            try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+            try { ipcRenderer.send('window-maximize'); } catch (_) {}
+          });
+          if (!W.__fnosDsHooked) {
+            W.__fnosDsHooked = true; W.__fnosDsDrag = false;
+            W.addEventListener('mousemove', function (e) {
+              if (!W.__fnosDsDown || W.__fnosDsDrag) return;
+              if (e.buttons === 0) { W.__fnosDsDown = null; W.__fnosDsDrag = false; return; }
+              try {
+                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) {
+                  W.__fnosDsDrag = true;
+                  ipcRenderer.send('window-drag');
+                }
+              } catch (_) {}
+            }, true);
+            W.addEventListener('mouseup', function () { W.__fnosDsDown = null; W.__fnosDsDrag = false; }, true);
+          }
+        })();
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root().appendChild(bar);
@@ -1140,8 +1171,39 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(left);
         const dragStrip = document.createElement('div');
         dragStrip.id = 'fnos-tb-dragstrip';
-        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:drag;pointer-events:none;cursor:default;';
-        dragStrip.addEventListener('pointerdown', (e) => { try { e.preventDefault(); ipcRenderer.send('window-drag'); } catch (_) {} });
+        // v2.17.46：标题栏中部空白区不再用 -webkit-app-region:drag（drag 区的 mousedown 会被系统
+        // move loop 接管、dblclick 不派发，v2.17.45 的 mousedown 时间戳双击判定因此失效——首次
+        // mousedown 就 send('window-drag')，主进程 w.startDrag() 同步阻塞，第二次 mousedown 收不到）。
+        // 改为普通可交互层：移动超 3px 才发起原生拖拽（纯点击/双击不被打断），dblclick 走 window-maximize。
+        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
+        (function () {
+          const W = window;
+          W.__fnosDsDown = null;
+          dragStrip.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) return;
+            W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
+            W.__fnosDsDrag = false;
+          });
+          dragStrip.addEventListener('dblclick', function (e) {
+            W.__fnosDsDown = null; W.__fnosDsDrag = true;
+            try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+            try { ipcRenderer.send('window-maximize'); } catch (_) {}
+          });
+          if (!W.__fnosDsHooked) {
+            W.__fnosDsHooked = true; W.__fnosDsDrag = false;
+            W.addEventListener('mousemove', function (e) {
+              if (!W.__fnosDsDown || W.__fnosDsDrag) return;
+              if (e.buttons === 0) { W.__fnosDsDown = null; W.__fnosDsDrag = false; return; }
+              try {
+                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) {
+                  W.__fnosDsDrag = true;
+                  ipcRenderer.send('window-drag');
+                }
+              } catch (_) {}
+            }, true);
+            W.addEventListener('mouseup', function () { W.__fnosDsDown = null; W.__fnosDsDrag = false; }, true);
+          }
+        })();
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
         root2.appendChild(bar);
@@ -1153,7 +1215,7 @@ module.exports = function injectTitleBar(ctx) {
           try {
             if (ev.button !== 0) return;
             const t = ev.target;
-            if (t && t.closest && t.closest('button')) return;
+            if (t && t.closest && t.closest('#fnos-tb-dragstrip, button')) return;
             const __now = Date.now();
             const __sx = ev.screenX || 0, __sy = ev.screenY || 0;
             if (__now - __lastTbDown2 < 450 && Math.abs(__sx - __lastTbDownX2) < 8 && Math.abs(__sy - __lastTbDownY2) < 8) {

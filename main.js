@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.45';
+const APP_VERSION = '2.17.46';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4607,7 +4607,28 @@ function registerWindow(win, opts = {}) {
   // v2.17.39：全屏/最大化事件统一接线——主窗口与应用窗口（含嵌入窗）共用同一套状态机
   //（enter/leave 全屏同步 UI + 退出还原尺寸；maximize/unmaximize 走 workArea 校正）。
   win.on('enter-full-screen', () => __applyFsFor(win, true));
-  win.on('leave-full-screen', () => __applyFsFor(win, false));
+  // v2.17.46（用户反馈：主窗 F11 全屏后打开应用，主窗立刻退出全屏变回窗口化 = 标题栏重新出现、
+  // 尺寸复原）——新建应用窗 show() 抢走前台会让 Windows 打断主窗的 fullscreen，leave-full-screen 随之
+  // 派发；旧实现无条件 __applyFsFor(false)，等于把「被系统打断」当成「用户要退出」，于是全屏样式与 bounds
+  // 一起被撤掉。现在：状态机仍认为该窗应全屏（只有 ESC/F11 会改状态）时直接重新进全屏，最多补 8 次防死循环。
+  win.on('leave-full-screen', () => {
+    try {
+      if (__isFsOn(win)) {
+        const __n = (win.__fsLeaveGuard46 || 0) + 1;
+        win.__fsLeaveGuard46 = __n;
+        try { fnosLog('warn', 'fullscreen', 'leave-guard reenter win=' + win.id + ' n=' + __n); } catch (_) {}
+        if (__n <= 8) {
+          [20, 260].forEach((ms) => {
+            setTimeout(() => {
+              try { if (!win.isDestroyed() && __isFsOn(win)) win.setFullScreen(true); } catch (_) {}
+            }, ms);
+          });
+        }
+        return;
+      }
+    } catch (_) {}
+    __applyFsFor(win, false);
+  });
   win.on('maximize', () => __onWindowMaximize(win));
   win.on('unmaximize', () => __onWindowUnmaximize(win));
   win.on('focus', () => { try { if (__isFsOn(win)) win.webContents.focus(); } catch (_) {} });
@@ -5032,6 +5053,15 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // 因此 XTE 与普通应用一样注入自定义标题栏。保留 __skipTitlebar 标志位机制供未来使用，
   // 但默认不再为 XTE 设置跳过。若未来某应用确有自带标题栏，可在下方按 URL 特征显式设置。
 
+  // v2.17.46 诊断：新建应用窗时记录主窗当时的全屏态/尺寸，用来确认「打开应用→主窗退全屏」的真实触发点。
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const __mb46 = mainWindow.getBounds();
+      fnosLog('info', 'fullscreen', 'appwin.open main fs=' + (__isFsOn(mainWindow) ? 1 : 0)
+        + ' b=' + [__mb46.x, __mb46.y, __mb46.width, __mb46.height].join(',')
+        + ' vis=' + (mainWindow.isVisible() ? 1 : 0) + ' min=' + (mainWindow.isMinimized() ? 1 : 0));
+    }
+  } catch (_) {}
   const isHome = !!opts.isHome;
   registerWindow(win, {
     url, title: opts.title || APP_NAME, isMain: isHome, isHome, partition,

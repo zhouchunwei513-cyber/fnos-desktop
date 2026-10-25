@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.18.0';
+const APP_VERSION = '2.18.1';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -710,6 +710,61 @@ const GITHUB_REPO = 'zhouchunwei513-cyber/fnos-desktop';
 const RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases/latest`;
 
+// v2.18.1（用户 2026-10-26 反馈「检查更新功能失效，以前扣子写过但跑不通」）：
+// 全仓库此前只有 checkForUpdates 里的一次 compareVersions(...) 调用，**从未定义过这个函数**，
+// 于是点一次就抛 ReferenceError: compareVersions is not defined，被外层 catch 吞掉后
+// 显示成"无法连接到 GitHub"，看起来像网络问题，实际是代码缺失。此处补上真实实现。
+// 规则：忽略前导 v；按 . - + 分段；纯数字段按数值比，其它段按字符串比；返回 >0 表示 a 更新。
+function compareVersions(a, b) {
+  const norm = (v) => String(v == null ? '' : v).trim().replace(/^[vV]/, '');
+  const splitPre = (s) => {
+    const i = s.indexOf('-');
+    return i < 0 ? [s, ''] : [s.slice(0, i), s.slice(i + 1)];
+  };
+  const parts = (s) => s.split(/[.+]/).filter((x) => x !== '');
+  const ca = splitPre(norm(a));
+  const cb = splitPre(norm(b));
+  const pa = parts(ca[0]), pb = parts(cb[0]);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const xa = i < pa.length ? pa[i] : '0';
+    const xb = i < pb.length ? pb[i] : '0';
+    const na = /^\d+$/.test(xa) ? parseInt(xa, 10) : null;
+    const nb = /^\d+$/.test(xb) ? parseInt(xb, 10) : null;
+    if (na !== null && nb !== null) {
+      if (na !== nb) return na > nb ? 1 : -1;
+    } else {
+      const sa = String(xa).toLowerCase(), sb = String(xb).toLowerCase();
+      if (sa !== sb) return sa > sb ? 1 : -1;
+    }
+  }
+  const qa = ca[1] ? parts(ca[1]) : null;
+  const qb = cb[1] ? parts(cb[1]) : null;
+  if (qa && !qb) return -1;
+  if (!qa && qb) return 1;
+  if (qa && qb) {
+    const m = Math.max(qa.length, qb.length);
+    for (let i = 0; i < m; i++) {
+      if (i >= qa.length) return -1;
+      if (i >= qb.length) return 1;
+      const xa = qa[i], xb = qb[i];
+      const na = /^\d+$/.test(xa) ? parseInt(xa, 10) : null;
+      const nb = /^\d+$/.test(xb) ? parseInt(xb, 10) : null;
+      if (na !== null && nb !== null) {
+        if (na !== nb) return na > nb ? 1 : -1;
+      } else if (na !== null) {
+        return -1;
+      } else if (nb !== null) {
+        return 1;
+      } else {
+        const sa = xa.toLowerCase(), sb = xb.toLowerCase();
+        if (sa !== sb) return sa > sb ? 1 : -1;
+      }
+    }
+  }
+  return 0;
+}
+
 async function checkGitLatestTag() {
   // v1.10.5:
   //  - 使用 Electron net 模块（默认遵循系统代理，开了 Clash/v2ray 等会自动走代理）
@@ -786,15 +841,20 @@ async function checkGitLatestTag() {
   }
 }
 
-async function checkForUpdates(interactive = true) {
+async function checkForUpdates(interactive = true, parentOverride = null) {
   // v1.10.5: 统一使用玻璃风格对话框（和软件其他提示一致），不再自绘 dataURL 弹窗
+  // v2.18.1: 允许调用方指定父窗口——「关于 FNOS」窗口里点检查更新时，弹窗挂在关于窗口上，
+  // 不再无条件挂到主窗口（否则主窗口若在后台，弹窗会跑到主窗口上或看不见）。
+  const __pickParent = () => {
+    if (parentOverride && typeof parentOverride.isDestroyed === 'function' && !parentOverride.isDestroyed()) return parentOverride;
+    if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+    return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  };
   let checkingWin = null;
   if (interactive) {
     try {
       // 用 glassMessageBox 显示"正在检查..."的无按钮提示（带转圈通过 detail 中的字符）
-      const parentWin = (mainWindow && !mainWindow.isDestroyed())
-        ? mainWindow
-        : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
+      const parentWin = __pickParent();
       if (parentWin) {
         checkingWin = new BrowserWindow({
           width: 320, height: 130,
@@ -848,9 +908,7 @@ async function checkForUpdates(interactive = true) {
     closeChecking();
     const latest = info.tag.replace(/^v/i, '');
     const cmp = compareVersions(latest, APP_VERSION);
-    const parentWin = (mainWindow && !mainWindow.isDestroyed())
-      ? mainWindow
-      : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
+    const parentWin = __pickParent();
     if (!parentWin) return;
     if (cmp > 0) {
       const notes = (info.notes || '').trim().slice(0, 420);
@@ -881,9 +939,7 @@ async function checkForUpdates(interactive = true) {
   } catch (err) {
     closeChecking();
     if (interactive) {
-      const w = (mainWindow && !mainWindow.isDestroyed())
-        ? mainWindow
-        : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]);
+      const w = __pickParent();
       if (w) {
         await glassErrorBox('检查更新失败',
           `无法连接到 GitHub：\n${err?.message || err}\n\n` +
@@ -7547,6 +7603,49 @@ function copyCurrentWindowLink() {
   } catch (e) { dlog && dlog('warn', 'menu.copy-link', { err: String(e && e.message || e) }); }
 }
 
+// v2.18.1: 「关于 FNOS」弹窗——与偏好设置页 / 帮助页同一套视觉与圆角：
+// 透明窗 + preload 注入同款标题栏（titlebar-inject 的"设置窗口"分支，clip-path 10px 圆角）。
+// 内容含当前版本号 + 检查更新按钮；按钮经 IPC 回到这里调 checkForUpdates(true, aboutWin)，
+// 保持与菜单检查更新完全同一套逻辑（网络/代理/版本比较/跳 GitHub 下载）。
+let aboutWindow = null;
+function createAboutWindow() {
+  try {
+    if (aboutWindow && !aboutWindow.isDestroyed()) {
+      aboutWindow.show();
+      aboutWindow.focus();
+      return aboutWindow;
+    }
+  } catch (_) {}
+  const aboutWin = new BrowserWindow({
+    width: 520, height: 440,
+    title: 'FNOS · 关于',
+    autoHideMenuBar: true,
+    frame: process.platform === 'darwin',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    resizable: false, maximizable: false, minimizable: true,
+    transparent: true,
+    roundedCorners: false,
+    backgroundColor: '#00000000',
+    icon: ICON_PATH,
+    parent: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
+    modal: false,
+    show: false,
+    webPreferences: {
+      contextIsolation: true, webviewTag: false, nodeIntegration: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.js'),
+      backgroundThrottling: false,
+    },
+  });
+  aboutWindow = aboutWin;
+  try { aboutWin.setMenuBarVisibility(false); } catch (_) {}
+  aboutWin.once('ready-to-show', () => { try { aboutWin.show(); } catch (_) {} });
+  aboutWin.on('closed', () => { if (aboutWindow === aboutWin) aboutWindow = null; });
+  const ABOUT_PAGE = path.join(__dirname, 'about.html');
+  aboutWin.loadFile(ABOUT_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
+  return aboutWin;
+}
+
 function buildMenuTemplate() {
   const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
 
@@ -7713,8 +7812,8 @@ function buildMenuTemplate() {
           helpWin.loadFile(HELP_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
         }},
         { type: 'separator' },
-        // v2.18.0: 菜单「检查更新」——复用既有 checkForUpdates()，弹窗显示当前版本与最新版本
-        { label: '检查更新…', click: () => { checkForUpdates(true); } },
+        // v2.18.1: 按用户要求——「检查更新」从帮助菜单移除，改由「关于 FNOS」弹窗内的按钮触发
+        { label: '关于 FNOS', click: () => { createAboutWindow(); } },
       ],
     },
   ];
@@ -9552,6 +9651,21 @@ ipcMain.on('titlebar:should-inject', (e) => {
 });
 
 // v1.14：重启应用（用于玻璃标题栏等需要重建窗口才能生效的设置）
+// v2.18.1：「关于 FNOS」窗口按钮桥——检查更新 / 关闭关于窗口
+ipcMain.handle('app:check-update', async (e) => {
+  let win = null;
+  try { win = BrowserWindow.fromWebContents(e.sender); } catch (_) {}
+  try { await checkForUpdates(true, win || null); } catch (_) {}
+  return true;
+});
+ipcMain.handle('app:about-close', async (e) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (win && !win.isDestroyed()) win.close();
+  } catch (_) {}
+  return true;
+});
+
 ipcMain.handle('app:restart', async () => {
   try {
     app.isQuitting = true;

@@ -1487,6 +1487,9 @@ try {
     listLogFiles: () => { console.log('[fnApi] listLogFiles'); return ipcRenderer.invoke('log:list-files'); },
     readLogFile: (params) => { console.log('[fnApi] readLogFile', params); return ipcRenderer.invoke('log:read', params); },
     getLogStatus: () => { console.log('[fnApi] getLogStatus'); return ipcRenderer.invoke('log:get-status'); },
+    // v2.18.1：「关于 FNOS」窗口专用——检查更新 / 关闭窗口
+    checkUpdate: () => { console.log('[fnApi] checkUpdate'); return ipcRenderer.invoke('app:check-update'); },
+    closeAbout: () => { console.log('[fnApi] closeAbout'); return ipcRenderer.invoke('app:about-close'); },
   });
 } catch (_) {}
 

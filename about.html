@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>关于 FNOS</title>
+<style>
+  html { background: transparent; overflow: hidden; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    box-sizing: border-box;
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, sans-serif;
+    color: #e9efff;
+    background: #05060a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    overflow: hidden;
+  }
+  .bg {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(620px 330px at 16% 0%, rgba(90,130,255,.15), transparent 62%),
+      radial-gradient(540px 310px at 90% 10%, rgba(120,240,255,.10), transparent 66%),
+      linear-gradient(180deg, #070a13 0%, #04060c 100%);
+  }
+  .wrap { text-align: center; padding: 6px 32px 0; }
+  .logo {
+    width: 82px; height: 82px; display: block; margin: 0 auto 13px;
+    border-radius: 20px;
+    box-shadow: 0 12px 32px -12px rgba(80,140,255,.55), inset 0 1px 0 rgba(255,255,255,.18);
+  }
+  .name { font-size: 19px; font-weight: 700; letter-spacing: 3px; }
+  .ver { margin-top: 9px; font-size: 13px; color: #8ea2c8; letter-spacing: 1px; }
+  .ver b { color: #cfe0ff; font-weight: 600; letter-spacing: 1px; }
+  .sub { margin-top: 5px; font-size: 12px; color: #64748b; }
+  .btns { margin-top: 22px; display: flex; gap: 10px; justify-content: center; }
+  .btn {
+    min-width: 108px; height: 34px; padding: 0 16px;
+    font-size: 13px; font-family: inherit; color: #cbd8f2; cursor: pointer;
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 9px;
+    transition: background .16s, border-color .16s, color .16s;
+  }
+  .btn:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.24); color: #fff; }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary {
+    color: #04101f; font-weight: 700;
+    background: linear-gradient(135deg, #8fd8ff, #7c9dff);
+    border-color: transparent;
+  }
+  .btn.primary:hover { filter: brightness(1.08); color: #04101f; }
+  .btn[disabled] { opacity: .55; cursor: default; transform: none; }
+  .hint { margin-top: 16px; min-height: 18px; font-size: 12px; color: #64748b; }
+  .link { margin-top: 10px; font-size: 11px; color: #46536b; letter-spacing: .3px; }
+</style>
+</head>
+<body>
+  <div class="bg"></div>
+  <div class="wrap">
+    <img class="logo" src="assets/fnos-logo.png" alt="FNOS">
+    <div class="name">FNOS CLIENT</div>
+    <div class="ver">版本 <b id="ver">—</b></div>
+    <div class="sub">飞牛 OS 桌面客户端 · Windows</div>
+    <div class="btns">
+      <button id="btn-update" class="btn primary">检查更新</button>
+      <button id="btn-close" class="btn">关闭</button>
+    </div>
+    <div class="hint" id="hint">检查更新会联网访问 GitHub，若发现新版本可前往下载</div>
+    <div class="link">github.com/zhouchunwei513-cyber/fnos-desktop</div>
+  </div>
+  <script>
+    (function () {
+      var verEl = document.getElementById('ver');
+      var hint = document.getElementById('hint');
+      var btnU = document.getElementById('btn-update');
+      var btnC = document.getElementById('btn-close');
+      var v = '';
+      try {
+        var m = /[?&]v=([^&]+)/.exec(String(location.search || ''));
+        if (m) v = decodeURIComponent(m[1]);
+      } catch (e) {}
+      verEl.textContent = v ? ('v' + v) : '—';
+
+      btnU.addEventListener('click', function () {
+        if (!(window.fnApi && typeof window.fnApi.checkUpdate === 'function')) {
+          hint.textContent = '当前页面不支持检查更新';
+          return;
+        }
+        btnU.disabled = true;
+        hint.textContent = '正在检查更新…';
+        Promise.resolve(window.fnApi.checkUpdate())
+          .then(function () { hint.textContent = '检查完成'; })
+          .catch(function (err) { hint.textContent = '检查失败：' + ((err && err.message) || err); })
+          .then(function () { btnU.disabled = false; });
+      });
+
+      btnC.addEventListener('click', function () {
+        try {
+          if (window.fnApi && typeof window.fnApi.closeAbout === 'function') {
+            window.fnApi.closeAbout();
+            return;
+          }
+        } catch (e) {}
+        try { window.close(); } catch (e) {}
+      });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { try { btnC.click(); } catch (_) {} }
+      });
+    })();
+  </script>
+</body>
+</html>

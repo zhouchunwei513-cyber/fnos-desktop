@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.18.2';
+const APP_VERSION = '2.18.3';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -784,8 +784,8 @@ async function checkGitLatestTag() {
         fn(v);
       };
       const timer = setTimeout(() => {
-        finish(reject, new Error('连接 GitHub 超时（25 秒）'));
-      }, 25000);
+        finish(reject, new Error('连接 GitHub 超时（8 秒）'));
+      }, 8000);
 
       const r = net.request({
         method: 'GET',
@@ -826,9 +826,12 @@ async function checkGitLatestTag() {
   // 解析系统代理（仅用于诊断，真正的代理使用由 Electron net 自动处理）
   let proxyInfo = 'direct';
   try {
-    proxyInfo = await new Promise((resolve) => {
-      ses.resolveProxy(RELEASES_API, (p) => resolve(p || 'direct'));
-    });
+    proxyInfo = await Promise.race([
+      new Promise((resolve) => {
+        try { ses.resolveProxy(RELEASES_API, (p) => resolve(p || 'direct')); } catch (_) { resolve('direct'); }
+      }),
+      new Promise((resolve) => setTimeout(() => resolve('direct'), 1500)),
+    ]);
   } catch (_) {}
   console.log(`[update] using proxy: ${proxyInfo}`);
 
@@ -836,7 +839,7 @@ async function checkGitLatestTag() {
     return await onceAttempt();
   } catch (e1) {
     console.warn('[update] first attempt failed:', e1?.message, '— retrying...');
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 600));
     return await onceAttempt();
   }
 }
@@ -903,8 +906,12 @@ async function checkForUpdates(interactive = true, parentOverride = null) {
     try { if (checkingWin && !checkingWin.isDestroyed()) checkingWin.close(); } catch (_) {}
     checkingWin = null;
   };
+  const __guardTimer = interactive ? setTimeout(() => { try { closeChecking(); } catch (_) {} }, 24000) : null;
   try {
-    const info = await checkGitLatestTag();
+    const info = await Promise.race([
+      checkGitLatestTag(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('检查更新超时（20 秒）')), 20000)),
+    ]);
     closeChecking();
     const latest = info.tag.replace(/^v/i, '');
     const cmp = compareVersions(latest, APP_VERSION);
@@ -947,6 +954,10 @@ async function checkForUpdates(interactive = true, parentOverride = null) {
           `也可以稍后重试，或直接访问：\n${RELEASES_PAGE}`);
       }
     }
+  }
+  finally {
+    if (__guardTimer) { try { clearTimeout(__guardTimer); } catch (_) {} }
+    closeChecking();
   }
 }
 

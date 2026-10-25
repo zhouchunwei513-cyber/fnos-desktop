@@ -241,6 +241,16 @@ class MpvSurface {
         height = Math.max(90, height + dy);
       }
     }
+    // v2.17.57（同一份日志实证）—— mpv 是独立置顶窗，一旦算出的矩形超出宿主内容区
+    //（典型：退出全屏瞬间网页补报一次全屏期的 dipRect 1920x1080，而窗口已复原成 1280x820，
+    // 于是得到"尺寸取全屏、位置取窗口"的 1920x1080+320+140），画面就会跑出窗口、看着错位。
+    // 这里加一道硬约束：mpv 永远不许超出宿主内容区，多出来的部分按内容区裁掉。
+    if (!this._standalone && !this._pip && cb && cb.width > 0 && cb.height > 0) {
+      const maxW = cb.width - (x - cb.x);
+      const maxH = cb.height - (y - cb.y);
+      if (maxW > 0 && width > maxW) width = maxW;
+      if (maxH > 0 && height > maxH) height = maxH;
+    }
     return {
       x: Math.round(x),
       y: Math.round(y),
@@ -299,13 +309,25 @@ class MpvSurface {
     // v2.17.54：全屏期间不按内容区比例缩放 dipRect（全屏尺寸跨度大，缩放会污染视频区坐标，
     // 退出全屏就回不到原来的跟随）。全屏几何由 _computeScreenGeometry 直接给整屏。
     if (!this._isHostFs()) this._syncDipToResize();
+    // v2.17.57（用户反馈：飞牛影视/电视直播全屏时 MPV 还是错位）——
+    // 本机 mpv 构建不支持 window-* 写入，定位只靠 set_property geometry 兜底；一旦有旧几何迟到
+    // 覆盖掉新几何，player._lastGeoStr 仍记着"正确"的串，去抖会让后续轮询再也不重发，
+    // 错位就永久化（实测退出全屏后画面停在 1920x1080+320+140）。这里每 2s 主动清一次去抖缓存，
+    // 强制按当前真实位置重发一次，相当于自愈心跳；_reassert 期间不刷 embed.align 日志。
+    const __now = Date.now();
+    let __reassert = false;
+    if (!this._lastReassertTs || __now - this._lastReassertTs >= 2000) {
+      this._lastReassertTs = __now;
+      __reassert = true;
+      try { this.player._lastGeoStr = ''; } catch (_) {}
+    }
     const geo = this._computeScreenGeometry();
     if (geo && this._started) {
       try {
         const before = this.player._lastGeoStr;
         this.player.setGeometry(geo);
         const after = `${Math.max(160, geo.width)}x${Math.max(90, geo.height)}+${geo.x}+${geo.y}`;
-        if (before !== after) {
+        if (!__reassert && before !== after) {
           // v1.68.0：宿主拖动/网页滚动时 setRect 上报极频繁（几百 ms 内几十次），
           // 逐条打 embed.align 会把 fnos-diag.log 刷爆。做日志节流：几何有实质变化时
           // 每 400ms 最多记一条，定位仍走 setGeometry 去抖后的真实 IPC。

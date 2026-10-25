@@ -964,13 +964,24 @@ class MpvPlayer extends EventEmitter {
         try { this.command(['set_property', 'geometry', geoStr]).catch(() => {}); } catch (_) {}
       }
       // 全部 window-* 都失败时才尝试 geometry 回退（避免每次抖动都双写 IPC）
+      // v2.17.57（用户反馈：全屏/退出全屏后 MPV 播放器还是错位）——
+      // 本机 mpv 构建写 window-x/y/width/height 一律返回 -3（不支持），每次定位实际只靠这个 60ms 后的
+      // set_property geometry。全屏进出时 200ms 内会连发好几组几何，而各兜底定时器彼此独立、不取消，
+      // 迟到的旧几何会把新几何盖掉。实测 fnos-mpv_..._0bab.log 退出全屏那 130ms 里依次落了
+      // "1280x803+0+34"、"853x803+320+140"、"1920x1080+320+140"，最终画面停在
+      // 1920x1080+320+140 —— 比宿主窗口大一圈、整体偏移，就是用户看到的"错位"。
+      // 这里给每次下发编号：只有最新一次允许落兜底，旧的一次直接丢弃。
+      if (this._geoFallbackTimer) { try { clearTimeout(this._geoFallbackTimer); } catch (_) {} }
+      const geoSeq = (this._geoSeq = (this._geoSeq || 0) + 1);
       const fallbackTimer = setTimeout(() => {
         try {
+          if (this._geoSeq !== geoSeq) return;
           if (winOk > 0) return;
           this.command(['set_property', 'geometry', geoStr])
             .catch(e => this.emit('log', 'geometry set fail: ' + (e && e.message)));
         } catch (_) {}
       }, 60);
+      this._geoFallbackTimer = fallbackTimer;
       if (fallbackTimer.unref) fallbackTimer.unref();
       // v2.15.90：窗口几何变化（缩放跟随）后，按新窗口比例重算 cover 缩放，保证 resize 后仍贴合
       if (this._videoW && this._videoH) this._applyCoverZoom(this._videoW, this._videoH);

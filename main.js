@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.54';
+const APP_VERSION = '2.17.55';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1207,11 +1207,30 @@ function __fsAuditStart() {
   }, 700);
   try { if (__fsAuditTimer.unref) __fsAuditTimer.unref(); } catch (_) {}
 }
+// v2.17.55（用户反馈：电视直播全屏时 MPV 播放器和飞牛影视窗口错位、不贴合）——
+// MPV 嵌入层此前只能从 Electron 侧信号判断宿主是否全屏：isFullScreen() 在 transparent +
+// frame:false 窗口上恒为 false（v2.17.35 已实测并记录），而电视直播窗是独立创建路径、
+// enter-full-screen / maximize 这些事件根本没接过线，事件侧同样不可靠。于是全屏时 MPV 仍按
+// "视频区 dipRect + 标题栏 34px 下压"算，与全屏窗口错位。
+// 主进程的 __fsStateMap 是唯一真值，这里在状态每次变化时把真值直接推给该窗的嵌入层。
+function __syncMpvHostState(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    let fs = false;
+    try { fs = __isFsOn(win) || win.isFullScreen(); } catch (_) { fs = __isFsOn(win); }
+    const map = (typeof mpvSurfaces !== 'undefined') ? mpvSurfaces : null;
+    if (!map || typeof map.get !== 'function') return;
+    const s = map.get(win.id);
+    if (s && typeof s.setHostState === 'function') s.setHostState({ fs: !!fs });
+  } catch (_) {}
+}
 function __applyFsFor(win, on) {
   try {
     if (!win || win.isDestroyed()) return;
     on = !!on;
     __fsStateMap.set(win, on);
+    // v2.17.55：状态一变就同步给 MPV 嵌入层（重复下发在 setHostState 内做幂等）
+    __syncMpvHostState(win);
     if (on === !!__fsUiAppliedMap.get(win)) return;
     __fsUiAppliedMap.set(win, on);
     // v2.17.41：进入全屏记时间戳，供 __fsAuditStart 的自愈巡检跳过过渡期；首次调用即启动巡检。
@@ -11773,6 +11792,58 @@ function createLiveWindow(autoplayChannel) {
         try { if (liveWindow && !liveWindow.isDestroyed()) liveWindow.webContents.forcefullyCrashRenderer(); } catch (_) {}
       }, 3000);
     });
+    // v2.17.55（用户反馈：电视直播窗按 F11 全屏不了）——
+    // 直播窗是独立创建的窗口，此前只接了 ready-to-show / did-fail-load / 图标 / 崩溃自愈，
+    // 而全屏与最大化的一整套接线（F11、ESC、enter/leave-full-screen、maximize/unmaximize、
+    // did-finish-load 后的全屏 UI 补发）只存在于主窗与应用窗（registerWindow）里，
+    // 所以直播窗按 F11 毫无反应、最大化也绕过 workArea 钳制（会盖住任务栏）。
+    // 这里复用同一套模块级状态机补齐；窗口仍是 transparent + roundedCorners:false，
+    // 四角 20px 圆角由页面 clip-path 负责，本次不动。
+    try {
+      liveWindow.webContents.on('before-input-event', (event, input) => {
+        if (!input || input.type !== 'keyDown') return;
+        if (input.key === 'F11') {
+          __toggleFullScreenWin(liveWindow);
+          event.preventDefault();
+          return;
+        }
+        if (input.key !== 'Escape') return;
+        if (input.alt || input.control || input.meta || input.shift) return;
+        // 与主窗一致：先退页面级 HTML5 全屏，再退窗口全屏 / 最大化
+        try {
+          liveWindow.webContents.executeJavaScript('try{if(document.fullscreenElement){document.exitFullscreen().catch(function(){});}}catch(e){}', true).catch(() => {});
+        } catch (_) {}
+        if (__isFsOn(liveWindow)) { __exitFullScreenWin(liveWindow); event.preventDefault(); }
+        else if (__maxOn(liveWindow)) { __toggleMaxWin(liveWindow); event.preventDefault(); }
+      });
+      liveWindow.on('enter-full-screen', () => __applyFsFor(liveWindow, true));
+      // 与主窗同样的守护：状态机仍认为全屏（只有 ESC/F11 会改状态）时被系统打断就重新进全屏
+      liveWindow.on('leave-full-screen', () => {
+        try {
+          if (__isFsOn(liveWindow)) {
+            const __n = (liveWindow.__fsLeaveGuard46 || 0) + 1;
+            liveWindow.__fsLeaveGuard46 = __n;
+            if (__n <= 8) {
+              [20, 260].forEach((ms) => {
+                setTimeout(() => {
+                  try { if (liveWindow && !liveWindow.isDestroyed() && __isFsOn(liveWindow)) liveWindow.setFullScreen(true); } catch (_) {}
+                }, ms);
+              });
+            }
+            return;
+          }
+        } catch (_) {}
+        __applyFsFor(liveWindow, false);
+      });
+      liveWindow.on('maximize', () => __onWindowMaximize(liveWindow));
+      liveWindow.on('unmaximize', () => __onWindowUnmaximize(liveWindow));
+      liveWindow.on('focus', () => { try { if (__isFsOn(liveWindow)) liveWindow.webContents.focus(); } catch (_) {} });
+      // 整页重载/导航后补发全屏 UI（隐藏标题栏、body 回满），与主窗 __resyncFsUiForMain 同义
+      liveWindow.webContents.on('did-finish-load', () => {
+        try { __fsUiAppliedMap.delete(liveWindow); } catch (_) {}
+        try { if (__isFsOn(liveWindow)) __syncFsUIFor(liveWindow, true); } catch (_) {}
+      });
+    } catch (_) {}
     liveWindow.loadFile(LIVE_PAGE).catch((e) => console.error('live window load fail', e));
     liveWindow.on('closed', () => {
       liveWindow = null;
@@ -13252,6 +13323,8 @@ async function embedMpvPlay(hostWin, payload) {
       onNeedFreshUrl
     });
     mpvSurfaces.set(hostId, surf);
+    // v2.17.55：宿主若已处于全屏（以主进程状态机为准），创建时立即按全屏几何铺满，避免首帧错位
+    try { surf.setHostState({ fs: (__isFsOn(hostWin) || hostWin.isFullScreen()) }); } catch (_) {}
     surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
     surf.player.on('surface-log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
     surf.player.on('end-file', reason => dlog('info', 'mpv.player.end', { reason: String(reason) }));

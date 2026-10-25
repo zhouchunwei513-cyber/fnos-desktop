@@ -94,9 +94,13 @@ class MpvSurface {
       // 此前只监听 move/resize/minimize/restore：全屏时 _computeScreenGeometry 仍按
       // "标题栏 34px 下压"算，顶部留 34px 缺口、高度少 34px；且 dipRect 会被 resize
       // 比例兜底污染，退出全屏后回不到原来的跟随 —— 表现为"飞牛影视全屏了 MPV 没跟"。
-      this._fsEnter = (html) => {
+      this._fsEnter = () => {
         const wasFs = this._isHostFs();
-        if (html) this._hostFs = true; // 窗口级全屏不置标记，靠 win.isFullScreen() 实时判断，避免事件丢失后卡在全屏
+        // v2.17.55（用户反馈：电视直播全屏时 MPV 与窗口错位、不贴合）——
+        // 进入全屏一律置标记。此前窗口级全屏只靠 win.isFullScreen() 实时判断，但 transparent +
+        // frame:false 窗口上它恒为 false，直播窗连全屏事件都没有，于是全屏后 MPV 仍按视频区跟随。
+        // 现在主进程用 setHostState() 显式下发全屏真值，这里统一落到 _hostFs。
+        this._hostFs = true;
         if (!wasFs) {
           this._fsSavedDip = { x: this.dipRect.x, y: this.dipRect.y, width: this.dipRect.width, height: this.dipRect.height };
           this._fsSavedView = { x: this.viewOffset.x || 0, y: this.viewOffset.y || 0 };
@@ -115,9 +119,9 @@ class MpvSurface {
         this._applyGeometry();
         this._raiseMpv();
       };
-      this._enterFsHandler = () => this._fsEnter(false);
+      this._enterFsHandler = () => this._fsEnter();
       this._leaveFsHandler = () => this._fsExit();
-      this._enterHtmlFsHandler = () => this._fsEnter(true);
+      this._enterHtmlFsHandler = () => this._fsEnter();
       this._leaveHtmlFsHandler = () => this._fsExit();
       this._maximizeHandler = () => {
         try { this.player._lastGeoStr = ''; } catch (_) {}
@@ -504,6 +508,18 @@ class MpvSurface {
   async togglePiP() { return this.setPiP('toggle'); }
 
   isPip() { return !!this._pip; }
+
+  // v2.17.55：主进程下发宿主全屏真值（唯一权威来源 __fsStateMap）。
+  // 为什么不在渲染层自己判断：Electron 的 isFullScreen() 在 transparent + frame:false 窗口上
+  // 恒为 false；电视直播窗又是独立创建路径，enter-full-screen 等事件原本完全没接线。
+  // 幂等：状态没变就只重算一次几何，避免与 200ms 轮询互相打架。
+  setHostState(st) {
+    if (this._standalone || this._dead) return;
+    const fs = !!(st && st.fs);
+    if (fs === this._isHostFs()) { this._applyGeometry(); return; }
+    if (fs) { try { this._fsEnter(); } catch (_) {} }
+    else { try { this._fsExit(); } catch (_) {} }
+  }
 
   // 更新视频区 DIP 坐标（guest 持续上报 / 网页滚动 / 缩放）
   setRect(dipRect, viewOffset) {

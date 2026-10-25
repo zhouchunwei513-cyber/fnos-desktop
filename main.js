@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.48';
+const APP_VERSION = '2.17.49';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2384,27 +2384,39 @@ ipcMain.on('window-close', (e) => {
 // 系统 move loop 接管、不派发 DOM 事件，做不到「既原生拖拽又用 DOM 判双击」。
 // 这里改成主进程真实拖动：renderer 按下发 win-drag-start（带起点 screenX/Y），移动发
 // win-drag-move（screenX/Y 与 setPosition 同为 DIP，可直接相减），松开发 win-drag-end。
-let __winDragState = null; // { win, ox, oy, sx, sy, lx, ly }
+let __winDragState = null; // { win, ox, oy, sx, sy, lx, ly, maxPending }
+// v2.17.49（用户要求：已最大化的窗口去拖标题栏，应当先还原到最大化前的尺寸和位置，再跟着
+// 鼠标走）。这里只登记「待还原目标」，不立刻 unmaximize——否则单击、双击也会把最大化窗口
+// 弹下来；等真正开始移动（第一条 win-drag-move）时才还原，且本次不位移，只重设拖动基准。
+function __winDragBegin(w, sx, sy) {
+  try {
+    if (!w || w.isDestroyed()) return null;
+    if (__isFsOn(w)) return null; // 全屏态标题栏已隐藏，不允许拖动
+    const b = w.getBounds();
+    let pending = null;
+    if (__maxOn(w) || w.isMaximized()) {
+      try { pending = __maxPre(w) || null; } catch (_) { pending = null; }
+      if (!pending) { try { pending = w.getNormalBounds(); } catch (_) { pending = null; } }
+      if (pending && !(pending.width > 10 && pending.height > 10)) pending = null;
+    }
+    return {
+      win: w, ox: b.x, oy: b.y,
+      sx: Number(sx) || 0, sy: Number(sy) || 0,
+      lx: b.x, ly: b.y, maxPending: pending
+    };
+  } catch (_) { return null; }
+}
 ipcMain.on('win-drag-start', (e, p) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
     if (!w || w.isDestroyed() || !p) return;
-    if (__isFsOn(w)) return; // 全屏态标题栏已隐藏，不允许拖动
-    let b = w.getBounds();
-    // 最大化 / 伪最大化（r37 的 workArea 校正）窗口被拖动时，先还原到最大化前的 bounds，
-    // 再以鼠标为锚点重设位置——否则 setPosition 对最大化窗口无效，表现为「拖不动」。
-    if (__maxOn(w) || w.isMaximized()) {
-      const pb = __maxPre(w);
-      __maxInfo.set(w, { on: false, pre: null, pseudo: false });
-      try { w.unmaximize(); } catch (_) {}
-      const nb = pb || b;
-      const nx = Math.round((Number(p.sx) || 0) - nb.width / 2);
-      const ny = Math.round((Number(p.sy) || 0) - 18);
-      try { w.setBounds({ x: nx, y: ny, width: nb.width, height: nb.height }); } catch (_) {}
-      b = { x: nx, y: ny, width: nb.width, height: nb.height };
-    }
-    __winDragState = { win: w, ox: b.x, oy: b.y, sx: Number(p.sx) || 0, sy: Number(p.sy) || 0, lx: b.x, ly: b.y };
-    try { fnosLog('info', 'window', 'drag.start win=' + w.id + ' o=' + b.x + ',' + b.y); } catch (_) {}
+    const st = __winDragBegin(w, p.sx, p.sy);
+    if (!st) return;
+    __winDragState = st;
+    try {
+      fnosLog('info', 'window', 'drag.start win=' + w.id + ' o=' + st.ox + ',' + st.oy
+        + ' maxPending=' + (st.maxPending ? [st.maxPending.x, st.maxPending.y, st.maxPending.width, st.maxPending.height].join(',') : '-'));
+    } catch (_) {}
   } catch (_) {}
 });
 ipcMain.on('win-drag-move', (e, p) => {
@@ -2412,8 +2424,25 @@ ipcMain.on('win-drag-move', (e, p) => {
     const d = __winDragState;
     if (!d || !p || !d.win || d.win.isDestroyed()) return;
     if (hostWindowFromSender(e && e.sender) !== d.win) return; // 多窗口时只认发起拖动的那个
-    const nx = Math.round(d.ox + (Number(p.sx) || 0) - d.sx);
-    const ny = Math.round(d.oy + (Number(p.sy) || 0) - d.sy);
+    const sx = Number(p.sx) || 0, sy = Number(p.sy) || 0;
+    if (d.maxPending) {
+      // 这一帧只做还原：unmaximize + 回到最大化前的 x/y/宽/高（与双击还原同一结果），
+      // 然后把拖动基准改到还原后的位置，本次不移动，避免窗口瞬间跳到鼠标下面。
+      const pb = d.maxPending;
+      d.maxPending = null;
+      const target = {
+        x: Math.round(pb.x), y: Math.round(pb.y),
+        width: Math.round(pb.width), height: Math.round(pb.height)
+      };
+      try { __maxInfo.set(d.win, { on: false, pre: null, pseudo: false }); } catch (_) {}
+      try { d.win.unmaximize(); } catch (_) {}
+      try { d.win.setBounds(target); } catch (_) {}
+      d.ox = target.x; d.oy = target.y; d.sx = sx; d.sy = sy; d.lx = target.x; d.ly = target.y;
+      try { fnosLog('info', 'window', 'drag.restore win=' + d.win.id + ' b=' + [target.x, target.y, target.width, target.height].join(',')); } catch (_) {}
+      return;
+    }
+    const nx = Math.round(d.ox + sx - d.sx);
+    const ny = Math.round(d.oy + sy - d.sy);
     if (nx === d.lx && ny === d.ly) return;
     d.lx = nx; d.ly = ny;
     d.win.setPosition(nx, ny);
@@ -2432,9 +2461,10 @@ ipcMain.on('win-drag-end', (e) => {
 ipcMain.on('window-drag', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
-    if (!w || w.isDestroyed() || __isFsOn(w)) return;
-    const b = w.getBounds();
-    __winDragState = { win: w, ox: b.x, oy: b.y, sx: Number(screen.getCursorScreenPoint().x) || 0, sy: Number(screen.getCursorScreenPoint().y) || 0, lx: b.x, ly: b.y };
+    if (!w || w.isDestroyed()) return;
+    const cp = screen.getCursorScreenPoint();
+    const st = __winDragBegin(w, cp && cp.x, cp && cp.y);
+    if (st) __winDragState = st;
   } catch (_) {}
 });
 // v2.17.20: 视图缩放持久化。此前 Ctrl+滚轮 / 菜单「视图-放大/缩小」只改内存里的

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.17.47';
+const APP_VERSION = '2.17.48';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1003,22 +1003,57 @@ function __maxClampLater(win) {
     } catch (_) {}
   }, 260);
 }
+// v2.17.48（用户要求：双击标题栏还原，不仅要回原尺寸，还要回原位置）：
+// unmaximize() 之后系统会用自己的「最大化前位置」做还原动画，只在一个固定延迟后 setBounds 一次，
+// 很容易被这次还原覆盖掉——表现就是尺寸回来了、位置却跑回系统记忆的位置。
+// 这里改多点纠偏：0/60/160/320/560ms 各校验一次 bounds，与目标差 > 2px 才纠正（幂等）；
+// 用户一旦开始手动拖动该窗（__winDragState 指向它）或它又被最大化，立即停手，不跟用户抢位置。
+function __restoreWinBounds(win, pb) {
+  try {
+    if (!win || win.isDestroyed()) return null;
+    let target = pb;
+    if (!target) { try { target = win.getNormalBounds(); } catch (_) {} }
+    if (!target || !isFinite(target.width) || !isFinite(target.height) || target.width < 10 || target.height < 10) return null;
+    const t = { x: Math.round(target.x), y: Math.round(target.y), width: Math.round(target.width), height: Math.round(target.height) };
+    const apply = () => {
+      try {
+        if (!win || win.isDestroyed()) return;
+        const d = __winDragState;
+        if (d && d.win === win) return; // 用户正在手动拖这个窗，别抢位置
+        if (__maxOn(win) || win.isMaximized()) return; // 又被最大化了，别纠偏
+        if (__isFsOn(win) || win.isFullScreen()) return;
+        const b = win.getBounds();
+        if (Math.abs(b.x - t.x) > 2 || Math.abs(b.y - t.y) > 2
+          || Math.abs(b.width - t.width) > 2 || Math.abs(b.height - t.height) > 2) {
+          win.setBounds(t);
+        }
+      } catch (_) {}
+    };
+    [0, 60, 160, 320, 560, 900].forEach((ms) => setTimeout(apply, ms));
+    return t;
+  } catch (_) { return null; }
+}
 function __toggleMaxWin(win) {
   try {
     if (!win || win.isDestroyed()) return;
     const st = __maxInfo.get(win);
     if (st && st.on) {
+      const pb = st.pre;
       __maxInfo.set(win, { on: false, pre: null, pseudo: false });
       try { win.unmaximize(); } catch (_) {}
-      const pb = st.pre;
-      if (pb) {
-        setTimeout(() => {
-          try { if (!win.isDestroyed()) win.setBounds(pb); } catch (_) {}
-        }, 40);
-      }
+      // v2.17.48：还原到「最大化前的 bounds（含 x/y）」，多点纠偏防系统还原覆盖
+      const t = __restoreWinBounds(win, pb);
+      try {
+        fnosLog('info', 'window', 'max restore win=' + win.id
+          + ' pre=' + (pb ? [pb.x, pb.y, pb.width, pb.height].join(',') : '-')
+          + ' t=' + (t ? [t.x, t.y, t.width, t.height].join(',') : '-'));
+      } catch (_) {}
       return;
     }
-    const pre = win.getBounds();
+    let pre = null;
+    try { pre = win.getBounds(); } catch (_) {}
+    if (!pre || !isFinite(pre.width) || pre.width < 10) { try { pre = win.getNormalBounds(); } catch (_) {} }
+    try { fnosLog('info', 'window', 'max in win=' + win.id + ' pre=' + (pre ? [pre.x, pre.y, pre.width, pre.height].join(',') : '-')); } catch (_) {}
     __maxInfo.set(win, { on: true, pre, pseudo: false });
     try { win.maximize(); } catch (_) {}
     __maxClampLater(win);

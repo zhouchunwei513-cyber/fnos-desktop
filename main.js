@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.18.1';
+const APP_VERSION = '2.18.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -7811,8 +7811,11 @@ function buildMenuTemplate() {
           // v2.18.0: 把当前版本号传给帮助页，页脚版本号自动跟随 APP_VERSION，不再手写死值。
           helpWin.loadFile(HELP_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
         }},
-        { type: 'separator' },
-        // v2.18.1: 按用户要求——「检查更新」从帮助菜单移除，改由「关于 FNOS」弹窗内的按钮触发
+      ],
+    },
+    {
+      label: '关于',
+      submenu: [
         { label: '关于 FNOS', click: () => { createAboutWindow(); } },
       ],
     },

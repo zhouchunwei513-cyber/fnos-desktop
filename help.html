@@ -502,7 +502,7 @@ body::-webkit-scrollbar-thumb:hover {
   <section class="card">
     <h2>关于与检查更新</h2>
     <ul>
-      <li>菜单 <b>帮助 → 关于 FNOS</b> 打开关于窗口：里面显示当前版本号，并提供 <b>检查更新</b> 按钮。</li>
+      <li>菜单 <b>关于 → 关于 FNOS</b> 打开关于窗口：里面显示当前版本号，并提供 <b>检查更新</b> 按钮。</li>
       <li>点「检查更新」会向 GitHub 查询本项目的最新 Release；弹窗里会同时给出 <b>当前版本</b> 与 <b>最新版本</b> 两个版本号：
         <ul>
           <li>有新版本：按钮为「<b>前往下载</b>」与「<b>稍后</b>」。点「前往下载」用系统浏览器打开 GitHub Release 页面，由你自行下载安装包并安装（客户端不静默下载、不自动安装）。</li>
@@ -526,7 +526,7 @@ body::-webkit-scrollbar-thumb:hover {
     <h3>视频播到一半中断 / 进度条拖不动？</h3>
     <p>电影 / MKV 走的是 NAS 的<b>时效签名链接</b>，播久了链接会过期。新版内置 MPV 会自动重新取流并从断点续播，拖进度条卡住时也会自动重新取流并跳到目标位置，一般无需操作。若仍异常，可关闭 MPV 后用 <b>工具 → 用 MPV 嵌入播放当前视频</b> 重新接管，并把 <code>fnos-mpv.log</code> 与 <code>fnos-diag.log</code> 一起反馈。直播频道分片实时刷新，不受此影响。</p>
     <h3>全屏后播放器错位 / 有灰边？</h3>
-    <p>从 v2.17.59 起，全屏改用 MPV 的 fullscreen 模式铺满整屏（含任务栏区域）。若仍看到灰边，请确认已升级到最新版（<b>帮助 → 关于 FNOS → 检查更新</b>），并在反馈时附上 <code>fnos-diag.log</code>（其中 <code>mpv.win.mismatch</code> 行会记录实际窗口尺寸）。</p>
+    <p>从 v2.17.59 起，全屏改用 MPV 的 fullscreen 模式铺满整屏（含任务栏区域）。若仍看到灰边，请确认已升级到最新版（<b>关于 → 关于 FNOS → 检查更新</b>），并在反馈时附上 <code>fnos-diag.log</code>（其中 <code>mpv.win.mismatch</code> 行会记录实际窗口尺寸）。</p>
     <h3>绿屏 / 花屏 / 授权无反应？</h3>
     <ul>
       <li>已移除会导致 ARM / 集显设备绿屏的 COEP / CORP 头，并把 UA 伪装为桌面 Chrome，飞牛音乐、影视登录后不再绿屏。</li>
@@ -552,7 +552,7 @@ body::-webkit-scrollbar-thumb:hover {
       <tr><td><code>fnos-web.log</code></td><td>页面侧日志（媒体地址追踪、播放器接管）</td></tr>
       <tr><td><code>fnos-live.log</code></td><td>电视直播窗口日志（订阅、换台、断流自愈）</td></tr>
     </table>
-    <div class="tip">问题现象建议连同 <b>版本号</b>（本页页脚 / 帮助 → 关于 FNOS 里可见）、<b>NAS 系统版本</b>、<b>复现步骤</b> 一起说明。</div>
+    <div class="tip">问题现象建议连同 <b>版本号</b>（本页页脚 / 关于 → 关于 FNOS 里可见）、<b>NAS 系统版本</b>、<b>复现步骤</b> 一起说明。</div>
   </section>
 
   <section class="card">

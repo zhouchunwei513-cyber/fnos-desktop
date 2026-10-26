@@ -21,9 +21,46 @@ FN.cjk_font = "Microsoft YaHei, SimHei, sans-serif"
 -- 由客户端主进程把"网页是否有上一集/下一集"写入 user-data/fnos/ep-prev/ep-next（yes/no），
 -- 这里据此点亮按钮；点击时写入 user-data/fnos/epnav（方向:序号:时间戳），
 -- 客户端 observe 该属性后转成网页内切集动作。
+-- v2.20.2：读整季列表 + 当前集（供 ep_flag 推算与菜单复用）
+function FN.ep_list_raw()
+    local raw = nil
+    pcall(function() raw = mp.get_property_native("user-data/fnos/ep-list") end)
+    if type(raw) ~= "string" or raw == "" then
+        pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end)
+    end
+    if type(raw) ~= "string" or raw == "" then return nil end
+    local ok_u, u = pcall(require, "mp.utils")
+    if not ok_u or not u or not u.parse_json then return nil end
+    local ok_j, arr = pcall(u.parse_json, raw)
+    if type(arr) == "string" then
+        local ok2, arr2 = pcall(u.parse_json, arr)
+        if ok2 then arr = arr2 end
+    end
+    if type(arr) ~= "table" or #arr < 2 then return nil end
+    local cur = nil
+    pcall(function() cur = mp.get_property_native("user-data/fnos/ep-cur") end)
+    if type(cur) ~= "string" then
+        pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end)
+    end
+    if type(cur) == "string" then cur = cur:gsub("\"", "") end
+    return arr, cur
+end
+
 function FN.ep_flag(name)
-    -- v2.20.1：user-data 是 native 属性，get_property 会返回带引号的 JSON 串（"\"yes\""），
-    -- 必须用 get_property_native，否则判断恒为 false（按钮永远灰）。
+    -- v2.20.2：优先用整季列表 + 当前集推算（列表在就一定能算出有没有上/下一集），
+    -- 列表缺失时才退回主进程写入的 ep-prev/ep-next 标记。
+    -- 这样即使标记写入丢了（mpv IPC 未就绪时 command 被丢弃），按钮与菜单项也不会凭空消失。
+    local arr, cur = FN.ep_list_raw()
+    if arr and cur and cur ~= "" then
+        local idx = nil
+        for i, it in ipairs(arr) do
+            if type(it) == "table" and it.guid == cur then idx = i break end
+        end
+        if idx then
+            if name == "ep-prev" then return idx > 1 end
+            if name == "ep-next" then return idx < #arr end
+        end
+    end
     local v = nil
     pcall(function() v = mp.get_property_native("user-data/fnos/" .. name) end)
     if v == nil then
@@ -2251,27 +2288,43 @@ local function osc_init()
     -- playlist buttons
 
     -- prev
+    -- v2.20.2：不再在脚本加载时把 enabled 定死。mpv 启动瞬间 user-data 往往还没写入，
+    -- 定死后即使随后写入也不会变亮（用户看到的就是"一开始能亮、切集后永久灰"）。
+    -- 现在按钮始终可点，点击时按真实状态决定：剧集切集 > 播放列表上一台 > 提示已是第一集。
     ne = new_element("playlist_prev", "button")
 
     ne.content = icons.prev
-    local fn_ep_prev = FN.ep_flag("ep-prev")
-    ne.enabled = (pl_pos > 1) or (loop ~= "no") or fn_ep_prev
+    ne.enabled = true
     bind_mouse_buttons("playlist_prev")
-    -- v2.20.0：飞牛剧集优先走网页切集；仅当 mpv 播放列表只有 1 项时接管，
-    -- 保留原生多文件播放列表的 playlist-prev 行为
-    if fn_ep_prev and pl_count <= 1 then
-        ne.eventresponder["mbtn_left_up"] = function () FN.ep_nav("prev") end
+    ne.eventresponder["mbtn_left_up"] = function ()
+        local ok, ep = pcall(function() return FN.ep_flag("ep-prev") end)
+        local pos = mp.get_property_number("playlist-pos-1", 0) or 0
+        if ok and ep then
+            FN.ep_nav("prev")
+        elseif pos > 0 then
+            mp.command("playlist-prev")
+        else
+            mp.osd_message("已经是第一集", 2)
+        end
     end
 
     --next
     ne = new_element("playlist_next", "button")
 
     ne.content = icons.next
-    local fn_ep_next = FN.ep_flag("ep-next")
-    ne.enabled = (have_pl and (pl_pos < pl_count)) or (loop ~= "no") or fn_ep_next
+    ne.enabled = true
     bind_mouse_buttons("playlist_next")
-    if fn_ep_next and pl_count <= 1 then
-        ne.eventresponder["mbtn_left_up"] = function () FN.ep_nav("next") end
+    ne.eventresponder["mbtn_left_up"] = function ()
+        local ok, ep = pcall(function() return FN.ep_flag("ep-next") end)
+        local pos = mp.get_property_number("playlist-pos-1", 0) or 0
+        local cnt = mp.get_property_number("playlist-count", 0) or 0
+        if ok and ep then
+            FN.ep_nav("next")
+        elseif pos + 1 < cnt then
+            mp.command("playlist-next")
+        else
+            mp.osd_message("已经是最后一集", 2)
+        end
     end
 
 

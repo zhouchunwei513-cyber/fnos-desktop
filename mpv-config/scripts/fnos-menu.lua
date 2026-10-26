@@ -19,8 +19,43 @@ local build_menu            -- 前向声明（open_context_menu 会先用到，�
 
 -- v2.20.1：飞牛影视剧集切换。主进程把「是否有上一集/下一集」写到 user-data/fnos/ep-prev|ep-next，
 -- 这里读它决定菜单项是否出现；点击后写 user-data/fnos/epnav，由客户端转成网页内切集动作。
+-- v2.20.2：读整季列表 + 当前集（上下集判定与「选集 ▸」共用同一份数据）
+local function fnos_ep_raw()
+    local raw = nil
+    pcall(function() raw = mp.get_property_native("user-data/fnos/ep-list") end)
+    if type(raw) ~= "string" or raw == "" then
+        pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end)
+    end
+    if type(raw) ~= "string" or raw == "" then return nil end
+    local ok_j, arr = pcall(utils.parse_json, raw)
+    if type(arr) == "string" then
+        local ok2, arr2 = pcall(utils.parse_json, arr)
+        if ok2 then arr = arr2 end
+    end
+    if type(arr) ~= "table" or #arr < 2 then return nil end
+    local cur = nil
+    pcall(function() cur = mp.get_property_native("user-data/fnos/ep-cur") end)
+    if type(cur) ~= "string" then
+        pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end)
+    end
+    if type(cur) == "string" then cur = cur:gsub("\"", "") end
+    return arr, cur
+end
+
 local function fnos_ep_flag(name)
-    -- v2.20.1：user-data 是 native 属性，读要 get_property_native（否则拿到带引号的串，判断恒 false）
+    -- v2.20.2：优先用整季列表 + 当前集推算，列表缺失才退回主进程写的 ep-prev/ep-next 标记；
+    -- 避免标记写入丢失（mpv IPC 未就绪时命令被丢弃）导致菜单项消失。
+    local arr, cur = fnos_ep_raw()
+    if arr and cur and cur ~= "" then
+        local idx = nil
+        for i, it in ipairs(arr) do
+            if type(it) == "table" and it.guid == cur then idx = i break end
+        end
+        if idx then
+            if name == "ep-prev" then return idx > 1 end
+            if name == "ep-next" then return idx < #arr end
+        end
+    end
     local v = nil
     pcall(function() v = mp.get_property_native("user-data/fnos/" .. name) end)
     if v == nil then pcall(function() v = mp.get_property("user-data/fnos/" .. name) end) end
@@ -49,20 +84,8 @@ local function sep() return { ["type"] = "separator" } end
 
 -- v2.20.1：整季选集列表（客户端把 [{no,guid}] 的 JSON 写进 user-data/fnos/ep-list，当前集在 ep-cur）
 local function fnos_ep_list(sname)
-    local raw = nil
-    pcall(function() raw = mp.get_property_native("user-data/fnos/ep-list") end)
-    if raw == nil then pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end) end
-    if type(raw) ~= "string" or raw == "" then return nil end
-    local ok, arr = pcall(utils.parse_json, raw)
-    if ok and type(arr) == "string" then
-        local ok2, arr2 = pcall(utils.parse_json, arr)
-        if ok2 then arr = arr2 end
-    end
-    if type(arr) ~= "table" or #arr < 2 then return nil end
-    local cur = nil
-    pcall(function() cur = mp.get_property_native("user-data/fnos/ep-cur") end)
-    if cur == nil then pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end) end
-    if type(cur) == "string" then cur = cur:gsub("\"", "") end
+    local arr, cur = fnos_ep_raw()
+    if not arr then return nil end
     local out = {}
     for _, it in ipairs(arr) do
         if type(it) == "table" and it.guid and it.guid ~= "" then

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.20.1';
+const APP_VERSION = '2.20.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -13849,6 +13849,17 @@ async function embedMpvPlay(hostWin, payload) {
     surf.setRect(dipRect, viewOffset);
   }
 
+  // v2.20.2：surface 建好后立刻补一次剧集 user-data，并在 IPC 就绪/新文件加载完成后重放。
+  //（mpv 进程启动前写入会被丢弃；mpv 重启后 user-data 清空，必须重放才能点亮按钮/菜单项）
+  try {
+    epUdApply(hostId, surf, true);
+    if (!surf.__epUdHooked) {
+      surf.__epUdHooked = true;
+      surf.player.on('ipc-ready', () => { try { epUdApply(hostId, surf, true); } catch (_) {} });
+      surf.player.on('loaded', () => { try { epUdApply(hostId, surf, true); } catch (_) {} });
+    }
+  } catch (_) {}
+
   // 鉴权头：Cookie（session 自动取）+ Authorization（preload 捕获）+ Referer + UA
   const headers = {};
   const origin = payload.origin || '';
@@ -13949,40 +13960,63 @@ ipcMain.on('mpv:embed-rect', (e, rect) => {
 });
 
 // v2.20.0：网页上报剧集导航能力（是否有上一集/下一集），主进程写入 mpv user-data，
-// 中文控制条据此点亮/置灰上一集、下一集按钮（无 playlist 时原生 osc 恒为灰色）。
+// 中文控制条/菜单据此点亮上一集、下一集（单文件播放时 playlist-count==1，原生恒灰）。
+// v2.20.2 修复「一开始能亮、切集后永久变灰/菜单项消失」的两个真因：
+//   1) mpv 进程尚未连上 IPC 时 command() 直接 reject（静默丢弃），而旧的"仅变化时写"去重
+//      让后续永远不会补写 → 新一集 mpv 里 user-data 一直是空；
+//   2) 能力上报早于 mpv 表面创建时被整体丢弃，没有任何缓存可复用。
+// 现在改为「按 host 记住期望值 + IPC 就绪/加载完成后重放」，任何时刻写都能落到活进程。
+const epUdByHost = new Map(); // hostId -> { prev:'yes'|'no', next:'yes'|'no', list, cur }
+
+function epUdPush(surf, key, val) {
+  try {
+    const p = surf && surf.player;
+    if (!p) return;
+    const doWrite = () => { try { p.command(['set', 'user-data/fnos/' + key, val]); } catch (_) {} };
+    if (!p.connected) { try { p.once('ipc-ready', doWrite); } catch (_) {} return; }
+    doWrite();
+  } catch (_) {}
+}
+
+function epUdApply(hostId, surf, force) {
+  try {
+    const d = epUdByHost.get(hostId);
+    const p = surf && surf.player;
+    if (!d || !p) return;
+    // 兼容既有逻辑：eof 自动连播读 surf.__hasNext
+    surf.__hasPrev = d.prev === 'yes';
+    surf.__hasNext = d.next === 'yes';
+    const w = (field, key) => {
+      const slot = '__ud_' + field;
+      if (force || surf[slot] !== d[field]) { surf[slot] = d[field]; epUdPush(surf, key, d[field]); }
+    };
+    w('prev', 'ep-prev');
+    w('next', 'ep-next');
+    w('list', 'ep-list');
+    w('cur', 'ep-cur');
+  } catch (_) {}
+}
+
 ipcMain.on('mpv:episode-ability', (e, info) => {
   try {
     const hostWin = hostWindowFromSender(e && e.sender) || mainWindow;
-    const surf = hostWin ? mpvSurfaces.get(hostWin.id) : null;
-    if (!surf || !surf.player) return;
-    const pHasPrev = surf.__hasPrev;
-    const pHasNext = surf.__hasNext;
+    if (!hostWin) return;
+    const hostId = hostWin.id;
     const hasPrev = !!(info && info.hasPrev);
     const hasNext = !!(info && info.hasNext);
-    surf.__hasPrev = hasPrev;
-    surf.__hasNext = hasNext;
-    // 仅在能力变化时写 mpv 属性：OSC 收到属性变化会重建控制条，重复写会导致每秒闪烁
-    if (pHasPrev !== hasPrev) {
-      try { surf.player.command(['set', 'user-data/fnos/ep-prev', hasPrev ? 'yes' : 'no']); } catch (_) {}
-    }
-    if (pHasNext !== hasNext) {
-      try { surf.player.command(['set', 'user-data/fnos/ep-next', hasNext ? 'yes' : 'no']); } catch (_) {}
-    }
-    // v2.20.1：整季列表写进 user-data，供 MPV 菜单里的「选集 ▸」直接用（≤80 集，约 2~3KB）
+    let epsJson = '';
     try {
       const eps = Array.isArray(info && info.episodes) ? info.episodes : [];
-      const epsJson = eps.length > 1 ? JSON.stringify(eps) : '';
-      if (surf.__epListJson !== epsJson) {
-        surf.__epListJson = epsJson;
-        try { surf.player.command(['set', 'user-data/fnos/ep-list', epsJson]); } catch (_) {}
-      }
-      const curGuid = String((info && info.itemGuid) || '');
-      if (surf.__epCur !== curGuid) {
-        surf.__epCur = curGuid;
-        try { surf.player.command(['set', 'user-data/fnos/ep-cur', curGuid]); } catch (_) {}
-      }
+      epsJson = eps.length > 1 ? JSON.stringify(eps) : '';
     } catch (_) {}
-    dlog('info', 'mpv.epnav.ability', { host: hostWin && hostWin.id, hasPrev: surf.__hasPrev, hasNext: surf.__hasNext, total: info && info.total, source: info && info.source });
+    const curGuid = String((info && info.itemGuid) || '');
+    epUdByHost.set(hostId, { prev: hasPrev ? 'yes' : 'no', next: hasNext ? 'yes' : 'no', list: epsJson, cur: curGuid });
+    const surf = mpvSurfaces.get(hostId);
+    if (surf) epUdApply(hostId, surf, false);
+    dlog('info', 'mpv.epnav.ability', {
+      host: hostId, hasPrev, hasNext, total: info && info.total, source: info && info.source,
+      hasSurf: !!surf, ipc: !!(surf && surf.player && surf.player.connected), eps: (info && info.episodes && info.episodes.length) || 0
+    });
   } catch (err) { dlog('warn', 'mpv.epnav.ability.err', { err: String(err && err.message || err) }); }
 });
 

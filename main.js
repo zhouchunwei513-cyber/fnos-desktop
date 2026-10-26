@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.21.0';
+const APP_VERSION = '2.22.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1735,6 +1735,8 @@ function defaultSettings() {
       configMode: 'builtin',   // builtin = 随包中文配置（右键菜单/中文 OSC）；own = 用 MPV 自身配置
       perfPreset: null,        // 低功耗预设：null=自动（内置开、自定义关）/ true / false
       subStyle: { pos: null, size: null, scale: null }, // 字幕位置/字号/缩放（记住用户调整）
+      // v2.22.0：本地续播——记住每集看到哪里，下次打开接着播（数据在 userData/play-progress.json）
+      resume: true,
     },
     // v2.1.17：FPK 图标管理器 API 配置
     fpkApi: {
@@ -1762,15 +1764,17 @@ function getMpvSettings() {
     const configMode = (v.configMode === 'own') ? 'own' : 'builtin';
     const perfPreset = (typeof v.perfPreset === 'boolean') ? v.perfPreset : null;
     const subStyle = mpvSubStyleNorm(v.subStyle);
+    // v2.22.0：本地续播开关（默认开）
+    const resume = v.resume !== false;
     return {
       enabled: v.enabled !== false, alwaysUse: v.alwaysUse === true, hwDecode: hw,
-      cacheLevel, exePath, extraArgs, configMode, perfPreset, subStyle
+      cacheLevel, exePath, extraArgs, configMode, perfPreset, subStyle, resume
     };
   } catch (_) {
     return {
       enabled: true, alwaysUse: false, hwDecode: 'auto', cacheLevel: 'smooth',
       exePath: '', extraArgs: '', configMode: 'builtin', perfPreset: null,
-      subStyle: { pos: null, size: null, scale: null }
+      subStyle: { pos: null, size: null, scale: null }, resume: true
     };
   }
 }
@@ -1802,7 +1806,7 @@ function saveMpvSubStyle(style) {
     const merged = {
       enabled: cur.enabled, alwaysUse: cur.alwaysUse, hwDecode: cur.hwDecode, cacheLevel: cur.cacheLevel,
       exePath: cur.exePath, extraArgs: cur.extraArgs, configMode: cur.configMode,
-      perfPreset: cur.perfPreset, subStyle: next
+      perfPreset: cur.perfPreset, subStyle: next, resume: cur.resume !== false
     };
     if (__mpvSubStyleTimer) { try { clearTimeout(__mpvSubStyleTimer); } catch (_) {} }
     __mpvSubStyleTimer = setTimeout(() => {
@@ -1814,6 +1818,188 @@ function saveMpvSubStyle(style) {
       } catch (_) {}
     }, 1200);
     if (__mpvSubStyleTimer.unref) __mpvSubStyleTimer.unref();
+  } catch (_) {}
+}
+
+// ===================== v2.22.0 本地续播（播放进度记忆） =====================
+// 为什么不用飞牛服务端观看记录：那套接口没有公开契约，且网页端自己会写，
+// 双向同步容易互相覆盖。这里做「本机记忆」——按 item guid 记位置，落地了一个文件，
+// 换集/换片/重启应用都还在，且完全在本地，不影响 NAS。
+const PLAY_PROGRESS_MAX = 800;         // 最多记 800 条，超出按最近访问淘汰
+let __progressDb = null;               // { key: {p:秒, d:总时长秒, t:片名, at:毫秒} }
+let __progressFlushTimer = null;
+
+function progressFilePath() {
+  try { return path.join(app.getPath('userData'), 'play-progress.json'); } catch (_) { return ''; }
+}
+
+function loadProgress() {
+  if (__progressDb) return __progressDb;
+  __progressDb = {};
+  try {
+    const p = progressFilePath();
+    if (p && fs.existsSync(p)) {
+      const o = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (o && typeof o === 'object' && !Array.isArray(o)) __progressDb = o;
+    }
+  } catch (_) { __progressDb = {}; }
+  return __progressDb;
+}
+
+function flushProgress() {
+  try {
+    const p = progressFilePath();
+    if (!p) return;
+    fs.writeFileSync(p, JSON.stringify(__progressDb || {}));
+  } catch (_) {}
+}
+
+// 3s 合并落盘：播放中 5s 采样一次，写盘频率压到最低，避免频繁 IO
+function scheduleFlushProgress() {
+  if (__progressFlushTimer) return;
+  __progressFlushTimer = setTimeout(() => {
+    __progressFlushTimer = null;
+    flushProgress();
+  }, 3000);
+  if (__progressFlushTimer.unref) __progressFlushTimer.unref();
+}
+
+function progressPut(key, pos, dur, title) {
+  try {
+    if (!key || !(pos > 0)) return;
+    const db = loadProgress();
+    const prev = db[key] || {};
+    db[key] = {
+      p: Math.round(pos),
+      d: (typeof dur === 'number' && dur > 0) ? Math.round(dur) : 0,
+      t: String(title || prev.t || '').slice(0, 120),
+      at: Date.now()
+    };
+    const keys = Object.keys(db);
+    if (keys.length > PLAY_PROGRESS_MAX) {
+      keys.sort((a, b) => (db[a].at || 0) - (db[b].at || 0));
+      for (let i = 0; i < keys.length - PLAY_PROGRESS_MAX; i++) delete db[keys[i]];
+    }
+    scheduleFlushProgress();
+  } catch (_) {}
+}
+
+function progressDel(key) {
+  try {
+    if (!key) return;
+    const db = loadProgress();
+    if (db[key]) { delete db[key]; scheduleFlushProgress(); }
+  } catch (_) {}
+}
+
+// 进度键：优先 item guid（同一集每次播放的直链签名都不同，拿 URL 当键会天天失效）；
+// 其次剧集列表当前项（ep-nav 上报过）；再次从网页路由 /v/video/<guid>、/v/tv/episode/<guid> 里抠；
+// 最后退到片名，实在没有才用「源站+路径」（去掉签名查询串）。
+function progressKeyFor(hostId, payload, guestWc, url, title) {
+  try {
+    const fromPayload = String((payload && payload.itemGuid) || '').trim();
+    if (fromPayload) return 'g:' + fromPayload;
+    if (hostId != null) {
+      const d = epUdByHost.get(hostId);
+      if (d && d.cur) return 'g:' + String(d.cur);
+    }
+    let href = '';
+    try { href = (guestWc && !guestWc.isDestroyed()) ? guestWc.getURL() : ''; } catch (_) {}
+    const m = /\/v\/(?:video|tv\/episode)\/([0-9a-zA-Z_-]{6,})/.exec(href || '');
+    if (m) return 'g:' + m[1];
+    const t = String(title || '').trim();
+    if (t && t !== '飞牛影视') return 't:' + t;
+    try { const u = new URL(url); return 'u:' + u.origin + u.pathname; } catch (_) {}
+  } catch (_) {}
+  return '';
+}
+
+function fmtSec(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const two = (n) => (n < 10 ? '0' + n : String(n));
+  return h > 0 ? (h + ':' + two(m) + ':' + two(ss)) : (m + ':' + two(ss));
+}
+
+// 取续播点：前 30s 不记、看到 95% 之后算看完（不回跳），直播不续播
+function resumePosFor(key, isLive) {
+  try {
+    if (isLive || !key) return 0;
+    if (!getMpvSettings().resume) return 0;
+    const r = progressGet(key);
+    if (!r || !(r.p > 30)) return 0;
+    if (r.d > 0 && r.p > r.d * 0.95) return 0;
+    return r.p;
+  } catch (_) { return 0; }
+}
+
+function progressGet(key) {
+  try {
+    if (!key) return null;
+    const db = loadProgress();
+    const r = db[key];
+    if (!r || typeof r.p !== 'number') return null;
+    return r;
+  } catch (_) { return null; }
+}
+
+// 给一个播放层挂进度记忆（每个 surface 只挂一次）
+function hookProgressMemory(surf, key, title) {
+  try {
+    if (!surf || !surf.player) return;
+    surf.__pgKey = key || '';
+    surf.__pgTitle = title || '';
+    if (surf.__pgHooked) return;
+    surf.__pgHooked = true;
+    const p = surf.player;
+    p.on('time', (val) => {
+      try {
+        const k = surf.__pgKey;
+        if (!k) return;
+        const now = Date.now();
+        if (surf.__pgLastAt && (now - surf.__pgLastAt) < 5000) return;
+        const dur = (typeof p._duration === 'number') ? p._duration : 0;
+        // 播到 95% 以上算看完：删记录，下次从头开始
+        if (dur > 0 && val > dur * 0.95) { progressDel(k); surf.__pgLastAt = now; return; }
+        if (!(val > 30)) return;   // 前 30s 不记，避免"点开就退"污染进度
+        surf.__pgLastAt = now;
+        progressPut(k, val, dur, surf.__pgTitle);
+      } catch (_) {}
+    });
+    p.on('pause', (paused) => {
+      try {
+        if (!paused || !surf.__pgKey) return;
+        const val = (typeof p._timePosVal === 'number') ? p._timePosVal : 0;
+        const dur = (typeof p._duration === 'number') ? p._duration : 0;
+        if (val > 30) progressPut(surf.__pgKey, val, dur, surf.__pgTitle);
+      } catch (_) {}
+    });
+    p.on('end-file', (reason) => {
+      try {
+        // 正常播完（eof）：清记录；断流/切集不算看完
+        if (String(reason) === 'eof' && surf.__pgKey) progressDel(surf.__pgKey);
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+
+// 续播前给一条 OSD 提示（在 loadfile 之前挂 loaded，避免漏掉首个 loaded 事件）
+function armResumeNotice(surf, pos) {
+  try {
+    if (!surf || !surf.player || !(pos > 0)) return;
+    const p = surf.player;
+    // 只提示一次：优先等新文件 loaded（最准），2.5s 兜底防 loaded 已错过
+    let shown = false;
+    const show = () => {
+      if (shown) return;
+      shown = true;
+      try { p.command(['show-text', '已从 ' + fmtSec(pos) + ' 继续播放', '2500']); } catch (_) {}
+    };
+    try { p.once('loaded', show); } catch (_) {}
+    setTimeout(show, 2500);
+    dlog('info', 'mpv.resume.restore', { pos: Math.round(pos) });
   } catch (_) {}
 }
 
@@ -9415,7 +9601,9 @@ ipcMain.handle('settings:set-vlc', async (_e, patch) => {
       extraArgs: typeof p.extraArgs === 'string' ? p.extraArgs.slice(0, 2000) : cur.extraArgs,
       configMode: (p.configMode === 'own' || p.configMode === 'builtin') ? p.configMode : cur.configMode,
       perfPreset: (typeof p.perfPreset === 'boolean' || p.perfPreset === null) ? p.perfPreset : cur.perfPreset,
-      subStyle: mpvSubStyleNorm(Object.assign({}, cur.subStyle || {}, (p.subStyle && typeof p.subStyle === 'object') ? p.subStyle : {}))
+      subStyle: mpvSubStyleNorm(Object.assign({}, cur.subStyle || {}, (p.subStyle && typeof p.subStyle === 'object') ? p.subStyle : {})),
+      // v2.22.0：本地续播开关
+      resume: typeof p.resume === 'boolean' ? p.resume : (cur.resume !== false)
     };
     saveSettings({ mpv: next });
     try { global.__mpvSettings = next; } catch (_) {}
@@ -9438,7 +9626,8 @@ ipcMain.handle('settings:vlc-runtime', async () => {
       available: false, reason: '', version: '', source: '',
       hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel,
       alwaysUse: settings.alwaysUse === true, gpu: {}, settings, mpv: true,
-      subStyle: settings.subStyle, exePath: settings.exePath, custom: false, customMissing: false
+      subStyle: settings.subStyle, exePath: settings.exePath, custom: false, customMissing: false,
+      resume: settings.resume !== false, progressCount: Object.keys(loadProgress()).length
     };
     if (MpvPlayerMod && process.platform === 'win32') {
       let exe = MpvPlayerMod.getMpvExe();
@@ -9460,6 +9649,20 @@ ipcMain.handle('settings:vlc-runtime', async () => {
     return info;
   } catch (e) {
     return { available: false, reason: e.message, settings: getMpvSettings() };
+  }
+});
+
+// v2.22.0：清除本机播放进度记录（设置页「清除播放记录」）
+ipcMain.handle('settings:clear-progress', async () => {
+  try {
+    const db = loadProgress();
+    const n = Object.keys(db).length;
+    __progressDb = {};
+    try { flushProgress(); } catch (_) {}
+    dlog('info', 'mpv.progress.cleared', { count: n });
+    return { ok: true, cleared: n };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
 });
 
@@ -13280,8 +13483,14 @@ async function playMediaWithMpv(mediaUrl, opts) {
       __lastVodTitle = rawTitle;  // 记录 VOD 片名，供直播残留判断
     }
 
+    // v2.22.0：独立窗口播放也走同一套进度记忆
+    const pgKeyS = progressKeyFor(null, opts, null, url, finalTitle);
+    const pgPosS = resumePosFor(pgKeyS, isLive);
+    try { hookProgressMemory(surf, pgKeyS, finalTitle); } catch (_) {}
+    if (pgPosS > 0) { try { armResumeNotice(surf, pgPosS); } catch (_) {} }
+
     try {
-      await surf.play(url, headers, { isLive, title: finalTitle || '飞牛影视', hwDecode: st.hwDecode });
+      await surf.play(url, headers, { isLive, title: finalTitle || '飞牛影视', hwDecode: st.hwDecode, resumePos: pgPosS > 0 ? pgPosS : undefined });
       try { liveLog('info', 'mpv.play', { ok: true, reason: '', isLive: !!opts.isLive, standalone: true }); } catch (_) {}
       return { ok: true };
     } catch (e) {
@@ -14024,8 +14233,16 @@ async function embedMpvPlay(hostWin, payload) {
   }
   headers['User-Agent'] = getNasUA();
 
+  // v2.22.0：本地续播——按 item guid 记位置，下次打开同一集自动接上
+  const pgIsLive = !!payload.isLive || payload.scope === 'live';
+  const pgTitle = payload.title || '';
+  const pgKey = progressKeyFor(hostId, payload, guestWc, url, pgTitle);
+  const pgPos = resumePosFor(pgKey, pgIsLive);
+  try { hookProgressMemory(surf, pgKey, pgTitle); } catch (_) {}
+  if (pgPos > 0) { try { armResumeNotice(surf, pgPos); } catch (_) {} }
+
   try {
-    await surf.play(url, headers, { isLive: !!payload.isLive || payload.scope === 'live', title: payload.title || '' });
+    await surf.play(url, headers, { isLive: pgIsLive, title: pgTitle, resumePos: pgPos > 0 ? pgPos : undefined });
     dlog('info', 'mpv.embed.ok', { host: hostId, hasCookie: !!headers['Cookie'], hasAuth: !!headers['Authorization'], isLive: !!payload.isLive || payload.scope === 'live',
       // v2.17.54：只记 Cookie 名字（不记值），便于排查"缺 ost/Trim-MC-token"这类鉴权不全问题
       cookieNames: String(headers['Cookie'] || '').split('; ').map((s) => String(s).split('=')[0]).filter(Boolean).join(',') });

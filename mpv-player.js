@@ -1028,7 +1028,10 @@ class MpvPlayer extends EventEmitter {
       if (typeof (opts && opts.resumePos) === 'number' && opts.resumePos > 1) this._resumePos = opts.resumePos;
       // 不重置 _earlyEofTries（新流若再提前 EOF 仍需受上限保护），其余进度状态照常刷新。
     } else {
-      this._resumePos = undefined;
+      // v2.22.0：本地续播——首次加载也允许指定 resumePos（上次看到的位置），
+      // 走与断流恢复完全相同的「file-loaded 后 seek + 校验重试」链路，逻辑上不新增分支。
+      const rp = (opts && opts.resumePos);
+      this._resumePos = (typeof rp === 'number' && rp > 1 && !this._isLive) ? rp : undefined;
       this._earlyEofTries = 0;
     }
     this._lastTimePos = -1; this._lastProgressAt = Date.now(); this._coreIdle = false;

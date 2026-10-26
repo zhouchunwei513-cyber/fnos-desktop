@@ -550,6 +550,20 @@
         </div>
       </div>
 
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">记住播放进度（续播）</div>
+          <div class="hotkey-sub">按剧集记忆看到哪里，下次打开同一集自动接着播（前 30 秒不记，看到 95% 以上视为看完、下次从头播）。记录只存在本机，不上传 NAS，也不影响网页端自己的观看记录。<span id="vlc-progress-count"></span></div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px;justify-content:flex-end">
+          <button type="button" class="btn-ghost" id="vlc-clear-progress" style="white-space:nowrap">清除播放记录</button>
+          <label class="switch" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="vlc-resume" checked />
+            <span id="vlc-resume-label">已开启</span>
+          </label>
+        </div>
+      </div>
+
       <div id="vlc-error" class="lock-error" hidden style="margin-top:10px"></div>
 
       <div class="setup-actions" style="margin-top:14px">

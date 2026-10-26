@@ -594,6 +594,11 @@
   const vlcSubPos = document.getElementById('vlc-sub-pos');
   const vlcSubSize = document.getElementById('vlc-sub-size');
   const vlcSubScale = document.getElementById('vlc-sub-scale');
+  // v2.22.0：本地续播
+  const vlcResume = document.getElementById('vlc-resume');
+  const vlcResumeLabel = document.getElementById('vlc-resume-label');
+  const vlcClearProgress = document.getElementById('vlc-clear-progress');
+  const vlcProgressCount = document.getElementById('vlc-progress-count');
   const vlcNum = (el) => {
     if (!el) return null;
     const raw = String(el.value == null ? '' : el.value).trim();
@@ -634,7 +639,14 @@
                  ' / 字号 ' + (rt.subStyle.size != null ? rt.subStyle.size : '默认') +
                  ' / 缩放 ' + (rt.subStyle.scale != null ? rt.subStyle.scale : '默认'))
               : '') + '</div>';
+          // v2.22.0：续播状态 + 已记多少条
+          html += '<div style="margin-top:6px;opacity:.85">本地续播：' + (rt.resume === false ? '已关闭' : '已开启') +
+            (typeof rt.progressCount === 'number' ? ('（已记录 ' + rt.progressCount + ' 条播放进度）') : '') + '</div>';
           vlcRuntime.innerHTML = html;
+          if (vlcProgressCount) {
+            vlcProgressCount.textContent = (typeof rt.progressCount === 'number' && rt.progressCount > 0)
+              ? ('当前已记录 ' + rt.progressCount + ' 条。') : '当前没有记录。';
+          }
         } catch (_) {}
       }).catch(() => { if (vlcRuntime) vlcRuntime.textContent = 'MPV 状态检测失败'; });
     } catch (_) {}
@@ -664,6 +676,11 @@
       if (vlcSubPos) vlcSubPos.value = (typeof ss.pos === 'number') ? String(ss.pos) : '';
       if (vlcSubSize) vlcSubSize.value = (typeof ss.size === 'number') ? String(ss.size) : '';
       if (vlcSubScale) vlcSubScale.value = (typeof ss.scale === 'number') ? String(ss.scale) : '';
+      // v2.22.0：续播开关（默认开）
+      if (vlcResume) {
+        vlcResume.checked = v.resume !== false;
+        if (vlcResumeLabel) vlcResumeLabel.textContent = vlcResume.checked ? '已开启' : '已关闭';
+      }
       refreshVlcRuntime();
     } catch (err) {
       showError(vlcError, err?.message || '加载播放器设置失败');
@@ -698,6 +715,36 @@
   if (vlcEnabled) {
     vlcEnabled.addEventListener('change', () => {
       if (vlcEnabledLabel) vlcEnabledLabel.textContent = vlcEnabled.checked ? '已启用' : '已关闭';
+    });
+  }
+
+  // v2.22.0：续播开关文案
+  if (vlcResume) {
+    vlcResume.addEventListener('change', () => {
+      if (vlcResumeLabel) vlcResumeLabel.textContent = vlcResume.checked ? '已开启' : '已关闭';
+    });
+  }
+
+  // v2.22.0：清除本机播放记录
+  if (vlcClearProgress) {
+    vlcClearProgress.addEventListener('click', async () => {
+      const ask = window.confirm('清除本机记录的所有播放进度？清除后各剧集下次将从头发起播放。');
+      if (!ask) return;
+      vlcClearProgress.disabled = true;
+      try {
+        const r = await fnosSettings.clearProgress();
+        if (r && r.ok) {
+          showError(vlcError, '');
+          if (vlcProgressCount) vlcProgressCount.textContent = '已清除 ' + (r.cleared || 0) + ' 条记录。';
+          refreshVlcRuntime();
+        } else {
+          showError(vlcError, (r && r.error) || '清除失败');
+        }
+      } catch (err) {
+        showError(vlcError, err?.message || '清除失败');
+      } finally {
+        vlcClearProgress.disabled = false;
+      }
     });
   }
 
@@ -737,6 +784,8 @@
           perfPreset: (vlcPerf ? vlcPerf.value : 'auto') === 'on' ? true
             : ((vlcPerf ? vlcPerf.value : 'auto') === 'off' ? false : null),
           subStyle: { pos: vlcNum(vlcSubPos), size: vlcNum(vlcSubSize), scale: vlcNum(vlcSubScale) },
+          // v2.22.0：本地续播
+          resume: vlcResume ? !!vlcResume.checked : true,
         });
         if (res && res.ok) {
           if (res.warning) showError(vlcError, res.warning);

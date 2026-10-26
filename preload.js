@@ -1489,6 +1489,16 @@ try {
     getLogStatus: () => { console.log('[fnApi] getLogStatus'); return ipcRenderer.invoke('log:get-status'); },
     // v2.18.1：「关于 FNOS」窗口专用——检查更新 / 关闭窗口
     checkUpdate: () => { console.log('[fnApi] checkUpdate'); return ipcRenderer.invoke('app:check-update'); },
+    // v2.18.5：关于页内嵌下载——选保存位置 / 取消 / 进度回调 / 打开发布页 / 打开所在文件夹
+    downloadUpdate: (payload) => { console.log('[fnApi] downloadUpdate', payload); return ipcRenderer.invoke('app:download-update', payload); },
+    cancelUpdateDownload: () => { console.log('[fnApi] cancelUpdateDownload'); return ipcRenderer.invoke('app:update-download-cancel'); },
+    onUpdateProgress: (cb) => {
+      const h = (_e, data) => { try { cb && cb(data); } catch (_) {} };
+      ipcRenderer.on('app:update-progress', h);
+      return () => { try { ipcRenderer.removeListener('app:update-progress', h); } catch (_) {} };
+    },
+    openReleasePage: (u) => { console.log('[fnApi] openReleasePage', u); return ipcRenderer.invoke('app:open-release', u); },
+    showInFolder: (p) => { console.log('[fnApi] showInFolder', p); return ipcRenderer.invoke('app:show-in-folder', p); },
     closeAbout: () => { console.log('[fnApi] closeAbout'); return ipcRenderer.invoke('app:about-close'); },
   });
 } catch (_) {}

@@ -20,8 +20,12 @@ local build_menu            -- 前向声明（open_context_menu 会先用到，�
 -- v2.20.1：飞牛影视剧集切换。主进程把「是否有上一集/下一集」写到 user-data/fnos/ep-prev|ep-next，
 -- 这里读它决定菜单项是否出现；点击后写 user-data/fnos/epnav，由客户端转成网页内切集动作。
 local function fnos_ep_flag(name)
-    local ok, v = pcall(function() return mp.get_property("user-data/fnos/" .. name) end)
-    if not ok then return false end
+    -- v2.20.1：user-data 是 native 属性，读要 get_property_native（否则拿到带引号的串，判断恒 false）
+    local v = nil
+    pcall(function() v = mp.get_property_native("user-data/fnos/" .. name) end)
+    if v == nil then pcall(function() v = mp.get_property("user-data/fnos/" .. name) end) end
+    if type(v) ~= "string" then return false end
+    v = v:gsub("\"", "")
     return v == "yes"
 end
 
@@ -46,12 +50,19 @@ local function sep() return { ["type"] = "separator" } end
 -- v2.20.1：整季选集列表（客户端把 [{no,guid}] 的 JSON 写进 user-data/fnos/ep-list，当前集在 ep-cur）
 local function fnos_ep_list(sname)
     local raw = nil
-    pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end)
-    if not raw or raw == "" then return nil end
+    pcall(function() raw = mp.get_property_native("user-data/fnos/ep-list") end)
+    if raw == nil then pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end) end
+    if type(raw) ~= "string" or raw == "" then return nil end
     local ok, arr = pcall(utils.parse_json, raw)
-    if not ok or type(arr) ~= "table" or #arr < 2 then return nil end
+    if ok and type(arr) == "string" then
+        local ok2, arr2 = pcall(utils.parse_json, arr)
+        if ok2 then arr = arr2 end
+    end
+    if type(arr) ~= "table" or #arr < 2 then return nil end
     local cur = nil
-    pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end)
+    pcall(function() cur = mp.get_property_native("user-data/fnos/ep-cur") end)
+    if cur == nil then pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end) end
+    if type(cur) == "string" then cur = cur:gsub("\"", "") end
     local out = {}
     for _, it in ipairs(arr) do
         if type(it) == "table" and it.guid and it.guid ~= "" then

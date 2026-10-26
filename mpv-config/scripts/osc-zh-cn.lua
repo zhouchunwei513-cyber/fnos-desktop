@@ -22,8 +22,15 @@ FN.cjk_font = "Microsoft YaHei, SimHei, sans-serif"
 -- 这里据此点亮按钮；点击时写入 user-data/fnos/epnav（方向:序号:时间戳），
 -- 客户端 observe 该属性后转成网页内切集动作。
 function FN.ep_flag(name)
-    local ok, v = pcall(function() return mp.get_property("user-data/fnos/" .. name) end)
-    if not ok then return false end
+    -- v2.20.1：user-data 是 native 属性，get_property 会返回带引号的 JSON 串（"\"yes\""），
+    -- 必须用 get_property_native，否则判断恒为 false（按钮永远灰）。
+    local v = nil
+    pcall(function() v = mp.get_property_native("user-data/fnos/" .. name) end)
+    if v == nil then
+        pcall(function() v = mp.get_property("user-data/fnos/" .. name) end)
+    end
+    if type(v) ~= "string" then return false end
+    v = v:gsub("\"", "")
     return v == "yes"
 end
 
@@ -41,14 +48,24 @@ end
 -- 当前集 guid 在 user-data/fnos/ep-cur 里，用于打勾。
 function FN.ep_list_items(sname)
     local raw = nil
-    pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end)
-    if not raw or raw == "" then return nil end
+    pcall(function() raw = mp.get_property_native("user-data/fnos/ep-list") end)
+    if raw == nil then pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end) end
+    if type(raw) ~= "string" or raw == "" then return nil end
     local ok_u, u = pcall(require, "mp.utils")
     if not ok_u or not u or not u.parse_json then return nil end
     local ok_j, arr = pcall(u.parse_json, raw)
-    if not ok_j or type(arr) ~= "table" or #arr < 2 then return nil end
+    if (not ok_j or type(arr) ~= "table") and ok_u and u.parse_json then
+        -- 兼容 get_property 的二次编码（第一次 parse 出来仍是字符串）
+        if type(arr) == "string" then
+            local ok2, arr2 = pcall(u.parse_json, arr)
+            if ok2 then arr = arr2 end
+        end
+    end
+    if type(arr) ~= "table" or #arr < 2 then return nil end
     local cur = nil
-    pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end)
+    pcall(function() cur = mp.get_property_native("user-data/fnos/ep-cur") end)
+    if cur == nil then pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end) end
+    if type(cur) == "string" then cur = cur:gsub("\"", "") end
     local out = {}
     for _, it in ipairs(arr) do
         if type(it) == "table" and it.guid and it.guid ~= "" then

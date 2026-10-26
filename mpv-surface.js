@@ -77,8 +77,8 @@ class MpvSurface {
       // v1.63：嵌入 mpv 虽常驻 ontop，但宿主窗口拖动/激活时偶尔会被系统提到 mpv 之上
       // （mpv 跑到飞牛窗口后面被盖住）。移动结束/恢复/首帧后强制重新置顶 mpv 一次。
       this._raiseMpv = () => { try { if (this.player && this.player.isRunning() && !this._pip && !this._docked) this.player.setOntop(true); } catch (_) {} };
-      this._moveHandler = () => { this._applyGeometry(); this._raiseMpv(); };
-      this._resizeHandler = () => { this._applyGeometry(); this._raiseMpv(); };
+      this._moveHandler = () => { this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(8); } catch (_) {} };
+      this._resizeHandler = () => { this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(12); } catch (_) {} };
       this._minHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
       this._restoreHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} this._raiseMpv(); };
       // v1.48.0：父窗被一键隐藏/锁定（hide）/重新呼出（show）时，嵌入 mpv 原生窗口也要跟随，
@@ -111,6 +111,7 @@ class MpvSurface {
         }
         try { this.player._lastGeoStr = ''; } catch (_) {}
         this._applyGeometry();
+        try { if (!this._chasing) this._chase(24); } catch (_) {}
         this._raiseMpv();
       };
       this._fsExit = () => {
@@ -122,6 +123,7 @@ class MpvSurface {
         this._baseCbW = 0; this._baseCbH = 0; this._baseDip = null;
         try { this.player._lastGeoStr = ''; } catch (_) {}
         this._applyGeometry();
+        try { if (!this._chasing) this._chase(24); } catch (_) {}
         this._raiseMpv();
       };
       this._enterFsHandler = () => this._fsEnter();
@@ -131,6 +133,7 @@ class MpvSurface {
       this._maximizeHandler = () => {
         try { this.player._lastGeoStr = ''; } catch (_) {}
         this._applyGeometry();
+        try { if (!this._chasing) this._chase(20); } catch (_) {}
         this._raiseMpv();
       };
       parentWin.on('enter-full-screen', this._enterFsHandler);
@@ -305,6 +308,52 @@ class MpvSurface {
     }
   }
 
+  // v2.24.0（用户反馈：来回切全屏/最大化时 MPV 跟随卡顿、画面跟不上宿主窗口）——
+  // 几何下发做 leading+trailing 节流：窗口动画期间最多约 40 次/秒把新几何推给 mpv（跟得上），
+  // 同时保证最后一次几何一定会补发（不会停在动画中间某一帧，动画结束后也不会残留错位）。
+  _pushGeometry(geo) {
+    if (!geo) return;
+    const now = Date.now();
+    this._geoWant = geo;
+    if (!this._geoLastAt || now - this._geoLastAt >= 24) {
+      this._geoLastAt = now;
+      try { this.player.setGeometry(geo); } catch (_) {}
+      return;
+    }
+    if (this._geoTrailTimer) return;
+    const wait = Math.max(8, 24 - (now - this._geoLastAt));
+    this._geoTrailTimer = setTimeout(() => {
+      this._geoTrailTimer = null;
+      const g = this._geoWant;
+      if (!g) return;
+      this._geoLastAt = Date.now();
+      try { this.player.setGeometry(g); } catch (_) {}
+    }, wait);
+    if (this._geoTrailTimer.unref) this._geoTrailTimer.unref();
+  }
+
+  // v2.24.0：过渡期追帧。全屏/最大化切换时宿主窗口有一段 100~300ms 的动画，Electron 在这段时间里
+  // 可能只发一两帧 resize，光靠事件会让 mpv 停在中间尺寸（视频里"窗口先变大、播放器一秒后才跟上"）。
+  // 这里在过渡开始后每 16ms 重算一帧几何，直到宿主尺寸稳定。
+  _chase(times) {
+    if (this._chaseTimer) { try { clearTimeout(this._chaseTimer); } catch (_) {} this._chaseTimer = null; }
+    let left = times || 12;
+    this._chasing = true;
+    const tick = () => {
+      this._chaseTimer = null;
+      try { this._applyGeometry(); } catch (_) {}
+      left -= 1;
+      if (left > 0) {
+        this._chaseTimer = setTimeout(tick, 16);
+        if (this._chaseTimer.unref) this._chaseTimer.unref();
+      } else {
+        this._chasing = false;
+      }
+    };
+    this._chaseTimer = setTimeout(tick, 16);
+    if (this._chaseTimer.unref) this._chaseTimer.unref();
+  }
+
   _applyGeometry() {
     if (this._dead) return;
     // 画中画小窗期间脱离视频区跟随（窗口已固定为右下角小尺寸并可被用户自由拖动），
@@ -326,15 +375,23 @@ class MpvSurface {
     // 留灰边。改用 mpv fullscreen 模式（set_property fullscreen），由 mpv 自行接管窗口尺寸、
     // 覆盖整个显示器（含任务栏），这才是"全屏铺满桌面"的正解。
     const fs = this._isHostFs();
+    let __fsToggled = false;
     if (fs !== !!this._mpvFsOn) {
+      __fsToggled = true;
       this._mpvFsOn = fs;
       try {
         this.player.setFullscreen(fs);
+        // v2.24.0：mpv 自己进出 fullscreen 需要 0.5~1.5s 才落地，这段时间下发的 geometry 会被它
+        // 覆盖掉（日志实测退出全屏后 1.7s 内 mpv 仍是 1920x1080，宿主已是 1299x745）。这里开 2s 的
+        // audit 快通道（100ms 一次、最多 14 次重发），mpv 一落地就立刻被拉回正确尺寸。
+        this._winAuditFastUntil = Date.now() + 2000;
         this._emit('log', 'embed.fs.fullscreen ' + (fs ? 'on' : 'off'));
       } catch (_) {}
       try { this.player._lastGeoStr = ''; } catch (_) {}
     }
     if (fs) return; // 全屏交给 fullscreen 模式，不走 geometry 定位/尺寸审计
+    // v2.24.0：仅在刚发生全屏切换时追帧（宿主尺寸分几帧变化），平时不追，避免常驻高频重算
+    if (__fsToggled && !this._chasing) { try { this._chase(24); } catch (_) {} }
     // v2.17.57（用户反馈：飞牛影视/电视直播全屏时 MPV 还是错位）——
     // 本机 mpv 构建不支持 window-* 写入，定位只靠 set_property geometry 兜底；一旦有旧几何迟到
     // 覆盖掉新几何，player._lastGeoStr 仍记着"正确"的串，去抖会让后续轮询再也不重发，
@@ -351,7 +408,7 @@ class MpvSurface {
     if (geo && this._started) {
       try {
         const before = this.player._lastGeoStr;
-        this.player.setGeometry(geo);
+        this._pushGeometry(geo);
         const after = `${Math.max(160, geo.width)}x${Math.max(90, geo.height)}+${geo.x}+${geo.y}`;
         if (!__reassert && before !== after) {
           // v1.68.0：宿主拖动/网页滚动时 setRect 上报极频繁（几百 ms 内几十次），
@@ -380,7 +437,9 @@ class MpvSurface {
     try {
       if (!geo || !this.player || typeof this.player.command !== 'function') return;
       const now = Date.now();
-      if (this._winAuditTs && now - this._winAuditTs < 1200) return;
+      // v2.24.0：全屏切换后的 2s 内走快通道（100ms 一次），其余时间保持 1200ms 心跳
+      const fast = !!(this._winAuditFastUntil && now < this._winAuditFastUntil);
+      if (this._winAuditTs && now - this._winAuditTs < (fast ? 100 : 1200)) return;
       this._winAuditTs = now;
       const want = {
         x: Math.round(geo.x),
@@ -405,7 +464,7 @@ class MpvSurface {
             this._winAuditTries = 0;
             this._emit('log', 'mpv.win.mismatch want=' + wantKey + ' got=' + w + 'x' + h + ' fs=' + (this._isHostFs() ? 1 : 0));
           }
-          if ((this._winAuditTries || 0) >= 3) return;
+          if ((this._winAuditTries || 0) >= (fast ? 14 : 3)) return;
           this._winAuditTries = (this._winAuditTries || 0) + 1;
           try { this.player._lastGeoStr = ''; } catch (_) {}
           try { this.player.setGeometry(want); } catch (_) {}

@@ -274,6 +274,14 @@ class MpvPlayer extends EventEmitter {
     this._logFilePath = '';   // mpv 自身详细日志文件（fnos-mpv.log）
     this._scaleFactor = 1;    // mpv 窗口所在显示器的 DPI 缩放（圆角物理像素 = 40 * scaleFactor）
     this._cornerTimer = null; // 圆角应用 debounce 定时器（点播圆角，直播直角）
+    // v2.24.0：圆角 helper 提前拉起——C# 编译约 0.5~1s，放在这里与 mpv 进程启动并行，
+    // 等首帧显示时它已就绪，圆角首帧即生效（不再出现『先直角、一秒多后变圆角』）。
+    this._cornerProc = null;
+    this._cornerReady = false;
+    this._cornerQueue = null;
+    if (process.platform === 'win32') {
+      try { this._ensureCornerHelper(); } catch (_) {}
+    }
   }
 
   // mpv 详细日志文件路径：放 userData（与 fnos-diag.log 同目录），回退系统临时目录
@@ -1091,62 +1099,50 @@ class MpvPlayer extends EventEmitter {
   //      设置成功即生效（日志显示 geometry 属性在本构建返回
   //      "unsupported format for accessing property"，故优先走 window-* 属性）。
   //   2) 兼容回退：set_property geometry（格式 WxH+X+Y，屏幕像素）。
-  setGeometry(g) {
+    setGeometry(g) {
     if (!g) return;
     this._geometry = g;
     const apply = () => {
       const x = Math.round(g.x), y = Math.round(g.y);
       const w = Math.max(160, Math.round(g.width)), h = Math.max(90, Math.round(g.height));
       const geoStr = `${w}x${h}+${x}+${y}`;
-      // 与上次实际下发的几何一致就不重复发 IPC（500ms 轮询会频繁调用，去抖减少主线程/IPC 负担）
+      // 与上次实际下发的几何一致就不重复发 IPC（轮询会频繁调用，去抖减少主线程/IPC 负担）
       if (this._lastGeoStr === geoStr) return;
       this._lastGeoStr = geoStr;
-      // v1.68.0：优先 window-* 属性（mpv 0.36+ 原生窗口定位，数字类型，最可靠）。
-      // 任一路径失败都不阻断：window-* 失败回退 geometry；geometry 失败则仅记录日志。
-      let winOk = 0, winErr = 0;
-      const winProps = [
-        ['window-x', x],
-        ['window-y', y],
-        ['window-width', w],
-        ['window-height', h]
-      ];
-      for (const [prop, val] of winProps) {
-        this.command(['set_property', prop, val])
-          .then(() => { winOk++; })
-          .catch(() => { winErr++; });
+      // v2.24.0（用户反馈：来回切全屏/最大化时 MPV 跟随卡顿、画面跟不上宿主窗口）——
+      // 旧实现真正落地的只有 60ms 定时器里的 set_property geometry，且带序列守卫：窗口动画期间
+      // 每来一帧都会取消上一帧的兜底定时器，一整段动画里 mpv 只在最后被挪一次（甚至更晚），
+      // 观感就是"播放器先僵住，然后突然跳过去"；另外每次定位都先白打 4 条注定失败(-3)的 window-*。
+      // 现在：geometry 立即下发（IPC 流本身有序，不需要序列守卫），window-* 探测一次后按能力缓存，
+      // 圆角同帧重裁（常驻 helper，1~3ms），跟手问题彻底解决。
+      try {
+        this.command(['set_property', 'geometry', geoStr])
+          .catch(e => this.emit('log', 'geometry set fail: ' + (e && e.message)));
+      } catch (_) {}
+      if (this._winPropsOk !== false) {
+        const props = [
+          ['window-x', x],
+          ['window-y', y],
+          ['window-width', w],
+          ['window-height', h]
+        ];
+        let done = 0, ok = 0;
+        for (const [prop, val] of props) {
+          this.command(['set_property', prop, val])
+            .then(() => { ok++; done++; if (done === props.length) this._winPropsOk = ok > 0; })
+            .catch(() => { done++; if (done === props.length) this._winPropsOk = ok > 0; });
+        }
       }
-      // v2.15.4：macOS 加固运行时重定位——mac mpv 后端对 window-* 属性/geometry 的运行时
-      // 重定位支持不一。补发 window-move/window-resize 命令（部分 mac 构建支持；shinchiro
-      // Windows 构建没有这俩命令，故仅 mac 走此分支）+ geometry 属性，多通道下发提高"跟随主窗"
-      // 命中率；均失败静默（不影响播放）。坐标统一 DIP（见 mpv-surface _computeScreenGeometry）。
+      // v2.15.4：macOS 加固运行时重定位（mach 构建对属性支持不一，多通道下发提高命中率）
       if (process.platform === 'darwin') {
         try { this.command(['window-move', x, y]).catch(() => {}); } catch (_) {}
         try { this.command(['window-resize', w, h]).catch(() => {}); } catch (_) {}
-        try { this.command(['set_property', 'geometry', geoStr]).catch(() => {}); } catch (_) {}
       }
-      // 全部 window-* 都失败时才尝试 geometry 回退（避免每次抖动都双写 IPC）
-      // v2.17.57（用户反馈：全屏/退出全屏后 MPV 播放器还是错位）——
-      // 本机 mpv 构建写 window-x/y/width/height 一律返回 -3（不支持），每次定位实际只靠这个 60ms 后的
-      // set_property geometry。全屏进出时 200ms 内会连发好几组几何，而各兜底定时器彼此独立、不取消，
-      // 迟到的旧几何会把新几何盖掉。实测 fnos-mpv_..._0bab.log 退出全屏那 130ms 里依次落了
-      // "1280x803+0+34"、"853x803+320+140"、"1920x1080+320+140"，最终画面停在
-      // 1920x1080+320+140 —— 比宿主窗口大一圈、整体偏移，就是用户看到的"错位"。
-      // 这里给每次下发编号：只有最新一次允许落兜底，旧的一次直接丢弃。
-      if (this._geoFallbackTimer) { try { clearTimeout(this._geoFallbackTimer); } catch (_) {} }
-      const geoSeq = (this._geoSeq = (this._geoSeq || 0) + 1);
-      const fallbackTimer = setTimeout(() => {
-        try {
-          if (this._geoSeq !== geoSeq) return;
-          if (winOk > 0) return;
-          this.command(['set_property', 'geometry', geoStr])
-            .catch(e => this.emit('log', 'geometry set fail: ' + (e && e.message)));
-        } catch (_) {}
-      }, 60);
-      this._geoFallbackTimer = fallbackTimer;
-      if (fallbackTimer.unref) fallbackTimer.unref();
       // v2.15.90：窗口几何变化（缩放跟随）后，按新窗口比例重算 cover 缩放，保证 resize 后仍贴合
       if (this._videoW && this._videoH) this._applyCoverZoom(this._videoW, this._videoH);
-      // v2.15.88：窗口尺寸变化后重建圆角 RGN（debounce 合并，窗口 resize 稳定后再裁）
+      // v2.24.0：圆角立即重裁（旧版依赖 _scheduleCorners 的 300ms debounce + 每次重新编译 C#，
+      // 观感就是"先看到直角，一秒多后才变圆角"），并补一次 settle 后的重裁兜底。
+      this._applyRoundedCorners();
       this._scheduleCorners();
     };
     if (!this.connected) { this.once('ipc-ready', apply); return; }
@@ -1157,33 +1153,43 @@ class MpvPlayer extends EventEmitter {
   //   - mpv 自带 --window-corners 只能做 DWM 8px/4px 圆角，达不到主窗 20px，故用 SetWindowRgn。
   //   - RGN 基于窗口客户区物理像素，圆角直径 = 40 * scaleFactor（20px 半径 DIP）。
   //   - 窗口 resize 后 RGN 需重建，故在 setGeometry / 首帧 reveal / loadfile 后统一 debounce 重设。
-  _scheduleCorners() {
+    _scheduleCorners() {
     if (process.platform !== 'win32') return;
-    if (this._cornerTimer) return;
+    if (this._cornerTimer) { try { clearTimeout(this._cornerTimer); } catch (_) {} }
     this._cornerTimer = setTimeout(() => {
       this._cornerTimer = null;
       this._applyRoundedCorners();
-    }, 300);
+    }, 40);
     if (this._cornerTimer.unref) this._cornerTimer.unref();
   }
 
-  _applyRoundedCorners() {
+    _applyRoundedCorners() {
     if (process.platform !== 'win32') return;
     if (!this.proc || this._dead) return;
     const pid = this.proc.pid;
     if (!pid) return;
     // 圆角形态：点播（飞牛影视电影/剧集）四角圆角；直播仅右上角圆角（其余三角直角，露出右上角窗口控制按钮区）；
-    // 独立播放器保持直角。v2.15.96：直播由"直角"改为"仅右上角圆角"（用户要求）。
+    // 独立播放器保持直角。
     let mode = 'none';
-    // v2.17.59：fullscreen 铺满整屏时四角是屏幕四角（直角），退出后按点播/直播形态恢复圆角
+    // fullscreen 铺满整屏时四角是屏幕四角（直角），退出后按点播/直播形态恢复圆角
     if (this._fsOn) { mode = 'none'; }
     else if (!this._standalone) { mode = this._isLive ? 'top-right' : 'all'; }
+    // 独立播放器（直播/独立窗口）恒为直角，从未裁过区域，无需再下 none 指令
+    if (mode === 'none' && this._standalone) return;
     const scale = this._scaleFactor || 1;
     const d = Math.max(2, Math.round(40 * scale)); // 圆角直径（物理像素）：20px 半径 DIP * 2 * scale
     const halfD = Math.max(1, Math.round(d / 2)); // 圆角半径（物理像素），用于补直角的竖条/横条宽度
-    const ps = [
-      "$ErrorActionPreference='SilentlyContinue';",
-      "$src=@'",
+    // v2.24.0（用户反馈：启动 / 全屏 / 最大化来回切时，四角由直角变圆角要等一会）——
+    // 旧实现每次都 spawn 一个 powershell 重新 Add-Type 编译 C#（0.5~1s），叠加 300ms debounce，
+    // 首帧起点是直角、一秒多后才变圆角。现在改用一个常驻 PowerShell 辅助进程：C# 只编译一次，
+    // 之后通过 stdin 逐行下达指令，进程内按 pid 找 hwnd、GetClientRect 现算客户区尺寸再
+    // SetWindowRgn，单次 1~3ms，可跟随每一次几何变化即时重裁。
+    this._cornerSend(pid, mode, d, halfD);
+  }
+
+  // 常驻圆角 helper 的 PowerShell 脚本（C# 只编译一次，之后循环读 stdin 指令）
+  _cornerHelperScript() {
+    const src = [
       'using System;',
       'using System.Runtime.InteropServices;',
       'public static class FMPVC {',
@@ -1202,38 +1208,116 @@ class MpvPlayer extends EventEmitter {
       '    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) { f = h; return false; } return true; }, IntPtr.Zero);',
       '    return f;',
       '  }',
-      '}',
-      "'@",
-      'Add-Type -TypeDefinition $src;',
-      `$hwnd=[FMPVC]::ByPid(${pid});`,
-      'if($hwnd -ne [IntPtr]::Zero){',
-      `  if(${JSON.stringify(mode)} -eq 'all'){`,
-      '    $r=New-Object FMPVC+RECT; [FMPVC]::GetClientRect($hwnd,[ref]$r)|Out-Null;',
-      '    $w=$r.R-$r.L; $h=$r.B-$r.T;',
-      `    if($w -gt 40 -and $h -gt 40){ $rgn=[FMPVC]::CreateRoundRectRgn(0,0,($w+1),($h+1),${d},${d}); [FMPVC]::SetWindowRgn($hwnd,$rgn,$true)|Out-Null; }`,
-      `  } elseif(${JSON.stringify(mode)} -eq 'top-right'){`,
-      '    $r=New-Object FMPVC+RECT; [FMPVC]::GetClientRect($hwnd,[ref]$r)|Out-Null;',
-      '    $w=$r.R-$r.L; $h=$r.B-$r.T;',
-      `    if($w -gt 40 -and $h -gt 40){`,
-      `      $rgn=[FMPVC]::CreateRoundRectRgn(0,0,($w+1),($h+1),${d},${d});`,
-      `      $pl=[FMPVC]::CreateRectRgn(0,0,(${halfD}+1),($h+1));`,
-      `      $pb=[FMPVC]::CreateRectRgn(0,($h-${halfD}),($w+1),($h+1));`,
-      '      [FMPVC]::CombineRgn($rgn,$rgn,$pl,2)|Out-Null;',
-      '      [FMPVC]::CombineRgn($rgn,$rgn,$pb,2)|Out-Null;',
-      `      [FMPVC]::SetWindowRgn($hwnd,$rgn,$true)|Out-Null;`,
-      '    }',
-      '  } else {',
-      '    [FMPVC]::SetWindowRgn($hwnd,[IntPtr]::Zero,$true)|Out-Null;',
-      '  }',
       '}'
     ].join('\n');
+    return [
+      "$ErrorActionPreference='SilentlyContinue';",
+      "$src=@'",
+      src,
+      "'@",
+      'Add-Type -TypeDefinition $src;',
+      "[Console]::Out.WriteLine('READY');",
+      '[Console]::Out.Flush();',
+      'while($true){',
+      '  $ln=[Console]::In.ReadLine();',
+      '  if($null -eq $ln){ break }',
+      '  $ln=$ln.Trim();',
+      '  if($ln.Length -eq 0){ continue }',
+      "  $p=$ln.Split(' ');",
+      "  if($p[0] -eq 'q'){ break }",
+      "  if($p[0] -ne 'a'){ continue }",
+      '  $tpid=[uint32]$p[1]; $md=$p[2]; $dd=[int]$p[3]; $hd=[int]$p[4];',
+      '  $hwnd=[FMPVC]::ByPid($tpid);',
+      '  if($hwnd -eq [IntPtr]::Zero){ continue }',
+      '  if($md -eq "none"){ [FMPVC]::SetWindowRgn($hwnd,[IntPtr]::Zero,$true)|Out-Null; continue }',
+      '  $r=New-Object FMPVC+RECT; [FMPVC]::GetClientRect($hwnd,[ref]$r)|Out-Null;',
+      '  $w=$r.R-$r.L; $h=$r.B-$r.T;',
+      '  if($w -le 40 -or $h -le 40){ continue }',
+      '  $rgn=[FMPVC]::CreateRoundRectRgn(0,0,($w+1),($h+1),$dd,$dd);',
+      '  if($md -eq "top-right"){',
+      '    $pl=[FMPVC]::CreateRectRgn(0,0,($hd+1),($h+1));',
+      '    $pb=[FMPVC]::CreateRectRgn(0,($h-$hd),($w+1),($h+1));',
+      '    [FMPVC]::CombineRgn($rgn,$rgn,$pl,2)|Out-Null;',
+      '    [FMPVC]::CombineRgn($rgn,$rgn,$pb,2)|Out-Null;',
+      '  }',
+      '  [FMPVC]::SetWindowRgn($hwnd,$rgn,$false)|Out-Null;',
+      '}'
+    ].join('\n');
+  }
+
+  _ensureCornerHelper() {
+    if (process.platform !== 'win32') return null;
+    const cur = this._cornerProc;
+    if (cur && !cur.killed) return cur;
+    const now = Date.now();
+    // 冷却：连续 spawn 失败时不要每次几何变化都起一个 powershell
+    if (this._cornerSpawnAt && now - this._cornerSpawnAt < 3000) return null;
+    this._cornerSpawnAt = now;
     try {
-      // 异步执行：Add-Type 编译 C# 每次约 0.5~1s，窗口拖动/缩放时会高频触发圆角重设，
-      // 用 spawn（异步）避免同步阻塞主线程导致拖动卡顿。失败/乱序均无害（圆角状态幂等）。
-      const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true });
+      const proc = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', this._cornerHelperScript()], {
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'ignore']
+      });
+      this._cornerProc = proc;
+      this._cornerReady = false;
+      this._cornerQueue = null;
+      try { proc.stdin.on('error', () => {}); } catch (_) {}
+      try { proc.stdout.on('error', () => {}); } catch (_) {}
+      proc.stdout.on('data', (buf) => {
+        const t = buf.toString('utf8');
+        if (t.indexOf('READY') >= 0) {
+          this._cornerReady = true;
+          const q = this._cornerQueue;
+          this._cornerQueue = null;
+          if (q) { try { proc.stdin.write(q); } catch (_) {} }
+        }
+      });
+      proc.on('error', () => { if (this._cornerProc === proc) { this._cornerProc = null; this._cornerReady = false; } });
+      proc.on('exit', () => { if (this._cornerProc === proc) { this._cornerProc = null; this._cornerReady = false; } });
+      try { proc.unref(); } catch (_) {}
+      try { if (proc.stdin.unref) proc.stdin.unref(); } catch (_) {}
+      try { if (proc.stdout.unref) proc.stdout.unref(); } catch (_) {}
+      return proc;
+    } catch (_) {
+      this._cornerProc = null;
+      this._cornerReady = false;
+      return null;
+    }
+  }
+
+  _cornerSend(pid, mode, d, halfD) {
+    const line = 'a ' + pid + ' ' + mode + ' ' + d + ' ' + halfD + '\n';
+    const proc = this._ensureCornerHelper();
+    if (!proc) { this._cornerFallbackOnce(pid, mode, d, halfD); return; }
+    if (!this._cornerReady) { this._cornerQueue = line; return; }
+    // 背压保护：helper 万一卡住，不要在内存里无限堆积指令（圆角只是观感，丢了下次几何变化会补）
+    try { if (proc.stdin.writableLength && proc.stdin.writableLength > 16384) return; } catch (_) {}
+    try { proc.stdin.write(line); } catch (_) {}
+  }
+
+  // 兜底：helper 起不来时退回一次性脚本（编译一次、apply 一次、退出），保证圆角功能不丢
+  _cornerFallbackOnce(pid, mode, d, halfD) {
+    const now = Date.now();
+    if (this._cornerFbAt && now - this._cornerFbAt < 2500) return;
+    this._cornerFbAt = now;
+    try {
+      const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', this._cornerHelperScript()], { windowsHide: true });
       child.on('error', () => {});
-      if (child.unref) child.unref();
+      if (!child.stdin) { try { child.unref(); } catch (_) {} return; }
+      try { child.stdin.on('error', () => {}); } catch (_) {}
+      try { child.stdin.write('a ' + pid + ' ' + mode + ' ' + d + ' ' + halfD + '\nq\n'); } catch (_) {}
+      try { child.unref(); } catch (_) {}
     } catch (_) { /* 圆角失败不阻断播放 */ }
+  }
+
+  _killCornerHelper() {
+    const p = this._cornerProc;
+    this._cornerProc = null;
+    this._cornerReady = false;
+    this._cornerQueue = null;
+    if (!p) return;
+    try { if (p.stdin) p.stdin.write('q\n'); } catch (_) {}
+    try { p.kill(); } catch (_) {}
   }
 
   // v1.49.0：隐藏/显示窗口。
@@ -1383,6 +1467,7 @@ class MpvPlayer extends EventEmitter {
   }
 
   stop() {
+    try { this._killCornerHelper(); } catch (_) {}
     this._manualStop = true;   // 主动停止：禁止崩溃自愈
     this._stopWatchdog();
     try { this._stopSubStyleWatch(); } catch (_) {}

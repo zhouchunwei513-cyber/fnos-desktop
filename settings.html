@@ -288,6 +288,29 @@
           </div>
         </div>
       </div>
+      <!-- v2.19.0：标题栏材质（纯色 / 磨砂玻璃） -->
+      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">标题栏材质</div>
+          <div class="hotkey-sub" id="tb-material-hint">纯色：标题栏为单一底色块；磨砂玻璃：模糊下层内容并叠加细噪点，呈现 Win11 毛玻璃质感</div>
+        </div>
+        <div class="tb-material-group" data-tb-material>
+          <button type="button" class="tb-mat-btn" data-material="solid">纯色</button>
+          <button type="button" class="tb-mat-btn" data-material="frosted">磨砂玻璃</button>
+        </div>
+      </div>
+
+      <!-- v2.19.0：磨砂强度（仅磨砂玻璃材质生效） -->
+      <div class="color-picker-row" id="tb-blur-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">磨砂强度</div>
+          <div class="hotkey-sub">模糊半径，0 为最通透，数值越大雾面越重（仅磨砂玻璃材质生效）</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
+          <input type="range" id="tb-blur" min="0" max="40" value="20" class="tb-range" style="flex:1" />
+          <span id="tb-blur-val" class="tb-range-val">20px</span>
+        </div>
+      </div>
       <div class="setup-actions" style="margin-top:14px">
         <button type="button" class="btn-primary" id="opt-save">保存界面设置</button>
         <span id="opt-status" class="lock-status" style="margin-left:12px"></span>

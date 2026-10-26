@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.18.6';
+const APP_VERSION = '2.19.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -9400,6 +9400,9 @@ ipcMain.handle('settings:get', async () => {
     // v1.58：标题栏不透明度/颜色（标题栏颜色独立于界面主题色）
     titleBarOpacity: clampInt(s.titleBarOpacity, 0, 100, 0),
     titleBarColor: String(s.titleBarColor || '#3B82F6'),
+    // v2.19.0：标题栏材质（solid 纯色 / frosted 磨砂玻璃）+ 磨砂强度 0~40px
+    titleBarMaterial: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
+    titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 20),
     themeColor: String(s.themeColor || '#4F6EF7'),
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
@@ -9534,6 +9537,9 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
     const tbPayload = {
       opacity: clampInt(opts?.titleBarOpacity, 0, 100, 0),
       color: String(opts?.titleBarColor || '#3B82F6'),
+      // v2.19.0：磨砂材质实时预览
+      material: opts?.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
+      blur: clampInt(opts?.titleBarBlur, 0, 40, 20),
     };
     for (const wc of require('electron').webContents.getAllWebContents()) {
       try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
@@ -9553,22 +9559,33 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       ? clampInt(opts.titleBarOpacity, 0, 100, 0)
       : clampInt(cachedSettings.titleBarOpacity, 0, 100, 0);
     const tbColor = opts?.titleBarColor ? String(opts.titleBarColor) : String(cachedSettings.titleBarColor || '#3B82F6');
+    // v2.19.0：标题栏材质 + 磨砂强度
+    const tbMaterial = (opts?.titleBarMaterial === 'frosted' || opts?.titleBarMaterial === 'solid')
+      ? opts.titleBarMaterial
+      : (cachedSettings.titleBarMaterial === 'frosted' ? 'frosted' : 'solid');
+    const tbBlur = (opts && opts.titleBarBlur != null && Number.isFinite(Number(opts.titleBarBlur)))
+      ? clampInt(opts.titleBarBlur, 0, 40, 20)
+      : clampInt(cachedSettings.titleBarBlur, 0, 40, 20);
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
     saveSettings({
       autoHideMenuBar: autoHide,
       titleBarAutoHide: tbAutoHide,
       titleBarOpacity: tbOpacity,
       titleBarColor: tbColor,
+      titleBarMaterial: tbMaterial,
+      titleBarBlur: tbBlur,
       themeColor: accent,
     });
     cachedSettings.autoHideMenuBar = autoHide;
     cachedSettings.titleBarAutoHide = tbAutoHide;
     cachedSettings.titleBarOpacity = tbOpacity;
     cachedSettings.titleBarColor = tbColor;
+    cachedSettings.titleBarMaterial = tbMaterial;
+    cachedSettings.titleBarBlur = tbBlur;
     cachedSettings.themeColor = accent;
     // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
-    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor };
+    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
@@ -9603,9 +9620,12 @@ ipcMain.on('settings:get-titlebar', (e) => {
       autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
       opacity: clampInt(s.titleBarOpacity, 0, 100, 0),
       color: String(s.titleBarColor || '#3B82F6'),
+      // v2.19.0：材质 + 磨砂强度
+      material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
+      blur: clampInt(s.titleBarBlur, 0, 40, 20),
     };
   } catch (_) {
-    e.returnValue = { autoHide: false, opacity: 0, color: '#3B82F6' };
+    e.returnValue = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20 };
   }
 });
 

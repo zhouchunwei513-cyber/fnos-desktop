@@ -327,7 +327,8 @@
 
   // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
   // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
-  const tbState = { opacity: 0, color: '#3B82F6' };
+  // v2.19.0：material = 纯色/磨砂玻璃，blur = 磨砂强度
+  const tbState = { opacity: 0, color: '#3B82F6', material: 'solid', blur: 20 };
   const tbOpacity = document.getElementById('tb-opacity');
   const tbOpacityVal = document.getElementById('tb-opacity-val');
   const tbColorInput = document.getElementById('tb-color-input');
@@ -336,6 +337,12 @@
   const tbAlpha = document.getElementById('tb-alpha');
   const tbAlphaVal = document.getElementById('tb-alpha-val');
   const tbColorHint = document.getElementById('tb-color-hint');
+  // v2.19.0：材质按钮组 / 磨砂强度
+  const tbMatGroup = document.querySelector('[data-tb-material]');
+  const tbMaterialHint = document.getElementById('tb-material-hint');
+  const tbBlur = document.getElementById('tb-blur');
+  const tbBlurVal = document.getElementById('tb-blur-val');
+  const tbBlurRow = document.getElementById('tb-blur-row');
 
   // #RGB / #RRGGBB / #RRGGBBAA 都收，统一归一成 #RRGGBB（Alpha 交给不透明度滑块，避免两个口径打架）
   const hexOk = (h) => /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(String(h || '').trim());
@@ -359,6 +366,8 @@
         fnosSettings.previewTitleBar({
           titleBarOpacity: tbState.opacity,
           titleBarColor: tbState.color,
+          titleBarMaterial: tbState.material,
+          titleBarBlur: tbState.blur,
         });
       } catch (_) {}
     }, 40);
@@ -366,6 +375,21 @@
 
   const syncTbMaterialBtns = () => {
     if (tbColorHint) tbColorHint.textContent = '标题栏底色';
+    // v2.19.0：材质按钮选中态 + 磨砂强度行的启用状态
+    if (tbMatGroup) {
+      tbMatGroup.querySelectorAll('.tb-mat-btn').forEach((b) => {
+        b.classList.toggle('active', b.getAttribute('data-material') === tbState.material);
+      });
+    }
+    if (tbMaterialHint) {
+      tbMaterialHint.textContent = tbState.material === 'frosted'
+        ? '磨砂玻璃：模糊下层内容并叠加细噪点，透出背景质感（Win11 毛玻璃观感）'
+        : '纯色：标题栏为单一底色块；想透出背景质感请选「磨砂玻璃」';
+    }
+    const off = tbState.material !== 'frosted';
+    if (tbBlurRow) tbBlurRow.classList.toggle('is-off', off);
+    if (tbBlur) tbBlur.disabled = off;
+    if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px';
   };
   const syncTbSliders = () => {
     if (tbOpacity) tbOpacity.value = String(tbState.opacity);
@@ -388,6 +412,13 @@
     return true;
   };
   const setTbOpacity = (v) => { tbState.opacity = clampInt(v, 0, 100, 0); syncTbSliders(); };
+  // v2.19.0：材质 / 磨砂强度
+  const setTbMaterial = (m) => { tbState.material = (m === 'frosted') ? 'frosted' : 'solid'; syncTbMaterialBtns(); };
+  const setTbBlur = (v) => {
+    tbState.blur = clampInt(v, 0, 40, 20);
+    if (tbBlur) tbBlur.value = String(tbState.blur);
+    if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px';
+  };
 
   if (tbOpacity) tbOpacity.addEventListener('input', () => { setTbOpacity(tbOpacity.value); tbPreview(); });
   if (tbAlpha) tbAlpha.addEventListener('input', () => { setTbOpacity(tbAlpha.value); tbPreview(); });
@@ -396,6 +427,16 @@
     tbColorHex.addEventListener('input', () => { if (setTbColor(tbColorHex.value)) tbPreview(); });
     tbColorHex.addEventListener('blur', () => { if (!hexOk(tbColorHex.value)) tbColorHex.value = tbState.color; });
   }
+  // v2.19.0：材质切换 / 磨砂强度拖动 → 立即预览
+  if (tbMatGroup) {
+    tbMatGroup.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('.tb-mat-btn') : null;
+      if (!btn) return;
+      setTbMaterial(btn.getAttribute('data-material'));
+      tbPreview();
+    });
+  }
+  if (tbBlur) tbBlur.addEventListener('input', () => { setTbBlur(tbBlur.value); tbPreview(); });
 
   // 载入当前设置填充界面
   fnosSettings.getSettings().then((info) => {
@@ -404,6 +445,9 @@
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 0);
       tbState.color = hexNorm6(info.titleBarColor) || '#3B82F6';
+      tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'solid';
+      tbState.blur = clampInt(info.titleBarBlur, 0, 40, 20);
+      if (tbBlur) tbBlur.value = String(tbState.blur);
       syncTbMaterialBtns(); syncTbSliders(); syncTbColor();
     } catch (_) {}
   }).catch(() => {});
@@ -416,6 +460,8 @@
           titleBarAutoHide: !!(optTbAutoHide && optTbAutoHide.checked),
           titleBarOpacity: tbState.opacity,
           titleBarColor: tbState.color,
+          titleBarMaterial: tbState.material,
+          titleBarBlur: tbState.blur,
         });
         if (res && res.ok) {
           optSave.textContent = '已 保 存（即时生效）';

@@ -398,13 +398,17 @@ module.exports = function injectTitleBar(ctx) {
     if (__SUB) return;
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
-    const TB = { autoHide: false, opacity: 0, color: '#3B82F6' };
+    // v2.19.0：material = 'solid'（纯色）| 'frosted'（磨砂玻璃）；blur = 磨砂强度 0~40px
+    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20 };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
       if (r && typeof r === 'object') {
         if (typeof r.autoHide === 'boolean') TB.autoHide = r.autoHide;
         if (r.opacity != null) TB.opacity = Math.max(0, Math.min(100, Number(r.opacity) || 0));
         if (r.color) TB.color = String(r.color);
+        // v2.19.0：材质 + 磨砂强度（老配置缺字段时回落 solid，行为与之前完全一致）
+        TB.material = (r.material === 'frosted') ? 'frosted' : 'solid';
+        if (r.blur != null) TB.blur = Math.max(0, Math.min(40, Number(r.blur) || 0));
       }
     } catch (_) {}
     let AUTO_HIDE = TB.autoHide;
@@ -452,10 +456,29 @@ module.exports = function injectTitleBar(ctx) {
         {
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
           const a = TB.opacity / 100;
-          if (a > 0.001) {
+          // v2.19.0（用户要求）：磨砂玻璃材质。三层叠加做出"雾面玻璃"：
+          //   1) 细噪点（SVG feTurbulence）—— 关键是它让磨砂"成立"：标题栏盖在 <webview> 等
+          //      跨进程内容之上时，backdrop-filter 未必采样得到，但噪点+高光依然呈现雾面颗粒感
+          //   2) 顶部白色高光渐变 —— 玻璃上沿的受光质感
+          //   3) 底色 —— 用户颜色（磨砂下最低 10% alpha，太透会完全看不见材质）
+          const frosted = TB.material === 'frosted';
+          const __blur = Math.max(0, Math.min(40, Number(TB.blur) || 0));
+          if (frosted) {
+            const alpha = a > 0.001 ? Math.max(a, 0.10) : 0.24;
+            const noiseOpacity = Math.max(0.05, Math.min(0.30, 0.30 - __blur * 0.006)).toFixed(2);
+            const noise = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'120\' height=\'120\'%3E%3Cfilter id=\'n\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.85\' numOctaves=\'2\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'120\' height=\'120\' filter=\'url(%23n)\' opacity=\'' + noiseOpacity + '\'/%3E%3C/svg%3E")';
+            bar.style.backgroundImage = noise + ', linear-gradient(180deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.05) 52%, rgba(255,255,255,0.02) 100%)';
+            bar.style.backgroundRepeat = 'repeat, no-repeat';
+            bar.style.backgroundSize = '120px 120px, auto';
+            bar.style.backgroundColor = a > 0.001 ? hexToRgba(TB.color, alpha) : 'rgba(16,20,36,0.34)';
+            bar.style.backdropFilter = 'blur(' + __blur + 'px) saturate(160%)';
+            bar.style.webkitBackdropFilter = 'blur(' + __blur + 'px) saturate(160%)';
+            bar.style.boxShadow = 'inset 0 -1px 0 rgba(255,255,255,0.10)';
+          } else if (a > 0.001) {
             bar.style.background = hexToRgba(TB.color, a);
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
+            bar.style.boxShadow = 'none';
           } else {
             // v2.15.69：设置窗口透明后标题栏透出桌面灰边，改深色渐变；主/应用窗口保持 transparent 透出下层
             var __argvS = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
@@ -466,11 +489,13 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.background = __isSettingsS ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
+            bar.style.boxShadow = 'none';
           }
         }
         // 底色较深时图标用白，较浅时图标用深色——保证对比
         // v2.15.14：opacity=0 默认走深色渐变 → 也用白图标
-        const darkBg = (TB.opacity > 45 || TB.opacity <= 0.001);
+        // v2.19.0：磨砂玻璃底色偏深（用户色+白高光+噪点），图标一律用白
+        const darkBg = (TB.material === 'frosted') ? (TB.opacity <= 60) : (TB.opacity > 45 || TB.opacity <= 0.001);
         bar.__useDarkIcon = !darkBg; // true = 浅底用深图标
         const iconStroke = darkBg ? 'rgba(255,255,255,0.95)' : 'rgba(20,20,20,0.92)';
         const iconShadow = darkBg
@@ -506,6 +531,9 @@ module.exports = function injectTitleBar(ctx) {
             if (typeof val.autoHide === 'boolean') { TB.autoHide = val.autoHide; AUTO_HIDE = val.autoHide; }
             if (val.opacity != null) TB.opacity = Math.max(0, Math.min(100, Number(val.opacity) || 0));
             if (val.color) TB.color = String(val.color);
+            // v2.19.0：材质 / 磨砂强度（预览与保存都会走这里）
+            if (val.material) TB.material = (val.material === 'frosted') ? 'frosted' : 'solid';
+            if (val.blur != null) TB.blur = Math.max(0, Math.min(40, Number(val.blur) || 0));
             const bar0 = document.getElementById('fnos-titlebar');
             if (bar0) {
               applyStyle(bar0);

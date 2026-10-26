@@ -1128,6 +1128,25 @@ contextBridge.exposeInMainWorld('fnos', {
       if (startRectLoop._on) return; startRectLoop._on = true;
       setInterval(reportRect, 500);
       window.addEventListener('resize', reportRect);
+      // v2.24.5：宿主过渡期（最大化/全屏/缩放）请求密集上报。
+      // 背景：页面布局是 CSS 过渡出来的，MutationObserver 感知不到，只能靠上面的 500ms 定时器兜底，
+      // 于是宿主过渡结束后 mpv 还要再等最多半秒才拿到真实视频区，表现为"画面慢半拍再跳一下"。
+      // 收到 burst 指令后 30ms 报一次，持续 host 给的时长（最长 1.5s）。
+      try {
+        ipcRenderer.on('mpv:rect-burst', (_e, ms) => {
+          const span = Math.max(200, Math.min(1500, Number(ms) || 700));
+          const until = Date.now() + span;
+          if (startRectLoop._burst) { clearInterval(startRectLoop._burst); startRectLoop._burst = null; }
+          startRectLoop._burst = setInterval(() => {
+            if (Date.now() > until) {
+              clearInterval(startRectLoop._burst);
+              startRectLoop._burst = null;
+              return;
+            }
+            reportRect();
+          }, 30);
+        });
+      } catch (_) {}
       try {
         const mo2 = new MutationObserver(() => reportRect());
         mo2.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true });

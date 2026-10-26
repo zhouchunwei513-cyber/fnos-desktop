@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.4';
+const APP_VERSION = '2.24.5';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -14369,6 +14369,8 @@ ipcMain.on('mpv:embed-rect', (e, rect) => {
     const hostWin = hostWindowFromSender(e && e.sender) || mainWindow;
     const surf = mpvSurfaces.get(hostWin.id);
     if (surf && rect) {
+      // v2.24.5：记住上报方（guest webContents），过渡期要给页面发"密集上报"指令
+      try { surf._guestWc = e.sender; } catch (_) {}
       // 只更新视频区坐标（相对 webview 视口），viewOffset（webview 在外壳内的偏移）保持 embed 时的测量值
       surf.setRect(normalizeDipRect(rect), null);
     }

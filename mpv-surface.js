@@ -77,8 +77,8 @@ class MpvSurface {
       // v1.63：嵌入 mpv 虽常驻 ontop，但宿主窗口拖动/激活时偶尔会被系统提到 mpv 之上
       // （mpv 跑到飞牛窗口后面被盖住）。移动结束/恢复/首帧后强制重新置顶 mpv 一次。
       this._raiseMpv = () => { try { if (this.player && this.player.isRunning() && !this._pip && !this._docked) this.player.setOntop(true); } catch (_) {} };
-      this._moveHandler = () => { this._trackTransit('move', 700); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(8); } catch (_) {} };
-      this._resizeHandler = () => { this._trackTransit('resize', 900); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(12); } catch (_) {} };
+      this._moveHandler = () => { this._trackTransit('move', 700); this._burstRect(400); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(8); } catch (_) {} };
+      this._resizeHandler = () => { this._trackTransit('resize', 900); this._burstRect(700); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(12); } catch (_) {} };
       this._minHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
       this._restoreHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} this._raiseMpv(); };
       // v1.48.0：父窗被一键隐藏/锁定（hide）/重新呼出（show）时，嵌入 mpv 原生窗口也要跟随，
@@ -110,6 +110,7 @@ class MpvSurface {
           this._fsSavedView = { x: this.viewOffset.x || 0, y: this.viewOffset.y || 0 };
         }
         try { this.player._lastGeoStr = ''; } catch (_) {}
+        this._burstRect(900);
         this._applyGeometry();
         try { if (!this._chasing) this._chase(24); } catch (_) {}
         this._raiseMpv();
@@ -122,6 +123,7 @@ class MpvSurface {
         if (this._fsSavedView) { this.viewOffset = { x: this._fsSavedView.x, y: this._fsSavedView.y }; this._fsSavedView = null; }
         this._baseCbW = 0; this._baseCbH = 0; this._baseDip = null;
         try { this.player._lastGeoStr = ''; } catch (_) {}
+        this._burstRect(900);
         this._applyGeometry();
         try { if (!this._chasing) this._chase(24); } catch (_) {}
         this._raiseMpv();
@@ -132,6 +134,7 @@ class MpvSurface {
       this._leaveHtmlFsHandler = () => this._fsExit();
       this._maximizeHandler = () => {
         try { this.player._lastGeoStr = ''; } catch (_) {}
+        this._burstRect(900);
         this._trackTransit('maximize', 1800);
         this._applyGeometry();
         try { if (!this._chasing) this._chase(20); } catch (_) {}
@@ -335,6 +338,22 @@ class MpvSurface {
       try { this.player.setGeometry(g); } catch (_) {}
     }, wait);
     if (this._geoTrailTimer.unref) this._geoTrailTimer.unref();
+  }
+
+  // v2.24.5（用户反馈：直播比点播更明显"跟不上"）——
+  // 日志实测：最大化瞬间 guest 只报了"宽度按比例、高度沿用旧的"中间值（980x731 → 1470x731），
+  // 真正的 1620x943 要等 guest 的 500ms 定时器才上报，mpv 因此被改两次尺寸（先错后对）= 画面跳两步。
+  // 这里在过渡开始时让 guest 以 30ms 间隔连续上报视频区（默认 700ms），宿主仍按 24ms 节流下发，
+  // mpv 就能跟着页面布局一帧帧走。只在过渡期间触发，静息时零开销。
+  _burstRect(ms) {
+    try {
+      const now = Date.now();
+      if (this._burstAt && now - this._burstAt < 120) return;
+      this._burstAt = now;
+      const wc = this._guestWc;
+      if (!wc || (wc.isDestroyed && wc.isDestroyed())) return;
+      wc.send('mpv:rect-burst', Math.max(200, Math.min(1500, ms || 700)));
+    } catch (_) {}
   }
 
   // v2.24.0：过渡期追帧。全屏/最大化切换时宿主窗口有一段 100~300ms 的动画，Electron 在这段时间里

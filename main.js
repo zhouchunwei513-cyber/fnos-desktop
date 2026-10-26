@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.9';
+const APP_VERSION = '2.24.10';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -7192,6 +7192,11 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resized', () => {
       try {
         if (__lockAspect || __maxOn(mainWindow) || __isFsOn(mainWindow)) return;
+        // v2.24.10（用户澄清：网友是按住标题栏移动窗口，过程中窗口一直变大）——
+        // 透明无边框窗移动时 DWM 重排边界，瞬时 getSize/getContentSize 偏大触发 resized，
+        // 比例锁据此 setSize 放大，且每次移动都放一点=越拖越大。拖动标题栏期间（__winDragState 非空）
+        // 直接跳过比例锁校正，切断放大链；移动结束（win-drag-end 置空）后恢复正常校正。
+        if (__winDragState) return;
         if (Date.now() < __fsGuardUntil) return;
         const [nw, nh] = __aspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
@@ -7199,8 +7204,10 @@ function createMainWindow(partition, loadTarget) {
         // 记录拖动结束后的外框/内容区尺寸 + 比例锁是否校正（校正到 nw,nh）。
         try {
           const [cw, ch] = mainWindow.getContentSize();
+          let zf = null;
+          try { zf = mainWindow.webContents.getZoomFactor(); } catch (_) {}
           fnosLog('info', 'window', 'resize.end', {
-            win: mainWindow.id, w, h, cw, ch,
+            win: mainWindow.id, w, h, cw, ch, zoom: zf,
             fix: (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) ? { nw, nh } : null
           });
         } catch (_) {}
@@ -7248,7 +7255,9 @@ function createMainWindow(partition, loadTarget) {
       try {
         if (Date.now() < __fsGuardUntil) return;
         const b = mainWindow.getBounds();
-        fnosLog('info', 'window', 'move.end', { win: mainWindow.id, x: b.x, y: b.y, w: b.width, h: b.height });
+        let zf = null;
+        try { zf = mainWindow.webContents.getZoomFactor(); } catch (_) {}
+        fnosLog('info', 'window', 'move.end', { win: mainWindow.id, x: b.x, y: b.y, w: b.width, h: b.height, zoom: zf });
       } catch (_) {}
     });
   } catch (_) {}

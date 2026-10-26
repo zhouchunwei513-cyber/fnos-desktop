@@ -36,10 +36,13 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       // v2.19.0：标题栏材质 / 磨砂强度
       titleBarMaterial: opts?.titleBarMaterial ? String(opts.titleBarMaterial) : undefined,
       titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
+      // v2.19.2：磨砂高光强度
+      titleBarHighlight: opts?.titleBarHighlight != null ? Number(opts.titleBarHighlight) : undefined,
     }),
   // v2.17.24：标题栏颜色实时预览（只广播，不落盘；保存仍走 setUIOptions）
   previewTitleBar: (opts) =>
     ipcRenderer.invoke('settings:preview-titlebar', {
+      titleBarHighlight: typeof opts?.titleBarHighlight === 'number' ? opts.titleBarHighlight : undefined,
       titleBarOpacity: opts?.titleBarOpacity != null ? Number(opts.titleBarOpacity) : undefined,
       titleBarColor: opts?.titleBarColor ? String(opts.titleBarColor) : undefined,
       // v2.19.0：磨砂材质实时预览

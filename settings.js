@@ -328,7 +328,7 @@
   // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
   // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
   // v2.19.0：material = 纯色/磨砂玻璃，blur = 磨砂强度
-  const tbState = { opacity: 0, color: '#3B82F6', material: 'solid', blur: 20 };
+  const tbState = { opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55 };
   const tbOpacity = document.getElementById('tb-opacity');
   const tbOpacityVal = document.getElementById('tb-opacity-val');
   const tbColorInput = document.getElementById('tb-color-input');
@@ -343,6 +343,10 @@
   const tbBlur = document.getElementById('tb-blur');
   const tbBlurVal = document.getElementById('tb-blur-val');
   const tbBlurRow = document.getElementById('tb-blur-row');
+  // v2.19.2：磨砂高光强度
+  const tbHl = document.getElementById('tb-hl');
+  const tbHlVal = document.getElementById('tb-hl-val');
+  const tbHlRow = document.getElementById('tb-hl-row');
 
   // #RGB / #RRGGBB / #RRGGBBAA 都收，统一归一成 #RRGGBB（Alpha 交给不透明度滑块，避免两个口径打架）
   const hexOk = (h) => /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(String(h || '').trim());
@@ -368,6 +372,7 @@
           titleBarColor: tbState.color,
           titleBarMaterial: tbState.material,
           titleBarBlur: tbState.blur,
+          titleBarHighlight: tbState.highlight,
         });
       } catch (_) {}
     }, 40);
@@ -390,6 +395,9 @@
     if (tbBlurRow) tbBlurRow.classList.toggle('is-off', off);
     if (tbBlur) tbBlur.disabled = off;
     if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px';
+    if (tbHlRow) tbHlRow.classList.toggle('is-off', off);
+    if (tbHl) tbHl.disabled = off;
+    if (tbHlVal) tbHlVal.textContent = String(tbState.highlight);
   };
   const syncTbSliders = () => {
     if (tbOpacity) tbOpacity.value = String(tbState.opacity);
@@ -419,6 +427,11 @@
     if (tbBlur) tbBlur.value = String(tbState.blur);
     if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px';
   };
+  const setTbHighlight = (v) => {
+    tbState.highlight = clampInt(v, 0, 100, 55);
+    if (tbHl) tbHl.value = String(tbState.highlight);
+    if (tbHlVal) tbHlVal.textContent = String(tbState.highlight);
+  };
 
   if (tbOpacity) tbOpacity.addEventListener('input', () => { setTbOpacity(tbOpacity.value); tbPreview(); });
   if (tbAlpha) tbAlpha.addEventListener('input', () => { setTbOpacity(tbAlpha.value); tbPreview(); });
@@ -437,6 +450,7 @@
     });
   }
   if (tbBlur) tbBlur.addEventListener('input', () => { setTbBlur(tbBlur.value); tbPreview(); });
+  if (tbHl) tbHl.addEventListener('input', () => { setTbHighlight(tbHl.value); tbPreview(); });
 
   // 载入当前设置填充界面
   fnosSettings.getSettings().then((info) => {
@@ -448,6 +462,8 @@
       tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'solid';
       tbState.blur = clampInt(info.titleBarBlur, 0, 40, 20);
       if (tbBlur) tbBlur.value = String(tbState.blur);
+      tbState.highlight = clampInt(info.titleBarHighlight, 0, 100, 55);
+      if (tbHl) tbHl.value = String(tbState.highlight);
       syncTbMaterialBtns(); syncTbSliders(); syncTbColor();
     } catch (_) {}
   }).catch(() => {});
@@ -462,6 +478,7 @@
           titleBarColor: tbState.color,
           titleBarMaterial: tbState.material,
           titleBarBlur: tbState.blur,
+          titleBarHighlight: tbState.highlight,
         });
         if (res && res.ok) {
           optSave.textContent = '已 保 存（即时生效）';

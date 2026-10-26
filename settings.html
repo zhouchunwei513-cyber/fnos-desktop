@@ -311,6 +311,17 @@
           <span id="tb-blur-val" class="tb-range-val">20px</span>
         </div>
       </div>
+      <!-- v2.19.2：磨砂高光强度 -->
+      <div class="color-picker-row" id="tb-hl-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">磨砂高光</div>
+          <div class="hotkey-sub">玻璃上沿的受光强度，越大越接近 Win11 亚克力质感（仅磨砂玻璃材质生效）</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
+          <input type="range" id="tb-hl" min="0" max="100" value="55" class="tb-range" style="flex:1" />
+          <span id="tb-hl-val" class="tb-range-val">55</span>
+        </div>
+      </div>
       <div class="setup-actions" style="margin-top:14px">
         <button type="button" class="btn-primary" id="opt-save">保存界面设置</button>
         <span id="opt-status" class="lock-status" style="margin-left:12px"></span>

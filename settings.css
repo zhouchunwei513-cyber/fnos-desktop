@@ -647,5 +647,7 @@ body::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(180deg, rgba(124, 157, 255, 0.32) 0%, rgba(94, 124, 255, 0.18) 100%);
   box-shadow: 0 4px 14px -6px rgba(90, 130, 255, 0.85);
 }
-#tb-blur-row.is-off { opacity: 0.45; }
-#tb-blur-row.is-off .hotkey-sub { color: rgba(255, 255, 255, 0.28); }
+#tb-blur-row.is-off,
+#tb-hl-row.is-off { opacity: 0.45; }
+#tb-blur-row.is-off .hotkey-sub,
+#tb-hl-row.is-off .hotkey-sub { color: rgba(255, 255, 255, 0.28); }

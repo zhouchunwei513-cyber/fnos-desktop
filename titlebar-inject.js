@@ -399,7 +399,7 @@ module.exports = function injectTitleBar(ctx) {
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
     // v2.19.0：material = 'solid'（纯色）| 'frosted'（磨砂玻璃）；blur = 磨砂强度 0~40px
-    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20 };
+    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55 };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
       if (r && typeof r === 'object') {
@@ -409,6 +409,7 @@ module.exports = function injectTitleBar(ctx) {
         // v2.19.0：材质 + 磨砂强度（老配置缺字段时回落 solid，行为与之前完全一致）
         TB.material = (r.material === 'frosted') ? 'frosted' : 'solid';
         if (r.blur != null) TB.blur = Math.max(0, Math.min(40, Number(r.blur) || 0));
+        if (r.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(r.highlight)));
       }
     } catch (_) {}
     let AUTO_HIDE = TB.autoHide;
@@ -465,15 +466,23 @@ module.exports = function injectTitleBar(ctx) {
           const __blur = Math.max(0, Math.min(40, Number(TB.blur) || 0));
           if (frosted) {
             const alpha = a > 0.001 ? Math.max(a, 0.10) : 0.24;
-            const noiseOpacity = Math.max(0.04, Math.min(0.18, 0.18 - __blur * 0.003)).toFixed(2);
+            const noiseOpacity = Math.max(0.04, Math.min(0.15, 0.15 - __blur * 0.0025)).toFixed(2);
             const noise = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'120\' height=\'120\'%3E%3Cfilter id=\'n\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.85\' numOctaves=\'2\' stitchTiles=\'stitch\'/%3E%3CfeColorMatrix type=\'saturate\' values=\'0\'/%3E%3C/filter%3E%3Crect width=\'120\' height=\'120\' filter=\'url(%23n)\' opacity=\'' + noiseOpacity + '\'/%3E%3C/svg%3E")';
-            bar.style.backgroundImage = noise + ', linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.04) 52%, rgba(255,255,255,0.015) 100%)';
-            bar.style.backgroundRepeat = 'repeat, no-repeat';
-            bar.style.backgroundSize = '120px 120px, auto';
+            // v2.19.2（用户要求）：高光强度可调，默认拉到接近 Win11 亚克力那种"上沿亮、向下渐弱"的受光。
+            // hl=0 → 0.06（几乎无高光，纯靠模糊+噪点）；hl=55 → 0.40；hl=100 → 0.68
+            const __hl = Math.max(0, Math.min(100, (TB.highlight == null ? 55 : Number(TB.highlight))));
+            const __hi = 0.06 + (__hl / 100) * 0.62;
+            const __w = (k) => 'rgba(255,255,255,' + (__hi * k).toFixed(3) + ')';
+            // v2.19.2（用户要求加强高光）：顶部 1.5px 硬亮线 + 上小下大的快衰减，
+            // 对齐 Win11 标题栏「上沿受光、往下越暗、底部反光」的层次
+            const __topline = 'linear-gradient(180deg, ' + __w(1.4) + ' 0px, ' + __w(1.4) + ' 1.5px, rgba(255,255,255,0) 1.5px)';
+            bar.style.backgroundImage = noise + ', ' + __topline + ', linear-gradient(180deg, ' + __w(1) + ' 0%, ' + __w(0.86) + ' 14%, ' + __w(0.50) + ' 46%, ' + __w(0.26) + ' 80%, ' + __w(0.34) + ' 100%)';
+            bar.style.backgroundRepeat = 'repeat, no-repeat, no-repeat';
+            bar.style.backgroundSize = '120px 120px, 100% 100%, auto';
             bar.style.backgroundColor = a > 0.001 ? hexToRgba(TB.color, alpha) : 'rgba(16,20,36,0.34)';
             bar.style.backdropFilter = 'blur(' + __blur + 'px) saturate(160%)';
             bar.style.webkitBackdropFilter = 'blur(' + __blur + 'px) saturate(160%)';
-            bar.style.boxShadow = 'inset 0 -1px 0 rgba(255,255,255,0.10)';
+            bar.style.boxShadow = 'inset 0 1px 0 ' + __w(0.9) + ', inset 0 -1px 0 ' + __w(0.35);
           } else if (a > 0.001) {
             bar.style.background = hexToRgba(TB.color, a);
             bar.style.backdropFilter = 'none';
@@ -534,6 +543,7 @@ module.exports = function injectTitleBar(ctx) {
             // v2.19.0：材质 / 磨砂强度（预览与保存都会走这里）
             if (val.material) TB.material = (val.material === 'frosted') ? 'frosted' : 'solid';
             if (val.blur != null) TB.blur = Math.max(0, Math.min(40, Number(val.blur) || 0));
+            if (val.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(val.highlight)));
             const bar0 = document.getElementById('fnos-titlebar');
             if (bar0) {
               applyStyle(bar0);

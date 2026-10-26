@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.8';
+const APP_VERSION = '2.24.9';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -7195,6 +7195,15 @@ function createMainWindow(partition, loadTarget) {
         if (Date.now() < __fsGuardUntil) return;
         const [nw, nh] = __aspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
+        // v2.24.9（用户反馈：拖动主窗“越拖越大”，加尺寸日志取证）——
+        // 记录拖动结束后的外框/内容区尺寸 + 比例锁是否校正（校正到 nw,nh）。
+        try {
+          const [cw, ch] = mainWindow.getContentSize();
+          fnosLog('info', 'window', 'resize.end', {
+            win: mainWindow.id, w, h, cw, ch,
+            fix: (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) ? { nw, nh } : null
+          });
+        } catch (_) {}
         if (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) {
           __lockAspect = true;
           try { mainWindow.setSize(nw, nh); } catch (_) {}
@@ -7231,6 +7240,17 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.on('resized', __saveBounds);
     mainWindow.on('moved', __saveBounds);
     mainWindow.on('close', __saveBounds);
+  } catch (_) {}
+  // v2.24.9（用户反馈：拖动主窗“越拖越大”，加位置/尺寸日志取证）——
+  // 拖动标题栏移动窗口结束后记录位置+外框尺寸，与 resize.end 互补（一个记尺寸一个记位置）。
+  try {
+    mainWindow.on('moved', () => {
+      try {
+        if (Date.now() < __fsGuardUntil) return;
+        const b = mainWindow.getBounds();
+        fnosLog('info', 'window', 'move.end', { win: mainWindow.id, x: b.x, y: b.y, w: b.width, h: b.height });
+      } catch (_) {}
+    });
   } catch (_) {}
   // v2.17.32：全屏三项修复（用户反馈）
   // 1) 全屏时把全屏态同步给渲染层，titlebar-inject 据此让 body 回满、去圆角、标题栏改悬浮。

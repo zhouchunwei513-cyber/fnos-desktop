@@ -269,6 +269,8 @@ ipcRenderer.on('open-fpk-app', (e, p) => {
 // 导致主进程永远拿不到刷新函数（重新签名恒为 null）。这里用模块级变量 + 闭包活引用，
 // 暴露的 __refreshMpvMedia 始终读取该变量的最新值。
 let __mpvRefreshFn = null;
+// v2.23.0：观看进度上报函数（同样用模块级变量 + 闭包活引用，理由同上）
+let __mpvProgressFn = null;
 
 // 安全地暴露给登录页/渲染页面使用。
 contextBridge.exposeInMainWorld('fnos', {
@@ -286,6 +288,12 @@ contextBridge.exposeInMainWorld('fnos', {
   // 读取隔离世界内注册的刷新函数，重新走 play/info→media/range，返回新鲜签名地址。
   __refreshMpvMedia: () => {
     try { return Promise.resolve(typeof __mpvRefreshFn === 'function' ? __mpvRefreshFn() : null); }
+    catch (e) { return Promise.resolve(null); }
+  },
+  // v2.23.0：观看进度上报（与飞牛网页端观看记录互通）。主进程把 mpv 当前播放位置传进来，
+  // 这里在隔离世界内完成签名 + POST /v/api/v1/play/record（Cookie 由渲染进程自动携带）。
+  __reportProgress: (body) => {
+    try { return Promise.resolve(typeof __mpvProgressFn === 'function' ? __mpvProgressFn(body || {}) : null); }
     catch (e) { return Promise.resolve(null); }
   },
 });
@@ -717,6 +725,7 @@ contextBridge.exposeInMainWorld('fnos', {
               if (!txt) return;
               try {
                 const j = JSON.parse(txt);
+                try { capturePlayInfo(j); } catch (_) {}
                 const mg = extractMediaGuid(j);
                 if (mg) { state.mediaGuid = mg; log('stream.guid', { itemGuid: state.itemGuid, mediaGuid: mg }); }
                 rememberMediaTitle(j);
@@ -757,6 +766,7 @@ contextBridge.exposeInMainWorld('fnos', {
             this.addEventListener('load', () => {
               try {
                 const j = JSON.parse(this.responseText);
+                try { capturePlayInfo(j); } catch (_) {}
                 const mg = extractMediaGuid(j);
                 if (mg) { state.mediaGuid = mg; log('stream.guid.xhr', { itemGuid: state.itemGuid, mediaGuid: mg }); }
                 rememberMediaTitle(j);
@@ -788,6 +798,7 @@ contextBridge.exposeInMainWorld('fnos', {
         const j = await r.json();
         // v2.20.1：留一份原始响应，剧集导航从这里提取整季列表（飞牛详情接口需签名，这条路零成本）
         try { __epPlayInfo = j; } catch (_) {}
+        try { capturePlayInfo(j); } catch (_) {}
         const mg = extractMediaGuid(j);
         log('playinfo.resp', { itemGuid, got: !!mg, code: j && j.code, msg: j && j.msg });
         return mg;
@@ -906,6 +917,65 @@ contextBridge.exposeInMainWorld('fnos', {
     // 点播播放中途断流（飞牛 media/range 是时效签名链接，约 10 分钟后续传 4xx）时，
     // 由主进程通过 window.fnos.__refreshMpvMedia() 回调：强制重新走 play/info 取新的 mediaGuid，
     // 返回一条新鲜签名地址；直播则复用 resolveDirectUrl（m3u8/分片天然刷新）。
+    // ============ v2.23.0：与飞牛网页端观看记录互通 ============
+    // 网页端"继续观看"的数据源就是这里两件事：
+    //   读：POST /v/api/v1/play/info 返回 data.ts（看到第几秒）+ data.item.duration
+    //   写：POST /v/api/v1/play/record  body {item_guid, media_guid, ts}（ts 秒，0 = 清记录）
+    // 网页播放器（xgplayer）上报时带的字段与此一致，另可选 resolution/bitrate/video_guid 等，
+    // 我们只保证最小的 item_guid/media_guid/ts（外加可得的 duration/video_guid/audio_guid）。
+    function capturePlayInfo(j) {
+      try {
+        const d = (j && (j.data || j.Data)) ? (j.data || j.Data) : null;
+        if (!d || typeof d !== 'object') return;
+        if (typeof d.ts === 'number' && isFinite(d.ts) && d.ts >= 0) {
+          state.serverTs = d.ts;
+          log('progress.srv', { ts: Math.round(d.ts) });
+        }
+        const it = d.item || d.Item || null;
+        const dur = (it && (it.duration || it.Duration)) || d.duration || 0;
+        if (dur > 0) state.serverDur = Number(dur) || 0;
+        if (d.media_guid) state.serverMediaGuid = String(d.media_guid);
+        if (d.video_guid) state.videoGuid = String(d.video_guid);
+        if (d.audio_guid) state.audioGuid = String(d.audio_guid);
+        if (d.item_guid) state.playItemGuid = String(d.item_guid);
+      } catch (_) {}
+    }
+
+    async function reportPlayRecord(input) {
+      try {
+        const b = input || {};
+        const item = String(b.item_guid || '');
+        if (!item) return null;
+        const ts = Math.max(0, Math.round(Number(b.ts) || 0));
+        const body = { item_guid: item, media_guid: String(b.media_guid || ''), ts };
+        const dur = Math.round(Number(b.duration) || 0);
+        if (dur > 0) body.duration = dur;
+        if (b.video_guid) body.video_guid = String(b.video_guid);
+        if (b.audio_guid) body.audio_guid = String(b.audio_guid);
+        if (b.play_link) body.play_link = String(b.play_link);
+        const apiPath = '/v/api/v1/play/record';
+        const headers = {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authx': genAuthx(apiPath, body)
+        };
+        const r = await fetch(state.baseOrigin + apiPath, {
+          method: 'POST',
+          credentials: 'include',
+          headers,
+          body: JSON.stringify(body)
+        });
+        let j = null;
+        try { j = await r.json(); } catch (_) {}
+        const ok = r.ok && (!j || j.code === 0 || j.code === '0');
+        log('progress.report', { ts, status: r.status, ok, code: j && j.code, msg: j && j.msg });
+        return { ok, ts };
+      } catch (e) {
+        log('progress.report.err', { err: String(e && e.message || e) });
+        return null;
+      }
+    }
+
     async function refreshMpvMedia() {
       try {
         readTokenFromStorage();
@@ -1200,6 +1270,13 @@ contextBridge.exposeInMainWorld('fnos', {
       try { darkenPlayerContainers(v); } catch (_) {}
       const wpLive = /\/wp\/(m3u8|flv|live)/i.test(direct.url);
       const isLiveNow = /\/v\/live\//.test(location.pathname) || wpLive || /\.(m3u8|flv)(\?|$)/i.test(direct.url) || /\/play\//i.test(direct.url);
+      // v2.23.0：网页没走 play/info（直链来自 mediaGuid hook / 路由 query）时，补一次以读到
+      // 服务端记住的观看位置；失败不影响播放（只是本轮读不到网页端进度）
+      if (!isLiveNow && state.itemGuid && state.serverTsFor !== state.itemGuid) {
+        // 换集/换片先清零，避免上一集的服务端观看位置被误用
+        state.serverTs = 0; state.serverDur = 0;
+        try { await fetchPlayInfo(state.itemGuid); state.serverTsFor = state.itemGuid; } catch (_) {}
+      }
       const payload = {
         url: direct.url,
         mediaGuid: direct.mediaGuid,
@@ -1211,6 +1288,11 @@ contextBridge.exposeInMainWorld('fnos', {
         isLive: isLiveNow,
         scope: 'movie',
         source: direct.source,
+        // v2.23.0：服务端观看记录（网页端"继续观看"的位置），主进程与本机进度取较新者
+        serverTs: Number(state.serverTs) || 0,
+        serverDur: Number(state.serverDur) || 0,
+        videoGuid: state.videoGuid || '',
+        audioGuid: state.audioGuid || '',
         rect
       };
       log('embed.invoke', { source: direct.source, url: direct.url.slice(0, 96) });
@@ -1792,6 +1874,7 @@ contextBridge.exposeInMainWorld('fnos', {
         readTokenFromStorage();
         state.itemGuid = guidFromPath();
         try { __mpvRefreshFn = refreshMpvMedia; } catch (_) {}
+        try { __mpvProgressFn = reportPlayRecord; } catch (_) {}
         try { hookFetch(); } catch (_) {}
         try { hookXHR(); } catch (_) {}
         // 标记“视频活动”：由网络钩子命中播放接口时调用，惰性安装 DOM 监听。

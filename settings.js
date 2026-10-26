@@ -640,8 +640,8 @@
                  ' / 缩放 ' + (rt.subStyle.scale != null ? rt.subStyle.scale : '默认'))
               : '') + '</div>';
           // v2.22.0：续播状态 + 已记多少条
-          html += '<div style="margin-top:6px;opacity:.85">本地续播：' + (rt.resume === false ? '已关闭' : '已开启') +
-            (typeof rt.progressCount === 'number' ? ('（已记录 ' + rt.progressCount + ' 条播放进度）') : '') + '</div>';
+          html += '<div style="margin-top:6px;opacity:.85">续播：' + (rt.resume === false ? '已关闭' : '已开启，本机记录与飞牛网页端观看记录双向同步') +
+            (typeof rt.progressCount === 'number' ? ('（本机已记录 ' + rt.progressCount + ' 条播放进度）') : '') + '</div>';
           vlcRuntime.innerHTML = html;
           if (vlcProgressCount) {
             vlcProgressCount.textContent = (typeof rt.progressCount === 'number' && rt.progressCount > 0)

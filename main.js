@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.22.0';
+const APP_VERSION = '2.23.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1945,12 +1945,46 @@ function progressGet(key) {
   } catch (_) { return null; }
 }
 
+// v2.23.0：把本机进度上报到飞牛服务端观看记录（POST /v/api/v1/play/record）。
+// 真正的 HTTP 调用落在渲染进程（preload 内有 Authx 签名 + 同源 Cookie），主进程只做节流与转发。
+// 与网页播放器一致的语义：ts=秒；ts=0 表示清掉该条的"继续观看"。
+function pushWatchRecord(surf, ts, dur) {
+  try {
+    const rc = surf && surf.__pgRemote;
+    if (!rc || !rc.itemGuid) return;
+    const wc = rc.wc;
+    if (!wc || (wc.isDestroyed && wc.isDestroyed()) || typeof wc.executeJavaScript !== 'function') return;
+    const body = {
+      item_guid: String(rc.itemGuid),
+      media_guid: String(rc.mediaGuid || ''),
+      ts: Math.max(0, Math.round(Number(ts) || 0)),
+    };
+    const d = Math.round(Number(dur) || Number(rc.dur) || 0);
+    if (d > 0) body.duration = d;
+    if (rc.videoGuid) body.video_guid = String(rc.videoGuid);
+    if (rc.audioGuid) body.audio_guid = String(rc.audioGuid);
+    if (rc.playLink) body.play_link = String(rc.playLink);
+    const now = Date.now();
+    // 播放中的周期上报节流到 15s；ts=0（播完清记录）与结束补报不受节流限制
+    if (body.ts > 0 && surf.__pgRemoteAt && (now - surf.__pgRemoteAt) < 15000) return;
+    if (body.ts > 0) surf.__pgRemoteAt = now;
+    surf.__pgRemoteTs = body.ts;
+    const js = 'Promise.resolve(window.fnos && window.fnos.__reportProgress ? window.fnos.__reportProgress(' +
+      JSON.stringify(body) + ') : null)';
+    const ret = wc.executeJavaScript(js, true);
+    if (ret && ret.catch) ret.catch(() => {});
+    dlog('info', 'mpv.progress.report', { ts: body.ts, dur: body.duration || 0, item: body.item_guid.slice(0, 14) });
+  } catch (_) {}
+}
+
 // 给一个播放层挂进度记忆（每个 surface 只挂一次）
-function hookProgressMemory(surf, key, title) {
+function hookProgressMemory(surf, key, title, remote) {
   try {
     if (!surf || !surf.player) return;
     surf.__pgKey = key || '';
     surf.__pgTitle = title || '';
+    // v2.23.0：服务端观看记录同步上下文（渲染进程/条目 guid），缺省表示不同步
+    surf.__pgRemote = remote || surf.__pgRemote || null;
     if (surf.__pgHooked) return;
     surf.__pgHooked = true;
     const p = surf.player;
@@ -1966,6 +2000,7 @@ function hookProgressMemory(surf, key, title) {
         if (!(val > 30)) return;   // 前 30s 不记，避免"点开就退"污染进度
         surf.__pgLastAt = now;
         progressPut(k, val, dur, surf.__pgTitle);
+        try { pushWatchRecord(surf, val, dur); } catch (_) {}
       } catch (_) {}
     });
     p.on('pause', (paused) => {
@@ -1973,13 +2008,25 @@ function hookProgressMemory(surf, key, title) {
         if (!paused || !surf.__pgKey) return;
         const val = (typeof p._timePosVal === 'number') ? p._timePosVal : 0;
         const dur = (typeof p._duration === 'number') ? p._duration : 0;
-        if (val > 30) progressPut(surf.__pgKey, val, dur, surf.__pgTitle);
+        if (val > 30) {
+          progressPut(surf.__pgKey, val, dur, surf.__pgTitle);
+          try { pushWatchRecord(surf, val, dur); } catch (_) {}
+        }
       } catch (_) {}
     });
     p.on('end-file', (reason) => {
       try {
+        const dur = (typeof p._duration === 'number') ? p._duration : 0;
         // 正常播完（eof）：清记录；断流/切集不算看完
-        if (String(reason) === 'eof' && surf.__pgKey) progressDel(surf.__pgKey);
+        if (String(reason) === 'eof') {
+          if (surf.__pgKey) progressDel(surf.__pgKey);
+          // v2.23.0：网页端播完也会清掉观看记录（ts=0），保持一致，避免"看完了还挂在继续观看"
+          try { pushWatchRecord(surf, 0, dur); } catch (_) {}
+        } else {
+          // 关窗/切集/断流：把当前位置补报一次，网页端也能接着看
+          const val = (typeof p._timePosVal === 'number') ? p._timePosVal : 0;
+          if (val > 30) { try { pushWatchRecord(surf, val, dur); } catch (_) {} }
+        }
       } catch (_) {}
     });
   } catch (_) {}
@@ -14237,8 +14284,24 @@ async function embedMpvPlay(hostWin, payload) {
   const pgIsLive = !!payload.isLive || payload.scope === 'live';
   const pgTitle = payload.title || '';
   const pgKey = progressKeyFor(hostId, payload, guestWc, url, pgTitle);
-  const pgPos = resumePosFor(pgKey, pgIsLive);
-  try { hookProgressMemory(surf, pgKey, pgTitle); } catch (_) {}
+  const pgLocalPos = resumePosFor(pgKey, pgIsLive);
+  // v2.23.0：与飞牛网页端观看记录互通——payload.serverTs 是网页端"继续观看"记住的位置，
+  // 与本机记录取较新者；前 30s 与"看到 95% 以上"的规则与网页端/本机一致。
+  const pgSync = getMpvSettings().resume !== false;
+  const pgSrvTs = Math.floor(Number(payload.serverTs) || 0);
+  const pgSrvDur = Math.floor(Number(payload.serverDur) || 0);
+  const pgSrvOk = pgSync && !pgIsLive && pgSrvTs > 30 && !(pgSrvDur > 0 && pgSrvTs > pgSrvDur * 0.95);
+  const pgPos = Math.max(pgLocalPos, pgSrvOk ? pgSrvTs : 0);
+  const pgRemote = (pgSync && !pgIsLive && payload.itemGuid) ? {
+    wc: guestWc,
+    itemGuid: String(payload.itemGuid),
+    mediaGuid: String(payload.mediaGuid || ''),
+    videoGuid: String(payload.videoGuid || ''),
+    audioGuid: String(payload.audioGuid || ''),
+    playLink: String(payload.playLink || ''),
+    dur: pgSrvDur,
+  } : null;
+  try { hookProgressMemory(surf, pgKey, pgTitle, pgRemote); } catch (_) {}
   if (pgPos > 0) { try { armResumeNotice(surf, pgPos); } catch (_) {} }
 
   try {

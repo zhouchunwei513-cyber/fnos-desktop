@@ -77,8 +77,8 @@ class MpvSurface {
       // v1.63：嵌入 mpv 虽常驻 ontop，但宿主窗口拖动/激活时偶尔会被系统提到 mpv 之上
       // （mpv 跑到飞牛窗口后面被盖住）。移动结束/恢复/首帧后强制重新置顶 mpv 一次。
       this._raiseMpv = () => { try { if (this.player && this.player.isRunning() && !this._pip && !this._docked) this.player.setOntop(true); } catch (_) {} };
-      this._moveHandler = () => { this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(8); } catch (_) {} };
-      this._resizeHandler = () => { this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(12); } catch (_) {} };
+      this._moveHandler = () => { this._trackTransit('move', 700); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(8); } catch (_) {} };
+      this._resizeHandler = () => { this._trackTransit('resize', 900); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(12); } catch (_) {} };
       this._minHandler = () => { try { this.player.hideWindow(); } catch (_) {} };
       this._restoreHandler = () => { try { this.player.showWindow(); this._applyGeometry(); } catch (_) {} this._raiseMpv(); };
       // v1.48.0：父窗被一键隐藏/锁定（hide）/重新呼出（show）时，嵌入 mpv 原生窗口也要跟随，
@@ -132,6 +132,7 @@ class MpvSurface {
       this._leaveHtmlFsHandler = () => this._fsExit();
       this._maximizeHandler = () => {
         try { this.player._lastGeoStr = ''; } catch (_) {}
+        this._trackTransit('maximize', 1800);
         this._applyGeometry();
         try { if (!this._chasing) this._chase(20); } catch (_) {}
         this._raiseMpv();
@@ -384,7 +385,8 @@ class MpvSurface {
         // v2.24.0：mpv 自己进出 fullscreen 需要 0.5~1.5s 才落地，这段时间下发的 geometry 会被它
         // 覆盖掉（日志实测退出全屏后 1.7s 内 mpv 仍是 1920x1080，宿主已是 1299x745）。这里开 2s 的
         // audit 快通道（100ms 一次、最多 14 次重发），mpv 一落地就立刻被拉回正确尺寸。
-        this._winAuditFastUntil = Date.now() + 2000;
+        try { this.player._markTransit(800); } catch (_) {}
+        this._trackTransit(fs ? 'fs-on' : 'fs-off', 2600);
         this._emit('log', 'embed.fs.fullscreen ' + (fs ? 'on' : 'off'));
       } catch (_) {}
       try { this.player._lastGeoStr = ''; } catch (_) {}
@@ -409,6 +411,7 @@ class MpvSurface {
       try {
         const before = this.player._lastGeoStr;
         this._pushGeometry(geo);
+        try { this.player._markTransit(150); } catch (_) {}
         const after = `${Math.max(160, geo.width)}x${Math.max(90, geo.height)}+${geo.x}+${geo.y}`;
         if (!__reassert && before !== after) {
           // v1.68.0：宿主拖动/网页滚动时 setRect 上报极频繁（几百 ms 内几十次），
@@ -433,6 +436,18 @@ class MpvSurface {
   // keepaspect / DPI 截过，一直是黑盒。这里用只读属性 osd-dimensions 直接问 mpv 的真实像素尺寸，
   // 与我们下发的不一致就清掉去抖缓存并立刻重下发（自愈），同时记一次 mpv.win.mismatch 供定位。
   // 同一组 want/got 连续重试 3 次仍不收敛就停止重发（避免和 mpv 内部约束死斗），只保留日志。
+  // v2.24.2：把"这次是大跨度窗口变化"登记下来——顺带开审计快通道。低配机上窗口施加
+  // 本身要几百毫秒，慢心跳会漏掉中间态；同时记录 mpv 追上目标尺寸的耗时，settle 后写一行
+  // mpv.track 到 diag 日志，用户机上一眼看出到底慢在哪个阶段。
+  _trackTransit(tag, ms) {
+    try {
+      const now = Date.now();
+      const until = now + Math.max(300, ms || 0);
+      if (!this._winAuditFastUntil || until > this._winAuditFastUntil) this._winAuditFastUntil = until;
+      this._track = { tag: tag, t0: now, worst: 0, done: false };
+    } catch (_) {}
+  }
+
   _auditMpvWin(geo) {
     try {
       if (!geo || !this.player || typeof this.player.command !== 'function') return;
@@ -456,7 +471,16 @@ class MpvSurface {
           if (Math.abs(w - want.width) <= 2 && Math.abs(h - want.height) <= 2) {
             this._winAuditKey = '';
             this._winAuditTries = 0;
+            const tr = this._track;
+            if (tr && !tr.done) {
+              tr.done = true;
+              this._emit('log', 'mpv.track ' + tr.tag + ' settled=' + (now - tr.t0) + 'ms worst=' + Math.round(tr.worst) + 'px');
+            }
             return;
+          }
+          if (this._track && !this._track.done) {
+            const dv = Math.abs(w - want.width) + Math.abs(h - want.height);
+            if (dv > this._track.worst) this._track.worst = dv;
           }
           const key = wantKey + '>' + w + 'x' + h;
           if (this._winAuditKey !== key) {
@@ -464,7 +488,7 @@ class MpvSurface {
             this._winAuditTries = 0;
             this._emit('log', 'mpv.win.mismatch want=' + wantKey + ' got=' + w + 'x' + h + ' fs=' + (this._isHostFs() ? 1 : 0));
           }
-          if ((this._winAuditTries || 0) >= (fast ? 14 : 3)) return;
+          if ((this._winAuditTries || 0) >= (fast ? 18 : 3)) return;
           this._winAuditTries = (this._winAuditTries || 0) + 1;
           try { this.player._lastGeoStr = ''; } catch (_) {}
           try { this.player.setGeometry(want); } catch (_) {}

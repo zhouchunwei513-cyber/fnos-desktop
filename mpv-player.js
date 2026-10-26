@@ -490,6 +490,10 @@ class MpvPlayer extends EventEmitter {
     this._logFilePath = '';   // mpv 自身详细日志文件（fnos-mpv.log）
     this._scaleFactor = 1;    // mpv 窗口所在显示器的 DPI 缩放（圆角物理像素 = 40 * scaleFactor）
     this._cornerTimer = null; // 圆角应用 debounce 定时器（点播圆角，直播直角）
+    // v2.24.2：过渡期（拖动/缩放/全屏切换）内不重裁圆角——SetWindowRgn 会同步失效窗口并触发重绘，
+    // 卡在 mpv 正在改尺寸的窗口上会让窗口尺寸动画一顿一顿，表现为"播放器跟不上窗口"。
+    this._transitUntil = 0;       // 过渡期截止时间戳；期间圆角指令延后
+    this._cornerDeferTimer = null; // 过渡结束后补一次圆角的定时器
     // v2.24.1：圆角 helper 已提到模块级单例，这里只做一次预热（幂等，重复调用无副作用）
     if (process.platform === 'win32') prewarmCorners();
   }
@@ -1363,7 +1367,17 @@ class MpvPlayer extends EventEmitter {
   //   - mpv 自带 --window-corners 只能做 DWM 8px/4px 圆角，达不到主窗 20px，故用 SetWindowRgn。
   //   - RGN 基于窗口客户区物理像素，圆角直径 = 40 * scaleFactor（20px 半径 DIP）。
   //   - 窗口 resize 后 RGN 需重建，故在 setGeometry / 首帧 reveal / loadfile 后统一 debounce 重设。
-    _scheduleCorners() {
+    // v2.24.2：标记过渡期（毫秒）。过渡期内圆角只延后不执行，结束后一发补齐。
+  _markTransit(ms) {
+    const t = Date.now() + Math.max(0, ms || 0);
+    if (t > this._transitUntil) this._transitUntil = t;
+  }
+
+  _inTransit() {
+    return !!this._transitUntil && Date.now() < this._transitUntil;
+  }
+
+  _scheduleCorners() {
     if (process.platform !== 'win32') return;
     if (this._cornerTimer) { try { clearTimeout(this._cornerTimer); } catch (_) {} }
     this._cornerTimer = setTimeout(() => {
@@ -1394,6 +1408,20 @@ class MpvPlayer extends EventEmitter {
     const scale = this._scaleFactor || 1;
     const d = Math.max(2, Math.round(40 * scale)); // 圆角直径（物理像素）：20px 半径 DIP * 2 * scale
     const halfD = Math.max(1, Math.round(d / 2)); // 圆角半径（物理像素），用于补直角的竖条/横条宽度
+    // v2.24.2：过渡期延后。20 次/秒的 SetWindowRgn 落在 mpv 正在改尺寸的窗口上会把 resize 拖慢，
+    // 等于用圆角去跟窗口抢：过渡结束时补一发，视觉上"停稳即圆"，过程中不再和尺寸动画抢锁。
+    if (this._inTransit()) {
+      if (!this._cornerDeferTimer) {
+        const wait = Math.max(24, this._transitUntil - Date.now() + 24);
+        this._cornerDeferTimer = setTimeout(() => {
+          this._cornerDeferTimer = null;
+          if (this._dead) return;
+          this._applyRoundedCorners();
+        }, wait);
+        if (this._cornerDeferTimer.unref) this._cornerDeferTimer.unref();
+      }
+      return;
+    }
     // v2.24.0（用户反馈：启动 / 全屏 / 最大化来回切时，四角由直角变圆角要等一会）——
     // 旧实现每次都 spawn 一个 powershell 重新 Add-Type 编译 C#（0.5~1s），叠加 300ms debounce，
     // 首帧起点是直角、一秒多后才变圆角。现在改用一个常驻 PowerShell 辅助进程：C# 只编译一次，

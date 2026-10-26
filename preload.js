@@ -406,6 +406,8 @@ contextBridge.exposeInMainWorld('fnos', {
       baseOrigin: location.origin,
       handled: false,
       resolving: false,
+      mpvAlways: false,  // v2.20.0：默认用 MPV 播放（所有视频直接交给 MPV）
+      epSwitchAt: 0,     // v2.20.0：最近一次「上一集/下一集」点击时刻（切集宽限窗口）
       lastTitle: ''
     };
 
@@ -1260,10 +1262,197 @@ contextBridge.exposeInMainWorld('fnos', {
       return false;
     }
 
+    // ============ v2.20.0：剧集导航（上一集 / 下一集 / 自动连播）============
+    // 飞牛影视播放页是单文件播放（mpv playlist 只有 1 项），原生控制条的上一集/下一集
+    // 因为 playlist-count==1 恒为灰色。这里把"切集"交回网页自身完成：
+    //   1) 优先找页面上明确的「下一集 / 上一集」按钮（最贴近站点原生行为，改集数逻辑由站点负责）；
+    //   2) 退化为扫描页面内 /v/video/<guid> 链接构成的剧集序列，按 DOM 顺序定位当前集并点击相邻项。
+    // 网页切集后 video 重新加载，preload 的接管逻辑会自动重新 embed，观感连续。
+    const EP_NAV_RX = {
+      next: /(下一集|下集|后一集|下一个|next\s*episode|next)/i,
+      prev: /(上一集|上集|前一集|上一个|previous\s*episode|prev\s*episode|previous|prev)/i
+    };
+    let __lastAbilityKey = '';
+    let __lastAbilityAt = 0;
+
+    function elVisible(el) {
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const st = window.getComputedStyle(el);
+        return st.visibility !== 'hidden' && st.display !== 'none' && Number(st.opacity || 1) > 0.05;
+      } catch (_) { return false; }
+    }
+
+    // 找"下一集/上一集"按钮：看 aria-label / title / 文本，文本须短（排除整段介绍）
+    function findEpisodeButton(dir) {
+      const rx = EP_NAV_RX[dir];
+      if (!rx) return null;
+      const out = [];
+      try {
+        const nodes = document.querySelectorAll('button,[role="button"],a,div,span,i,svg');
+        for (let i = 0; i < nodes.length; i++) {
+          const el = nodes[i];
+          try {
+            const attr = ((el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title') || '')) || '').replace(/\s+/g, ' ').trim();
+            const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            const label = attr || text;
+            if (!label || label.length > 12) continue;
+            if (!rx.test(label)) continue;
+            if (el.disabled === true || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) continue;
+            // 文本要能"点到"：按钮本身或其最近的可点击祖先
+            const clickable = el.closest('button,[role="button"],a') || el;
+            if (!elVisible(clickable)) continue;
+            out.push(clickable);
+          } catch (_) {}
+        }
+      } catch (_) {}
+      if (!out.length) return null;
+      // 取最内层（文本最短）的可点元素，避免命中包裹整个播放器的容器
+      out.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+      return out[0];
+    }
+
+    // 扫描页面内剧集链接（/v/video/<guid>），按 DOM 顺序作为集序
+    function collectEpisodeItems() {
+      const list = [];
+      const seen = new Set();
+      try {
+        const anchors = document.querySelectorAll('a[href*="/v/video/"]');
+        for (let i = 0; i < anchors.length; i++) {
+          const a = anchors[i];
+          const href = a.getAttribute('href') || '';
+          const m = /\/v\/video\/([A-Za-z0-9_-]{6,})/.exec(href);
+          if (!m) continue;
+          const guid = m[1];
+          if (seen.has(guid)) continue;
+          seen.add(guid);
+          list.push({ guid, el: a, href });
+        }
+      } catch (_) {}
+      return list;
+    }
+
+    function currentEpisodeGuid() {
+      try { return state.itemGuid || guidFromPath() || ''; } catch (_) { return ''; }
+    }
+
+    function episodeAbility() {
+      const cur = currentEpisodeGuid();
+      const btnNext = findEpisodeButton('next');
+      const btnPrev = findEpisodeButton('prev');
+      if (btnNext || btnPrev) {
+        return { hasPrev: !!btnPrev, hasNext: !!btnNext, source: 'button', total: 0, index: -1 };
+      }
+      const list = collectEpisodeItems();
+      const idx = list.findIndex(it => it.guid === cur);
+      if (idx >= 0 && list.length > 1) {
+        return { hasPrev: idx > 0, hasNext: idx < list.length - 1, source: 'list', total: list.length, index: idx };
+      }
+      return { hasPrev: false, hasNext: false, source: '', total: list.length, index: idx };
+    }
+
+    function goEpisode(dir) {
+      const d = dir === 'prev' ? 'prev' : 'next';
+      if (!isVideoRoute()) { log('epnav.skip.route', { dir: d, path: location.pathname }); return false; }
+      // 切集后继续由 MPV 播放（否则新一集会被网页 <video> 正常播，播放器切换观感断裂）
+      state.mpvAlways = true;
+      state.epSwitchAt = Date.now();
+      const ab = episodeAbility();
+      if ((d === 'next' && !ab.hasNext) || (d === 'prev' && !ab.hasPrev)) {
+        log('epnav.none', { dir: d, hasPrev: ab.hasPrev, hasNext: ab.hasNext, source: ab.source, total: ab.total });
+        return false;
+      }
+      // 1) 优先点站点自己的按钮
+      const btn = findEpisodeButton(d);
+      if (btn) {
+        try {
+          btn.click();
+          state.epSwitchAt = Date.now();
+          log('epnav.click.button', { dir: d, text: String(btn.innerText || '').slice(0, 20) });
+          // 切集后网页会重新加载 video；解除接管标记让新一轮 embed 生效
+          setTimeout(() => {
+            try { state.handled = false; state.mediaGuid = ''; state.resolving = false; } catch (_) {}
+            // handled=true 时 scheduleScan 会跳过扫描，这里主动扫一次让新一集被 watch → 重新 embed
+            try { if (isVideoRoute()) scan(); } catch (_) {}
+          }, 600);
+          return true;
+        } catch (_) {}
+      }
+      // 2) 退化为剧集链接序列
+      const list = collectEpisodeItems();
+      const cur = currentEpisodeGuid();
+      const idx = list.findIndex(it => it.guid === cur);
+      if (idx >= 0) {
+        const target = list[d === 'next' ? idx + 1 : idx - 1];
+        if (target) {
+          try {
+            if (target.el && typeof target.el.click === 'function') {
+              target.el.click();
+              state.epSwitchAt = Date.now();
+              log('epnav.click.link', { dir: d, guid: target.guid, index: idx });
+              setTimeout(() => {
+            try { state.handled = false; state.mediaGuid = ''; state.resolving = false; } catch (_) {}
+            // handled=true 时 scheduleScan 会跳过扫描，这里主动扫一次让新一集被 watch → 重新 embed
+            try { if (isVideoRoute()) scan(); } catch (_) {}
+          }, 600);
+              return true;
+            }
+          } catch (_) {}
+          try {
+            location.href = target.href;
+            log('epnav.href', { dir: d, guid: target.guid, index: idx });
+            return true;
+          } catch (_) {}
+        }
+      }
+      log('epnav.fail', { dir: d, hasPrev: ab.hasPrev, hasNext: ab.hasNext, source: ab.source, total: ab.total, index: idx });
+      return false;
+    }
+
+    // 把"是否有上一集/下一集"上报主进程 → 写入 mpv user-data → 中文控制条点亮对应按钮
+    function reportEpisodeAbility(force) {
+      try {
+        if (!state.handled) return;
+        const now = Date.now();
+        if (!force && now - __lastAbilityAt < 1200) return;
+        __lastAbilityAt = now;
+        const cur = currentEpisodeGuid();
+        if (!cur) return;
+        const ab = episodeAbility();
+        const key = cur + '|' + (ab.hasPrev ? 1 : 0) + (ab.hasNext ? 1 : 0);
+        if (!force && key === __lastAbilityKey) return;
+        __lastAbilityKey = key;
+        ipcRenderer.send('mpv:episode-ability', {
+          itemGuid: cur, hasPrev: ab.hasPrev, hasNext: ab.hasNext,
+          total: ab.total, index: ab.index, source: ab.source
+        });
+        log('epnav.ability', { hasPrev: ab.hasPrev, hasNext: ab.hasNext, source: ab.source, total: ab.total, index: ab.index });
+      } catch (_) {}
+    }
+
     function watch(v) {
       try {
         if (!v || v.__mpvWatched) return;
         v.__mpvWatched = true;
+        // v2.20.0：默认用 MPV 播放 → 视频一出现就接管，不再等 error/stalled 判定
+        if (state.mpvAlways) {
+          const tryAlways = () => {
+            try {
+              const epWin = state.epSwitchAt && (Date.now() - state.epSwitchAt) < 8000;
+              if ((state.handled && !epWin) || state.resolving) return;
+              if (!isVideoRoute()) return;
+              const m = getMainVideo();
+              if (!m) return;
+              if (!(m.currentSrc || m.src)) return;
+              log('embed.always', { readyState: m.readyState, path: location.pathname });
+              triggerEmbed(m, 'always');
+            } catch (_) {}
+          };
+          v.addEventListener('loadedmetadata', tryAlways, true);
+          v.addEventListener('playing', tryAlways, true);
+          setTimeout(tryAlways, 900);
+        }
         const fail = () => { if (isUnsupported(v)) triggerEmbed(v, 'error'); };
         v.addEventListener('error', fail, true);
         v.addEventListener('stalled', () => {
@@ -1394,6 +1583,8 @@ contextBridge.exposeInMainWorld('fnos', {
             if (__isPlayLikeRoute() && document.getElementsByTagName('video').length > 0) {
               installDomObserver();
             }
+            // v2.20.0：接管期间持续同步剧集导航能力（是否有上一集/下一集）
+            if (state.handled) { try { reportEpisodeAbility(false); } catch (_) {} }
           } catch (_) {}
         }, 1000);
         if (__videoProbe.unref) __videoProbe.unref();
@@ -1410,6 +1601,28 @@ contextBridge.exposeInMainWorld('fnos', {
           } catch (_) {}
         });
         ipcRenderer.on('mpv:embed-closed', () => { try { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); restorePlayerContainers(); log('embed.closed', {}); } catch (_) {} });
+        // v2.20.0：读取 MPV 设置（默认用 MPV 播放）
+        try {
+          ipcRenderer.invoke('mpv:get-settings').then((cfg) => {
+            try {
+              state.mpvAlways = !!(cfg && cfg.alwaysUse);
+              log('mpv.settings', { alwaysUse: state.mpvAlways, enabled: !!(cfg && cfg.enabled) });
+              if (state.mpvAlways && __isPlayLikeRoute()) {
+                installDomObserver();
+                const v = getMainVideo();
+                if (v && (v.currentSrc || v.src)) triggerEmbed(v, 'always-boot');
+              }
+            } catch (_) {}
+          }).catch(() => {});
+        } catch (_) {}
+        // v2.20.0：MPV 控制条「上一集 / 下一集 / 自动连播」→ 网页内切集
+        ipcRenderer.on('mpv:episode-nav', (_e, d) => {
+          try {
+            const dir = (d && d.dir) === 'prev' ? 'prev' : 'next';
+            log('epnav.recv', { dir, auto: !!(d && d.auto) });
+            goEpisode(dir);
+          } catch (err) { log('epnav.recv.err', { err: String(err && err.message || err) }); }
+        });
         log('preload.boot', { path: location.pathname });
       } catch (_) {}
     };

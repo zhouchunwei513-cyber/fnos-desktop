@@ -408,18 +408,32 @@
         <h2>兼容性播放器（MPV）</h2>
       </div>
       <p class="section-desc">
-        飞牛影视网页/内置直播默认使用系统网页内核播放；遇到网页解不了的格式（HEVC/H.265 10bit、4K、MKV、特殊音轨）时，
-        会自动用内置 <b>MPV</b> 播放器（自带完整 ffmpeg 解码器）在<b>应用内视频区</b>直接播放，通吃绝大多数视频，无需跳出外部窗口。MPV 运行库随应用打包。
+        内置 <b>MPV</b> 播放器（自带完整 ffmpeg 解码器）在<b>应用内视频区</b>直接播放，通吃绝大多数视频，无需跳出外部窗口。
+        <b>默认用 MPV 播放</b>开启时，飞牛影视的所有视频都直接交给 MPV；关闭时仅当网页内核解不了的格式（HEVC/H.265 10bit、4K、MKV、特殊音轨）才自动切换。
+        播放剧集时，MPV 控制条支持上一集 / 下一集，并可在播完后自动连播下一集。MPV 运行库随应用打包。
       </p>
 
       <div id="vlc-runtime" class="hotkey-sub" style="margin:10px 0;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,0.05);line-height:1.7">
         正在检测 MPV 运行状态…
       </div>
 
-      <div class="hotkey-row" style="margin-top:10px">
+      <div class="hotkey-row" style="margin-top:10px" id="vlc-always-row">
         <div class="hotkey-label">
-          <div class="hotkey-title">解码失败时自动用 MPV 播放</div>
-          <div class="hotkey-sub">关闭后仅保留菜单/按钮里的「用 MPV 播放」手动入口</div>
+          <div class="hotkey-title">默认用 MPV 播放（推荐）</div>
+          <div class="hotkey-sub">开启后飞牛影视的所有视频都直接用 MPV 播放，不再先尝试网页内核；剧集支持上一集 / 下一集与自动连播</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;align-items:center">
+          <label class="switch" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="checkbox" id="vlc-always" />
+            <span id="vlc-always-label">已关闭</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px" id="vlc-fallback-row">
+        <div class="hotkey-label">
+          <div class="hotkey-title">解码失败时自动兜底</div>
+          <div class="hotkey-sub" id="vlc-fallback-sub">网页内核无法解码（HEVC/10bit/4K/MKV 等）时自动切到 MPV；开启「默认用 MPV 播放」后本项不再生效</div>
         </div>
         <div style="flex:0 0 260px;display:flex;align-items:center">
           <label class="switch" style="display:flex;align-items:center;gap:10px;cursor:pointer">

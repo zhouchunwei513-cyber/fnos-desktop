@@ -15,6 +15,27 @@ local opt = require 'mp.options'
 local FN = {}
 -- Windows 中文字体回退（微软雅黑/黑体），确保 ASS 标签内的中文能正常渲染
 FN.cjk_font = "Microsoft YaHei, SimHei, sans-serif"
+
+-- v2.20.0：飞牛影视剧集导航（上一集 / 下一集）
+-- 单文件播放时 playlist-count==1，原生上一集/下一集恒为灰色不可点。
+-- 由客户端主进程把"网页是否有上一集/下一集"写入 user-data/fnos/ep-prev/ep-next（yes/no），
+-- 这里据此点亮按钮；点击时写入 user-data/fnos/epnav（方向:序号:时间戳），
+-- 客户端 observe 该属性后转成网页内切集动作。
+function FN.ep_flag(name)
+    local ok, v = pcall(function() return mp.get_property("user-data/fnos/" .. name) end)
+    if not ok then return false end
+    return v == "yes"
+end
+
+function FN.ep_nav(dir)
+    FN.ep_seq = (FN.ep_seq or 0) + 1
+    local val = tostring(dir) .. ":" .. tostring(FN.ep_seq) .. ":" .. tostring(os.time())
+    local ok = pcall(function() mp.set_property("user-data/fnos/epnav", val) end)
+    if not ok then
+        pcall(function() mp.set_property_native("user-data/fnos/epnav", val) end)
+    end
+    mp.osd_message(dir == "prev" and "正在切换上一集…" or "正在切换下一集…", 2)
+end
 -- 中文标签用的 ASS 样式（继承 OSC 字号语义，仅覆盖字体为中文字体）
 function FN.zh(style_str)
     -- style_str 形如 "...\\fs20}"；在结尾 } 前插入字体覆盖
@@ -2166,15 +2187,25 @@ local function osc_init()
     ne = new_element("playlist_prev", "button")
 
     ne.content = icons.prev
-    ne.enabled = (pl_pos > 1) or (loop ~= "no")
+    local fn_ep_prev = FN.ep_flag("ep-prev")
+    ne.enabled = (pl_pos > 1) or (loop ~= "no") or fn_ep_prev
     bind_mouse_buttons("playlist_prev")
+    -- v2.20.0：飞牛剧集优先走网页切集；仅当 mpv 播放列表只有 1 项时接管，
+    -- 保留原生多文件播放列表的 playlist-prev 行为
+    if fn_ep_prev and pl_count <= 1 then
+        ne.eventresponder["mbtn_left_up"] = function () FN.ep_nav("prev") end
+    end
 
     --next
     ne = new_element("playlist_next", "button")
 
     ne.content = icons.next
-    ne.enabled = (have_pl and (pl_pos < pl_count)) or (loop ~= "no")
+    local fn_ep_next = FN.ep_flag("ep-next")
+    ne.enabled = (have_pl and (pl_pos < pl_count)) or (loop ~= "no") or fn_ep_next
     bind_mouse_buttons("playlist_next")
+    if fn_ep_next and pl_count <= 1 then
+        ne.eventresponder["mbtn_left_up"] = function () FN.ep_nav("next") end
+    end
 
 
     -- big buttons
@@ -2976,6 +3007,9 @@ mp.register_event("start-file", request_init)
 mp.observe_property("track-list", "native", request_init)
 mp.observe_property("playlist-count", "native", request_init)
 mp.observe_property("playlist-pos", "native", request_init)
+-- v2.20.0：剧集导航能力变化 → 重建控制条，实时点亮/置灰上一集、下一集
+pcall(function() mp.observe_property("user-data/fnos/ep-prev", "string", request_init) end)
+pcall(function() mp.observe_property("user-data/fnos/ep-next", "string", request_init) end)
 mp.observe_property("chapter-list", "native", function(_, list)
     list = list or {}  -- safety, shouldn't return nil
     table.sort(list, function(a, b) return a.time < b.time end)

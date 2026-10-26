@@ -578,6 +578,11 @@
   // --------- 兼容性播放器（MPV）v1.25.0 ---------
   const vlcEnabled = document.getElementById('vlc-enabled');
   const vlcEnabledLabel = document.getElementById('vlc-enabled-label');
+  // v2.20.0：默认用 MPV 播放（所有视频直接交给 MPV）
+  const vlcAlways = document.getElementById('vlc-always');
+  const vlcAlwaysLabel = document.getElementById('vlc-always-label');
+  const vlcFallbackRow = document.getElementById('vlc-fallback-row');
+  const vlcFallbackSub = document.getElementById('vlc-fallback-sub');
   const vlcHw = bindGlassSelect(document.querySelector('[data-select="vlc-hw"]'));
   const vlcCache = bindGlassSelect(document.querySelector('[data-select="vlc-cache"]'));
   const vlcSave = document.getElementById('vlc-save');
@@ -592,9 +597,12 @@
           const hwLabel = { auto: '自动', d3d11va: 'D3D11VA', dxva2: 'DXVA2', no: '软解' }[rt.hwDecode] || rt.hwDecode;
           const cacheLabel = { standard: '均衡 32MB/60s', smooth: '流畅 128MB/120s', unlimited: '超大 512MB/300s' }[rt.cacheLevel] || rt.cacheLevel;
           let html = '';
+          const always = rt.alwaysUse === true;
           if (rt.available) {
-            html = '<div style="color:#4ade80">● MPV 播放器已就绪，应用内嵌入播放</div>' +
-              '<div style="opacity:.8;margin-top:4px">网页遇到 HEVC/10bit/4K/MKV 等无法解码的视频时，将自动在视频区调用 MPV 直接播放（无需跳出窗口）。</div>';
+            html = '<div style="color:#4ade80">● MPV 播放器已就绪，应用内嵌入播放' + (always ? '（默认播放器）' : '（兜底播放器）') + '</div>' +
+              '<div style="opacity:.8;margin-top:4px">' + (always
+                ? '当前为默认播放模式：飞牛影视的所有视频都直接交给 MPV 播放，剧集支持上一集 / 下一集与自动连播。'
+                : '当前为兜底模式：仅当网页内核无法解码（HEVC/10bit/4K/MKV 等）时自动切换到 MPV。') + '</div>';
           } else {
             html = '<div style="color:#f87171">● MPV 播放器不可用：' + (rt.reason || '未知原因') + '</div>' +
               '<div style="opacity:.8;margin-top:4px">特殊编码视频仍只能依赖网页内核，可能无法播放。</div>';
@@ -614,12 +622,42 @@
         vlcEnabled.checked = v.enabled !== false;
         if (vlcEnabledLabel) vlcEnabledLabel.textContent = vlcEnabled.checked ? '已启用' : '已关闭';
       }
+      if (vlcAlways) {
+        vlcAlways.checked = v.alwaysUse === true;
+        if (vlcAlwaysLabel) vlcAlwaysLabel.textContent = vlcAlways.checked ? '已开启' : '已关闭';
+      }
+      syncVlcAlways();
       if (vlcHw) vlcHw.value = v.hwDecode || 'auto';
       if (vlcCache) vlcCache.value = v.cacheLevel || 'smooth';
       refreshVlcRuntime();
     } catch (err) {
       showError(vlcError, err?.message || '加载播放器设置失败');
     }
+  }
+
+  // 默认用 MPV 时，兜底开关不再生效 → 置灰 + 说明
+  function syncVlcAlways() {
+    const always = !!(vlcAlways && vlcAlways.checked);
+    if (vlcFallbackRow) {
+      vlcFallbackRow.style.opacity = always ? '0.45' : '';
+    }
+    if (vlcEnabled) vlcEnabled.disabled = always;
+    // 被接管时勾选框是禁用空框，文案同步为「已停用」避免与状态自相矛盾
+    if (vlcEnabledLabel) vlcEnabledLabel.textContent = always
+      ? '已停用'
+      : (vlcEnabled && vlcEnabled.checked ? '已启用' : '已关闭');
+    if (vlcFallbackSub) {
+      vlcFallbackSub.textContent = always
+        ? '已由「默认用 MPV 播放」接管，本项不再生效'
+        : '网页内核无法解码（HEVC/10bit/4K/MKV 等）时自动切到 MPV；开启「默认用 MPV 播放」后本项不再生效';
+    }
+  }
+
+  if (vlcAlways) {
+    vlcAlways.addEventListener('change', () => {
+      if (vlcAlwaysLabel) vlcAlwaysLabel.textContent = vlcAlways.checked ? '已开启' : '已关闭';
+      syncVlcAlways();
+    });
   }
 
   if (vlcEnabled) {
@@ -634,8 +672,11 @@
       vlcSave.textContent = '保 存 中';
       showError(vlcError, '');
       try {
+        const alwaysOn = vlcAlways ? !!vlcAlways.checked : false;
         const res = await fnosSettings.setVlc({
-          enabled: vlcEnabled ? !!vlcEnabled.checked : true,
+          // v2.20.0：默认用 MPV 播放时，兜底开关不再生效，enabled 一律视为开启
+          enabled: alwaysOn ? true : (vlcEnabled ? !!vlcEnabled.checked : true),
+          alwaysUse: alwaysOn,
           hwDecode: vlcHw ? vlcHw.value : 'auto',
           cacheLevel: vlcCache ? vlcCache.value : 'smooth',
         });

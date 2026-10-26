@@ -516,6 +516,12 @@ class MpvPlayer extends EventEmitter {
       // v1.32.0：观察视频参数（首帧解码就绪信号）与轨道列表，用于"首帧前隐藏窗口"
       this.command(['observe_property', 9, 'video-params']);
       this.command(['observe_property', 10, 'track-list/count']);
+      // v2.20.0：中文控制条（osc-zh-cn.lua）点上一集/下一集时写入 user-data/fnos/epnav，
+      // 这里观察该属性变化并 emit('epnav', dir)，由主进程转成网页切集动作。
+      this.command(['observe_property', 11, 'user-data/fnos/epnav']);
+      // v2.20.0：部分 mpv 构建对 user-data/* 的观察不派发事件，另起一条 800ms 轮询做兜底
+      // （同一 _lastEpNav 去重，两路并存不会重复触发）
+      this._startEpNavPoll();
       this._startWatchdog();
     });
     sock.on('data', chunk => {
@@ -586,6 +592,14 @@ class MpvPlayer extends EventEmitter {
           this._userPause = false; // 提前 EOF 时的暂停是 keep-open 自动暂停，非用户主动
           this.emit('ended');
           this._handlePrematureEof();
+        }
+      }
+      else if (id === 11) {
+        // 值形如 "next:12:1730000000"（方向:序号:时间戳），序号保证连续点同一方向也能触发
+        if (val != null && String(val) !== this._lastEpNav) {
+          this._lastEpNav = String(val);
+          const dir = String(val).split(':')[0] === 'prev' ? 'prev' : 'next';
+          this.emit('epnav', dir);
         }
       }
       else if (id === 5) { this._coreIdle = !!val; }
@@ -723,6 +737,26 @@ class MpvPlayer extends EventEmitter {
       if (this._startupTimer.unref) this._startupTimer.unref();
     } catch (_) {}
   }
+
+  // v2.20.0：剧集导航兜底轮询（控制器点击上一集/下一集 → user-data/fnos/epnav 变化）
+  _startEpNavPoll() {
+    if (this._epNavTimer) return;
+    this._epNavTimer = setInterval(() => {
+      try {
+        if (!this.connected || this._dead) return;
+        this.command(['get_property', 'user-data/fnos/epnav']).then((v) => {
+          if (v == null) return;
+          const s = String(v);
+          if (s === this._lastEpNav) return;
+          this._lastEpNav = s;
+          this.emit('epnav', s.split(':')[0] === 'prev' ? 'prev' : 'next');
+        }).catch(() => {});
+      } catch (_) {}
+    }, 800);
+    if (this._epNavTimer.unref) this._epNavTimer.unref();
+  }
+
+  _stopEpNavPoll() { try { if (this._epNavTimer) { clearInterval(this._epNavTimer); this._epNavTimer = null; } } catch (_) {} }
 
   _startWatchdog() {
     this._stopWatchdog();

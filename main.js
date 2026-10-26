@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.19.2';
+const APP_VERSION = '2.20.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1705,6 +1705,7 @@ function defaultSettings() {
     // v1.26.6：MPV 默认 d3d11va 零拷贝硬解（N100/Intel 核显双路 4K 关键），gpu-context=d3d11
     mpv: {
       enabled: true,           // 网页无法播放时允许用 MPV 兜底弹出
+      alwaysUse: false,        // v2.20.0：默认用 MPV 播放（所有视频直接交给 MPV，不等解码失败）
       hwDecode: 'auto',        // auto/d3d11va -> d3d11va 零拷贝；dxva2 -> copy；no -> 软解
     },
     // v2.1.17：FPK 图标管理器 API 配置
@@ -1727,9 +1728,9 @@ function getMpvSettings() {
     let hw = ['auto', 'auto-safe', 'd3d11va', 'dxva2', 'no'].includes(v.hwDecode) ? v.hwDecode : 'auto';
     if (hw === 'auto-safe') hw = 'd3d11va';
     const cacheLevel = ['standard', 'smooth', 'unlimited'].includes(v.cacheLevel) ? v.cacheLevel : 'smooth';
-    return { enabled: v.enabled !== false, hwDecode: hw, cacheLevel };
+    return { enabled: v.enabled !== false, alwaysUse: v.alwaysUse === true, hwDecode: hw, cacheLevel };
   } catch (_) {
-    return { enabled: true, hwDecode: 'auto', cacheLevel: 'smooth' };
+    return { enabled: true, alwaysUse: false, hwDecode: 'auto', cacheLevel: 'smooth' };
   }
 }
 
@@ -9322,6 +9323,7 @@ ipcMain.handle('settings:set-vlc', async (_e, patch) => {
     const cur = getMpvSettings();
     const next = {
       enabled: patch && typeof patch.enabled === 'boolean' ? patch.enabled : cur.enabled,
+      alwaysUse: patch && typeof patch.alwaysUse === 'boolean' ? patch.alwaysUse : cur.alwaysUse === true,
       hwDecode: ['auto', 'd3d11va', 'dxva2', 'no'].includes(patch && patch.hwDecode) ? patch.hwDecode : cur.hwDecode,
       cacheLevel: ['standard', 'smooth', 'unlimited'].includes(patch && patch.cacheLevel) ? patch.cacheLevel : cur.cacheLevel,
     };
@@ -9337,7 +9339,7 @@ ipcMain.handle('settings:set-vlc', async (_e, patch) => {
 ipcMain.handle('settings:vlc-runtime', async () => {
   try {
     const settings = getMpvSettings();
-    let info = { available: false, reason: '', version: '', source: '', hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel, gpu: {}, settings, mpv: true };
+    let info = { available: false, reason: '', version: '', source: '', hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel, alwaysUse: settings.alwaysUse === true, gpu: {}, settings, mpv: true };
     if (MpvPlayerMod && process.platform === 'win32') {
       const exe = MpvPlayerMod.getMpvExe();
       info.available = !!exe;
@@ -13123,7 +13125,6 @@ async function playMediaWithMpv(mediaUrl, opts) {
       });
       mpvSurfaces.set(STANDALONE_KEY, surf);
       surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
-      surf.player.on('end-file', reason => dlog('info', 'mpv.player.end', { reason: String(reason) }));
       const onExit = (code, _sig, userClosed) => {
         dlog('info', 'mpv.player.exit', { code, userClosed: !!userClosed, standalone: true });
         try { if (mpvSurfaces.get(STANDALONE_KEY) === surf) mpvSurfaces.delete(STANDALONE_KEY); } catch (_) {}
@@ -13174,6 +13175,11 @@ ipcMain.handle('mpv:status', async () => {
     const info = process.platform === 'win32' ? MpvPlayerMod.getMpvInfo() : { available: false, reason: '仅支持 Windows', version: '', source: '' };
     return Object.assign({}, info, { enabled: st.enabled, hwDecode: st.hwDecode });
   } catch (e) { return { available: false, reason: e.message }; }
+});
+
+// v2.20.0：网页 preload 读取 MPV 设置（决定是否"默认用 MPV 播放"，不等解码失败）
+ipcMain.handle('mpv:get-settings', async () => {
+  try { return getMpvSettings(); } catch (_) { return { enabled: true, alwaysUse: false, hwDecode: 'auto', cacheLevel: 'smooth' }; }
 });
 
 ipcMain.handle('mpv:play', async (_e, payload) => {
@@ -13739,7 +13745,8 @@ async function embedMpvPlay(hostWin, payload) {
   }
   const st = getMpvSettings();
   try { global.__mpvSettings = st; } catch (_) {}
-  if (st.enabled === false) {
+  // v2.20.0：「默认用 MPV 播放」优先于兜底开关，两者都不成立才拒绝
+  if (st.enabled === false && !st.alwaysUse) {
     dlog('info', 'mpv.embed.skip', { reason: 'disabled-in-settings' });
     return { ok: false, reason: 'MPV 已在设置中关闭' };
   }
@@ -13790,7 +13797,24 @@ async function embedMpvPlay(hostWin, payload) {
     try { surf.setHostState({ fs: (__isFsOn(hostWin) || hostWin.isFullScreen()) }); } catch (_) {}
     surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
     surf.player.on('surface-log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
-    surf.player.on('end-file', reason => dlog('info', 'mpv.player.end', { reason: String(reason) }));
+    // v2.20.0：控制条「上一集 / 下一集」→ 通知网页切集（网页切集后会重新走 embed 接管）
+    surf.player.on('epnav', (dir) => {
+      try {
+        const d = dir === 'prev' ? 'prev' : 'next';
+        dlog('info', 'mpv.epnav.cmd', { host: hostId, dir: d });
+        guestWc.send('mpv:episode-nav', { dir: d, auto: false });
+      } catch (err) { dlog('warn', 'mpv.epnav.cmd.err', { err: String(err && err.message || err) }); }
+    });
+    // v2.20.0：正常播完（eof）且网页报告还有下一集 → 自动连播
+    surf.player.on('end-file', reason => {
+      dlog('info', 'mpv.player.end', { reason: String(reason) });
+      try {
+        if (String(reason) === 'eof' && surf.__hasNext) {
+          dlog('info', 'mpv.epnav.autonext', { host: hostId });
+          guestWc.send('mpv:episode-nav', { dir: 'next', auto: true });
+        }
+      } catch (err) { dlog('warn', 'mpv.epnav.autonext.err', { err: String(err && err.message || err) }); }
+    });
     // exit 第三参 userClosed：true=用户点 mpv 窗口 X（正常关闭），false=进程崩溃
     surf.player.on('exit', (code, _sig, userClosed) => {
       dlog('info', 'mpv.player.exit', { code, userClosed: !!userClosed });
@@ -13913,6 +13937,21 @@ ipcMain.on('mpv:embed-rect', (e, rect) => {
       surf.setRect(normalizeDipRect(rect), null);
     }
   } catch (_) {}
+});
+
+// v2.20.0：网页上报剧集导航能力（是否有上一集/下一集），主进程写入 mpv user-data，
+// 中文控制条据此点亮/置灰上一集、下一集按钮（无 playlist 时原生 osc 恒为灰色）。
+ipcMain.on('mpv:episode-ability', (e, info) => {
+  try {
+    const hostWin = hostWindowFromSender(e && e.sender) || mainWindow;
+    const surf = hostWin ? mpvSurfaces.get(hostWin.id) : null;
+    if (!surf || !surf.player) return;
+    surf.__hasPrev = !!(info && info.hasPrev);
+    surf.__hasNext = !!(info && info.hasNext);
+    try { surf.player.command(['set', 'user-data/fnos/ep-prev', surf.__hasPrev ? 'yes' : 'no']); } catch (_) {}
+    try { surf.player.command(['set', 'user-data/fnos/ep-next', surf.__hasNext ? 'yes' : 'no']); } catch (_) {}
+    dlog('info', 'mpv.epnav.ability', { host: hostWin && hostWin.id, hasPrev: surf.__hasPrev, hasNext: surf.__hasNext, total: info && info.total, source: info && info.source });
+  } catch (err) { dlog('warn', 'mpv.epnav.ability.err', { err: String(err && err.message || err) }); }
 });
 
 ipcMain.handle('mpv:embed-close', async (e) => {

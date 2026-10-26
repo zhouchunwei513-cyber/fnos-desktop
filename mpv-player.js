@@ -231,6 +231,222 @@ function perfArgs() {
 }
 
 // ---------- 嵌入式 MPV 播放器（带 named-pipe IPC）----------
+const _corner = { proc: null, ready: false, queue: null, spawnAt: 0, fbAt: 0, buildAt: 0 };
+
+// ---------- v2.24.0/2.24.1 圆角常驻 helper（模块级单例，与 player 实例解耦）----------
+// v2.24.1：圆角 helper 的 C# 编译产物缓存路径（首次 Add-Type 要编译 C#，落盘后下次直接 LoadFrom 复用）
+function cornerDllPath() {
+  try {
+    const base = process.env.LOCALAPPDATA || process.env.TEMP || os.tmpdir();
+    if (!base) return '';
+    const dir = path.join(base, 'fnos-desktop');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+    return path.join(dir, 'fmpvc3.dll');
+  } catch (_) { return ''; }
+}
+
+function cornerCsSource() {
+  return [
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public static class FMPVC {',
+    '  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);',
+    '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);',
+    '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);',
+    '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);',
+    '  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT r);',
+    '  [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);',
+    '  [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int l, int t, int r, int b);',
+    '  [DllImport("gdi32.dll")] public static extern int CombineRgn(IntPtr hDest, IntPtr hSrc1, IntPtr hSrc2, int mode);',
+    '  [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hWnd, IntPtr rgn, bool redraw);',
+    '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }',
+    // v2.24.1：EnumWindows + .NET 回调 marshal 一次要 40~60ms，不能每次 apply 都做。
+    // 这里按 pid 缓存 hwnd（mpv 换进程必然换 pid，缓存不会指向死窗口）。
+    '  private static IntPtr _hw = IntPtr.Zero;',
+    '  private static uint _pid = 0;',
+    '  public static IntPtr ByPid(uint pid) {',
+    '    if (pid == _pid && _hw != IntPtr.Zero) return _hw;',
+    '    IntPtr f = IntPtr.Zero;',
+    '    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) { f = h; return false; } return true; }, IntPtr.Zero);',
+    '    if (f != IntPtr.Zero) { _pid = pid; _hw = f; }',
+    '    return f;',
+    '  }',
+    '  public static int Version() { return 2; }',
+    '  public static int Apply(uint pid, int mode, int d, int halfD) {',
+    '    IntPtr h = ByPid(pid);',
+    '    if (h == IntPtr.Zero) return -1;',
+    '    if (mode == 0) { SetWindowRgn(h, IntPtr.Zero, true); return 0; }',
+    '    RECT r; if (!GetClientRect(h, out r)) return -2;',
+    '    int w = r.R - r.L, ht = r.B - r.T;',
+    '    if (w <= 40 || ht <= 40) return -3;',
+    '    IntPtr rgn = CreateRoundRectRgn(0, 0, w + 1, ht + 1, d, d);',
+    '    if (mode == 2) {',
+    '      IntPtr pl = CreateRectRgn(0, 0, halfD + 1, ht + 1);',
+    '      IntPtr pb = CreateRectRgn(0, ht - halfD, w + 1, ht + 1);',
+    '      CombineRgn(rgn, rgn, pl, 2);',
+    '      CombineRgn(rgn, rgn, pb, 2);',
+    '    }',
+    '    return SetWindowRgn(h, rgn, false);',
+    '  }',
+    '}'
+  ].join('\n');
+}
+
+function cornerHelperScript() {
+  const src = cornerCsSource();
+  const dll = cornerDllPath().replace(/'/g, "''");
+  return [
+    "$ErrorActionPreference='SilentlyContinue';",
+    "$dll='" + dll + "';",
+    'if ($dll) { $dd=Split-Path $dll -Parent; if ($dd -and -not (Test-Path $dd)) { New-Item -ItemType Directory -Force -Path $dd | Out-Null } }',
+    '$ok=$false;',
+    // v2.24.1：快通道——上次已经编译好就直接载入（Version() 顺带校验类型可用）
+    'if ($dll -and (Test-Path $dll)) { try { [void][System.Reflection.Assembly]::LoadFrom($dll); if ([FMPVC]::Version() -eq 2) { $ok=$true } } catch { $ok=$false } }',
+    'if (-not $ok) {',
+    "$src=@'",
+    src,
+    "'@",
+    // 慢通道：in-memory 编译保证这次能用；同时后台隐藏进程把它编译成 DLL，下次走快通道
+    '  try { Add-Type -TypeDefinition $src; if ([FMPVC]::Version() -eq 2) { $ok=$true } } catch { $ok=$false }',
+    '}',
+    'if (-not $ok) { [Console]::Out.WriteLine("FAIL"); exit 1 }',
+    "[Console]::Out.WriteLine('READY');",
+    '[Console]::Out.Flush();',
+    'while($true){',
+    '  $ln=[Console]::In.ReadLine();',
+    '  if($null -eq $ln){ break }',
+    '  $ln=$ln.Trim();',
+    '  if($ln.Length -eq 0){ continue }',
+    "  $p=$ln.Split(' ');",
+    "  if($p[0] -eq 'q'){ break }",
+    "  if($p[0] -ne 'a'){ continue }",
+    '  $tpid=[uint32]$p[1]; $md=$p[2]; $dd=[int]$p[3]; $hd=[int]$p[4];',
+    '  $m=1; if($md -eq "none"){ $m=0 } elseif($md -eq "top-right"){ $m=2 }',
+    '  [void][FMPVC]::Apply($tpid,$m,$dd,$hd)',
+    '}'
+  ].join('\n');
+}
+
+// v2.24.1：DLL 缓存由独立 -File 进程编译（和常驻 helper 解耦，失败不影响播放）
+function cornerBuildScript() {
+  const dll = cornerDllPath().replace(/'/g, "''");
+  return [
+    "$ErrorActionPreference='Stop';",
+    "$dll='" + dll + "';",
+    "$dd=Split-Path $dll -Parent;",
+    'if ($dd -and -not (Test-Path $dd)) { New-Item -ItemType Directory -Force -Path $dd | Out-Null }',
+    'if (-not $dll) { exit 1 }',
+    'try {',
+    "$src=@'",
+    cornerCsSource(),
+    "'@",
+    '  Add-Type -TypeDefinition $src -OutputAssembly $dll -OutputType Library',
+    '} catch { exit 1 }',
+    'exit 0'
+  ].join('\r\n');
+}
+
+function buildCornerDll() {
+  if (process.platform !== 'win32') return;
+  try {
+    const dll = cornerDllPath();
+    if (!dll || fs.existsSync(dll)) return;
+    const now = Date.now();
+    if (_corner.buildAt && now - _corner.buildAt < 600000) return;
+    _corner.buildAt = now;
+    const ps1 = path.join(os.tmpdir(), 'fnos_corner_build.ps1');
+    fs.writeFileSync(ps1, '\ufeff' + cornerBuildScript(), 'utf8');
+    const p = spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
+      windowsHide: true,
+      stdio: 'ignore'
+    });
+    // detached 子进程实测不干活（无输出句柄直接退出），这里只 unref，进程照常跑完退出
+    try { p.on('error', () => { _corner.buildAt = 0; }); } catch (_) {}
+    try { p.unref(); } catch (_) {}
+  } catch (_) {}
+}
+
+function ensureCornerHelper() {
+  if (process.platform !== 'win32') return null;
+  const cur = _corner.proc;
+  if (cur && !cur.killed) return cur;
+  const now = Date.now();
+  // 冷却：连续 spawn 失败时不要每次几何变化都起一个 powershell
+  if (_corner.spawnAt && now - _corner.spawnAt < 3000) return null;
+  _corner.spawnAt = now;
+  try {
+    const proc = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cornerHelperScript()], {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'ignore']
+    });
+    _corner.proc = proc;
+    _corner.ready = false;
+    _corner.queue = null;
+    try { proc.stdin.on('error', () => {}); } catch (_) {}
+    try { proc.stdout.on('error', () => {}); } catch (_) {}
+    proc.stdout.on('data', (buf) => {
+      const t = buf.toString('utf8');
+      if (t.indexOf('READY') >= 0) {
+        _corner.ready = true;
+        // 常驻 helper 就绪后再后台编 DLL，避免抢 CPU 影响首帧圆角
+        try { buildCornerDll(); } catch (_) {}
+        const q = _corner.queue;
+        _corner.queue = null;
+        if (q) { try { proc.stdin.write(q); } catch (_) {} }
+      }
+    });
+    proc.on('error', () => { if (_corner.proc === proc) { _corner.proc = null; _corner.ready = false; } });
+    proc.on('exit', () => { if (_corner.proc === proc) { _corner.proc = null; _corner.ready = false; } });
+    try { proc.unref(); } catch (_) {}
+    try { if (proc.stdin.unref) proc.stdin.unref(); } catch (_) {}
+    try { if (proc.stdout.unref) proc.stdout.unref(); } catch (_) {}
+    return proc;
+  } catch (_) {
+    _corner.proc = null;
+    _corner.ready = false;
+    return null;
+  }
+  }
+
+function cornerSend(pid, mode, d, halfD) {
+  const line = 'a ' + pid + ' ' + mode + ' ' + d + ' ' + halfD + '\n';
+  const proc = ensureCornerHelper();
+  if (!proc) { cornerFallbackOnce(pid, mode, d, halfD); return; }
+  if (!_corner.ready) { _corner.queue = line; return; }
+  // 背压保护：helper 万一卡住，不要在内存里无限堆积指令（圆角只是观感，丢了下次几何变化会补）
+  try { if (proc.stdin.writableLength && proc.stdin.writableLength > 16384) return; } catch (_) {}
+  try { proc.stdin.write(line); } catch (_) {}
+  }
+
+  // 兜底：helper 起不来时退回一次性脚本（编译一次、apply 一次、退出），保证圆角功能不丢
+function cornerFallbackOnce(pid, mode, d, halfD) {
+  const now = Date.now();
+  if (_corner.fbAt && now - _corner.fbAt < 2500) return;
+  _corner.fbAt = now;
+  try {
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cornerHelperScript()], { windowsHide: true });
+    child.on('error', () => {});
+    if (!child.stdin) { try { child.unref(); } catch (_) {} return; }
+    try { child.stdin.on('error', () => {}); } catch (_) {}
+    try { child.stdin.write('a ' + pid + ' ' + mode + ' ' + d + ' ' + halfD + '\nq\n'); } catch (_) {}
+    try { child.unref(); } catch (_) {}
+  } catch (_) { /* 圆角失败不阻断播放 */ }
+  }
+
+function killCornerHelper() {
+  const p = _corner.proc;
+  _corner.proc = null;
+  _corner.ready = false;
+  _corner.queue = null;
+  if (!p) return;
+  try { if (p.stdin) p.stdin.write('q\n'); } catch (_) {}
+  try { p.kill(); } catch (_) {}
+  }
+
+// v2.24.1：预热圆角 helper（编译/载入 DLL 与 mpv 启动并行，甚至 app ready 就开跑），
+// 目的是首帧显示时圆角已生效，不再出现『先直角、一秒多后变圆角』。
+function prewarmCorners() { try { ensureCornerHelper(); } catch (_) {} }
+
 class MpvPlayer extends EventEmitter {
   constructor() {
     super();
@@ -274,14 +490,8 @@ class MpvPlayer extends EventEmitter {
     this._logFilePath = '';   // mpv 自身详细日志文件（fnos-mpv.log）
     this._scaleFactor = 1;    // mpv 窗口所在显示器的 DPI 缩放（圆角物理像素 = 40 * scaleFactor）
     this._cornerTimer = null; // 圆角应用 debounce 定时器（点播圆角，直播直角）
-    // v2.24.0：圆角 helper 提前拉起——C# 编译约 0.5~1s，放在这里与 mpv 进程启动并行，
-    // 等首帧显示时它已就绪，圆角首帧即生效（不再出现『先直角、一秒多后变圆角』）。
-    this._cornerProc = null;
-    this._cornerReady = false;
-    this._cornerQueue = null;
-    if (process.platform === 'win32') {
-      try { this._ensureCornerHelper(); } catch (_) {}
-    }
+    // v2.24.1：圆角 helper 已提到模块级单例，这里只做一次预热（幂等，重复调用无副作用）
+    if (process.platform === 'win32') prewarmCorners();
   }
 
   // mpv 详细日志文件路径：放 userData（与 fnos-diag.log 同目录），回退系统临时目录
@@ -1163,7 +1373,12 @@ class MpvPlayer extends EventEmitter {
     if (this._cornerTimer.unref) this._cornerTimer.unref();
   }
 
-    _applyRoundedCorners() {
+    // 圆角指令走模块级常驻 helper：与 player 实例解耦，stop() 不再回收，换集无需重新编译
+  _cornerSend(pid, mode, d, halfD) {
+    try { cornerSend(pid, mode, d, halfD); } catch (_) {}
+  }
+
+  _applyRoundedCorners() {
     if (process.platform !== 'win32') return;
     if (!this.proc || this._dead) return;
     const pid = this.proc.pid;
@@ -1185,139 +1400,6 @@ class MpvPlayer extends EventEmitter {
     // 之后通过 stdin 逐行下达指令，进程内按 pid 找 hwnd、GetClientRect 现算客户区尺寸再
     // SetWindowRgn，单次 1~3ms，可跟随每一次几何变化即时重裁。
     this._cornerSend(pid, mode, d, halfD);
-  }
-
-  // 常驻圆角 helper 的 PowerShell 脚本（C# 只编译一次，之后循环读 stdin 指令）
-  _cornerHelperScript() {
-    const src = [
-      'using System;',
-      'using System.Runtime.InteropServices;',
-      'public static class FMPVC {',
-      '  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);',
-      '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);',
-      '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);',
-      '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);',
-      '  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT r);',
-      '  [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);',
-      '  [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int l, int t, int r, int b);',
-      '  [DllImport("gdi32.dll")] public static extern int CombineRgn(IntPtr hDest, IntPtr hSrc1, IntPtr hSrc2, int mode);',
-      '  [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hWnd, IntPtr rgn, bool redraw);',
-      '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }',
-      '  public static IntPtr ByPid(uint pid) {',
-      '    IntPtr f = IntPtr.Zero;',
-      '    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) { f = h; return false; } return true; }, IntPtr.Zero);',
-      '    return f;',
-      '  }',
-      '}'
-    ].join('\n');
-    return [
-      "$ErrorActionPreference='SilentlyContinue';",
-      "$src=@'",
-      src,
-      "'@",
-      'Add-Type -TypeDefinition $src;',
-      "[Console]::Out.WriteLine('READY');",
-      '[Console]::Out.Flush();',
-      'while($true){',
-      '  $ln=[Console]::In.ReadLine();',
-      '  if($null -eq $ln){ break }',
-      '  $ln=$ln.Trim();',
-      '  if($ln.Length -eq 0){ continue }',
-      "  $p=$ln.Split(' ');",
-      "  if($p[0] -eq 'q'){ break }",
-      "  if($p[0] -ne 'a'){ continue }",
-      '  $tpid=[uint32]$p[1]; $md=$p[2]; $dd=[int]$p[3]; $hd=[int]$p[4];',
-      '  $hwnd=[FMPVC]::ByPid($tpid);',
-      '  if($hwnd -eq [IntPtr]::Zero){ continue }',
-      '  if($md -eq "none"){ [FMPVC]::SetWindowRgn($hwnd,[IntPtr]::Zero,$true)|Out-Null; continue }',
-      '  $r=New-Object FMPVC+RECT; [FMPVC]::GetClientRect($hwnd,[ref]$r)|Out-Null;',
-      '  $w=$r.R-$r.L; $h=$r.B-$r.T;',
-      '  if($w -le 40 -or $h -le 40){ continue }',
-      '  $rgn=[FMPVC]::CreateRoundRectRgn(0,0,($w+1),($h+1),$dd,$dd);',
-      '  if($md -eq "top-right"){',
-      '    $pl=[FMPVC]::CreateRectRgn(0,0,($hd+1),($h+1));',
-      '    $pb=[FMPVC]::CreateRectRgn(0,($h-$hd),($w+1),($h+1));',
-      '    [FMPVC]::CombineRgn($rgn,$rgn,$pl,2)|Out-Null;',
-      '    [FMPVC]::CombineRgn($rgn,$rgn,$pb,2)|Out-Null;',
-      '  }',
-      '  [FMPVC]::SetWindowRgn($hwnd,$rgn,$false)|Out-Null;',
-      '}'
-    ].join('\n');
-  }
-
-  _ensureCornerHelper() {
-    if (process.platform !== 'win32') return null;
-    const cur = this._cornerProc;
-    if (cur && !cur.killed) return cur;
-    const now = Date.now();
-    // 冷却：连续 spawn 失败时不要每次几何变化都起一个 powershell
-    if (this._cornerSpawnAt && now - this._cornerSpawnAt < 3000) return null;
-    this._cornerSpawnAt = now;
-    try {
-      const proc = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', this._cornerHelperScript()], {
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'ignore']
-      });
-      this._cornerProc = proc;
-      this._cornerReady = false;
-      this._cornerQueue = null;
-      try { proc.stdin.on('error', () => {}); } catch (_) {}
-      try { proc.stdout.on('error', () => {}); } catch (_) {}
-      proc.stdout.on('data', (buf) => {
-        const t = buf.toString('utf8');
-        if (t.indexOf('READY') >= 0) {
-          this._cornerReady = true;
-          const q = this._cornerQueue;
-          this._cornerQueue = null;
-          if (q) { try { proc.stdin.write(q); } catch (_) {} }
-        }
-      });
-      proc.on('error', () => { if (this._cornerProc === proc) { this._cornerProc = null; this._cornerReady = false; } });
-      proc.on('exit', () => { if (this._cornerProc === proc) { this._cornerProc = null; this._cornerReady = false; } });
-      try { proc.unref(); } catch (_) {}
-      try { if (proc.stdin.unref) proc.stdin.unref(); } catch (_) {}
-      try { if (proc.stdout.unref) proc.stdout.unref(); } catch (_) {}
-      return proc;
-    } catch (_) {
-      this._cornerProc = null;
-      this._cornerReady = false;
-      return null;
-    }
-  }
-
-  _cornerSend(pid, mode, d, halfD) {
-    const line = 'a ' + pid + ' ' + mode + ' ' + d + ' ' + halfD + '\n';
-    const proc = this._ensureCornerHelper();
-    if (!proc) { this._cornerFallbackOnce(pid, mode, d, halfD); return; }
-    if (!this._cornerReady) { this._cornerQueue = line; return; }
-    // 背压保护：helper 万一卡住，不要在内存里无限堆积指令（圆角只是观感，丢了下次几何变化会补）
-    try { if (proc.stdin.writableLength && proc.stdin.writableLength > 16384) return; } catch (_) {}
-    try { proc.stdin.write(line); } catch (_) {}
-  }
-
-  // 兜底：helper 起不来时退回一次性脚本（编译一次、apply 一次、退出），保证圆角功能不丢
-  _cornerFallbackOnce(pid, mode, d, halfD) {
-    const now = Date.now();
-    if (this._cornerFbAt && now - this._cornerFbAt < 2500) return;
-    this._cornerFbAt = now;
-    try {
-      const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', this._cornerHelperScript()], { windowsHide: true });
-      child.on('error', () => {});
-      if (!child.stdin) { try { child.unref(); } catch (_) {} return; }
-      try { child.stdin.on('error', () => {}); } catch (_) {}
-      try { child.stdin.write('a ' + pid + ' ' + mode + ' ' + d + ' ' + halfD + '\nq\n'); } catch (_) {}
-      try { child.unref(); } catch (_) {}
-    } catch (_) { /* 圆角失败不阻断播放 */ }
-  }
-
-  _killCornerHelper() {
-    const p = this._cornerProc;
-    this._cornerProc = null;
-    this._cornerReady = false;
-    this._cornerQueue = null;
-    if (!p) return;
-    try { if (p.stdin) p.stdin.write('q\n'); } catch (_) {}
-    try { p.kill(); } catch (_) {}
   }
 
   // v1.49.0：隐藏/显示窗口。
@@ -1467,7 +1549,6 @@ class MpvPlayer extends EventEmitter {
   }
 
   stop() {
-    try { this._killCornerHelper(); } catch (_) {}
     this._manualStop = true;   // 主动停止：禁止崩溃自愈
     this._stopWatchdog();
     try { this._stopSubStyleWatch(); } catch (_) {}
@@ -1595,5 +1676,6 @@ module.exports = {
   hwDecodeArgs,
   getMpvInfo,
   play,
-  killAll
+  killAll,
+  prewarmCorners
 };

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.0';
+const APP_VERSION = '2.24.1';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -14774,6 +14774,9 @@ function __handleSecondInstance(_e, commandLine) {
 // v2.0.0: 命令行参数启动时跳过主界面
 const subAppLaunched = launchSubAppFromArgs();
 app.whenReady().then(() => {
+  // v2.24.1：预热 MPV 圆角 helper（C# 首次要编译、之后载入 DLL，都是秒级）。
+  // 放在这里与主窗口创建并行，等用户真正开始播放时圆角已就绪，首帧不会再先看到直角。
+  try { if (MpvPlayerMod && typeof MpvPlayerMod.prewarmCorners === 'function') MpvPlayerMod.prewarmCorners(); } catch (_) {}
   // v2.3.5（需求 2.6.4）：托盘图标丢失自动重建。
   // Windows 下 Explorer 重启/托盘被系统回收时图标会消失：定时检查 + 系统恢复事件兜底重建。
   try {

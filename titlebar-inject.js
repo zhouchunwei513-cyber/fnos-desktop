@@ -465,9 +465,9 @@ module.exports = function injectTitleBar(ctx) {
           const __blur = Math.max(0, Math.min(40, Number(TB.blur) || 0));
           if (frosted) {
             const alpha = a > 0.001 ? Math.max(a, 0.10) : 0.24;
-            const noiseOpacity = Math.max(0.05, Math.min(0.30, 0.30 - __blur * 0.006)).toFixed(2);
-            const noise = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'120\' height=\'120\'%3E%3Cfilter id=\'n\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.85\' numOctaves=\'2\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'120\' height=\'120\' filter=\'url(%23n)\' opacity=\'' + noiseOpacity + '\'/%3E%3C/svg%3E")';
-            bar.style.backgroundImage = noise + ', linear-gradient(180deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.05) 52%, rgba(255,255,255,0.02) 100%)';
+            const noiseOpacity = Math.max(0.04, Math.min(0.18, 0.18 - __blur * 0.003)).toFixed(2);
+            const noise = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'120\' height=\'120\'%3E%3Cfilter id=\'n\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.85\' numOctaves=\'2\' stitchTiles=\'stitch\'/%3E%3CfeColorMatrix type=\'saturate\' values=\'0\'/%3E%3C/filter%3E%3Crect width=\'120\' height=\'120\' filter=\'url(%23n)\' opacity=\'' + noiseOpacity + '\'/%3E%3C/svg%3E")';
+            bar.style.backgroundImage = noise + ', linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.04) 52%, rgba(255,255,255,0.015) 100%)';
             bar.style.backgroundRepeat = 'repeat, no-repeat';
             bar.style.backgroundSize = '120px 120px, auto';
             bar.style.backgroundColor = a > 0.001 ? hexToRgba(TB.color, alpha) : 'rgba(16,20,36,0.34)';

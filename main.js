@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.10';
+const APP_VERSION = '2.24.11';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -9928,6 +9928,10 @@ ipcMain.handle('settings:get', async () => {
       host: s.fpkApi?.host || '',
       port: s.fpkApi?.port || 18080,
     },
+    // v2.24.11（用户反馈：设置页「默认用 MPV 播放」勾选后过一会变回已关闭）——
+    // settings:get 漏返回 mpv 字段，设置页 loadVlcConfig 读 info.mpv||info.vlc 拿不到，
+    // v={} 导致复选框永远显示未勾选（实际 alwaysUse 仍为 true，状态栏却显示"默认播放器"）。
+    mpv: getMpvSettings(),
   };
 });
 

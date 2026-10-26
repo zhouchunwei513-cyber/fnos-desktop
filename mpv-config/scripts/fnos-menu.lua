@@ -64,6 +64,24 @@ local function fnos_ep_flag(name)
     return v == "yes"
 end
 
+-- v2.24.6：自动播放下一集开关。状态由客户端主进程写在 user-data/fnos/autonext（yes/no），
+-- 点击菜单时写 user-data/fnos/epnav = "autonext:…"，主进程翻转设置后回写 autonext 状态。
+local function fnos_autonext_on()
+    local v = ""
+    pcall(function() v = mp.get_property("user-data/fnos/autonext", "") end)
+    if type(v) ~= "string" then return false end
+    v = v:gsub("\"", "")
+    return v == "yes"
+end
+
+local _fnos_an_seq = 0
+local function fnos_autonext_toggle()
+    _fnos_an_seq = _fnos_an_seq + 1
+    local val = "autonext:m" .. tostring(_fnos_an_seq) .. ":" .. tostring(os.time())
+    local ok = pcall(function() mp.set_property("user-data/fnos/epnav", val) end)
+    if not ok then pcall(function() mp.set_property_native("user-data/fnos/epnav", val) end) end
+end
+
 local _fnos_ep_seq = 0
 local function fnos_ep_nav(dir)
     _fnos_ep_seq = _fnos_ep_seq + 1
@@ -532,6 +550,9 @@ build_menu = function()
         item("播放 / 暂停", "cycle pause", "空格"),
         item("停止播放 / 关闭", "stop"),
         item("全屏", "cycle fullscreen", "f"),
+        -- v2.24.6：自动播放下一集开关（顶层快捷入口，与「播放控制」里同一项）
+        item((fnos_autonext_on() and "✓ 自动播放下一集" or "自动播放下一集"),
+            "script-message-to " .. ((mp.get_script_name and mp.get_script_name()) or "fnos_menu") .. " fnos-menu-autonext"),
         sep(),
 
         { ["title"] = "播放控制", ["type"] = "submenu", ["submenu"] = (function()
@@ -545,6 +566,9 @@ build_menu = function()
             if fnos_ep_flag("ep-next") then
                 t[#t + 1] = item("⏭ 下一集", "script-message-to " .. sname .. " fnos-menu-ep-next")
             end
+            -- v2.24.6：自动播放下一集（勾选态来自 user-data/fnos/autonext）
+            t[#t + 1] = item((fnos_autonext_on() and "✓ 自动播放下一集" or "自动播放下一集"),
+                "script-message-to " .. sname .. " fnos-menu-autonext")
             local ep_list = fnos_ep_list(sname)
             if ep_list then
                 t[#t + 1] = { ["title"] = "选集 ▸", ["type"] = "submenu", ["submenu"] = ep_list }
@@ -626,6 +650,8 @@ safe_msg("fnos-sub-local", function()
 end)
 
 -- v2.20.1：右键菜单 / ☰ 菜单的剧集切换（定向 script-message，避免多脚本重复触发）
+-- v2.24.6：自动播放下一集开关（右键菜单 / 「☰」菜单共用）
+safe_msg("fnos-menu-autonext", function() fnos_autonext_toggle() end)
 safe_msg("fnos-menu-ep-prev", function() fnos_ep_nav("prev") end)
 safe_msg("fnos-menu-ep-next", function() fnos_ep_nav("next") end)
 -- 选集：值为 "go:<guid>"，客户端解析后让网页跳到该集

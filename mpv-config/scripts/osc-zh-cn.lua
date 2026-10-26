@@ -362,6 +362,16 @@ function FN.menu_main()
     if ep_list then
         items[#items + 1] = { title = "选集 ▸", submenu = ep_list }
     end
+    -- v2.24.6：自动播放下一集开关（状态由客户端写在 user-data/fnos/autonext）
+    local an_on = false
+    pcall(function()
+        local av = mp.get_property("user-data/fnos/autonext", "")
+        if type(av) == "string" then an_on = (av:gsub("\"", "") == "yes") end
+    end)
+    items[#items + 1] = {
+        title = (an_on and "✓ 自动播放下一集" or "自动播放下一集"),
+        cmd = "script-message-to fnos_menu fnos-menu-autonext"
+    }
     if ep_prev or ep_next or ep_list then items[#items + 1] = { type = "separator" } end
     local rest = {
         { title = "音轨选择 ▸", submenu = FN.build_audio_items() },

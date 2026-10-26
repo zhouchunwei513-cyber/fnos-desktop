@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.5';
+const APP_VERSION = '2.24.6';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1746,6 +1746,9 @@ function defaultSettings() {
     },
     // v2.15.0：主窗口位置/尺寸持久化（关闭/调整时存，启动恢复上次大小），null 表示用默认
     windowBounds: null,
+    // v2.24.6：MPV 自动播放下一集（MPV 右键菜单 / 控制条「☰」菜单可切换；根级键，
+    // 避免设置页保存 mpv 子对象时把这个键覆盖掉）
+    mpvAutoNext: true,
   };
 }
 
@@ -1766,15 +1769,18 @@ function getMpvSettings() {
     const subStyle = mpvSubStyleNorm(v.subStyle);
     // v2.22.0：本地续播开关（默认开）
     const resume = v.resume !== false;
+    // v2.24.6：自动播放下一集（默认开）。存在根级 mpvAutoNext，不进 mpv 子对象。
+    let autoNext = true;
+    try { autoNext = loadSettings().mpvAutoNext !== false; } catch (_) { autoNext = true; }
     return {
       enabled: v.enabled !== false, alwaysUse: v.alwaysUse === true, hwDecode: hw,
-      cacheLevel, exePath, extraArgs, configMode, perfPreset, subStyle, resume
+      cacheLevel, exePath, extraArgs, configMode, perfPreset, subStyle, resume, autoNext
     };
   } catch (_) {
     return {
       enabled: true, alwaysUse: false, hwDecode: 'auto', cacheLevel: 'smooth',
       exePath: '', extraArgs: '', configMode: 'builtin', perfPreset: null,
-      subStyle: { pos: null, size: null, scale: null }, resume: true
+      subStyle: { pos: null, size: null, scale: null }, resume: true, autoNext: true
     };
   }
 }
@@ -1818,6 +1824,26 @@ function saveMpvSubStyle(style) {
       } catch (_) {}
     }, 1200);
     if (__mpvSubStyleTimer.unref) __mpvSubStyleTimer.unref();
+  } catch (_) {}
+}
+
+// v2.24.6：自动播放下一集开关的持久化与下发（Lua 菜单读 user-data/fnos/autonext 打勾）
+function saveMpvAutoNext(on) {
+  try {
+    saveSettings({ mpvAutoNext: !!on });
+    try { if (global.__mpvSettings && typeof global.__mpvSettings === 'object') global.__mpvSettings.autoNext = !!on; } catch (_) {}
+    dlog('info', 'mpv.autonext.saved', { on: !!on });
+  } catch (_) {}
+}
+
+function pushAutoNext(surf) {
+  try {
+    const p = surf && surf.player;
+    if (!p) return;
+    const v = (getMpvSettings().autoNext !== false) ? 'yes' : 'no';
+    const doWrite = () => { try { p.command(['set', 'user-data/fnos/autonext', v]); } catch (_) {} };
+    if (!p.connected) { try { p.once('ipc-ready', doWrite); } catch (_) {} return; }
+    doWrite();
   } catch (_) {}
 }
 
@@ -14190,6 +14216,16 @@ async function embedMpvPlay(hostWin, payload) {
     surf.player.on('log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
     surf.player.on('surface-log', msg => dlog('info', 'mpv.player.log', { msg: String(msg).slice(0, 400) }));
     // v2.20.0：控制条「上一集 / 下一集」→ 通知网页切集（网页切集后会重新走 embed 接管）
+    // v2.24.6：MPV 右键菜单 / 「☰」菜单里的「自动播放下一集」开关（Lua 写 epnav=autonext:…）
+    surf.player.on('autonext-toggle', () => {
+      try {
+        const next = !(getMpvSettings().autoNext !== false);
+        saveMpvAutoNext(next);
+        pushAutoNext(surf);
+        dlog('info', 'mpv.autonext.toggle', { host: hostId, on: next });
+        try { surf.player.command(['show-text', next ? '自动播放下一集：开' : '自动播放下一集：关', 2000]); } catch (_) {}
+      } catch (err) { dlog('warn', 'mpv.autonext.toggle.err', { err: String(err && err.message || err) }); }
+    });
     surf.player.on('epnav', (dir) => {
       try {
         const d = dir === 'prev' ? 'prev' : 'next';
@@ -14210,9 +14246,11 @@ async function embedMpvPlay(hostWin, payload) {
     surf.player.on('end-file', reason => {
       dlog('info', 'mpv.player.end', { reason: String(reason) });
       try {
-        if (String(reason) === 'eof' && surf.__hasNext) {
+        if (String(reason) === 'eof' && surf.__hasNext && getMpvSettings().autoNext !== false) {
           dlog('info', 'mpv.epnav.autonext', { host: hostId });
           guestWc.send('mpv:episode-nav', { dir: 'next', auto: true });
+        } else if (String(reason) === 'eof' && surf.__hasNext) {
+          dlog('info', 'mpv.epnav.autonext.skip', { host: hostId });
         }
       } catch (err) { dlog('warn', 'mpv.epnav.autonext.err', { err: String(err && err.message || err) }); }
     });
@@ -14412,6 +14450,7 @@ function epUdApply(hostId, surf, force) {
     w('next', 'ep-next');
     w('list', 'ep-list');
     w('cur', 'ep-cur');
+    try { pushAutoNext(surf); } catch (_) {}
   } catch (_) {}
 }
 

@@ -1042,6 +1042,8 @@ class MpvPlayer extends EventEmitter {
   _emitEpNav(s) {
     try {
       const v = String(s || '');
+      // v2.24.6：菜单里的「自动播放下一集」开关（Lua 侧写 autonext:<seq>:<ts>）
+      if (v.indexOf('autonext') === 0) { this.emit('autonext-toggle'); return; }
       if (v.indexOf('go:') === 0) {
         const guid = v.split(':')[1] || '';
         if (guid) this.emit('epnav-go', guid);

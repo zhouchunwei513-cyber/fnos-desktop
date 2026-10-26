@@ -1134,17 +1134,37 @@ contextBridge.exposeInMainWorld('fnos', {
       // 收到 burst 指令后 30ms 报一次，持续 host 给的时长（最长 1.5s）。
       try {
         ipcRenderer.on('mpv:rect-burst', (_e, ms) => {
-          const span = Math.max(200, Math.min(1500, Number(ms) || 700));
+          const span = Math.max(200, Math.min(2000, Number(ms) || 700));
           const until = Date.now() + span;
+          log('embed.burst', { ms: span });
           if (startRectLoop._burst) { clearInterval(startRectLoop._burst); startRectLoop._burst = null; }
+          let tick = 0;
+          let same = 0;
+          let nudge = 0;
+          let lastKey = '';
           startRectLoop._burst = setInterval(() => {
             if (Date.now() > until) {
               clearInterval(startRectLoop._burst);
               startRectLoop._burst = null;
               return;
             }
+            tick++;
             reportRect();
-          }, 30);
+            // v2.24.6：飞牛影视的视频区重排走防抖（实测切最大化后 500~800ms 才落地），
+            // 光高频读 rect 只能更快发现"晚到的终值"。长时间读不到变化时补发一次
+            // 合成 resize 事件催它重排（每次 burst 最多 3 次，避免反复重排抖动）。
+            try {
+              const r = getMainVideoRect();
+              const k = r ? (r.x + ',' + r.y + ',' + r.width + ',' + r.height) : '';
+              if (k && k === lastKey) same++; else { same = 0; lastKey = k; }
+              if (same >= 4 && nudge < 3) {
+                nudge++;
+                same = 0;
+                try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+                log('embed.burst.nudge', { tick: tick, nudge: nudge, rect: k });
+              }
+            } catch (_) {}
+          }, 25);
         });
       } catch (_) {}
       try {
@@ -1230,6 +1250,47 @@ contextBridge.exposeInMainWorld('fnos', {
       return isLive ? '直播频道' : '飞牛影视';
     }
 
+    // v2.24.6（用户反馈：MPV 一开，网页播放器内容不再加载、但飞牛服务器仍在转码）——
+    // 之前只 pause + 隐藏，网页播放器仍持有那路 HLS/转码连接，NAS 侧 ffmpeg 继续转码出片。
+    // 这里把 <video> 的 src 彻底摘掉再 load()，浏览器层面真正断开该路拉流，
+    // 服务端转码会话因失去消费者而结束；MPV 自己走 media/range 直连原片，不需要转码。
+    function hardStopVideo(v) {
+      try {
+        if (!v) return;
+        try { if (!v.paused) v.pause(); } catch (_) {}
+        if (!v.__mpvSrcBackup) {
+          try { v.__mpvSrcBackup = v.currentSrc || v.getAttribute('src') || ''; } catch (_) {}
+        }
+        try { v.removeAttribute('src'); } catch (_) {}
+        try { v.querySelectorAll('source').forEach(s => { try { s.remove(); } catch (_) {} }); } catch (_) {}
+        try { v.load(); } catch (_) {}
+      } catch (_) {}
+    }
+
+    // MPV 播放期间守住"网页播放器不重新拉流"：部分播放器 error 后会自动重试/重建 src
+    function startPageStopWatch() {
+      try {
+        if (state.pageStopTimer) return;
+        let n = 0;
+        state.pageStopTimer = setInterval(() => {
+          try {
+            n++;
+            if (!state.handled || n > 40) { clearInterval(state.pageStopTimer); state.pageStopTimer = null; return; }
+            document.querySelectorAll('video').forEach(v => {
+              try {
+                const src = v.getAttribute('src') || '';
+                if (src || (v.currentSrc && !v.paused)) {
+                  log('embed.pagestop.retry', { src: String(src).slice(0, 100) });
+                  hardStopVideo(v);
+                }
+              } catch (_) {}
+            });
+          } catch (_) {}
+        }, 500);
+        if (state.pageStopTimer.unref) state.pageStopTimer.unref();
+      } catch (_) {}
+    }
+
     async function triggerEmbed(v, reason) {
       if (state.handled || state.resolving) return;
       // v1.58：在接管前先用【可见的 video】定位播放器容器并缓存，接管后 video 会被隐藏，
@@ -1278,8 +1339,12 @@ contextBridge.exposeInMainWorld('fnos', {
             if (v && !v.paused) v.pause();
             v.__mpvPrevDisplay = v.style.display;
             v.style.display = 'none';
+            // v2.24.6：不再只 pause（连接仍被持有 → NAS 继续转码），直接把拉流断掉
+            hardStopVideo(v);
           } catch (_) {}
         });
+        log('embed.pagestop', { n: all.length });
+        startPageStopWatch();
       } catch (_) {}
       // v1.57：【不再注入全屏黑层】。此前的全屏 #fnos-embed-black 会盖住剧集列表、
       // 侧边栏，甚至返回主页后残留导致整页全黑。沉浸黑改由原生 MPV 窗口自身的黑底
@@ -1348,10 +1413,16 @@ contextBridge.exposeInMainWorld('fnos', {
     function restoreVideoDisplay() {
       try {
         state.playerBox = null; state.cachedRect = null; lastRectKey = '';
+        try { if (state.pageStopTimer) { clearInterval(state.pageStopTimer); state.pageStopTimer = null; } } catch (_) {}
         document.querySelectorAll('video').forEach(v => {
           try {
             if (typeof v.__mpvPrevDisplay !== 'undefined') { v.style.display = v.__mpvPrevDisplay; v.__mpvPrevDisplay = undefined; }
             else { v.style.display = ''; }
+            // v2.24.6：接管时摘掉的 src 还回去，关掉 MPV 后网页端仍可自己播
+            if (v.__mpvSrcBackup) {
+              const b = v.__mpvSrcBackup; v.__mpvSrcBackup = '';
+              try { if (!v.getAttribute('src')) { v.setAttribute('src', b); v.load(); } } catch (_) {}
+            }
           } catch (_) {}
         });
       } catch (_) {}

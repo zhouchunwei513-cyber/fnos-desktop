@@ -316,6 +316,10 @@ class MpvSurface {
     if (!geo) return;
     const now = Date.now();
     this._geoWant = geo;
+    // v2.24.4：记下“我们最近一次真正下发的几何”，供 audit 判断 mpv 是“还没追上”还是“真没接受”
+    this._pushKey = Math.max(160, Math.round(geo.width)) + 'x' + Math.max(90, Math.round(geo.height)) +
+      '+' + Math.round(geo.x) + '+' + Math.round(geo.y);
+    this._pushKeyAt = now;
     if (!this._geoLastAt || now - this._geoLastAt >= 24) {
       this._geoLastAt = now;
       try { this.player.setGeometry(geo); } catch (_) {}
@@ -454,7 +458,7 @@ class MpvSurface {
       const now = Date.now();
       // v2.24.0：全屏切换后的 2s 内走快通道（100ms 一次），其余时间保持 1200ms 心跳
       const fast = !!(this._winAuditFastUntil && now < this._winAuditFastUntil);
-      if (this._winAuditTs && now - this._winAuditTs < (fast ? 100 : 1200)) return;
+      if (this._winAuditTs && now - this._winAuditTs < (fast ? 50 : 1200)) return;
       this._winAuditTs = now;
       const want = {
         x: Math.round(geo.x),
@@ -488,10 +492,16 @@ class MpvSurface {
             this._winAuditTries = 0;
             this._emit('log', 'mpv.win.mismatch want=' + wantKey + ' got=' + w + 'x' + h + ' fs=' + (this._isHostFs() ? 1 : 0));
           }
-          if ((this._winAuditTries || 0) >= (fast ? 18 : 3)) return;
+          // v2.24.4：mpv 的 osd-dimensions 在 VO 重配期间仍报旧值，此前每 100ms 据此重推一次几何，
+          // 等于反复逼 mpv 重配 VO，迟到的重配又和用户下一次切换打架（实测反复最大化“永远慢一步”）。
+          // 现在：这组几何只要是我们 600ms 内刚下发的，就只等不重推；超过 600ms 才判定“真没接受”重推。
+          const pushKey = want.width + 'x' + want.height + '+' + want.x + '+' + want.y;
+          if (this._pushKey === pushKey && now - (this._pushKeyAt || 0) < 600) return;
+          if ((this._winAuditTries || 0) >= (fast ? 8 : 3)) return;
           this._winAuditTries = (this._winAuditTries || 0) + 1;
           try { this.player._lastGeoStr = ''; } catch (_) {}
           try { this.player.setGeometry(want); } catch (_) {}
+          this._pushKeyAt = now;
         } catch (_) {}
       }).catch(() => {});
     } catch (_) {}

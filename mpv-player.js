@@ -494,7 +494,8 @@ class MpvPlayer extends EventEmitter {
     // 卡在 mpv 正在改尺寸的窗口上会让窗口尺寸动画一顿一顿，表现为"播放器跟不上窗口"。
     this._transitUntil = 0;       // 过渡期截止时间戳；期间圆角指令延后
     this._cornerDeferTimer = null; // 过渡结束后补一次圆角的定时器
-    this._cornerCleared = false;   // 过渡期是否已清空区域（清空后不裁剪，等停手再裁圆角）
+    this._cornerLastAt = 0;        // 上次真正下发圆角指令的时间戳（过渡期 70ms 节流用）
+    this._cornerLogAt = 0;         // mpv.corner 日志节流时间戳
     // v2.24.1：圆角 helper 已提到模块级单例，这里只做一次预热（幂等，重复调用无副作用）
     if (process.platform === 'win32') prewarmCorners();
   }
@@ -1409,35 +1410,34 @@ class MpvPlayer extends EventEmitter {
     const scale = this._scaleFactor || 1;
     const d = Math.max(2, Math.round(40 * scale)); // 圆角直径（物理像素）：20px 半径 DIP * 2 * scale
     const halfD = Math.max(1, Math.round(d / 2)); // 圆角半径（物理像素），用于补直角的竖条/横条宽度
-    // v2.24.2：过渡期延后。20 次/秒的 SetWindowRgn 落在 mpv 正在改尺寸的窗口上会把 resize 拖慢，
-    // 等于用圆角去跟窗口抢：过渡结束时补一发，视觉上"停稳即圆"，过程中不再和尺寸动画抢锁。
-    if (this._inTransit()) {
-      // 实测（v2.24.2）：SetWindowRgn 的区域不会随窗口放大而跟着拉伸——
-      // 584x361 的区域，客户区放到 968x622 后仍是 584x361，新露出的部分直接被裁掉（画面被切）。
-      // 所以过渡期既不能"不下发"（会切画面），也不能每帧下发（整窗重绘和 resize 抢锁）。
-      // 折中：过渡开始清空区域一次（无区域=不裁剪，绝不切画面），停手后再裁回圆角。
-      if (!this._cornerCleared) {
-        this._cornerCleared = true;
-        this._cornerSend(pid, 'none', d, halfD);
-      }
-      if (!this._cornerDeferTimer) {
-        const wait = Math.max(24, this._transitUntil - Date.now() + 24);
-        this._cornerDeferTimer = setTimeout(() => {
-          this._cornerDeferTimer = null;
-          if (this._dead) return;
-          this._applyRoundedCorners();
-        }, wait);
-        if (this._cornerDeferTimer.unref) this._cornerDeferTimer.unref();
-      }
+    // v2.24.4（用户反馈：MPV 圆角状态不稳定，运行中会变直角）——
+    // 过渡期既不能“不下发”（SetWindowRgn 的区域不随窗口拉伸，放大后新露出的部分会被裁=画面被切），
+    // 也不能每帧下发（整窗重绘会和 resize 抢锁）。折中：过渡期照裁、只做 70ms 节流，
+    // 停手后再补一帧对齐最终客户区尺寸——圆角全程不消失。
+    const now = Date.now();
+    if (this._inTransit() && this._cornerLastAt && now - this._cornerLastAt < 70) {
+      this._cornerDeferAfterTransit();
       return;
     }
-    this._cornerCleared = false;
-    // v2.24.0（用户反馈：启动 / 全屏 / 最大化来回切时，四角由直角变圆角要等一会）——
-    // 旧实现每次都 spawn 一个 powershell 重新 Add-Type 编译 C#（0.5~1s），叠加 300ms debounce，
-    // 首帧起点是直角、一秒多后才变圆角。现在改用一个常驻 PowerShell 辅助进程：C# 只编译一次，
-    // 之后通过 stdin 逐行下达指令，进程内按 pid 找 hwnd、GetClientRect 现算客户区尺寸再
-    // SetWindowRgn，单次 1~3ms，可跟随每一次几何变化即时重裁。
+    this._cornerLastAt = now;
     this._cornerSend(pid, mode, d, halfD);
+    if (!this._cornerLogAt || now - this._cornerLogAt >= 800) {
+      this._cornerLogAt = now;
+      try { this.emit('log', 'mpv.corner mode=' + mode + ' d=' + d + ' transit=' + (this._inTransit() ? 1 : 0)); } catch (_) {}
+    }
+    this._cornerDeferAfterTransit();
+  }
+
+  // 过渡停手后补裁一次：对齐最终客户区尺寸/半径（节流期间被丢掉的那一帧在这里补齐）
+  _cornerDeferAfterTransit() {
+    if (this._cornerDeferTimer) return;
+    const wait = Math.max(24, this._transitUntil - Date.now() + 24);
+    this._cornerDeferTimer = setTimeout(() => {
+      this._cornerDeferTimer = null;
+      if (this._dead) return;
+      this._applyRoundedCorners();
+    }, wait);
+    if (this._cornerDeferTimer.unref) this._cornerDeferTimer.unref();
   }
 
   // v1.49.0：隐藏/显示窗口。

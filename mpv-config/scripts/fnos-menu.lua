@@ -17,6 +17,23 @@ local msg = require 'mp.msg'
 
 local build_menu            -- 前向声明（open_context_menu 会先用到，真正赋值在后面）
 
+-- v2.20.1：飞牛影视剧集切换。主进程把「是否有上一集/下一集」写到 user-data/fnos/ep-prev|ep-next，
+-- 这里读它决定菜单项是否出现；点击后写 user-data/fnos/epnav，由客户端转成网页内切集动作。
+local function fnos_ep_flag(name)
+    local ok, v = pcall(function() return mp.get_property("user-data/fnos/" .. name) end)
+    if not ok then return false end
+    return v == "yes"
+end
+
+local _fnos_ep_seq = 0
+local function fnos_ep_nav(dir)
+    _fnos_ep_seq = _fnos_ep_seq + 1
+    local val = tostring(dir) .. ":m" .. tostring(_fnos_ep_seq) .. ":" .. tostring(os.time())
+    local ok = pcall(function() mp.set_property("user-data/fnos/epnav", val) end)
+    if not ok then pcall(function() mp.set_property_native("user-data/fnos/epnav", val) end) end
+    pcall(function() mp.osd_message(dir == "prev" and "正在切换上一集…" or "正在切换下一集…", 2) end)
+end
+
 -- ---------------- 基础工具 ----------------
 local function item(title, cmd, shortcut)
     local it = { ["title"] = title }
@@ -25,6 +42,28 @@ local function item(title, cmd, shortcut)
     return it
 end
 local function sep() return { ["type"] = "separator" } end
+
+-- v2.20.1：整季选集列表（客户端把 [{no,guid}] 的 JSON 写进 user-data/fnos/ep-list，当前集在 ep-cur）
+local function fnos_ep_list(sname)
+    local raw = nil
+    pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end)
+    if not raw or raw == "" then return nil end
+    local ok, arr = pcall(utils.parse_json, raw)
+    if not ok or type(arr) ~= "table" or #arr < 2 then return nil end
+    local cur = nil
+    pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end)
+    local out = {}
+    for _, it in ipairs(arr) do
+        if type(it) == "table" and it.guid and it.guid ~= "" then
+            local no = tonumber(it.no) or 0
+            local mark = (cur ~= nil and cur == it.guid) and "✓ " or ""
+            out[#out + 1] = item(mark .. "第" .. tostring(no) .. "集",
+                "script-message-to " .. tostring(sname) .. " fnos-menu-ep-go " .. tostring(it.guid))
+        end
+    end
+    if #out < 2 then return nil end
+    return out
+end
 
 -- 子菜单（画质/倍速）打开期间为 true：此时 refresh_menu_data 不得覆盖 menu-data，
 -- 否则 context_menu 弹出后点选的菜单项已变回主菜单数据，导致命令不执行（点击失效）。
@@ -461,14 +500,30 @@ build_menu = function()
         item("全屏", "cycle fullscreen", "f"),
         sep(),
 
-        { ["title"] = "播放控制", ["type"] = "submenu", ["submenu"] = {
-            item("上一集 / 上一台", "playlist-prev"),
-            item("下一集 / 下一台", "playlist-next"),
-            item("恢复正常速度", "script-message fnos-speed 1.0", "Backspace"),
-            item("A-B 循环", "ab-loop", "l"),
-            item("逐帧前进", "frame-step", "."),
-            item("逐帧后退", "frame-back-step", ","),
-        }},
+        { ["title"] = "播放控制", ["type"] = "submenu", ["submenu"] = (function()
+            local sname = (mp.get_script_name and mp.get_script_name()) or "fnos_menu"
+            local t = {}
+            -- v2.20.1：剧集场景优先给「上一集/下一集」（剧集是单文件播放，playlist 里只有 1 项，
+            -- playlist-prev/next 点了没反应），其余场景保留播放列表的上/下一台。
+            if fnos_ep_flag("ep-prev") then
+                t[#t + 1] = item("⏮ 上一集", "script-message-to " .. sname .. " fnos-menu-ep-prev")
+            end
+            if fnos_ep_flag("ep-next") then
+                t[#t + 1] = item("⏭ 下一集", "script-message-to " .. sname .. " fnos-menu-ep-next")
+            end
+            local ep_list = fnos_ep_list(sname)
+            if ep_list then
+                t[#t + 1] = { ["title"] = "选集 ▸", ["type"] = "submenu", ["submenu"] = ep_list }
+            end
+            if #t > 0 then t[#t + 1] = sep() end
+            t[#t + 1] = item("上一台（播放列表）", "playlist-prev")
+            t[#t + 1] = item("下一台（播放列表）", "playlist-next")
+            t[#t + 1] = item("恢复正常速度", "script-message fnos-speed 1.0", "Backspace")
+            t[#t + 1] = item("A-B 循环", "ab-loop", "l")
+            t[#t + 1] = item("逐帧前进", "frame-step", ".")
+            t[#t + 1] = item("逐帧后退", "frame-back-step", ",")
+            return t
+        end)()},
 
         { ["title"] = "字幕", ["type"] = "submenu", ["submenu"] = sub_menu },
 
@@ -534,6 +589,19 @@ safe_msg("fnos-sub-local", function()
             end
         end)
     end)
+end)
+
+-- v2.20.1：右键菜单 / ☰ 菜单的剧集切换（定向 script-message，避免多脚本重复触发）
+safe_msg("fnos-menu-ep-prev", function() fnos_ep_nav("prev") end)
+safe_msg("fnos-menu-ep-next", function() fnos_ep_nav("next") end)
+-- 选集：值为 "go:<guid>"，客户端解析后让网页跳到该集
+safe_msg("fnos-menu-ep-go", function(g)
+    if not g or g == "" then return end
+    _fnos_ep_seq = _fnos_ep_seq + 1
+    local val = "go:" .. tostring(g) .. ":m" .. tostring(_fnos_ep_seq) .. ":" .. tostring(os.time())
+    local ok = pcall(function() mp.set_property("user-data/fnos/epnav", val) end)
+    if not ok then pcall(function() mp.set_property_native("user-data/fnos/epnav", val) end) end
+    mp.osd_message("正在切换到该集…", 2)
 end)
 
 -- v1.47.0：弹幕搜索/选择/下载处理器已移除（弹幕功能整体下线）。

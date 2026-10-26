@@ -36,6 +36,33 @@ function FN.ep_nav(dir)
     end
     mp.osd_message(dir == "prev" and "正在切换上一集…" or "正在切换下一集…", 2)
 end
+
+-- v2.20.1：整季选集列表（客户端主进程把 [{no=1,guid=".."}] 的 JSON 写进 user-data/fnos/ep-list），
+-- 当前集 guid 在 user-data/fnos/ep-cur 里，用于打勾。
+function FN.ep_list_items(sname)
+    local raw = nil
+    pcall(function() raw = mp.get_property("user-data/fnos/ep-list") end)
+    if not raw or raw == "" then return nil end
+    local ok_u, u = pcall(require, "mp.utils")
+    if not ok_u or not u or not u.parse_json then return nil end
+    local ok_j, arr = pcall(u.parse_json, raw)
+    if not ok_j or type(arr) ~= "table" or #arr < 2 then return nil end
+    local cur = nil
+    pcall(function() cur = mp.get_property("user-data/fnos/ep-cur") end)
+    local out = {}
+    for _, it in ipairs(arr) do
+        if type(it) == "table" and it.guid and it.guid ~= "" then
+            local no = tonumber(it.no) or 0
+            local mark = (cur ~= nil and cur == it.guid) and "✓ " or "" 
+            out[#out + 1] = {
+                title = mark .. "第" .. tostring(no) .. "集",
+                cmd = "script-message-to " .. tostring(sname) .. " fnos-epnav-go " .. tostring(it.guid)
+            }
+        end
+    end
+    if #out < 2 then return nil end
+    return out
+end
 -- 中文标签用的 ASS 样式（继承 OSC 字号语义，仅覆盖字体为中文字体）
 function FN.zh(style_str)
     -- style_str 形如 "...\\fs20}"；在结尾 } 前插入字体覆盖
@@ -260,7 +287,29 @@ end
 
 -- ☰ 主菜单：全中文（含播放列表/章节/音频设备子菜单，全部自建中文，不跳英文 select）。
 function FN.menu_main()
-    local items = {
+    local items = {}
+    -- v2.20.1：飞牛影视剧集场景下，☰ 菜单直接提供上一集/下一集
+    -- （控制条按钮在无播放列表时原本恒灰，这里给一条不受 playlist 限制的入口）
+    local sname = (mp.get_script_name and mp.get_script_name()) or "osc-zh-cn"
+    local function ep_on(name)
+        if type(FN.ep_flag) ~= "function" then return false end
+        local ok, v = pcall(FN.ep_flag, name)
+        return ok and v == true
+    end
+    local ep_prev, ep_next = ep_on("ep-prev"), ep_on("ep-next")
+    if ep_prev then
+        items[#items + 1] = { title = "⏮ 上一集", cmd = "script-message-to " .. sname .. " fnos-epnav-prev" }
+    end
+    if ep_next then
+        items[#items + 1] = { title = "⏭ 下一集", cmd = "script-message-to " .. sname .. " fnos-epnav-next" }
+    end
+    -- v2.20.1：整季选集（主进程把剧集列表写进 user-data/fnos/ep-list，最多 80 集）
+    local ep_list = FN.ep_list_items(sname)
+    if ep_list then
+        items[#items + 1] = { title = "选集 ▸", submenu = ep_list }
+    end
+    if ep_prev or ep_next or ep_list then items[#items + 1] = { type = "separator" } end
+    local rest = {
         { title = "音轨选择 ▸", submenu = FN.build_audio_items() },
         { title = "字幕设置 ▸", submenu = FN.build_sub_items() },
         { title = "播放倍速 ▸", submenu = FN.build_speed_items() },
@@ -271,6 +320,7 @@ function FN.menu_main()
         { type = "separator" },
         { title = "播放信息", cmd = "script-message fnos-playback-stats" },
     }
+    for _, it in ipairs(rest) do items[#items + 1] = it end
     FN.open_menu(items)
 end
 
@@ -3007,6 +3057,21 @@ mp.register_event("start-file", request_init)
 mp.observe_property("track-list", "native", request_init)
 mp.observe_property("playlist-count", "native", request_init)
 mp.observe_property("playlist-pos", "native", request_init)
+-- v2.20.1：菜单项走定向 script-message，避免广播导致多个脚本各切一次集
+pcall(function()
+    mp.register_script_message("fnos-epnav-prev", function() FN.ep_nav("prev") end)
+    mp.register_script_message("fnos-epnav-next", function() FN.ep_nav("next") end)
+    -- 选集：值为 "go:<guid>:<序号>"，客户端解析后让网页跳到该集
+    mp.register_script_message("fnos-epnav-go", function(g)
+        if not g or g == "" then return end
+        FN.ep_seq = (FN.ep_seq or 0) + 1
+        local val = "go:" .. tostring(g) .. ":" .. tostring(FN.ep_seq)
+        local ok = pcall(function() mp.set_property("user-data/fnos/epnav", val) end)
+        if not ok then pcall(function() mp.set_property_native("user-data/fnos/epnav", val) end) end
+        mp.osd_message("正在切换到该集…", 2)
+    end)
+end)
+
 -- v2.20.0：剧集导航能力变化 → 重建控制条，实时点亮/置灰上一集、下一集
 pcall(function() mp.observe_property("user-data/fnos/ep-prev", "string", request_init) end)
 pcall(function() mp.observe_property("user-data/fnos/ep-next", "string", request_init) end)

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.20.0';
+const APP_VERSION = '2.20.1';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -13805,6 +13805,15 @@ async function embedMpvPlay(hostWin, payload) {
         guestWc.send('mpv:episode-nav', { dir: d, auto: false });
       } catch (err) { dlog('warn', 'mpv.epnav.cmd.err', { err: String(err && err.message || err) }); }
     });
+    // v2.20.1：MPV 菜单「选集 ▸」选中某一集 → 通知网页跳到该 item guid
+    surf.player.on('epnav-go', (g) => {
+      try {
+        const gg = String(g || '');
+        if (!gg) return;
+        dlog('info', 'mpv.epnav.go', { host: hostId, guid: gg });
+        guestWc.send('mpv:episode-goto', { guid: gg });
+      } catch (err) { dlog('warn', 'mpv.epnav.go.err', { err: String(err && err.message || err) }); }
+    });
     // v2.20.0：正常播完（eof）且网页报告还有下一集 → 自动连播
     surf.player.on('end-file', reason => {
       dlog('info', 'mpv.player.end', { reason: String(reason) });
@@ -13959,6 +13968,20 @@ ipcMain.on('mpv:episode-ability', (e, info) => {
     if (pHasNext !== hasNext) {
       try { surf.player.command(['set', 'user-data/fnos/ep-next', hasNext ? 'yes' : 'no']); } catch (_) {}
     }
+    // v2.20.1：整季列表写进 user-data，供 MPV 菜单里的「选集 ▸」直接用（≤80 集，约 2~3KB）
+    try {
+      const eps = Array.isArray(info && info.episodes) ? info.episodes : [];
+      const epsJson = eps.length > 1 ? JSON.stringify(eps) : '';
+      if (surf.__epListJson !== epsJson) {
+        surf.__epListJson = epsJson;
+        try { surf.player.command(['set', 'user-data/fnos/ep-list', epsJson]); } catch (_) {}
+      }
+      const curGuid = String((info && info.itemGuid) || '');
+      if (surf.__epCur !== curGuid) {
+        surf.__epCur = curGuid;
+        try { surf.player.command(['set', 'user-data/fnos/ep-cur', curGuid]); } catch (_) {}
+      }
+    } catch (_) {}
     dlog('info', 'mpv.epnav.ability', { host: hostWin && hostWin.id, hasPrev: surf.__hasPrev, hasNext: surf.__hasNext, total: info && info.total, source: info && info.source });
   } catch (err) { dlog('warn', 'mpv.epnav.ability.err', { err: String(err && err.message || err) }); }
 });

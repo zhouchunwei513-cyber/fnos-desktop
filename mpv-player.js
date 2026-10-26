@@ -596,10 +596,10 @@ class MpvPlayer extends EventEmitter {
       }
       else if (id === 11) {
         // 值形如 "next:12:1730000000"（方向:序号:时间戳），序号保证连续点同一方向也能触发
+        // v2.20.1：新增 "go:<guid>:<序号>" —— 菜单里直接选某一集
         if (val != null && String(val) !== this._lastEpNav) {
           this._lastEpNav = String(val);
-          const dir = String(val).split(':')[0] === 'prev' ? 'prev' : 'next';
-          this.emit('epnav', dir);
+          this._emitEpNav(String(val));
         }
       }
       else if (id === 5) { this._coreIdle = !!val; }
@@ -738,6 +738,19 @@ class MpvPlayer extends EventEmitter {
     } catch (_) {}
   }
 
+  // v2.20.1：统一解析 epnav 值 —— "prev:.."/"next:.." 是方向切换，"go:<guid>:.." 是选集跳转
+  _emitEpNav(s) {
+    try {
+      const v = String(s || '');
+      if (v.indexOf('go:') === 0) {
+        const guid = v.split(':')[1] || '';
+        if (guid) this.emit('epnav-go', guid);
+        return;
+      }
+      this.emit('epnav', v.split(':')[0] === 'prev' ? 'prev' : 'next');
+    } catch (_) {}
+  }
+
   // v2.20.0：剧集导航兜底轮询（控制器点击上一集/下一集 → user-data/fnos/epnav 变化）
   _startEpNavPoll() {
     if (this._epNavTimer) return;
@@ -749,7 +762,7 @@ class MpvPlayer extends EventEmitter {
           const s = String(v);
           if (s === this._lastEpNav) return;
           this._lastEpNav = s;
-          this.emit('epnav', s.split(':')[0] === 'prev' ? 'prev' : 'next');
+          this._emitEpNav(s);
         }).catch(() => {});
       } catch (_) {}
     }, 800);

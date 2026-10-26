@@ -786,6 +786,8 @@ contextBridge.exposeInMainWorld('fnos', {
         });
         if (!r.ok) { log('playinfo.http', { itemGuid, status: r.status }); return ''; }
         const j = await r.json();
+        // v2.20.1：留一份原始响应，剧集导航从这里提取整季列表（飞牛详情接口需签名，这条路零成本）
+        try { __epPlayInfo = j; } catch (_) {}
         const mg = extractMediaGuid(j);
         log('playinfo.resp', { itemGuid, got: !!mg, code: j && j.code, msg: j && j.msg });
         return mg;
@@ -1264,16 +1266,23 @@ contextBridge.exposeInMainWorld('fnos', {
 
     // ============ v2.20.0：剧集导航（上一集 / 下一集 / 自动连播）============
     // 飞牛影视播放页是单文件播放（mpv playlist 只有 1 项），原生控制条的上一集/下一集
-    // 因为 playlist-count==1 恒为灰色。这里把"切集"交回网页自身完成：
-    //   1) 优先找页面上明确的「下一集 / 上一集」按钮（最贴近站点原生行为，改集数逻辑由站点负责）；
-    //   2) 退化为扫描页面内 /v/video/<guid> 链接构成的剧集序列，按 DOM 顺序定位当前集并点击相邻项。
-    // 网页切集后 video 重新加载，preload 的接管逻辑会自动重新 embed，观感连续。
+    // 因为 playlist-count==1 恒为灰色。这里把"切集"交回飞牛影视自己完成。
+    // v2.20.1 关键修正：数据源改为飞牛影视官方接口
+    //   ① GET /v/api/v1/item/<guid>            → 当前条目（含 season/parent guid、episode_number）
+    //   ② GET /v/api/v1/episode/list/<season>  → 该季全部集（guid + episode_number）
+    //   原来只扫 DOM 的 a[href*="/v/video/"]，而站点剧集页实际是 /v/tv/episode/<guid>，
+    //   导致 hasPrev/hasNext 恒为 false、控制条按钮永远灰。DOM 扫描降级为兜底。
     const EP_NAV_RX = {
       next: /(下一集|下集|后一集|下一个|next\s*episode|next)/i,
       prev: /(上一集|上集|前一集|上一个|previous\s*episode|prev\s*episode|previous|prev)/i
     };
+    const EP_ITEM_RX = /\/(?:v\/)?(?:tv\/episode|tv\/season|video|movie|other|folder)\/([0-9a-fA-F]{16,40})(?:[/?#]|$)/;
     let __lastAbilityKey = '';
     let __lastAbilityAt = 0;
+    let __domAbilityAt = 0;
+    let __domAbility = null;
+    const __epSeries = { guid: '', at: 0, list: null, busy: false, curNo: 0, failGuid: '', failAt: 0 };
+    let __epPlayInfo = null;   // 最近一次 /v/api/v1/play/info 的原始响应（含剧集上下文时可直接用）
 
     function elVisible(el) {
       try {
@@ -1300,7 +1309,6 @@ contextBridge.exposeInMainWorld('fnos', {
             if (!label || label.length > 12) continue;
             if (!rx.test(label)) continue;
             if (el.disabled === true || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) continue;
-            // 文本要能"点到"：按钮本身或其最近的可点击祖先
             const clickable = el.closest('button,[role="button"],a') || el;
             if (!elVisible(clickable)) continue;
             out.push(clickable);
@@ -1308,81 +1316,345 @@ contextBridge.exposeInMainWorld('fnos', {
         }
       } catch (_) {}
       if (!out.length) return null;
-      // 取最内层（文本最短）的可点元素，避免命中包裹整个播放器的容器
       out.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
       return out[0];
     }
 
-    // 扫描页面内剧集链接（/v/video/<guid>），按 DOM 顺序作为集序
+    function epIsHex(v) {
+      return typeof v === 'string' && /^[0-9a-fA-F]{16,40}$/.test(v);
+    }
+
+    // 在接口返回里递归找"元素为对象且能取到 guid + 集号"的数组（字段命名不稳定，做宽松匹配）
+    function epFindSeries(obj, depth) {
+      if (!obj || depth > 6) return null;
+      if (Array.isArray(obj)) {
+        const mapped = [];
+        for (let i = 0; i < obj.length; i++) {
+          const it = obj[i];
+          if (!it || typeof it !== 'object') continue;
+          const g = it.guid || it.item_guid || it.itemGuid || it.media_guid || it.mediaGuid || it.episode_guid;
+          if (!epIsHex(g)) continue;
+          const rawNo = it.episode_number != null ? it.episode_number
+            : (it.episodeNumber != null ? it.episodeNumber
+              : (it.episode_no != null ? it.episode_no : it.no));
+          const no = Number(rawNo);
+          mapped.push({ guid: g, no: isFinite(no) ? no : 0 });
+        }
+        if (mapped.length >= 2) return mapped;
+        for (let i = 0; i < obj.length && i < 60; i++) {
+          const r = epFindSeries(obj[i], depth + 1);
+          if (r) return r;
+        }
+        return null;
+      }
+      if (typeof obj !== 'object') return null;
+      for (const k in obj) {
+        if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+        const r = epFindSeries(obj[k], depth + 1);
+        if (r) return r;
+      }
+      return null;
+    }
+
+    // 从 item 详情里找"所属季"的 guid
+    function epSeasonGuidOf(obj, cur) {
+      const cands = [];
+      const walk = (o, d) => {
+        if (!o || d > 6 || typeof o !== 'object') return;
+        if (Array.isArray(o)) {
+          for (let i = 0; i < o.length && i < 40; i++) walk(o[i], d + 1);
+          return;
+        }
+        for (const k in o) {
+          if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+          const v = o[k];
+          if (epIsHex(v) && v !== cur) {
+            const kl = String(k).toLowerCase();
+            if (/season/.test(kl) && !/episode/.test(kl)) cands.push([4, v]);
+            else if (/parent/.test(kl)) cands.push([3, v]);
+            else if (/^tv/.test(kl)) cands.push([2, v]);
+            else if (/collection/.test(kl)) cands.push([1, v]);
+          } else if (v && typeof v === 'object') {
+            walk(v, d + 1);
+          }
+        }
+      };
+      walk(obj, 0);
+      if (!cands.length) return '';
+      cands.sort((a, b) => b[0] - a[0]);
+      return cands[0][1];
+    }
+
+    // 飞牛影视业务接口要 Authx 签名（否则 {"code":5000,"msg":"invalid sign"}）
+    // 签名算法与客户端取流完全一致：genAuthx(path, body)，GET 传 undefined。
+    function epApiGet(path) {
+      try {
+        const headers = { 'Accept': 'application/json' };
+        try { const ax = genAuthx(path, undefined); if (ax) headers['Authx'] = ax; } catch (_) {}
+        return fetch(state.baseOrigin + path, { credentials: 'include', headers: headers })
+          .then(r => (r && r.ok) ? r.json() : null)
+          .catch(() => null);
+      } catch (_) { return Promise.resolve(null); }
+    }
+
+    // 拉取当前集的整季序列；结果缓存 60s，避免每次上报都打接口
+    function epFetchSeries(guid, done) {
+      const now = Date.now();
+      if (__epSeries.guid === guid && __epSeries.list && now - __epSeries.at < 60000) {
+        try { done(__epSeries.list); } catch (_) {}
+        return;
+      }
+      if (__epSeries.busy) return;
+      // 失败退避 30s：非剧集片源必然拿不到列表，别跟着 1.2s 上报节流反复打接口
+      if (__epSeries.failGuid === guid && now - __epSeries.failAt < 30000) { try { done(null); } catch (_) {} return; }
+      __epSeries.busy = true;
+      let finished = false;
+      const fin = (list) => {
+        if (finished) return;
+        finished = true;
+        __epSeries.busy = false;
+        if (!list) { __epSeries.failGuid = guid; __epSeries.failAt = Date.now(); }
+        try { done(list); } catch (_) {}
+      };
+      let curNo = 0;
+      // 收下候选剧集数组：必须含当前集且至少 2 集，才认为有效
+      const accept = (list, src) => {
+        if (!list || list.length < 2) {
+          log('epnav.api.reject', { src: src, n: list ? list.length : 0 });
+          return false;
+        }
+        list.sort((a, b) => a.no - b.no);
+        const hasCur = list.some(it => it.guid === guid);
+        log('epnav.api.list', { src: src, n: list.length, hasCur: hasCur });
+        if (!hasCur) return false;
+        __epSeries.guid = guid;
+        __epSeries.at = Date.now();
+        __epSeries.list = list;
+        __epSeries.curNo = curNo;
+        fin(list);
+        return true;
+      };
+      // 0) 播放信息接口（取流时已调用过）若本身带整季剧集，直接用，省两次请求
+      if (__epPlayInfo && accept(epFindSeries(__epPlayInfo, 0), 'playinfo')) return;
+      epApiGet('/v/api/v1/item/' + guid).then(item => {
+        const obj = (item && (item.data || item)) || null;
+        const itemSeason = obj ? epSeasonGuidOf(obj, guid) : '';
+        const domSeason = itemSeason ? '' : epDomSeasonGuid();
+        const seasonGuid = itemSeason || domSeason;
+        try {
+          if (obj) {
+            const n = obj.episode_number != null ? obj.episode_number : obj.episodeNumber;
+            curNo = Number(n) || 0;
+          }
+        } catch (_) {}
+        log('epnav.api.item', {
+          ok: !!obj, code: item && item.code, itemSeason: itemSeason || '',
+          domSeason: domSeason || '', curNo: curNo,
+          keys: obj ? Object.keys(obj).slice(0, 12) : []
+        });
+        // 详情接口本身若内联了整季剧集，直接采用，省一次请求
+        const inline = obj ? epFindSeries(obj, 0) : null;
+        if (accept(inline, 'inline')) return;
+        if (!seasonGuid) { fin(null); return; }
+        epApiGet('/v/api/v1/episode/list/' + seasonGuid).then(res => {
+          if (accept(epFindSeries(res, 0), 'episode-list')) return;
+          // episode/list 打不开（season guid 可能传成了 tv guid）→ 退到 season/list 取第一个季再试一次
+          epApiGet('/v/api/v1/season/list/' + seasonGuid).then(sres => {
+            const seasons = epFindSeries(sres, 0);
+            log('epnav.api.seasons', { n: seasons ? seasons.length : 0 });
+            if (!seasons || !seasons.length) { fin(null); return; }
+            const sg = seasons[0].guid;
+            epApiGet('/v/api/v1/episode/list/' + sg).then(res2 => {
+              if (accept(epFindSeries(res2, 0), 'episode-list-2')) return;
+              fin(null);
+            }).catch(() => fin(null));
+          }).catch(() => fin(null));
+        }).catch(() => fin(null));
+      }).catch(() => fin(null));
+    }
+
+    // 页面上的「剧集/季」链接 → 拿到 season guid（详情接口拿不到季时用它兜底）
+    function epDomSeasonGuid() {
+      try {
+        const as = document.querySelectorAll('a[href*="/v/tv/"]');
+        let season = '', tv = '';
+        for (let i = 0; i < as.length; i++) {
+          const h = as[i].getAttribute('href') || '';
+          let m = /\/v\/tv\/season\/([0-9a-fA-F]{16,40})/.exec(h);
+          if (m) { season = m[1]; break; }
+          m = /\/v\/tv\/([0-9a-fA-F]{16,40})/.exec(h);
+          if (m && !tv) tv = m[1];
+        }
+        return season || tv;
+      } catch (_) { return ''; }
+    }
+
+    // 兜底 1：页面内剧集链接（/v/video/、/v/tv/episode/、/v/movie/ 等）
     function collectEpisodeItems() {
       const list = [];
       const seen = new Set();
       try {
-        const anchors = document.querySelectorAll('a[href*="/v/video/"]');
+        const anchors = document.querySelectorAll('a[href]');
         for (let i = 0; i < anchors.length; i++) {
           const a = anchors[i];
           const href = a.getAttribute('href') || '';
-          const m = /\/v\/video\/([A-Za-z0-9_-]{6,})/.exec(href);
+          const m = EP_ITEM_RX.exec(href);
           if (!m) continue;
           const guid = m[1];
           if (seen.has(guid)) continue;
           seen.add(guid);
-          list.push({ guid, el: a, href });
+          list.push({ guid: guid, el: a, href: href, no: 0, active: false });
         }
       } catch (_) {}
-      return list;
+      if (list.length > 1) return list;
+      return collectEpisodeByText();
+    }
+
+    // 兜底 2：没有 href 的纯按钮选集列表（"第1集 / 第2集 …"），按同一父容器成组
+    function collectEpisodeByText() {
+      const out = [];
+      try {
+        const rx = /^(?:第\s*)?(\d{1,4})(?:\s*[集话話期])?$/;
+        const nodes = document.querySelectorAll('button,[role="button"],a,li,div,span');
+        const byParent = new Map();
+        for (let i = 0; i < nodes.length; i++) {
+          const el = nodes[i];
+          const t = (el.innerText || el.textContent || '').replace(/\s+/g, '');
+          if (!t || t.length > 6) continue;
+          const m = rx.exec(t);
+          if (!m) continue;
+          if (!elVisible(el)) continue;
+          const p = el.parentElement;
+          if (!p) continue;
+          if (!byParent.has(p)) byParent.set(p, []);
+          byParent.get(p).push({ no: Number(m[1]), el: el });
+        }
+        let best = null;
+        byParent.forEach(v => { if (!best || v.length > best.length) best = v; });
+        if (!best || best.length < 2) return [];
+        best.sort((a, b) => a.no - b.no);
+        const seen = new Set();
+        best.forEach(it => {
+          const key = String(it.no);
+          if (seen.has(key)) return;
+          seen.add(key);
+          let active = false;
+          try {
+            const cl = (it.el.className || '') + '';
+            active = /(^|\s)(active|selected|current|on)(\s|$)/.test(cl)
+              || it.el.getAttribute('aria-current') != null
+              || it.el.getAttribute('aria-selected') === 'true';
+          } catch (_) {}
+          out.push({ guid: '', el: it.el, href: '', no: it.no, active: active });
+        });
+      } catch (_) {}
+      return out;
     }
 
     function currentEpisodeGuid() {
-      try { return state.itemGuid || guidFromPath() || ''; } catch (_) { return ''; }
+      try {
+        const g = state.itemGuid || guidFromPath() || '';
+        if (g) return g;
+        const m = EP_ITEM_RX.exec(location.pathname || '');
+        return m ? m[1] : '';
+      } catch (_) { return ''; }
     }
 
     function episodeAbility() {
       const cur = currentEpisodeGuid();
-      const btnNext = findEpisodeButton('next');
-      const btnPrev = findEpisodeButton('prev');
-      if (btnNext || btnPrev) {
-        return { hasPrev: !!btnPrev, hasNext: !!btnNext, source: 'button', total: 0, index: -1 };
+      // 1) 接口序列（最可靠，不依赖页面是否渲染出选集面板）
+      const api = __epSeries.list;
+      if (api && api.length > 1) {
+        const i = api.findIndex(it => it.guid === cur);
+        if (i >= 0) {
+          return { hasPrev: i > 0, hasNext: i < api.length - 1, source: 'api', total: api.length, index: i };
+        }
       }
-      const list = collectEpisodeItems();
-      const idx = list.findIndex(it => it.guid === cur);
-      if (idx >= 0 && list.length > 1) {
-        return { hasPrev: idx > 0, hasNext: idx < list.length - 1, source: 'list', total: list.length, index: idx };
+      // 2) 页面自带的「上一集/下一集」按钮或选集面板（15s 缓存，避免每次上报都全页遍历）
+      const now = Date.now();
+      if (!__domAbility || now - __domAbilityAt > 15000) {
+        __domAbilityAt = now;
+        __domAbility = scanDomAbility(cur);
       }
-      return { hasPrev: false, hasNext: false, source: '', total: list.length, index: idx };
+      return __domAbility;
+    }
+
+    function scanDomAbility(cur) {
+      const none = { hasPrev: false, hasNext: false, source: '', total: 0, index: -1 };
+      try {
+        const btnNext = findEpisodeButton('next');
+        const btnPrev = findEpisodeButton('prev');
+        if (btnNext || btnPrev) {
+          return { hasPrev: !!btnPrev, hasNext: !!btnNext, source: 'button', total: 0, index: -1 };
+        }
+        const list = collectEpisodeItems();
+        if (list.length > 1) {
+          const idx = list.findIndex(it => (it.guid && it.guid === cur) || (it.active === true) || (it.no && it.no === __epSeries.curNo));
+          if (idx >= 0) {
+            return { hasPrev: idx > 0, hasNext: idx < list.length - 1, source: 'list', total: list.length, index: idx };
+          }
+        }
+      } catch (_) {}
+      return none;
+    }
+
+    // 整页导航：先让主进程收起当前 MPV 嵌入窗，再跳转（否则旧窗口残留 + 新页面再嵌一次=双窗）
+    function epNavigate(url) {
+        if (!url) return false;
+        try {
+            const p = ipcRenderer.invoke('mpv:embed-close');
+            if (p && p.catch) p.catch(() => {});
+        } catch (_) {}
+        setTimeout(() => { try { location.href = url; } catch (_) {} }, 60);
+        return true;
+    }
+
+    // 跨页续播标记：网页切集是整页跳转，preload 的运行时状态会丢，这里用 sessionStorage 续上
+    function epMarkContinue() {
+      try { sessionStorage.setItem('__fnosMpvContinue', '1'); } catch (_) {}
     }
 
     function goEpisode(dir) {
       const d = dir === 'prev' ? 'prev' : 'next';
       if (!isVideoRoute()) { log('epnav.skip.route', { dir: d, path: location.pathname }); return false; }
-      // 切集后继续由 MPV 播放（否则新一集会被网页 <video> 正常播，播放器切换观感断裂）
-      state.mpvAlways = true;
-      state.epSwitchAt = Date.now();
       const ab = episodeAbility();
       if ((d === 'next' && !ab.hasNext) || (d === 'prev' && !ab.hasPrev)) {
         log('epnav.none', { dir: d, hasPrev: ab.hasPrev, hasNext: ab.hasNext, source: ab.source, total: ab.total });
         return false;
       }
-      // 1) 优先点站点自己的按钮
+      state.mpvAlways = true;
+      state.epSwitchAt = Date.now();
+      epMarkContinue();
+      // 1) 接口序列 → 直接用 guid 跳转播放页（最可靠）
+      if (ab.source === 'api' && __epSeries.list) {
+        const list = __epSeries.list;
+        const i = list.findIndex(it => it.guid === currentEpisodeGuid());
+        const target = i >= 0 ? list[d === 'next' ? i + 1 : i - 1] : null;
+        if (target) {
+          log('epnav.api.jump', { dir: d, guid: target.guid, no: target.no, index: i, total: list.length });
+          if (epNavigate('/v/video/' + target.guid)) return true;
+        }
+      }
+      // 2) 站点自己的按钮
       const btn = findEpisodeButton(d);
       if (btn) {
         try {
           btn.click();
           state.epSwitchAt = Date.now();
           log('epnav.click.button', { dir: d, text: String(btn.innerText || '').slice(0, 20) });
-          // 切集后网页会重新加载 video；解除接管标记让新一轮 embed 生效
           setTimeout(() => {
             try { state.handled = false; state.mediaGuid = ''; state.resolving = false; } catch (_) {}
-            // handled=true 时 scheduleScan 会跳过扫描，这里主动扫一次让新一集被 watch → 重新 embed
             try { if (isVideoRoute()) scan(); } catch (_) {}
           }, 600);
           return true;
         } catch (_) {}
       }
-      // 2) 退化为剧集链接序列
+      // 3) 页面剧集链接 / 选集按钮
       const list = collectEpisodeItems();
       const cur = currentEpisodeGuid();
-      const idx = list.findIndex(it => it.guid === cur);
+      const idx = list.length > 1
+        ? list.findIndex(it => (it.guid && it.guid === cur) || (it.active === true) || (it.no && it.no === __epSeries.curNo))
+        : -1;
       if (idx >= 0) {
         const target = list[d === 'next' ? idx + 1 : idx - 1];
         if (target) {
@@ -1392,18 +1664,18 @@ contextBridge.exposeInMainWorld('fnos', {
               state.epSwitchAt = Date.now();
               log('epnav.click.link', { dir: d, guid: target.guid, index: idx });
               setTimeout(() => {
-            try { state.handled = false; state.mediaGuid = ''; state.resolving = false; } catch (_) {}
-            // handled=true 时 scheduleScan 会跳过扫描，这里主动扫一次让新一集被 watch → 重新 embed
-            try { if (isVideoRoute()) scan(); } catch (_) {}
-          }, 600);
+                try { state.handled = false; state.mediaGuid = ''; state.resolving = false; } catch (_) {}
+                try { if (isVideoRoute()) scan(); } catch (_) {}
+              }, 600);
               return true;
             }
           } catch (_) {}
-          try {
-            location.href = target.href;
-            log('epnav.href', { dir: d, guid: target.guid, index: idx });
-            return true;
-          } catch (_) {}
+          if (target.href) {
+            if (epNavigate(target.href)) {
+              log('epnav.href', { dir: d, guid: target.guid, index: idx });
+              return true;
+            }
+          }
         }
       }
       log('epnav.fail', { dir: d, hasPrev: ab.hasPrev, hasNext: ab.hasNext, source: ab.source, total: ab.total, index: idx });
@@ -1420,12 +1692,25 @@ contextBridge.exposeInMainWorld('fnos', {
         const cur = currentEpisodeGuid();
         if (!cur) return;
         const ab = episodeAbility();
-        const key = cur + '|' + (ab.hasPrev ? 1 : 0) + (ab.hasNext ? 1 : 0);
+        // 接口序列还没拉到时，点火一次；拿到后强制重报（这一步是按钮能否点亮的根因修复）
+        if (!ab.hasPrev && !ab.hasNext && !ab.source && !(__epSeries.guid === cur && __epSeries.list)) {
+          epFetchSeries(cur, list => {
+            if (list) { try { __lastAbilityAt = 0; reportEpisodeAbility(true); } catch (_) {} }
+          });
+        }
+        const key = cur + '|' + (ab.hasPrev ? 1 : 0) + (ab.hasNext ? 1 : 0) + '|' + ab.source;
         if (!force && key === __lastAbilityKey) return;
         __lastAbilityKey = key;
+        // v2.20.1：把整季列表一起带给主进程 → 写进 mpv user-data → ☰/右键菜单里可以「选集 ▸」
+        let eps = [];
+        try {
+          if (__epSeries.list && __epSeries.list.length > 1) {
+            eps = __epSeries.list.slice(0, 80).map(it => ({ no: it.no, guid: it.guid }));
+          }
+        } catch (_) {}
         ipcRenderer.send('mpv:episode-ability', {
           itemGuid: cur, hasPrev: ab.hasPrev, hasNext: ab.hasNext,
-          total: ab.total, index: ab.index, source: ab.source
+          total: ab.total, index: ab.index, source: ab.source, episodes: eps
         });
         log('epnav.ability', { hasPrev: ab.hasPrev, hasNext: ab.hasNext, source: ab.source, total: ab.total, index: ab.index });
       } catch (_) {}
@@ -1606,6 +1891,15 @@ contextBridge.exposeInMainWorld('fnos', {
           ipcRenderer.invoke('mpv:get-settings').then((cfg) => {
             try {
               state.mpvAlways = !!(cfg && cfg.alwaysUse);
+              // v2.20.1：上一集/下一集是整页跳转，用 sessionStorage 把「继续用 MPV 播」带过去，
+              //          这样即使没开「默认用 MPV 播放」，切集后新一集也不会掉回网页播放器。
+              try {
+                if (sessionStorage.getItem('__fnosMpvContinue') === '1') {
+                  sessionStorage.removeItem('__fnosMpvContinue');
+                  state.mpvAlways = true;
+                  state.epSwitchAt = Date.now();
+                }
+              } catch (_) {}
               log('mpv.settings', { alwaysUse: state.mpvAlways, enabled: !!(cfg && cfg.enabled) });
               if (state.mpvAlways && __isPlayLikeRoute()) {
                 installDomObserver();
@@ -1615,6 +1909,18 @@ contextBridge.exposeInMainWorld('fnos', {
             } catch (_) {}
           }).catch(() => {});
         } catch (_) {}
+        // v2.20.1：MPV 菜单里直接选「第 N 集」→ 跳到对应 item guid
+        ipcRenderer.on('mpv:episode-goto', (_e, d) => {
+          try {
+            const g = d && d.guid;
+            if (!g || !/^[0-9a-fA-F]{16,40}$/.test(String(g))) return;
+            state.mpvAlways = true;
+            state.epSwitchAt = Date.now();
+            epMarkContinue();
+            log('epnav.goto', { guid: String(g) });
+            epNavigate('/v/video/' + g);
+          } catch (err) { log('epnav.goto.err', { err: String(err && err.message || err) }); }
+        });
         // v2.20.0：MPV 控制条「上一集 / 下一集 / 自动连播」→ 网页内切集
         ipcRenderer.on('mpv:episode-nav', (_e, d) => {
           try {

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.18.5';
+const APP_VERSION = '2.18.6';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -9637,108 +9637,154 @@ ipcMain.on('titlebar:should-inject', (e) => {
 });
 
 // v2.18.1：「关于 FNOS」窗口按钮桥——检查更新 / 关闭关于窗口
-// v2.18.5：检查更新改为返回结构化结果（内部不再弹任何窗口），由关于页自己渲染；
-// 同批新增「下载安装包 / 取消下载 / 打开发布页 / 打开所在文件夹」四个入口。
-ipcMain.handle('app:check-update', async () => {
-  return await checkForUpdates();
-});
+// v2.18.6（用户要求）：检查更新回到「跳出提示框」形态。
+// 关键改动：弹框前先把父窗（关于窗）隐藏——v2.18.4 的"压字"其实是 520x440 的关于窗
+// 与 440x240 的玻璃弹框叠在一起、半透明背景把下面的文字透出来造成的，不是排版 bug。
+// 现在关于窗全程隐藏，弹框独立居中于屏幕；流程走完再把关于窗显示回来。
+const UPD_PROGRESS_PAGE = path.join(__dirname, 'update-progress.html');
+const UPD_PROGRESS_PRELOAD = path.join(__dirname, 'update-progress-preload.js');
 
-// v2.18.5：下载更新安装包。流程 = 先让用户选保存位置 -> 流式写入 <目标>.part
-// -> 完成后重命名到目标；进度用 app:update-progress 推给关于页；取消/失败都会清掉 .part。
-let __updateDl = null;
-ipcMain.handle('app:download-update', async (e, payload) => {
-  const sender = e.sender;
-  let win = null;
-  try { win = BrowserWindow.fromWebContents(sender); } catch (_) {}
-  const dlUrl = String((payload && payload.url) || '');
-  const ver = String((payload && payload.version) || '').replace(/[^0-9A-Za-z.\-]/g, '');
-  if (!/^https:\/\/(github\.com|objects\.githubusercontent\.com)\//i.test(dlUrl)) {
-    return { ok: false, error: '下载地址无效' };
-  }
-  if (__updateDl) return { ok: false, error: '已有下载任务正在进行' };
+let __updCheckingWin = null;
+let __updProgressWin = null;
+let __updDl = null;
 
-  let target = '';
+// 检查中：300x100 的小悬浮窗（只有转圈 + 文案，不可交互）
+function __showUpdChecking() {
+  if (__updCheckingWin && !__updCheckingWin.isDestroyed()) return;
+  let wa = { width: 1366, height: 768 };
+  try { wa = screen.getPrimaryDisplay().workAreaSize; } catch (_) {}
+  const w = 300;
+  const h = 100;
+  const win = new BrowserWindow({
+    width: w, height: h,
+    x: Math.round((wa.width - w) / 2), y: Math.round((wa.height - h) / 2),
+    frame: false, transparent: true, resizable: false, minimizable: false,
+    maximizable: false, fullscreenable: false, skipTaskbar: true,
+    alwaysOnTop: true, show: false, hasShadow: true, icon: ICON_PATH,
+    backgroundColor: '#00000000',
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+  });
+  win.__isGlassDialog = true;
+  const html = '<!doctype html><html><head><meta charset="utf-8"><style>'
+    + 'html,body{margin:0;height:100%;background:transparent;overflow:hidden}'
+    + '.c{box-sizing:border-box;height:100%;border-radius:14px;display:flex;align-items:center;gap:12px;padding:0 18px;'
+    + 'background:linear-gradient(160deg,rgba(24,32,54,.97),rgba(10,14,26,.98));border:1px solid rgba(255,255,255,.13);'
+    + 'box-shadow:0 20px 50px -18px rgba(0,0,0,.85),inset 0 1px 0 rgba(255,255,255,.08);'
+    + 'color:#e9efff;font-family:"Microsoft YaHei",system-ui,sans-serif}'
+    + '.s{width:18px;height:18px;border:2px solid rgba(255,255,255,.18);border-top-color:#7cecff;border-right-color:#7c83ff;'
+    + 'border-radius:50%;animation:sp .9s linear infinite;flex:0 0 auto}'
+    + '@keyframes sp{to{transform:rotate(360deg)}}'
+    + '.t{font-size:12.5px;font-weight:600}.d{margin-top:3px;font-size:10.5px;color:#7d8ba5}'
+    + '</style></head><body><div class="c"><div class="s"></div><div>'
+    + '<div class="t">正在检查更新…</div><div class="d">两条通道并行，最长约 11 秒</div>'
+    + '</div></div></body></html>';
   try {
-    const r = await dialog.showSaveDialog(win || undefined, {
-      title: '保存更新安装包',
-      defaultPath: path.join(app.getPath('downloads'), `FNOS-${ver || 'new'}-setup.exe`),
-      buttonLabel: '保存',
-      filters: [
-        { name: '安装程序 (*.exe)', extensions: ['exe'] },
-        { name: '所有文件', extensions: ['*'] },
-      ],
-      properties: ['createDirectory', 'showOverwriteConfirmation'],
-    });
-    if (win && !win.isDestroyed()) { try { win.focus(); } catch (_) {} }
-    if (r.canceled || !r.filePath) return { canceled: true };
-    target = r.filePath;
-  } catch (err) {
-    return { ok: false, error: '无法打开保存对话框' };
-  }
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {});
+  } catch (_) {}
+  win.once('ready-to-show', () => {
+    try { win.showInactive(); win.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
+  });
+  win.on('closed', () => { if (__updCheckingWin === win) __updCheckingWin = null; });
+  __updCheckingWin = win;
+}
 
-  const part = target + '.part';
-  return await new Promise((resolve) => {
+function __closeUpdChecking() {
+  const w = __updCheckingWin;
+  __updCheckingWin = null;
+  if (w && !w.isDestroyed()) { try { w.close(); } catch (_) {} }
+}
+
+// 下载中：380x146 进度窗
+function __showUpdProgress(ver) {
+  __closeUpdProgress();
+  let wa = { width: 1366, height: 768 };
+  try { wa = screen.getPrimaryDisplay().workAreaSize; } catch (_) {}
+  const w = 380;
+  const h = 140;
+  const win = new BrowserWindow({
+    width: w, height: h,
+    x: Math.round((wa.width - w) / 2), y: Math.round((wa.height - h) / 2),
+    frame: false, transparent: true, resizable: false, minimizable: false,
+    maximizable: false, fullscreenable: false, skipTaskbar: true,
+    alwaysOnTop: true, show: false, hasShadow: true, icon: ICON_PATH,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: UPD_PROGRESS_PRELOAD,
+      contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
+    },
+  });
+  win.__isGlassDialog = true;
+  win.loadFile(UPD_PROGRESS_PAGE, { query: { v: String(ver || '') } }).catch(() => {});
+  win.once('ready-to-show', () => {
+    try { win.show(); win.setAlwaysOnTop(true, 'screen-saver'); win.focus(); } catch (_) {}
+  });
+  win.on('closed', () => { if (__updProgressWin === win) __updProgressWin = null; });
+  __updProgressWin = win;
+}
+
+function __closeUpdProgress() {
+  const w = __updProgressWin;
+  __updProgressWin = null;
+  if (w && !w.isDestroyed()) { try { w.close(); } catch (_) {} }
+}
+
+function __sendUpdProgress(data) {
+  try {
+    if (__updProgressWin && !__updProgressWin.isDestroyed()) {
+      __updProgressWin.webContents.send('upd:progress', data);
+    }
+  } catch (_) {}
+}
+
+// 流式下载到指定路径：先写 <目标>.part，成功后 rename；失败/取消删 .part
+function __fetchToFile(url, target, onProgress) {
+  return new Promise((resolve) => {
+    const part = target + '.part';
     let req = null;
     let ws = null;
     let received = 0;
     let total = 0;
     let settled = false;
-    const state = { canceled: false, abort: null };
-    __updateDl = state;
+    const state = { abort: null };
+    __updDl = state;
 
-    const emit = (extra) => {
-      try {
-        if (sender && !sender.isDestroyed()) {
-          sender.send('app:update-progress', Object.assign({
-            received,
-            total,
-            percent: total > 0 ? Math.min(100, Math.round(received * 100 / total)) : 0,
-          }, extra || {}));
-        }
-      } catch (_) {}
-    };
-    const dropPart = () => { try { fs.unlinkSync(part); } catch (_) {} };
-    const fail = (msg, extra) => {
+    const cleanup = () => { try { fs.unlinkSync(part); } catch (_) {} };
+    const finish = (obj) => {
       if (settled) return;
       settled = true;
+      if (__updDl === state) __updDl = null;
+      resolve(obj);
+    };
+    const fail = (msg, extra) => {
+      if (settled) return;
       try { if (ws) ws.destroy(); } catch (_) {}
       try { if (req) req.abort(); } catch (_) {}
-      dropPart();
-      if (__updateDl === state) __updateDl = null;
-      emit(Object.assign({ phase: 'error', error: msg }, extra || {}));
-      try { fnosLog('warn', 'update', 'download.fail', { msg: String(msg).slice(0, 200) }); } catch (_) {}
-      resolve(Object.assign({ ok: false, error: msg }, extra || {}));
+      cleanup();
+      try { fnosLog('warn', 'update', 'download.fail', { msg: String(msg).slice(0, 180) }); } catch (_) {}
+      finish(Object.assign({ ok: false, error: msg }, extra || {}));
     };
     state.abort = () => fail('已取消', { canceled: true });
 
     try {
       req = net.request({
-        method: 'GET',
-        url: dlUrl,
-        redirect: 'follow',
-        session: session.defaultSession,
-        credentials: 'omit',
-        useSessionCookies: false,
-        cache: 'no-store',
+        method: 'GET', url, redirect: 'follow', session: session.defaultSession,
+        credentials: 'omit', useSessionCookies: false, cache: 'no-store',
       });
-    } catch (err) {
-      fail('无法创建下载请求');
-      return;
-    }
-    req.setHeader('User-Agent', `FNOS-Desktop/${APP_VERSION}`);
+    } catch (_) { fail('无法创建下载请求'); return; }
+    req.setHeader('User-Agent', 'FNOS-Desktop/' + APP_VERSION);
     req.setHeader('Accept', 'application/octet-stream');
 
     req.on('response', (res) => {
       const code = res.statusCode || 0;
-      if (code < 200 || code >= 300) { fail(`下载失败：HTTP ${code}`); return; }
+      if (code < 200 || code >= 300) { fail('下载失败：HTTP ' + code); return; }
       total = parseInt(res.headers['content-length'] || 0, 10) || 0;
-      try { ws = fs.createWriteStream(part); } catch (err) { fail('无法写入保存位置'); return; }
+      try { ws = fs.createWriteStream(part); } catch (_) { fail('无法写入保存位置'); return; }
       ws.on('error', () => fail('写入文件失败（磁盘空间或权限）'));
       res.on('data', (chunk) => {
         if (settled) return;
         received += chunk.length;
         try { ws.write(chunk); } catch (_) {}
-        if (!total || (received % (256 * 1024)) < chunk.length) emit({ phase: 'downloading' });
+        try { if (typeof onProgress === 'function') onProgress(received, total); } catch (_) {}
       });
       res.on('error', () => fail('下载中断'));
       res.on('end', () => {
@@ -9746,37 +9792,148 @@ ipcMain.handle('app:download-update', async (e, payload) => {
         try {
           ws.end(() => {
             if (settled) return;
-            settled = true;
             let moved = true;
-            try {
-              fs.renameSync(part, target);
-            } catch (_) {
+            try { fs.renameSync(part, target); } catch (_) {
               moved = false;
               try { fs.copyFileSync(part, target); fs.unlinkSync(part); moved = true; } catch (_) { moved = false; }
             }
-            if (__updateDl === state) __updateDl = null;
-            if (!moved) {
-              emit({ phase: 'error', error: '保存文件失败' });
-              resolve({ ok: false, error: '保存文件失败' });
-              return;
-            }
-            emit({ phase: 'done', percent: 100 });
-            try { fnosLog('info', 'update', 'download.done', { size: received }); } catch (_) {}
-            resolve({ ok: true, path: target, size: received });
+            if (!moved) { cleanup(); fail('保存文件失败'); return; }
+            finish({ ok: true, path: target, size: received });
           });
         } catch (_) { fail('保存文件失败'); }
       });
-      emit({ phase: 'downloading' });
     });
-    req.on('error', () => fail('网络错误，下载失败'));
+    req.on('error', () => fail('网络错误，下载中断'));
     req.on('abort', () => { if (!settled) fail('已取消', { canceled: true }); });
     req.end();
   });
+}
+
+async function __openReleasePage(url) {
+  try { await shell.openExternal(url || RELEASES_PAGE); } catch (_) {}
+}
+
+// 选保存位置 -> 进度窗 -> 完成/失败弹框
+async function startUpdateDownload(info) {
+  const ver = String((info && info.latest) || '').replace(/[^0-9A-Za-z.\-]/g, '');
+  const url = String((info && info.download_url) || '');
+  const page = String((info && info.html_url) || RELEASES_PAGE);
+  if (!/^https:\/\/(github\.com|objects\.githubusercontent\.com)\//i.test(url)) {
+    const r0 = await showGlassDialog(null, {
+      title: '没有拿到下载地址',
+      message: '接口没有返回安装包直链，可以在浏览器里打开 Release 页手动下载。',
+      buttons: ['用浏览器查看', '关闭'], defaultId: 0, cancelId: 1, width: 500,
+    });
+    if (r0.response === 0) __openReleasePage(page);
+    return;
+  }
+
+  let target = '';
+  try {
+    const save = await dialog.showSaveDialog(null, {
+      title: '保存更新安装包',
+      defaultPath: path.join(app.getPath('downloads'), 'FNOS-' + (ver || 'new') + '-setup.exe'),
+      buttonLabel: '保存',
+      filters: [
+        { name: '安装程序 (*.exe)', extensions: ['exe'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (save.canceled || !save.filePath) return;
+    target = save.filePath;
+  } catch (_) {
+    await showGlassDialog(null, { title: '无法保存', message: '打开保存对话框失败。', buttons: ['确定'], width: 500 });
+    return;
+  }
+
+  __showUpdProgress(ver);
+  let lastEmit = 0;
+  const r = await __fetchToFile(url, target, (received, total) => {
+    const now = Date.now();
+    const pct = total > 0 ? Math.min(100, Math.round((received * 100) / total)) : 0;
+    if (now - lastEmit < 220 && received !== total) return;
+    lastEmit = now;
+    __sendUpdProgress({ received, total, percent: pct });
+  });
+  __closeUpdProgress();
+
+  if (r.ok) {
+    try { fnosLog('info', 'update', 'download.done', { size: r.size }); } catch (_) {}
+    const res = await showGlassDialog(null, {
+      title: '下载完成',
+      message: '安装包已保存到：\n' + r.path + '\n双击即可安装（安装前会先关闭当前程序）。',
+      buttons: ['打开所在文件夹', '关闭'], defaultId: 0, cancelId: 1, width: 500,
+    });
+    if (res.response === 0) { try { shell.showItemInFolder(r.path); } catch (_) {} }
+  } else if (!r.canceled) {
+    const res = await showGlassDialog(null, {
+      title: '下载失败',
+      message: String(r.error || '未知错误') + '\n目标位置：' + target,
+      buttons: ['用浏览器查看', '关闭'], defaultId: 0, cancelId: 1, width: 500,
+    });
+    if (res.response === 0) __openReleasePage(page);
+  }
+}
+
+// 完整流程：隐藏关于窗 -> 检查中悬浮窗 -> 结果弹框 ->（可选）下载 -> 恢复关于窗
+async function runUpdateFlow(parentWin) {
+  const p = (parentWin && !parentWin.isDestroyed()) ? parentWin : null;
+  if (p) { try { p.hide(); } catch (_) {} }
+  __showUpdChecking();
+  let r = null;
+  try {
+    r = await checkForUpdates();
+  } catch (err) {
+    r = { status: 'error', current: APP_VERSION, error: String((err && err.message) || err) };
+  } finally {
+    __closeUpdChecking();
+  }
+
+  try {
+    if (r && r.status === 'update') {
+      const res = await showGlassDialog(null, {
+        title: '发现新版本 v' + r.latest,
+        message: '当前 v' + r.current + '  →  最新 v' + r.latest
+          + '\n要现在下载安装包吗？下载时可以自己选保存位置。',
+        buttons: ['立即下载', '稍后'], defaultId: 0, cancelId: 1, width: 500,
+      });
+      if (res.response === 0) await startUpdateDownload(r);
+    } else if (r && r.status === 'latest') {
+      await showGlassDialog(null, {
+        title: '已是最新版本',
+        message: '当前 v' + r.current + ' 已经是 GitHub 上的最新版本。',
+        buttons: ['确定'], defaultId: 0, cancelId: 0, width: 500,
+      });
+    } else {
+      const res = await showGlassDialog(null, {
+        title: '检查更新失败',
+        message: '两条通道都没能拿到版本信息。\n' + String((r && r.error) || '未知错误').slice(0, 300),
+        buttons: ['用浏览器查看', '关闭'], defaultId: 0, cancelId: 1, width: 500,
+      });
+      if (res.response === 0) __openReleasePage(RELEASES_PAGE);
+    }
+  } finally {
+    if (p && !p.isDestroyed()) {
+      try { p.show(); p.focus(); } catch (_) {}
+    }
+  }
+  return true;
+}
+
+ipcMain.handle('app:check-update', async (e) => {
+  let win = null;
+  try { win = BrowserWindow.fromWebContents(e.sender); } catch (_) {}
+  try {
+    await runUpdateFlow(win);
+  } catch (err) {
+    try { fnosLog('warn', 'update', 'flow.fail', { msg: String((err && err.message) || err).slice(0, 200) }); } catch (_) {}
+  }
+  return true;
 });
 
-ipcMain.handle('app:update-download-cancel', async () => {
-  try { if (__updateDl && typeof __updateDl.abort === 'function') __updateDl.abort(); } catch (_) {}
-  return { ok: true };
+ipcMain.on('upd:cancel-download', () => {
+  try { if (__updDl && typeof __updDl.abort === 'function') __updDl.abort(); } catch (_) {}
 });
 
 ipcMain.handle('app:open-release', async (_e, u) => {

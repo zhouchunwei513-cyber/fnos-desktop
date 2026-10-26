@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>下载更新</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  .card {
+    box-sizing: border-box; height: 100%; border-radius: 16px; padding: 16px 20px;
+    background: linear-gradient(160deg, rgba(24,32,54,.97), rgba(10,14,26,.98));
+    border: 1px solid rgba(255,255,255,.13);
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.08);
+    color: #e9efff; font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    display: flex; flex-direction: column; justify-content: center; gap: 9px;
+    user-select: none;
+  }
+  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .ttl { font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+  .pct { font-size: 12px; font-weight: 700; color: #9fd8ff; font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; }
+  .bar i {
+    display: block; height: 100%; width: 0; border-radius: 3px;
+    background: linear-gradient(90deg, #8fd8ff, #7c9dff);
+    transition: width .18s ease;
+  }
+  .info { font-size: 11px; color: #8ea2c8; font-variant-numeric: tabular-nums; }
+  .foot { display: flex; justify-content: flex-end; margin-top: 2px; }
+  button {
+    height: 26px; padding: 0 13px; font-size: 11.5px; font-family: inherit;
+    color: #cbd8f2; cursor: pointer; border-radius: 7px;
+    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
+    transition: background .15s, color .15s;
+  }
+  button:hover { background: rgba(255,255,255,.14); color: #fff; }
+  button[disabled] { opacity: .55; cursor: default; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">
+      <span class="ttl" id="ttl">正在下载安装包</span>
+      <span class="pct" id="pct">0%</span>
+    </div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="info" id="info">准备中…</div>
+    <div class="foot"><button id="btn-cancel">取消下载</button></div>
+  </div>
+  <script>
+    (function () {
+      var ver = (/[?&]v=([^&]+)/.exec(String(location.search || '')) || [])[1] || '';
+      ver = ver ? decodeURIComponent(ver) : '';
+      var ttl = document.getElementById('ttl');
+      var pct = document.getElementById('pct');
+      var bar = document.getElementById('bar');
+      var info = document.getElementById('info');
+      var btn = document.getElementById('btn-cancel');
+      if (ver) ttl.textContent = '正在下载 v' + ver;
+
+      function mb(n) {
+        n = Number(n) || 0;
+        if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+        if (n >= 1024) return Math.round(n / 1024) + ' KB';
+        return n + ' B';
+      }
+
+      try {
+        if (window.updApi && typeof window.updApi.onProgress === 'function') {
+          window.updApi.onProgress(function (d) {
+            if (!d) return;
+            var p = Number(d.percent) || 0;
+            pct.textContent = p + '%';
+            bar.style.width = Math.max(0, Math.min(100, p)) + '%';
+            if (d.total) info.textContent = mb(d.received) + ' / ' + mb(d.total);
+            else info.textContent = mb(d.received) + ' 已下载';
+          });
+        }
+      } catch (e) {}
+
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.textContent = '正在取消…';
+        info.textContent = '正在取消，请稍候';
+        try { if (window.updApi && window.updApi.cancel) window.updApi.cancel(); } catch (e) {}
+      });
+    })();
+  </script>
+</body>
+</html>

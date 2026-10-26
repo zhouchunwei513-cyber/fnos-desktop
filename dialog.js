@@ -61,7 +61,7 @@ function applyOptions(opts) {
   // 上报真实尺寸后再通知主进程显示
   requestAnimationFrame(() => {
     try {
-      const f = document.querySelector('.dialog-frame');
+      const f = document.querySelector('.card');
       const h = Math.ceil(f.getBoundingClientRect().height) + 40;
       const w = Math.ceil(f.getBoundingClientRect().width) + 40;
       if (api && api.resize) api.resize({ width: w, height: h });

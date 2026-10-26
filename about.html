@@ -7,139 +7,38 @@
   html { background: transparent; overflow: hidden; }
   html, body { margin: 0; padding: 0; }
   body {
-    height: 100vh;
+    min-height: 100vh;
     box-sizing: border-box;
     font-family: "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, sans-serif;
     color: #e9efff;
     background: #05060a;
-    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     user-select: none;
+    overflow: hidden;
   }
   .bg {
-    position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
     background:
       radial-gradient(620px 330px at 16% 0%, rgba(90,130,255,.15), transparent 62%),
       radial-gradient(540px 310px at 90% 10%, rgba(120,240,255,.10), transparent 66%),
       linear-gradient(180deg, #070a13 0%, #04060c 100%);
   }
-
-  /* v2.18.5：整体改为「上头像 / 中状态面板 / 下按钮」三段式固定布局。
-     面板 flex:1 自适应剩余高度、内部滚动，所以无论检查结果多长都不会撑破窗口，
-     也不会再出现 v2.18.4 那种弹框与标题压字的情况。 */
-  .wrap {
-    position: relative; z-index: 1;
-    height: 100%;
-    box-sizing: border-box;
-    padding: 10px 22px 10px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    overflow: hidden;
-  }
-
-  .head { flex: 0 0 auto; text-align: center; }
+  .wrap { text-align: center; padding: 6px 32px 0; }
   .logo {
-    width: 66px; height: 66px; display: block; margin: 0 auto 8px;
-    border-radius: 17px;
-    box-shadow: 0 12px 30px -12px rgba(80,140,255,.55), inset 0 1px 0 rgba(255,255,255,.18);
+    width: 82px; height: 82px; display: block; margin: 0 auto 13px;
+    border-radius: 20px;
+    box-shadow: 0 12px 32px -12px rgba(80,140,255,.55), inset 0 1px 0 rgba(255,255,255,.18);
   }
-  .name { font-size: 17px; font-weight: 700; letter-spacing: 2.6px; }
-  .ver { margin-top: 5px; font-size: 12px; color: #8ea2c8; letter-spacing: .6px; }
-  .ver b { color: #cfe0ff; font-weight: 600; }
-  .sub { margin-top: 3px; font-size: 11px; color: #5c6b85; }
-
-  .panel {
-    flex: 1 1 auto;
-    min-height: 0;
-    width: 100%;
-    margin: 10px 0 0;
-    padding: 10px 12px;
-    box-sizing: border-box;
-    border-radius: 12px;
-    background: rgba(255,255,255,.045);
-    border: 1px solid rgba(255,255,255,.08);
-    overflow-y: auto;
-    scrollbar-width: none;
-    font-size: 12px;
-    color: #9fb0cc;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    transition: border-color .18s, background .18s;
-  }
-  .panel::-webkit-scrollbar { width: 0; height: 0; }
-  .panel.ok { border-color: rgba(110,231,183,.30); background: rgba(110,231,183,.07); }
-  .panel.bad { border-color: rgba(252,165,165,.30); background: rgba(252,165,165,.06); }
-  .panel.up { border-color: rgba(140,180,255,.32); background: rgba(120,160,255,.08); }
-
-  .row { display: flex; align-items: center; gap: 9px; }
-  .row.center { justify-content: center; }
-  .idle { justify-content: center; color: #5c6b85; font-size: 11.5px; line-height: 1.6; text-align: center; }
-  .idle-wrap { display: flex; flex-direction: column; align-items: center; gap: 7px; text-align: center; }
-  .idle-wrap svg { display: block; opacity: .55; }
-  .idle-wrap .t1 { font-size: 12.5px; color: #aebbd4; font-weight: 600; }
-  .idle-wrap .t2 { font-size: 11px; color: #5c6b85; line-height: 1.6; }
-
-  .sp {
-    flex: 0 0 auto; width: 15px; height: 15px;
-    border: 2px solid rgba(255,255,255,.18);
-    border-top-color: #7cecff; border-right-color: #7c83ff;
-    border-radius: 50%; animation: spin .9s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .ic {
-    flex: 0 0 auto; width: 17px; height: 17px; border-radius: 50%;
-    display: inline-flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: 700;
-  }
-  .ic.ok { color: #0b1a14; background: #6ee7b7; }
-  .ic.bad { color: #2a0d0d; background: #fca5a5; }
-
-  .box { min-width: 0; }
-  .t1 { font-size: 12.5px; color: #e9efff; font-weight: 600; }
-  .t2 { margin-top: 3px; font-size: 11px; color: #7d8ba5; }
-  .notes {
-    margin-top: 8px; font-size: 11px; line-height: 1.65; color: #8ea2c8;
-    white-space: pre-wrap; word-break: break-word;
-    max-height: 88px; overflow-y: auto; scrollbar-width: none;
-  }
-  .notes::-webkit-scrollbar { width: 0; height: 0; }
-  .err {
-    margin-top: 6px; font-size: 11px; line-height: 1.65; color: #fca5a5;
-    word-break: break-word; max-height: 72px; overflow-y: auto; scrollbar-width: none;
-  }
-  .err::-webkit-scrollbar { width: 0; height: 0; }
-  .path {
-    margin-top: 6px; font-size: 10.5px; color: #7d8ba5; line-height: 1.55;
-    word-break: break-all; max-height: 46px; overflow: hidden;
-  }
-
-  .bar { margin-top: 9px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; }
-  .bar i {
-    display: block; height: 100%; width: 0; border-radius: 3px;
-    background: linear-gradient(90deg, #8fd8ff, #7c9dff);
-    transition: width .2s ease;
-  }
-
-  .row-btns { margin-top: 10px; display: flex; gap: 8px; }
-  .mini {
-    height: 28px; padding: 0 13px; font-size: 11.5px; font-family: inherit;
-    color: #cbd8f2; cursor: pointer; border-radius: 8px;
-    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
-    transition: background .16s, border-color .16s, color .16s;
-  }
-  .mini:hover { background: rgba(255,255,255,.13); border-color: rgba(255,255,255,.24); color: #fff; }
-  .mini:active { transform: translateY(1px); }
-  .mini.primary { color: #04101f; font-weight: 700; background: linear-gradient(135deg, #8fd8ff, #7c9dff); border-color: transparent; }
-  .mini.primary:hover { filter: brightness(1.08); color: #04101f; }
-  .mini[disabled] { opacity: .55; cursor: default; transform: none; }
-
-  .foot { flex: 0 0 auto; width: 100%; margin-top: 10px; }
-  .btns { display: flex; gap: 10px; justify-content: center; }
+  .name { font-size: 19px; font-weight: 700; letter-spacing: 3px; }
+  .ver { margin-top: 9px; font-size: 13px; color: #8ea2c8; letter-spacing: 1px; }
+  .ver b { color: #cfe0ff; font-weight: 600; letter-spacing: 1px; }
+  .sub { margin-top: 5px; font-size: 12px; color: #64748b; }
+  .btns { margin-top: 22px; display: flex; gap: 10px; justify-content: center; }
   .btn {
-    min-width: 104px; height: 32px; padding: 0 16px;
-    font-size: 12.5px; font-family: inherit; color: #cbd8f2; cursor: pointer;
+    min-width: 108px; height: 34px; padding: 0 16px;
+    font-size: 13px; font-family: inherit; color: #cbd8f2; cursor: pointer;
     background: rgba(255,255,255,.06);
     border: 1px solid rgba(255,255,255,.14);
     border-radius: 9px;
@@ -147,210 +46,56 @@
   }
   .btn:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.24); color: #fff; }
   .btn:active { transform: translateY(1px); }
-  .btn.primary { color: #04101f; font-weight: 700; background: linear-gradient(135deg, #8fd8ff, #7c9dff); border-color: transparent; }
+  .btn.primary {
+    color: #04101f; font-weight: 700;
+    background: linear-gradient(135deg, #8fd8ff, #7c9dff);
+    border-color: transparent;
+  }
   .btn.primary:hover { filter: brightness(1.08); color: #04101f; }
   .btn[disabled] { opacity: .55; cursor: default; transform: none; }
-  .link { margin-top: 8px; text-align: center; font-size: 10.5px; color: #46536b; letter-spacing: .3px; }
+  .hint { margin-top: 16px; min-height: 18px; font-size: 12px; color: #64748b; }
+  .link { margin-top: 10px; font-size: 11px; color: #46536b; letter-spacing: .3px; }
 </style>
 </head>
 <body>
   <div class="bg"></div>
   <div class="wrap">
-    <div class="head">
-      <img class="logo" src="assets/fnos-logo.png" alt="FNOS">
-      <div class="name">FNOS CLIENT</div>
-      <div class="ver">版本 <b id="ver">—</b></div>
-      <div class="sub">飞牛 OS 桌面客户端 · Windows</div>
+    <img class="logo" src="assets/fnos-logo.png" alt="FNOS">
+    <div class="name">FNOS CLIENT</div>
+    <div class="ver">版本 <b id="ver">—</b></div>
+    <div class="sub">飞牛 OS 桌面客户端 · Windows</div>
+    <div class="btns">
+      <button id="btn-update" class="btn primary">检查更新</button>
+      <button id="btn-close" class="btn">关闭</button>
     </div>
-
-    <div class="panel" id="panel"></div>
-
-    <div class="foot">
-      <div class="btns">
-        <button id="btn-update" class="btn primary">检查更新</button>
-        <button id="btn-close" class="btn">关闭</button>
-      </div>
-      <div class="link">github.com/zhouchunwei513-cyber/fnos-desktop</div>
-    </div>
+    <div class="hint" id="hint">检查更新会联网访问 GitHub，若发现新版本可前往下载</div>
+    <div class="link">github.com/zhouchunwei513-cyber/fnos-desktop</div>
   </div>
-
   <script>
     (function () {
       var verEl = document.getElementById('ver');
-      var panel = document.getElementById('panel');
+      var hint = document.getElementById('hint');
       var btnU = document.getElementById('btn-update');
       var btnC = document.getElementById('btn-close');
-
-      var current = '';
-      var busy = false;
-      var lastUpdate = null;
-      var savedPath = '';
-      var offProgress = null;
-
+      var v = '';
       try {
         var m = /[?&]v=([^&]+)/.exec(String(location.search || ''));
-        if (m) current = decodeURIComponent(m[1]);
+        if (m) v = decodeURIComponent(m[1]);
       } catch (e) {}
-      verEl.textContent = current ? ('v' + current) : '—';
+      verEl.textContent = v ? ('v' + v) : '—';
 
-      function esc(s) {
-        return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
-          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-        });
-      }
-      function mb(n) {
-        n = Number(n) || 0;
-        if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
-        if (n >= 1024) return Math.round(n / 1024) + ' KB';
-        return n + ' B';
-      }
-      function paint(cls, html) {
-        panel.className = 'panel' + (cls ? ' ' + cls : '');
-        panel.innerHTML = html;
-      }
-
-      function renderIdle() {
-        paint('', '<div class="idle-wrap">'
-          + '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#5c6b85" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
-          + '<path d="M12 3v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4.5 20.5h15"/></svg>'
-          + '<div class="t1">检查是否有新版本</div>'
-          + '<div class="t2">点下方「检查更新」，并行查询 GitHub 的两个地址<br>任一通道可用即可拿到最新版本号</div>'
-          + '</div>');
-      }
-
-      function renderChecking() {
-        paint('', '<div class="row center"><span class="sp"></span><div class="box"><div class="t1">正在检查更新…</div>'
-          + '<div class="t2">两条通道并行请求，最长等待约 11 秒</div></div></div>');
-      }
-
-      function renderLatest(d) {
-        paint('ok', '<div class="row center"><span class="ic ok">✓</span><div class="box">'
-          + '<div class="t1">已是最新版本</div>'
-          + '<div class="t2">当前 v' + esc(d.current || current) + ' · 最新 v' + esc(d.latest || current) + '</div>'
-          + '</div></div>');
-      }
-
-      function renderUpdate(d) {
-        lastUpdate = d;
-        var h = '<div class="box"><div class="t1">发现新版本 v' + esc(d.latest) + '</div>'
-          + '<div class="t2">当前 v' + esc(d.current || current) + ' → 最新 v' + esc(d.latest) + '</div>';
-        if (d.notes) h += '<div class="notes">' + esc(d.notes) + '</div>';
-        h += '<div class="row-btns"><button class="mini primary" id="btn-dl">立即下载</button>'
-          + '<button class="mini" id="btn-rel">发布说明</button></div></div>';
-        paint('up', h);
-        var bd = document.getElementById('btn-dl');
-        var br = document.getElementById('btn-rel');
-        if (bd) bd.addEventListener('click', function () { startDownload(d); });
-        if (br) br.addEventListener('click', function () {
-          openRelease(d.html_url);
-        });
-      }
-
-      function renderDownloading(d) {
-        lastUpdate = d;
-        var h = '<div class="box"><div class="t1">正在下载 v' + esc(d.latest || '') + ' 安装包</div>'
-          + '<div class="t2" id="dl-info">准备中…</div>'
-          + '<div class="bar"><i id="dl-bar"></i></div>'
-          + '<div class="row-btns"><button class="mini" id="btn-cancel-dl">取消下载</button></div></div>';
-        paint('up', h);
-        var bc = document.getElementById('btn-cancel-dl');
-        if (bc) bc.addEventListener('click', function () {
-          bc.disabled = true;
-          bc.textContent = '正在取消…';
-          try { if (window.fnApi && window.fnApi.cancelUpdateDownload) window.fnApi.cancelUpdateDownload(); } catch (_) {}
-        });
-      }
-
-      function paintProgress(d) {
-        var bar = document.getElementById('dl-bar');
-        var info = document.getElementById('dl-info');
-        if (!bar || !info) return;
-        var pct = Number(d.percent) || 0;
-        bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
-        var t = '';
-        if (d.total) t = pct + '% · ' + mb(d.received) + ' / ' + mb(d.total);
-        else t = mb(d.received) + ' 已下载';
-        info.textContent = t;
-      }
-
-      function renderDone(path, size) {
-        savedPath = path || '';
-        paint('ok', '<div class="row"><span class="ic ok">✓</span><div class="box">'
-          + '<div class="t1">安装包已保存</div>'
-          + '<div class="t2">' + (size ? mb(size) : '下载完成') + '，双击即可安装新版本</div>'
-          + '<div class="path">' + esc(path) + '</div>'
-          + '<div class="row-btns"><button class="mini primary" id="btn-open">打开所在文件夹</button></div>'
-          + '</div></div>');
-        var bo = document.getElementById('btn-open');
-        if (bo) bo.addEventListener('click', function () {
-          try { if (window.fnApi && window.fnApi.showInFolder) window.fnApi.showInFolder(savedPath); } catch (_) {}
-        });
-      }
-
-      function renderError(msg, canBack) {
-        var h = '<div class="row" style="align-items:flex-start"><span class="ic bad">!</span><div class="box">'
-          + '<div class="t1">检查更新失败</div>'
-          + '<div class="err">' + esc(msg || '未知错误') + '</div>'
-          + '<div class="row-btns">'
-          + (canBack === false ? '' : '<button class="mini primary" id="btn-retry">重新检查</button>')
-          + '<button class="mini" id="btn-browser">用浏览器查看</button>'
-          + '</div></div></div>';
-        paint('bad', h);
-        var r = document.getElementById('btn-retry');
-        var b = document.getElementById('btn-browser');
-        if (r) r.addEventListener('click', function () { btnU.click(); });
-        if (b) b.addEventListener('click', function () { openRelease(''); });
-      }
-
-      function openRelease(url) {
-        try {
-          if (window.fnApi && window.fnApi.openReleasePage) window.fnApi.openReleasePage(url || '');
-        } catch (_) {}
-      }
-
-      function startDownload(d) {
-        if (!(window.fnApi && window.fnApi.downloadUpdate)) {
-          renderError('当前页面不支持下载，请点「用浏览器查看」');
+      btnU.addEventListener('click', function () {
+        if (!(window.fnApi && typeof window.fnApi.checkUpdate === 'function')) {
+          hint.textContent = '当前页面不支持检查更新';
           return;
         }
-        renderDownloading(d);
-        Promise.resolve(window.fnApi.downloadUpdate({ url: d.download_url, version: d.latest }))
-          .then(function (r) {
-            if (!r) return;
-            if (r.canceled) { renderUpdate(d); return; }
-            if (!r.ok) { renderError(r.error || '下载失败'); return; }
-            renderDone(r.path || '', r.size || 0);
-          })
-          .catch(function (err) { renderError((err && err.message) || String(err)); });
-      }
-
-      function doCheck() {
-        if (busy) return;
-        busy = true;
         btnU.disabled = true;
-        btnU.textContent = '检查中…';
-        renderChecking();
-        var p;
-        if (window.fnApi && typeof window.fnApi.checkUpdate === 'function') {
-          p = window.fnApi.checkUpdate();
-        } else {
-          p = Promise.reject(new Error('当前页面不支持检查更新'));
-        }
-        Promise.resolve(p).then(function (r) {
-          if (!r) throw new Error('没有取到检查结果');
-          if (r.status === 'update') renderUpdate(r);
-          else if (r.status === 'latest') renderLatest(r);
-          else renderError(r.error || '未知错误');
-        }).catch(function (err) {
-          renderError((err && err.message) || String(err));
-        }).then(function () {
-          busy = false;
-          btnU.disabled = false;
-          btnU.textContent = '检查更新';
-        });
-      }
-
-      btnU.addEventListener('click', doCheck);
+        hint.textContent = '正在检查更新…';
+        Promise.resolve(window.fnApi.checkUpdate())
+          .then(function () { hint.textContent = '检查完成'; })
+          .catch(function (err) { hint.textContent = '检查失败：' + ((err && err.message) || err); })
+          .then(function () { btnU.disabled = false; });
+      });
 
       btnC.addEventListener('click', function () {
         try {
@@ -365,21 +110,6 @@
       document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape') { try { btnC.click(); } catch (_) {} }
       });
-
-      try {
-        if (window.fnApi && typeof window.fnApi.onUpdateProgress === 'function') {
-          offProgress = window.fnApi.onUpdateProgress(function (d) {
-            if (!d || d.phase !== 'downloading') return;
-            paintProgress(d);
-          });
-        }
-      } catch (_) {}
-
-      window.addEventListener('beforeunload', function () {
-        try { if (typeof offProgress === 'function') offProgress(); } catch (_) {}
-      });
-
-      renderIdle();
     })();
   </script>
 </body>

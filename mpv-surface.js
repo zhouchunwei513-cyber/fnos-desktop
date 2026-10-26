@@ -122,6 +122,9 @@ class MpvSurface {
         if (this._fsSavedDip) { this.dipRect = { x: this._fsSavedDip.x, y: this._fsSavedDip.y, width: this._fsSavedDip.width, height: this._fsSavedDip.height }; this._fsSavedDip = null; }
         if (this._fsSavedView) { this.viewOffset = { x: this._fsSavedView.x, y: this._fsSavedView.y }; this._fsSavedView = null; }
         this._baseCbW = 0; this._baseCbH = 0; this._baseDip = null;
+        // v2.24.8：退出全屏后冻结 sync 缩放，等宿主窗口动画稳定（回到窗口化尺寸）后再重建基准，
+        // 避免用过渡期全屏尺寸当基准把 dipRect 等比缩小（详见 _syncDipToResize 内注释）。
+        this._syncFreezeUntil = Date.now() + 800;
         try { this.player._lastGeoStr = ''; } catch (_) {}
         this._burstRect(900);
         this._applyGeometry();
@@ -550,6 +553,11 @@ class MpvSurface {
     try {
       const w = this.parent;
       if (!w || w.isDestroyed() || this._standalone) return;
+      // v2.24.8（用户反馈 2：直播切全屏 MPV 越切越小）——退出全屏过渡期内冻结缩放，
+      // 否则 _fsExit 重置 _baseCbW=0 后，sync 的 else 分支会用"退出全屏动画中的 cb 尺寸"
+      // （约 1920x1035）重建基准，动画结束后 resize 再按 sw=1280/1920≈0.667 把 dipRect
+      // 反复等比缩小（实测 853→569→379→253→169，每切一次全屏缩一次）。
+      if (this._syncFreezeUntil && Date.now() < this._syncFreezeUntil) return;
       // v2.15.94：最小化/隐藏时不缩放（getContentBounds 返回离屏/异常值会污染 dipRect）
       if (w.isMinimized() || !w.isVisible()) return;
       const cb = w.getContentBounds();

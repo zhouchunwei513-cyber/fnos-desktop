@@ -1255,6 +1255,11 @@ contextBridge.exposeInMainWorld('fnos', {
           try { v.__mpvSrcBackup = v.currentSrc || v.getAttribute('src') || ''; } catch (_) {}
         }
         try { v.removeAttribute('src'); } catch (_) {}
+        // v2.24.8（用户反馈 3：直播 MSE/blob 流摘 src 无效，网页播放器仍在拉流）——
+        // removeAttribute 只清 DOM 属性；hls.js 用 video.src = URL.createObjectURL(ms) 设的
+        // blob property 还在，load() 后仍继续拉清单/分片。这里再清 property 与 srcObject 彻底断开。
+        try { v.src = ''; } catch (_) {}
+        try { v.srcObject = null; } catch (_) {}
         try { v.querySelectorAll('source').forEach(s => { try { s.remove(); } catch (_) {} }); } catch (_) {}
         try { v.load(); } catch (_) {}
         // v2.24.7：记下断流证据（备份的原地址 + 断流后网络状态）。

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.7';
+const APP_VERSION = '2.24.8';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2954,8 +2954,30 @@ ipcMain.on('app-popup-menu', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender) || BrowserWindow.getFocusedWindow() || null;
     const menu = Menu.buildFromTemplate(buildMenuTemplate());
-    menu.popup({ window: w || undefined });
+    // v2.24.8（用户反馈 4：MPV 播放时点标题栏菜单被 MPV 挡住）——
+    // 标题栏「☰」按钮走的是 app-popup-menu（完整应用菜单），此前 v2.24.7 的降层逻辑
+    // 误加在 shell:popup-menu（子窗口分菜单链路），主窗口标题栏菜单从未降层。
+    __mpvMenuOpening = true;
+    try { _applyMpvLayer(true, 'app-menu-open'); } catch (_) {}
+    const __appMenuDone = () => {
+      __mpvMenuOpening = false;
+      try { refreshMpvLayer(); } catch (_) {}
+      try {
+        for (const surf of mpvSurfaces.values()) {
+          try {
+            if (!surf || surf._dead || (surf.isAlive && !surf.isAlive())) continue;
+            surf._applyGeometry && surf._applyGeometry();
+            surf._raiseMpv && surf._raiseMpv();
+          } catch (_) {}
+        }
+      } catch (_) {}
+      try { dlog('info', 'mpv.layer.menu_close', {}); } catch (_) {}
+    };
+    menu.popup({ window: w || undefined, callback: __appMenuDone });
+    try { dlog('info', 'mpv.layer.menu_open', { id: 'app' }); } catch (_) {}
   } catch (err) {
+    __mpvMenuOpening = false;
+    try { refreshMpvLayer(); } catch (_) {}
     dlog && dlog('warn', 'app.menu.popup', { err: String(err && err.message || err) });
   }
 });

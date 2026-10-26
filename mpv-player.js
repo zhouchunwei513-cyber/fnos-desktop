@@ -494,6 +494,9 @@ class MpvPlayer extends EventEmitter {
     // 卡在 mpv 正在改尺寸的窗口上会让窗口尺寸动画一顿一顿，表现为"播放器跟不上窗口"。
     this._transitUntil = 0;       // 过渡期截止时间戳；期间圆角指令延后
     this._cornerDeferTimer = null; // 过渡结束后补一次圆角的定时器
+    // v2.24.7：圆角心跳补裁（mpv 换文件/重建 VO 会清空窗口区域，圆角会莫名变直角）
+    this._cornerKeepTimer = null;
+    this._cornerSilent = false;   // 心跳补裁时不刷 mpv.corner 日志
     this._cornerLastAt = 0;        // 上次真正下发圆角指令的时间戳（过渡期 70ms 节流用）
     this._cornerLogAt = 0;         // mpv.corner 日志节流时间戳
     // v2.24.1：圆角 helper 已提到模块级单例，这里只做一次预热（幂等，重复调用无副作用）
@@ -1423,7 +1426,8 @@ class MpvPlayer extends EventEmitter {
     }
     this._cornerLastAt = now;
     this._cornerSend(pid, mode, d, halfD);
-    if (!this._cornerLogAt || now - this._cornerLogAt >= 800) {
+    try { this._ensureCornerKeepalive(); } catch (_) {}
+    if (!this._cornerSilent && (!this._cornerLogAt || now - this._cornerLogAt >= 800)) {
       this._cornerLogAt = now;
       try { this.emit('log', 'mpv.corner mode=' + mode + ' d=' + d + ' transit=' + (this._inTransit() ? 1 : 0)); } catch (_) {}
     }
@@ -1431,6 +1435,25 @@ class MpvPlayer extends EventEmitter {
   }
 
   // 过渡停手后补裁一次：对齐最终客户区尺寸/半径（节流期间被丢掉的那一帧在这里补齐）
+  // v2.24.7（用户反馈 3：MPV 的 R 角又开始不保持）——mpv 换文件/重建 VO/切频道会重置窗口
+  // 区域（SetWindowRgn 被清空），这之后我们没有任何事件可感知，圆角就一直变直角。
+  // 3s 心跳补裁一次：只在不处于过渡期、且距上次下发 >1.2s 时做，helper 侧
+  // SetWindowRgn(redraw=false) 不触发重绘，代价极小；心跳不刷日志（_cornerSilent）。
+  _ensureCornerKeepalive() {
+    if (this._cornerKeepTimer) return;
+    this._cornerKeepTimer = setInterval(() => {
+      try {
+        if (this._dead || !this.proc) return;
+        if (this._inTransit()) return;
+        const now = Date.now();
+        if (this._cornerLastAt && now - this._cornerLastAt < 1200) return;
+        this._cornerSilent = true;
+        try { this._applyRoundedCorners(); } finally { this._cornerSilent = false; }
+      } catch (_) {}
+    }, 3000);
+    if (this._cornerKeepTimer.unref) this._cornerKeepTimer.unref();
+  }
+
   _cornerDeferAfterTransit() {
     if (this._cornerDeferTimer) return;
     const wait = Math.max(24, this._transitUntil - Date.now() + 24);
@@ -1591,6 +1614,7 @@ class MpvPlayer extends EventEmitter {
   stop() {
     this._manualStop = true;   // 主动停止：禁止崩溃自愈
     this._stopWatchdog();
+    if (this._cornerKeepTimer) { try { clearInterval(this._cornerKeepTimer); } catch (_) {} this._cornerKeepTimer = null; }
     try { this._stopSubStyleWatch(); } catch (_) {}
     if (this.proc && !this._dead) {
       try { this.proc.kill(); } catch (_) {}

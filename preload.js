@@ -415,6 +415,10 @@ contextBridge.exposeInMainWorld('fnos', {
       handled: false,
       resolving: false,
       mpvAlways: false,  // v2.20.0：默认用 MPV 播放（所有视频直接交给 MPV）
+      // v2.24.7：设置开关实时生效 + 用户主动关窗抑制（避免关掉后 0.2~1s 又被自动接管回来）
+      mpvEnabled: true,
+      mpvClosedAt: 0,
+      mpvClosedGuid: '',
       epSwitchAt: 0,     // v2.20.0：最近一次「上一集/下一集」点击时刻（切集宽限窗口）
       lastTitle: ''
     };
@@ -1140,8 +1144,6 @@ contextBridge.exposeInMainWorld('fnos', {
           if (startRectLoop._burst) { clearInterval(startRectLoop._burst); startRectLoop._burst = null; }
           let tick = 0;
           let same = 0;
-          let nudge = 0;
-          let lastKey = '';
           startRectLoop._burst = setInterval(() => {
             if (Date.now() > until) {
               clearInterval(startRectLoop._burst);
@@ -1150,20 +1152,11 @@ contextBridge.exposeInMainWorld('fnos', {
             }
             tick++;
             reportRect();
-            // v2.24.6：飞牛影视的视频区重排走防抖（实测切最大化后 500~800ms 才落地），
-            // 光高频读 rect 只能更快发现"晚到的终值"。长时间读不到变化时补发一次
-            // 合成 resize 事件催它重排（每次 burst 最多 3 次，避免反复重排抖动）。
-            try {
-              const r = getMainVideoRect();
-              const k = r ? (r.x + ',' + r.y + ',' + r.width + ',' + r.height) : '';
-              if (k && k === lastKey) same++; else { same = 0; lastKey = k; }
-              if (same >= 4 && nudge < 3) {
-                nudge++;
-                same = 0;
-                try { window.dispatchEvent(new Event('resize')); } catch (_) {}
-                log('embed.burst.nudge', { tick: tick, nudge: nudge, rect: k });
-              }
-            } catch (_) {}
+            // v2.24.7（用户反馈'直播切全屏 MPV 窗口越来越小，切得越多越小'）——
+            // v2.24.6 在矩形连续无变化时补发合成 resize 催页面重排，实测这是缩小循环的元凶：
+            // 直播页每收到一次 resize 就重算播放器容器，累计漂移 → 上报的视频区一次比一次小
+            // （日志实录 1619x943→1241x789→797x693→786x638，1.4s 内连降三档）。
+            // 且催重排对 settle 毫无帮助（180ms vs 之前 158ms 反而更慢）。这里彻底移除。
           }, 25);
         });
       } catch (_) {}
@@ -1264,6 +1257,14 @@ contextBridge.exposeInMainWorld('fnos', {
         try { v.removeAttribute('src'); } catch (_) {}
         try { v.querySelectorAll('source').forEach(s => { try { s.remove(); } catch (_) {} }); } catch (_) {}
         try { v.load(); } catch (_) {}
+        // v2.24.7：记下断流证据（备份的原地址 + 断流后网络状态）。
+        // 之后 5s 的 mpv.transcode.stat 若不再增长，就说明 NAS 那路转码已停。
+        try {
+          log('embed.pagestop.src', {
+            backup: String(v.__mpvSrcBackup || v.currentSrc || '').slice(0, 150),
+            networkState: v.networkState, readyState: v.readyState
+          });
+        } catch (_) {}
       } catch (_) {}
     }
 
@@ -1293,6 +1294,18 @@ contextBridge.exposeInMainWorld('fnos', {
 
     async function triggerEmbed(v, reason) {
       if (state.handled || state.resolving) return;
+      // v2.24.7：设置里关掉 MPV / 用户刚主动关窗（同一条目）→ 不做自动接管。
+      // 唯一例外是用户自己从菜单要求'用 MPV 播放'（reason='menu'）。
+      try {
+        if (String(reason || '') !== 'menu') {
+          if (state.mpvEnabled === false) { log('embed.suppress.disabled', { reason: String(reason || '') }); return; }
+          if (state.mpvClosedAt && (Date.now() - state.mpvClosedAt) < 180000 &&
+              String(state.itemGuid || '') === String(state.mpvClosedGuid || '')) {
+            log('embed.suppress.userclosed', { reason: String(reason || '') });
+            return;
+          }
+        }
+      } catch (_) {}
       // v1.58：在接管前先用【可见的 video】定位播放器容器并缓存，接管后 video 会被隐藏，
       // 之后用该容器实测矩形定位 MPV，保证"内嵌在播放器区"而不是铺满整窗（列表/侧栏保留）。
       try {
@@ -1318,6 +1331,21 @@ contextBridge.exposeInMainWorld('fnos', {
         } catch (_) {}
         log('embed.rect', { rect: JSON.stringify(rect), reason: reason || '', hasBox: !!state.playerBox, objectFit: of, videoW: vw, videoH: vh });
       }
+      // v2.24.7（用户需求4：判断飞牛服务器是否还在转码）——接管前记下网页播放器自己的流地址：
+      // 网页端走转码网关 http://<nas>:34500/play/<hash>.m3u8（+ .ts 分片）说明在转码；
+      // MPV 走 /v/api/v1/media/range/<media_guid> 原片直连、不触发转码。
+      try {
+        const m0 = getMainVideo();
+        const ps = String((m0 && (m0.currentSrc || m0.getAttribute('src'))) || '');
+        log('embed.page.stream', {
+          src: ps.slice(0, 170),
+          transcode: /\/play\//i.test(ps) || /\.m3u8(\?|$)/i.test(ps),
+          readyState: m0 ? m0.readyState : -1,
+          networkState: m0 ? m0.networkState : -1,
+          paused: m0 ? !!m0.paused : null,
+          videos: document.querySelectorAll('video').length
+        });
+      } catch (_) {}
       state.resolving = true;
       startRectLoop();
       readTokenFromStorage();
@@ -1899,6 +1927,10 @@ contextBridge.exposeInMainWorld('fnos', {
               const epWin = state.epSwitchAt && (Date.now() - state.epSwitchAt) < 8000;
               if ((state.handled && !epWin) || state.resolving) return;
               if (!isVideoRoute()) return;
+              // v2.24.7：设置关掉 MPV / 用户刚主动关窗 → 不再自动接管
+              if (state.mpvEnabled === false) return;
+              if (state.mpvClosedAt && (Date.now() - state.mpvClosedAt) < 180000 &&
+                  String(state.itemGuid || '') === String(state.mpvClosedGuid || '')) return;
               const m = getMainVideo();
               if (!m) return;
               if (!(m.currentSrc || m.src)) return;
@@ -2058,12 +2090,31 @@ contextBridge.exposeInMainWorld('fnos', {
             triggerEmbed(v, 'menu');
           } catch (_) {}
         });
-        ipcRenderer.on('mpv:embed-closed', () => { try { state.handled = false; state.mediaGuid = ''; restoreVideoDisplay(); restorePlayerContainers(); log('embed.closed', {}); } catch (_) {} });
+        // v2.24.7（用户反馈'关掉 MPV 播放器会立马又开启'）——
+        // 关窗后 main 发 mpv:embed-closed，此前这里立刻恢复 <video> src，页面重新起播 →
+        // loadedmetadata/playing 又触发 tryAlways → 0.2~1s 内 MPV 自动重开
+        // （日志实录：userclosed 后 0.2~1s 就出现 embed.start reason=always）。
+        // 现在区分'用户主动关窗'：置 3 分钟同条目抑制 + 清掉'本集继续用 MPV'会话标记，
+        // 恢复网页画面但不再自动接管。
+        ipcRenderer.on('mpv:embed-closed', (_e, d) => {
+          try {
+            const byUser = !!(d && d.byUser);
+            if (byUser) {
+              state.mpvClosedAt = Date.now();
+              state.mpvClosedGuid = String(state.itemGuid || '');
+              try { sessionStorage.removeItem('__fnosMpvContinue'); } catch (_) {}
+            }
+            state.handled = false; state.mediaGuid = '';
+            restoreVideoDisplay(); restorePlayerContainers();
+            log('embed.closed', { byUser: byUser, guid: String(state.itemGuid || '').slice(0, 40) });
+          } catch (_) {}
+        });
         // v2.20.0：读取 MPV 设置（默认用 MPV 播放）
         try {
           ipcRenderer.invoke('mpv:get-settings').then((cfg) => {
             try {
               state.mpvAlways = !!(cfg && cfg.alwaysUse);
+              state.mpvEnabled = !(cfg && cfg.enabled === false);
               // v2.20.1：上一集/下一集是整页跳转，用 sessionStorage 把「继续用 MPV 播」带过去，
               //          这样即使没开「默认用 MPV 播放」，切集后新一集也不会掉回网页播放器。
               try {
@@ -2082,6 +2133,17 @@ contextBridge.exposeInMainWorld('fnos', {
             } catch (_) {}
           }).catch(() => {});
         } catch (_) {}
+        // v2.24.7（用户反馈：偏好设置里切换「默认用 MPV 播放」不起作用）——
+        // 此前只有页面加载时读一次设置，改完必须重新登录/重开窗口才生效。主进程保存后广播，
+        // 这里立即更新本页状态（下一次起播/换集就按新值走）。
+        ipcRenderer.on('mpv:settings-changed', (_e, cfg) => {
+          try {
+            state.mpvAlways = !!(cfg && cfg.alwaysUse);
+            state.mpvEnabled = !(cfg && cfg.enabled === false);
+            if (state.mpvEnabled === false) { state.mpvClosedAt = 0; state.mpvClosedGuid = ''; }
+            log('mpv.settings.live', { alwaysUse: state.mpvAlways, enabled: state.mpvEnabled });
+          } catch (_) {}
+        });
         // v2.20.1：MPV 菜单里直接选「第 N 集」→ 跳到对应 item guid
         ipcRenderer.on('mpv:episode-goto', (_e, d) => {
           try {

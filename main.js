@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.6';
+const APP_VERSION = '2.24.7';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -3673,6 +3673,33 @@ function installCorsBypass(ses) {
   //    使用稳定函数引用 onBeforeRequestHandler，确保多次注册不互相覆盖。
   ses.webRequest.onBeforeRequest(onBeforeRequestHandler);
 
+  // v2.24.7（用户需求 4：'MPV 开启后飞牛服务器那边是不是还在转码'）——
+  // 网页播放器走转码网关（/play/<hash>.m3u8 列表 + .ts/.m4s 分片），
+  // MPV 走 /v/api/v1/media/range/<media_guid> 原片直连、不触发转码。
+  // 这里只读统计这两类请求，每 5s 落一条 mpv.transcode.stat：MPV 接管后
+  // play/seg 还在涨 → NAS 仍在为网页那路转码；归零（transcodeActive=false）→ 已停。
+  let __tcPlay = 0, __tcSeg = 0, __tcTotal = 0, __tcLastAt = 0, __tcShown = 0, __tcLastLogAt = 0;
+  global.__fnosTcNote = (u) => {
+    try {
+      if (!u) return;
+      if (/\/play\//i.test(u)) { __tcPlay++; __tcTotal++; __tcLastAt = Date.now(); }
+      else if (/\.(ts|m4s)(\?|$)/i.test(u)) { __tcSeg++; __tcTotal++; __tcLastAt = Date.now(); }
+    } catch (_) {}
+  };
+  try {
+    const __tcTimer = setInterval(() => {
+      try {
+        const now = Date.now();
+        const mpvOn = (typeof _hasLiveMpvSurface === 'function') && _hasLiveMpvSurface();
+        const delta = __tcTotal - __tcShown;
+        const active = (now - __tcLastAt) < 6500;
+        if (!delta && !(mpvOn && now - __tcLastLogAt > 60000)) return;
+        __tcShown = __tcTotal; __tcLastLogAt = now;
+        dlog('info', 'mpv.transcode.stat', { mpv: !!mpvOn, play: __tcPlay, seg: __tcSeg, delta: delta, transcodeActive: active });
+      } catch (_) {}
+    }, 5000);
+    if (__tcTimer.unref) __tcTimer.unref();
+  } catch (_) {}
   // v1.23.1：记录媒体请求的完成/失败状态，便于排查飞牛影视/直播无法播放
   // （403/404、Range 不支持、被中断、DNS 失败等都会落到 fnos-web.log）
   // v1.23.6：同时追踪每个 webContents 最近一次"主媒体"地址，供菜单"在浏览器中打开"使用。
@@ -3683,6 +3710,7 @@ function installCorsBypass(ses) {
     // 排除 .ts/.m4s/.aac 等微小分片（它们不是用户要打开的对象）。
     const isMainMedia = (u) => /\.(m3u8|mpd|mp4|mkv|m2ts|webm|mov|flv)(\?|$)/i.test(u || '') || /\/fnplay\//i.test(u || '');
     ses.webRequest.onCompleted((details) => {
+      try { global.__fnosTcNote && global.__fnosTcNote(details.url); } catch (_) {}
       if (!isMediaUrl(details.url)) return;
       if (isMainMedia(details.url) && details.webContentsId != null) {
         const rec = { url: details.url, at: Date.now() };
@@ -9680,6 +9708,27 @@ ipcMain.handle('settings:set-vlc', async (_e, patch) => {
     };
     saveSettings({ mpv: next });
     try { global.__mpvSettings = next; } catch (_) {}
+    // v2.24.7（用户反馈 6：设置开关不生效 / 关掉 MPV 立刻又被拉起）——
+    // 保存后立刻广播给所有页面（此前页面只在加载时读一次，改完必须重新登录才生效）；
+    // 关掉 MPV 时同时回收正在跑的播放层并把网页 <video> 还回去，避免'设置关了还在用 MPV'。
+    try {
+      const __allWc = require('electron').webContents.getAllWebContents();
+      for (const w of __allWc) {
+        try { if (!w.isDestroyed()) w.send('mpv:settings-changed', { enabled: next.enabled, alwaysUse: next.alwaysUse }); } catch (_) {}
+      }
+      try { dlog('info', 'mpv.settings.broadcast', { enabled: next.enabled, alwaysUse: next.alwaysUse }); } catch (_) {}
+      if (next.enabled === false) {
+        try {
+          for (const [__k, __s] of Array.from(mpvSurfaces.entries())) {
+            try { __s && __s.destroy && __s.destroy(); } catch (_) {}
+            try { mpvSurfaces.delete(__k); } catch (_) {}
+          }
+        } catch (_) {}
+        for (const w of __allWc) {
+          try { if (!w.isDestroyed()) w.send('mpv:embed-closed', { byUser: false, settingsOff: true }); } catch (_) {}
+        }
+      }
+    } catch (_) {}
     // 填了外部内核但文件不存在时给前端一个提示（播放时会自动回退内置，不影响可用性）
     let warning = '';
     if (next.exePath) {
@@ -12256,6 +12305,8 @@ function launchSubAppFromArgs() {
   return true;
 }
 
+// v2.24.7（用户反馈 7）：标题栏原生菜单弹出期间需要临时把 MPV 降层，见 shell:popup-menu。
+let __mpvMenuOpening = false;
 ipcMain.handle('shell:popup-menu', (_e, payload) => {
   try {
     if (!payload || !payload.id) return;
@@ -12268,7 +12319,33 @@ ipcMain.handle('shell:popup-menu', (_e, payload) => {
       if (it.label === label && it.submenu) {
         const x = Number.isFinite(payload.x) ? payload.x : undefined;
         const y = Number.isFinite(payload.y) ? payload.y : undefined;
-        it.submenu.popup({ window: mainWindow || undefined, x, y, positioningItem: 0 });
+        // v2.24.7（用户反馈 7：MPV 播放时点标题栏菜单，菜单被 MPV 窗口挡住、点不到菜单项）——
+        // 标题栏菜单是 Electron 原生 submenu（独立系统小窗），层级低于 ontop 的 mpv 原生窗。
+        // 弹菜单期间临时把 mpv 降层（复用设置窗那套 _applyMpvLayer 机制），关掉立即恢复。
+        __mpvMenuOpening = true;
+        try { _applyMpvLayer(true, 'app-menu-open'); } catch (_) {}
+        const __menuDone = () => {
+          __mpvMenuOpening = false;
+          try { refreshMpvLayer(); } catch (_) {}
+          try {
+            for (const surf of mpvSurfaces.values()) {
+              try {
+                if (!surf || surf._dead || (surf.isAlive && !surf.isAlive())) continue;
+                surf._applyGeometry && surf._applyGeometry();
+                surf._raiseMpv && surf._raiseMpv();
+              } catch (_) {}
+            }
+          } catch (_) {}
+          try { dlog('info', 'mpv.layer.menu_close', {}); } catch (_) {}
+        };
+        try {
+          it.submenu.popup({ window: mainWindow || undefined, x, y, positioningItem: 0, callback: __menuDone });
+          try { dlog('info', 'mpv.layer.menu_open', { id: String(payload.id || '') }); } catch (_) {}
+        } catch (e) {
+          __mpvMenuOpening = false;
+          try { refreshMpvLayer(); } catch (_) {}
+          throw e;
+        }
         return;
       }
     }
@@ -13643,7 +13720,7 @@ setInterval(() => {
     const cb = activeHost.getContentBounds();
     const inStrip = pt.x >= cb.x && pt.x <= cb.x + cb.width &&
                     pt.y >= cb.y && pt.y <= cb.y + TITLEBAR_STRIP;
-    if (inStrip) {
+    if (inStrip && !__mpvMenuOpening) {
       // 用户鼠标推到顶部标题栏带（正要去点最小化/最大化/关闭或拖动）：
       // 立即把嵌入 mpv 强制对齐到标题栏【下方】(y=34) 并置顶，确保顶部 34px 按钮区
       // 不被 mpv 原生窗盖住——即使 mpv 此前发生位置漂移，伸手点按钮这一刻也会被压回。
@@ -14069,11 +14146,12 @@ function normalizeDipRect(rect) {
 }
 
 // 通知飞牛网页（guest）mpv 已关闭：恢复被隐藏的 <video>、重置接管状态
-function notifyGuestMpvClosed(guestWc) {
+function notifyGuestMpvClosed(guestWc, byUser) {
   try {
     const wc = guestWc;
     if (wc && !wc.isDestroyed() && typeof wc.send === 'function') {
-      try { wc.send('mpv:embed-closed'); } catch (_) {}
+      // v2.24.7：带上 byUser——页面据此判定'用户主动关窗'，10 分钟内不再自动接管回来
+      try { wc.send('mpv:embed-closed', { byUser: !!byUser }); } catch (_) {}
     }
   } catch (_) {}
   // v1.60：同时广播给全部 webContents，标题栏模块据此撤除标题栏下方的沉浸黑条
@@ -14161,8 +14239,10 @@ async function embedMpvPlay(hostWin, payload) {
   }
   const st = getMpvSettings();
   try { global.__mpvSettings = st; } catch (_) {}
-  // v2.20.0：「默认用 MPV 播放」优先于兜底开关，两者都不成立才拒绝
-  if (st.enabled === false && !st.alwaysUse) {
+  // v2.24.7（用户反馈 6：偏好设置里「默认启用 MPV 播放」开关不起作用，一直用 MPV）——
+  // 旧逻辑是 alwaysUse 覆盖 enabled（两者任一为真就接管），等于开关点了没用。
+  // 现在 enabled=false 一律拒绝接管（alwaysUse 只在 enabled=true 时决定"是否直接接管"）。
+  if (st.enabled === false) {
     dlog('info', 'mpv.embed.skip', { reason: 'disabled-in-settings' });
     return { ok: false, reason: 'MPV 已在设置中关闭' };
   }
@@ -14262,7 +14342,7 @@ async function embedMpvPlay(hostWin, payload) {
         try {
           if (!surf.isAlive()) { surf.destroy && surf.destroy(); }
           if (mpvSurfaces.get(hostId) === surf) mpvSurfaces.delete(hostId);
-          notifyGuestMpvClosed(guestWc);
+          notifyGuestMpvClosed(guestWc, true);
         } catch (_) {}
       }
     });
@@ -14272,7 +14352,7 @@ async function embedMpvPlay(hostWin, payload) {
         dlog('info', 'mpv.player.userclosed', { host: hostId });
         surf.destroy();
         if (mpvSurfaces.get(hostId) === surf) mpvSurfaces.delete(hostId);
-        notifyGuestMpvClosed(guestWc);
+        notifyGuestMpvClosed(guestWc, true);
       } catch (_) {}
     });
   } else {
@@ -14679,6 +14759,30 @@ ipcMain.handle('iptv:clear-cache', async () => ({ ok: true, status: { listening:
 // 新进程 __secondInstanceHandshakeSync 同步阻塞后 app.exit(0)——不建窗、不加载页面。
 // 核心铁律：全程禁止自动弹出飞牛主页——本函数不再在无应用参数时自动 show 主窗口，
 // 只有托盘【显示主界面】才展示主页（需求 2.4-2 / 2.8）。
+// v2.24.7（用户反馈 5：托盘里隐藏的主程序，被桌面快捷方式启动飞牛影视时莫名弹出一次）——
+// 快捷方式链只负责开应用窗，主程序必须继续待在托盘。但 __openAppByWindowType /
+// createAppWindow / 页面重绘 / DWM 合成恢复都可能把已隐藏的主窗带出来一瞬。
+// 这里在快捷方式链上判定'进来时主窗是隐藏的'，随后 ~2s 内 6 次复查，一旦可见立刻压回去。
+function __guardMainHidden(reason) {
+  try {
+    const w = mainWindow;
+    if (!w || w.isDestroyed()) return;
+    if (w.isVisible()) return;  // 用户本来就在用主界面 → 不动
+    let n = 0;
+    const t = setInterval(() => {
+      n++;
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) { clearInterval(t); return; }
+        if (mainWindow.isVisible()) {
+          try { dlog('info', 'window.main.keep_hidden', { reason: String(reason || ''), n: n }); } catch (_) {}
+          try { hideMainToBackground(); } catch (_) {}
+        }
+      } catch (_) {}
+      if (n >= 6) clearInterval(t);
+    }, 350);
+    if (t.unref) t.unref();
+  } catch (_) {}
+}
 function __handleSecondInstance(_e, commandLine) {
   // v2.3.5：标记握手完成（写 pid），告知新实例主进程已响应，避免误报"进程异常"。
   try { __markHandshakeDone(); } catch (_) {}
@@ -14755,6 +14859,7 @@ function __handleSecondInstance(_e, commandLine) {
           const __opened15 = __openAppByWindowType(rawAppId, rawAppId, u, __wt15, __wt15url);
           __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? (__wt15 || 'popout') : '');
           try { hideMainToBackground(); } catch (_) {}
+          try { __guardMainHidden('shortcut-hot'); } catch (_) {}
           try { require('./logger.js').log('info', 'app', 'shortcut.app_open_in_main', { params: { url: String(u).slice(0, 160), appId: String(rawAppId).slice(0, 120) } }, __RUN_MODE); } catch (_) {}
         } else {
           // v1.78.0：主程序已运行但未登录/加载中 → 等待登录后自动打开（打开后主程序进入后台）
@@ -14778,6 +14883,7 @@ function __handleSecondInstance(_e, commandLine) {
           const __opened15 = __openAppByWindowType(rawAppId, rawAppId, u, __wt15, __wt15url);
           __notifyOpenFpkApp(rawAppId, true, u, __opened15 ? (__wt15 || 'popout') : '');
           try { hideMainToBackground(); } catch (_) {}
+          try { __guardMainHidden('shortcut-hot'); } catch (_) {}
         } catch (_) {}
       }
       return;

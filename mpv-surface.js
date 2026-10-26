@@ -494,6 +494,23 @@ class MpvSurface {
           if (Math.abs(w - want.width) <= 2 && Math.abs(h - want.height) <= 2) {
             this._winAuditKey = '';
             this._winAuditTries = 0;
+            // v2.24.7（用户反馈 3：MPV 的 R 角又开始不保持）——SetWindowRgn 的区域不会随窗口
+            // 尺寸变化而缩放，mpv 换文件/重建 VO 还会把区域清空。每次尺寸真正收敛时补裁一次。
+            try {
+              const ck = w + 'x' + h;
+              if (this._cornerDims !== ck) {
+                this._cornerDims = ck;
+                const self = this;
+                const t = setTimeout(() => {
+                  try {
+                    if (self._dead || !self.player) return;
+                    if (typeof self.player._applyRoundedCorners === 'function') self.player._applyRoundedCorners();
+                    self._emit('log', 'mpv.corner.keepalive ' + ck);
+                  } catch (_) {}
+                }, 60);
+                if (t.unref) t.unref();
+              }
+            } catch (_) {}
             const tr = this._track;
             if (tr && !tr.done) {
               tr.done = true;
@@ -557,7 +574,11 @@ class MpvSurface {
               // 用 sh 缩放会把高度缩错（实测最大化 879→1015，正确约 991），导致最大化/还原后
               // MPV 高度错误、反复抖动（"不跟随"）。此时保持旧高度，交由 guest reportRect
               // （500ms 定时 + resize + MutationObserver）上报真实值一次性纠正。
-              if (Math.abs(sw - sh) < 0.08) {
+              // v2.24.7（用户反馈 1/2：直播切全屏 MPV 越切越小、明显跟不上）——
+              // 直播页视频区就是内容区铺满（高度跟内容区高度走），点播页视频区高度才由
+              // 视频宽高比 + 黑边决定。所以直播也按 sh 缩放高度，避免'宽度先到位、高度
+              // 靠猜'的两跳（实测 980x731 → 1470x731 → 1620x943）。
+              if ((this.player && this.player._isLive) || Math.abs(sw - sh) < 0.08) {
                 this.dipRect.height = Math.max(90, Math.round(this.dipRect.height * sh));
               }
             }

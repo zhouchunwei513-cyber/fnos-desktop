@@ -13946,10 +13946,19 @@ ipcMain.on('mpv:episode-ability', (e, info) => {
     const hostWin = hostWindowFromSender(e && e.sender) || mainWindow;
     const surf = hostWin ? mpvSurfaces.get(hostWin.id) : null;
     if (!surf || !surf.player) return;
-    surf.__hasPrev = !!(info && info.hasPrev);
-    surf.__hasNext = !!(info && info.hasNext);
-    try { surf.player.command(['set', 'user-data/fnos/ep-prev', surf.__hasPrev ? 'yes' : 'no']); } catch (_) {}
-    try { surf.player.command(['set', 'user-data/fnos/ep-next', surf.__hasNext ? 'yes' : 'no']); } catch (_) {}
+    const pHasPrev = surf.__hasPrev;
+    const pHasNext = surf.__hasNext;
+    const hasPrev = !!(info && info.hasPrev);
+    const hasNext = !!(info && info.hasNext);
+    surf.__hasPrev = hasPrev;
+    surf.__hasNext = hasNext;
+    // 仅在能力变化时写 mpv 属性：OSC 收到属性变化会重建控制条，重复写会导致每秒闪烁
+    if (pHasPrev !== hasPrev) {
+      try { surf.player.command(['set', 'user-data/fnos/ep-prev', hasPrev ? 'yes' : 'no']); } catch (_) {}
+    }
+    if (pHasNext !== hasNext) {
+      try { surf.player.command(['set', 'user-data/fnos/ep-next', hasNext ? 'yes' : 'no']); } catch (_) {}
+    }
     dlog('info', 'mpv.epnav.ability', { host: hostWin && hostWin.id, hasPrev: surf.__hasPrev, hasNext: surf.__hasNext, total: info && info.total, source: info && info.source });
   } catch (err) { dlog('warn', 'mpv.epnav.ability.err', { err: String(err && err.message || err) }); }
 });

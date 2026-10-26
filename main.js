@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.20.2';
+const APP_VERSION = '2.20.3';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -709,6 +709,7 @@ const DEFAULT_SHORTCUTS = { lockApp: 'Ctrl+Alt+L', hideAll: 'Ctrl+Alt+H' };
 const GITHUB_REPO = 'zhouchunwei513-cyber/fnos-desktop';
 const RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases/latest`;
+const RELEASES_ATOM = `https://github.com/${GITHUB_REPO}/releases.atom`;
 
 // v2.18.1（用户 2026-10-26 反馈「检查更新功能失效，以前扣子写过但跑不通」）：
 // 全仓库此前只有 checkForUpdates 里的一次 compareVersions(...) 调用，**从未定义过这个函数**，
@@ -766,7 +767,7 @@ function compareVersions(a, b) {
 }
 
 async function checkGitLatestTag() {
-  // v2.18.4: 双通道并行竞速，解决「浏览器能打开 GitHub 但检查更新报连不上」的误判。
+  // v2.18.4: 多通道并行竞速，解决「浏览器能打开 GitHub 但检查更新报连不上」的误判。
   //   通道 A: https://api.github.com/repos/OWNER/REPO/releases/latest （能拿 release notes，
   //           但 api.github.com 在国内被污染/阻塞的概率远高于主站）
   //   通道 B: https://github.com/OWNER/REPO/releases/latest 的 302 Location （主站域名，
@@ -776,8 +777,10 @@ async function checkGitLatestTag() {
   // 代理/PAC 不回调时会把整条链路挂死（v2.18.3 实测仍会误报超时）。
   const ses = session.defaultSession;
 
-  // 统一请求器：3xx 只读 headers 立即返回；2xx 读完 body 再返回；超时才 abort。
-  function __req(url, timeoutMs, accept) {
+  // 统一请求器：默认跟随跳转（v2.20.3 修正：Electron 的 redirect:'manual' 收到 3xx 时
+  // 直接以 "Redirect was cancelled" 报错，拿不到 Location，通道 B 因此恒失败）；
+  // 2xx 读完 body 再返回；超时才 abort。
+  function __req(url, timeoutMs, accept, redirectMode) {
     return new Promise((resolve, reject) => {
       let r = null;
       let timer = null;
@@ -794,7 +797,7 @@ async function checkGitLatestTag() {
         r = net.request({
           method: 'GET',
           url,
-          redirect: 'manual',
+          redirect: redirectMode || 'follow',
           session: ses,
           credentials: 'omit',
           useSessionCookies: false,
@@ -831,7 +834,8 @@ async function checkGitLatestTag() {
   }
 
   const __tagFrom = (s) => {
-    const m = String(s || '').match(/\/releases\/tag\/(v?[^/?#"'\s<]+)/i);
+    // 必须紧跟 v?+数字：页面/atom 里可能存在 /releases/tag/*name 这类模板串
+    const m = String(s || '').match(/\/releases\/tag\/(v?\d[^/?#"'\s<]*)/i);
     return m ? decodeURIComponent(m[1]).replace(/^v/i, '') : '';
   };
 
@@ -864,7 +868,7 @@ async function checkGitLatestTag() {
   }
 
   async function __viaHtml(timeoutMs) {
-    const { code, loc, body } = await __req(RELEASES_PAGE, timeoutMs, 'text/html');
+    const { code, loc, body } = await __req(RELEASES_PAGE, timeoutMs, 'text/html', 'follow');
     const tagFromLoc = __tagFrom(loc);
     if (tagFromLoc) return { tag: tagFromLoc, name: 'v' + tagFromLoc, notes: '', html_url: RELEASES_PAGE, download_url: '', via: 'html' };
     if (code >= 200 && code < 300) {
@@ -875,9 +879,27 @@ async function checkGitLatestTag() {
     throw new Error(`github.com 返回 HTTP ${code}`);
   }
 
+  // 通道 C（v2.20.3）：releases.atom —— 直连 200、无跳转、体积仅几 KB，
+  // 在 api.github.com 被限流(403) 或主站跳转被拦时兜底。
+  async function __viaAtom(timeoutMs) {
+    const { code, body } = await __req(RELEASES_ATOM, timeoutMs, 'application/atom+xml');
+    if (code < 200 || code >= 300) throw new Error(`github.com/releases.atom 返回 HTTP ${code}`);
+    const ent = String(body || '').split(/<entry[\s>]/i)[1] || '';
+    const t = __tagFrom(ent) || __tagFrom(body);
+    if (!t) throw new Error('atom 中没有版本号');
+    return {
+      tag: t,
+      name: 'v' + t,
+      notes: '',
+      html_url: `https://github.com/${GITHUB_REPO}/releases/tag/v${t}`,
+      download_url: '',
+      via: 'atom',
+    };
+  }
+
   const __ms = 9000;
   try {
-    return await Promise.any([__viaApi(__ms), __viaHtml(__ms)]);
+    return await Promise.any([__viaApi(__ms), __viaAtom(__ms), __viaHtml(__ms)]);
   } catch (agg) {
     const errs = (agg && agg.errors) ? agg.errors : [agg];
     const brief = errs.map((e) => (e && e.message) ? String(e.message) : 'unknown').join('；');
@@ -9706,7 +9728,7 @@ function __showUpdChecking() {
     + '@keyframes sp{to{transform:rotate(360deg)}}'
     + '.t{font-size:12.5px;font-weight:600}.d{margin-top:3px;font-size:10.5px;color:#7d8ba5}'
     + '</style></head><body><div class="c"><div class="s"></div><div>'
-    + '<div class="t">正在检查更新…</div><div class="d">两条通道并行，最长约 11 秒</div>'
+    + '<div class="t">正在检查更新…</div><div class="d">三条通道并行，最长约 11 秒</div>'
     + '</div></div></body></html>';
   try {
     win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {});
@@ -9938,7 +9960,7 @@ async function runUpdateFlow(parentWin) {
     } else {
       const res = await showGlassDialog(null, {
         title: '检查更新失败',
-        message: '两条通道都没能拿到版本信息。\n' + String((r && r.error) || '未知错误').slice(0, 300),
+        message: '三条通道都没能拿到版本信息（接口 / atom 订阅 / 发布页）。\n' + String((r && r.error) || '未知错误').slice(0, 300),
         buttons: ['用浏览器查看', '关闭'], defaultId: 0, cancelId: 1, width: 500,
       });
       if (res.response === 0) __openReleasePage(RELEASES_PAGE);

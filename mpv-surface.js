@@ -38,6 +38,8 @@ class MpvSurface {
     this._started = false;
     this._startSettings = opts.settings || {};
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
+    // v2.21.0：字幕样式回采回调（用户拖动字幕/调字号后由主进程落盘，下次起播沿用）
+    this._onSubStyle = (typeof opts.onSubStyle === 'function') ? opts.onSubStyle : null;
     this._pollTimer = null;
     this._lastBoundsKey = '';
     // v2.15.89：resize 比例兜底基准。记录上次对齐时的内容区宽高与 dipRect，
@@ -275,6 +277,14 @@ class MpvSurface {
         headers: this._startSettings.headers || null,
         // 点播断流（签名链接时效失效）时，由主进程注入回调重新签名取新鲜地址
         onNeedFreshUrl: this._onNeedFreshUrl || null,
+        // v2.21.0：自定义 MPV 内核（mpv-lazy 等）/ 附加启动参数 / 配置来源 /
+        // 低功耗预设（null=自动：内置开、自定义关）/ 字幕样式（位置、字号、缩放）
+        mpvExe: this._startSettings.exePath || '',
+        mpvArgs: this._startSettings.extraArgs || '',
+        configMode: this._startSettings.configMode || 'builtin',
+        perfPreset: (typeof this._startSettings.perfPreset === 'boolean') ? this._startSettings.perfPreset : undefined,
+        subStyle: this._startSettings.subStyle || null,
+        onSubStyle: this._onSubStyle || null,
         scaleFactor: this._scaleFactor || 1
       });
       // 用户点 mpv 窗口自带关闭按钮：仅标记本嵌入层死亡。

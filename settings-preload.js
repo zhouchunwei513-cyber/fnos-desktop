@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   // v1.25.0：兼容性播放器（MPV）设置（通道名沿用 set-vlc/vlc-runtime）
   setVlc: (patch) => ipcRenderer.invoke('settings:set-vlc', patch || {}),
   vlcRuntime: () => ipcRenderer.invoke('settings:vlc-runtime'),
+  // v2.21.0：选择自定义 MPV 内核（mpv.exe）
+  pickMpvExe: () => ipcRenderer.invoke('settings:pick-mpv-exe'),
   // v2.0.0：开机自启动
   getAutoStart: () => ipcRenderer.invoke('settings:get-autostart'),
   setAutoStart: (enabled) => ipcRenderer.invoke('settings:set-autostart', { enabled: !!enabled }),

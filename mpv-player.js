@@ -97,6 +97,45 @@ function getMpvConfigArgs() {
   return args;
 }
 
+// ===================== v2.21.0：自定义 MPV 内核 / 附加参数 / 字幕样式 =====================
+// 设置页填了外部 mpv.exe（例如 mpv-lazy 懒人包，自带插帧/超分滤镜）时优先使用它。
+// 路径不存在或不是文件 → 回退内置内核（并在诊断日志留一行），绝不让播放链路整体失败。
+function resolveCustomExe(p) {
+  const raw = String(p == null ? '' : p).trim().replace(/^["']+|["']+$/g, '');
+  if (!raw) return null;
+  try {
+    const st = fs.statSync(raw);
+    if (!st || !st.isFile()) return null;
+    return raw;
+  } catch (_) { return null; }
+}
+
+// 把设置页的附加参数字符串拆成 argv：空格/换行分隔，成对引号包裹的片段整体保留
+//（例：--vf=vapoursynth="D:\插帧.vpy"、--script-opts="a=1,b=2"）。不经过 shell，
+// 因此含中文/空格的路径在 Windows 上也安全。
+function splitArgLine(str) {
+  const s = String(str == null ? '' : str);
+  const out = [];
+  let cur = '';
+  let quote = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+      if (cur) { out.push(cur); cur = ''; }
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 // ---------- 网络缓存/预读档位（用于消除局域网/在线播放卡顿）----------
 // 数值均为 mpv 原生参数；demuxer-readahead-secs 越大缓冲越多越抗抖动。
 const CACHE_PRESETS = {
@@ -252,7 +291,15 @@ class MpvPlayer extends EventEmitter {
 
   // opts: { wid, headers, cacheLevel, hwDecode, title, extraArgs, logFile, onNeedFreshUrl(async()=>{url,headers,isLive}) }
   start(opts = {}) {
-    const exe = getMpvExe();
+    // v2.21.0：优先使用用户自定义 mpv.exe（如 mpv-lazy 懒人包），不可用时回退内置内核
+    const builtinExe = getMpvExe();
+    const customExe = resolveCustomExe(opts.mpvExe);
+    if (opts.mpvExe && !customExe) {
+      this.emit('log', 'custom mpv unusable, fallback to builtin: ' + String(opts.mpvExe).slice(0, 200));
+    }
+    this._exeIsCustom = !!customExe;
+    this._exePath = customExe || builtinExe || '';
+    const exe = customExe || builtinExe;
     if (!exe) throw new Error('未找到内置 mpv.exe（resources/mpv/mpv.exe 缺失）');
     if (this.proc) this.stop();
 
@@ -294,9 +341,12 @@ class MpvPlayer extends EventEmitter {
     const args = ['--force-window=yes', '--idle=yes', '--terminal=no', '--msg-level=all=info',
       `--log-file=${this._logFilePath}`
     ];
-    // 内置中文右键菜单 / 配置（--config-dir 指向随包隔离目录，替代 --no-config；
-    // 该目录下的 mpv.conf + scripts/fnos-menu.lua 提供中文右键菜单，不读用户全局配置）
-    args.push(...getMpvConfigArgs());
+    // v2.21.0：配置来源（设置页「MPV 配置来源」可切）。
+    //   builtin（默认）：--config-dir 指向随包隔离目录，提供中文右键菜单 + 中文 OSC；
+    //   own：完全不干预配置，让外部 mpv 读自己的配置目录（mpv-lazy 等自带 mpv.conf，
+    //        里面通常已配好插帧/超分/着色器；硬塞 --config-dir 会把它整份顶掉）。
+    const configMode = (opts.configMode === 'own') ? 'own' : 'builtin';
+    if (configMode === 'builtin') args.push(...getMpvConfigArgs());
     // v1.29.2 关键：Windows 构建默认【不加载】内置 @context_menu.lua（Windows 走原生 menu.conf，
     // 而我们没有提供 menu.conf，原生菜单为空），导致 fnos-menu.lua 发出的
     // 'script-message context_menu open' 没有任何监听者——右键绑定触发了却无菜单可弹。
@@ -360,7 +410,11 @@ class MpvPlayer extends EventEmitter {
     args.push(...hwDecodeArgs(opts.hwDecode || 'auto'));
 
     // 低功耗/低开销（N100 双路 4K 关键）
-    args.push(...perfArgs());
+    // v2.21.0：低功耗预设（profile=fast / bilinear 缩放 / 关插值）只适合内置内核；
+    // 自定义内核（尤其带 svp/RIFE 插帧、Anime4K/NV 超分）绝不能被它覆盖，
+    // 因此默认「内置开、自定义关」，设置页也可强制。opts.perfPreset 为布尔时以它为准。
+    const perfOn = (typeof opts.perfPreset === 'boolean') ? opts.perfPreset : !this._exeIsCustom;
+    if (perfOn) args.push(...perfArgs());
 
     // 缓存/预读（消卡顿核心）。嵌入共用进程：点播用用户档位（默认 smooth），
     // 直播用轻量 live 档（N100 双路时直播 demuxer 负担/内存最低，20s 缓冲足够抗运营商抖动）。
@@ -380,6 +434,23 @@ class MpvPlayer extends EventEmitter {
       if (fields.length) args.push(`--http-header-fields=${fields.join(',')}`);
     }
 
+    // v2.21.0：设置页「附加启动参数」（透传给自定义内核，如 --vf=vapoursynth=... / --tscale=...）
+    if (opts.mpvArgs) args.push(...splitArgLine(opts.mpvArgs));
+    // v2.21.0：字幕样式持久化——上次记住的字幕位置/字号/缩放作为启动参数下发，
+    // 换片、换集、重启后都不再退回默认（"每次播放都要重调字幕"的根因）。放在用户自定义参数之前，
+    // 显式写的 --sub-* 仍可覆盖它。
+    const ss = (opts.subStyle && typeof opts.subStyle === 'object') ? opts.subStyle : null;
+    if (ss) {
+      if (typeof ss.pos === 'number' && isFinite(ss.pos)) {
+        args.push(`--sub-pos=${Math.max(0, Math.min(150, Math.round(ss.pos)))}`);
+      }
+      if (typeof ss.size === 'number' && isFinite(ss.size) && ss.size > 0) {
+        args.push(`--sub-font-size=${Math.round(ss.size)}`);
+      }
+      if (typeof ss.scale === 'number' && isFinite(ss.scale) && ss.scale > 0) {
+        args.push(`--sub-scale=${Number(ss.scale)}`);
+      }
+    }
     if (opts.extraArgs) args.push(...opts.extraArgs);
 
     try {
@@ -460,6 +531,11 @@ class MpvPlayer extends EventEmitter {
 
     // 连接 IPC（mpv 启动后异步创建管道，重试连接）
     this._connectPipe(0);
+    // v2.21.0：字幕样式回采——每 5s 采样 sub-pos / sub-font-size / sub-scale，
+    // 变化即回调主进程落盘（用户拖动字幕或按键调整字号后下次起播沿用）。
+    // 主进程只在需要时传 onSubStyle，未传则彻底不启用，零开销。
+    if (typeof opts.onSubStyle === 'function') this._startSubStyleWatch(opts.onSubStyle);
+    else this._stopSubStyleWatch();
     return true;
   }
 
@@ -770,6 +846,41 @@ class MpvPlayer extends EventEmitter {
   }
 
   _stopEpNavPoll() { try { if (this._epNavTimer) { clearInterval(this._epNavTimer); this._epNavTimer = null; } } catch (_) {} }
+
+  // v2.21.0：字幕样式回采。mpv 没有"字幕样式变化"事件，用 5s 轮询读三个属性足够
+  //（人工拖字幕/按 r/V 调字号不会比这更快），只在数值真的变化时回调，避免刷盘。
+  _startSubStyleWatch(cb) {
+    this._stopSubStyleWatch();
+    this._subStyleCb = cb;
+    this._subStyleLast = '';
+    const tick = () => {
+      try {
+        if (!this.connected || this._dead) return;
+        Promise.all([
+          this.command(['get_property', 'sub-pos']).catch(() => null),
+          this.command(['get_property', 'sub-font-size']).catch(() => null),
+          this.command(['get_property', 'sub-scale']).catch(() => null)
+        ]).then((arr) => {
+          const num = (v) => (typeof v === 'number' && isFinite(v)) ? v : null;
+          const cur = { pos: num(arr[0]), size: num(arr[1]), scale: num(arr[2]) };
+          if (cur.pos == null && cur.size == null && cur.scale == null) return;
+          const key = cur.pos + '|' + cur.size + '|' + cur.scale;
+          if (this._subStyleLast === key) return;
+          this._subStyleLast = key;
+          try { if (this._subStyleCb) this._subStyleCb(cur); } catch (_) {}
+        }).catch(() => {});
+      } catch (_) {}
+    };
+    if (this.connected) tick();
+    else this.once('ipc-ready', tick);
+    this._subStyleTimer = setInterval(tick, 5000);
+    if (this._subStyleTimer.unref) this._subStyleTimer.unref();
+  }
+
+  _stopSubStyleWatch() {
+    try { if (this._subStyleTimer) { clearInterval(this._subStyleTimer); this._subStyleTimer = null; } } catch (_) {}
+    this._subStyleCb = null;
+  }
 
   _startWatchdog() {
     this._stopWatchdog();
@@ -1271,6 +1382,7 @@ class MpvPlayer extends EventEmitter {
   stop() {
     this._manualStop = true;   // 主动停止：禁止崩溃自愈
     this._stopWatchdog();
+    try { this._stopSubStyleWatch(); } catch (_) {}
     if (this.proc && !this._dead) {
       try { this.proc.kill(); } catch (_) {}
       // 强制兜底

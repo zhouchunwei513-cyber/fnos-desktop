@@ -585,6 +585,22 @@
   const vlcFallbackSub = document.getElementById('vlc-fallback-sub');
   const vlcHw = bindGlassSelect(document.querySelector('[data-select="vlc-hw"]'));
   const vlcCache = bindGlassSelect(document.querySelector('[data-select="vlc-cache"]'));
+  // v2.21.0：自定义内核 / 附加参数 / 配置来源 / 低功耗预设 / 字幕样式
+  const vlcExe = document.getElementById('vlc-exe');
+  const vlcExeBrowse = document.getElementById('vlc-exe-browse');
+  const vlcArgs = document.getElementById('vlc-args');
+  const vlcConfig = bindGlassSelect(document.querySelector('[data-select="vlc-config"]'));
+  const vlcPerf = bindGlassSelect(document.querySelector('[data-select="vlc-perf"]'));
+  const vlcSubPos = document.getElementById('vlc-sub-pos');
+  const vlcSubSize = document.getElementById('vlc-sub-size');
+  const vlcSubScale = document.getElementById('vlc-sub-scale');
+  const vlcNum = (el) => {
+    if (!el) return null;
+    const raw = String(el.value == null ? '' : el.value).trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
   const vlcSave = document.getElementById('vlc-save');
   const vlcError = document.getElementById('vlc-error');
   const vlcRuntime = document.getElementById('vlc-runtime');
@@ -607,7 +623,17 @@
             html = '<div style="color:#f87171">● MPV 播放器不可用：' + (rt.reason || '未知原因') + '</div>' +
               '<div style="opacity:.8;margin-top:4px">特殊编码视频仍只能依赖网页内核，可能无法播放。</div>';
           }
-          html += '<div style="margin-top:6px;opacity:.85">硬件解码：' + hwLabel + ' ｜ 网络缓存：' + cacheLabel + '</div>';
+          if (rt.custom) {
+            html += '<div style="margin-top:6px;color:#60a5fa">● 当前使用自定义 MPV 内核：' + (rt.source || '') + '</div>';
+          } else if (rt.customMissing) {
+            html += '<div style="margin-top:6px;color:#fbbf24">● 自定义内核路径无效，已回退内置内核</div>';
+          }
+          html += '<div style="margin-top:6px;opacity:.85">硬件解码：' + hwLabel + ' ｜ 网络缓存：' + cacheLabel +
+            ((rt.subStyle && (rt.subStyle.pos != null || rt.subStyle.size != null || rt.subStyle.scale != null))
+              ? (' ｜ 字幕：位置 ' + (rt.subStyle.pos != null ? rt.subStyle.pos : '默认') +
+                 ' / 字号 ' + (rt.subStyle.size != null ? rt.subStyle.size : '默认') +
+                 ' / 缩放 ' + (rt.subStyle.scale != null ? rt.subStyle.scale : '默认'))
+              : '') + '</div>';
           vlcRuntime.innerHTML = html;
         } catch (_) {}
       }).catch(() => { if (vlcRuntime) vlcRuntime.textContent = 'MPV 状态检测失败'; });
@@ -629,6 +655,15 @@
       syncVlcAlways();
       if (vlcHw) vlcHw.value = v.hwDecode || 'auto';
       if (vlcCache) vlcCache.value = v.cacheLevel || 'smooth';
+      // v2.21.0
+      if (vlcExe) vlcExe.value = v.exePath || '';
+      if (vlcArgs) vlcArgs.value = v.extraArgs || '';
+      if (vlcConfig) vlcConfig.value = (v.configMode === 'own') ? 'own' : 'builtin';
+      if (vlcPerf) vlcPerf.value = (v.perfPreset === true) ? 'on' : (v.perfPreset === false ? 'off' : 'auto');
+      const ss = (v.subStyle && typeof v.subStyle === 'object') ? v.subStyle : {};
+      if (vlcSubPos) vlcSubPos.value = (typeof ss.pos === 'number') ? String(ss.pos) : '';
+      if (vlcSubSize) vlcSubSize.value = (typeof ss.size === 'number') ? String(ss.size) : '';
+      if (vlcSubScale) vlcSubScale.value = (typeof ss.scale === 'number') ? String(ss.scale) : '';
       refreshVlcRuntime();
     } catch (err) {
       showError(vlcError, err?.message || '加载播放器设置失败');
@@ -666,6 +701,22 @@
     });
   }
 
+  // v2.21.0：选择自定义 MPV 内核（mpv.exe）
+  if (vlcExeBrowse) {
+    vlcExeBrowse.addEventListener('click', async () => {
+      try {
+        const r = await fnosSettings.pickMpvExe();
+        if (r && r.ok && r.path) {
+          if (vlcExe) vlcExe.value = r.path;
+        } else if (r && r.error) {
+          showError(vlcError, r.error);
+        }
+      } catch (err) {
+        showError(vlcError, err?.message || '选择文件失败');
+      }
+    });
+  }
+
   if (vlcSave) {
     vlcSave.addEventListener('click', async () => {
       vlcSave.disabled = true;
@@ -679,8 +730,16 @@
           alwaysUse: alwaysOn,
           hwDecode: vlcHw ? vlcHw.value : 'auto',
           cacheLevel: vlcCache ? vlcCache.value : 'smooth',
+          // v2.21.0：自定义内核 / 附加参数 / 配置来源 / 低功耗预设 / 字幕样式
+          exePath: vlcExe ? String(vlcExe.value || '').trim() : '',
+          extraArgs: vlcArgs ? String(vlcArgs.value || '').trim() : '',
+          configMode: (vlcConfig && vlcConfig.value === 'own') ? 'own' : 'builtin',
+          perfPreset: (vlcPerf ? vlcPerf.value : 'auto') === 'on' ? true
+            : ((vlcPerf ? vlcPerf.value : 'auto') === 'off' ? false : null),
+          subStyle: { pos: vlcNum(vlcSubPos), size: vlcNum(vlcSubSize), scale: vlcNum(vlcSubScale) },
         });
         if (res && res.ok) {
+          if (res.warning) showError(vlcError, res.warning);
           vlcSave.textContent = '已保存';
           refreshVlcRuntime();
           setTimeout(() => { vlcSave.textContent = '保存播放器设置'; }, 1800);

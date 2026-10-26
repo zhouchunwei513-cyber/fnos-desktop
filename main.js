@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.20.3';
+const APP_VERSION = '2.21.0';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1729,6 +1729,12 @@ function defaultSettings() {
       enabled: true,           // 网页无法播放时允许用 MPV 兜底弹出
       alwaysUse: false,        // v2.20.0：默认用 MPV 播放（所有视频直接交给 MPV，不等解码失败）
       hwDecode: 'auto',        // auto/d3d11va -> d3d11va 零拷贝；dxva2 -> copy；no -> 软解
+      // v2.21.0：自定义 MPV 内核（如 mpv-lazy 懒人包，自带插帧/超分）
+      exePath: '',             // 外部 mpv.exe 绝对路径；空 = 用内置内核
+      extraArgs: '',           // 附加启动参数（空格分隔，支持引号），如 --vf=vapoursynth="D:\svp.vpy"
+      configMode: 'builtin',   // builtin = 随包中文配置（右键菜单/中文 OSC）；own = 用 MPV 自身配置
+      perfPreset: null,        // 低功耗预设：null=自动（内置开、自定义关）/ true / false
+      subStyle: { pos: null, size: null, scale: null }, // 字幕位置/字号/缩放（记住用户调整）
     },
     // v2.1.17：FPK 图标管理器 API 配置
     fpkApi: {
@@ -1750,10 +1756,65 @@ function getMpvSettings() {
     let hw = ['auto', 'auto-safe', 'd3d11va', 'dxva2', 'no'].includes(v.hwDecode) ? v.hwDecode : 'auto';
     if (hw === 'auto-safe') hw = 'd3d11va';
     const cacheLevel = ['standard', 'smooth', 'unlimited'].includes(v.cacheLevel) ? v.cacheLevel : 'smooth';
-    return { enabled: v.enabled !== false, alwaysUse: v.alwaysUse === true, hwDecode: hw, cacheLevel };
+    // v2.21.0：自定义 MPV 内核 / 附加启动参数 / 配置来源 / 低功耗预设 / 字幕样式记忆
+    const exePath = (typeof v.exePath === 'string') ? v.exePath.trim().slice(0, 400) : '';
+    const extraArgs = (typeof v.extraArgs === 'string') ? v.extraArgs.slice(0, 2000) : '';
+    const configMode = (v.configMode === 'own') ? 'own' : 'builtin';
+    const perfPreset = (typeof v.perfPreset === 'boolean') ? v.perfPreset : null;
+    const subStyle = mpvSubStyleNorm(v.subStyle);
+    return {
+      enabled: v.enabled !== false, alwaysUse: v.alwaysUse === true, hwDecode: hw,
+      cacheLevel, exePath, extraArgs, configMode, perfPreset, subStyle
+    };
   } catch (_) {
-    return { enabled: true, alwaysUse: false, hwDecode: 'auto', cacheLevel: 'smooth' };
+    return {
+      enabled: true, alwaysUse: false, hwDecode: 'auto', cacheLevel: 'smooth',
+      exePath: '', extraArgs: '', configMode: 'builtin', perfPreset: null,
+      subStyle: { pos: null, size: null, scale: null }
+    };
   }
+}
+
+// v2.21.0：字幕样式归一化。null 表示该项沿用 mpv 默认（mpv 默认 sub-pos=100、sub-font-size=55）。
+//   pos   0-150（100=贴底，越小越往上）
+//   size  8-200（mpv 的 sub-font-size，像素字号）
+//   scale 0.2-5（整体缩放倍率）
+function mpvSubStyleNorm(v) {
+  const o = (v && typeof v === 'object') ? v : {};
+  const pos = (typeof o.pos === 'number' && isFinite(o.pos)) ? Math.max(0, Math.min(150, Math.round(o.pos))) : null;
+  const size = (typeof o.size === 'number' && isFinite(o.size) && o.size >= 8 && o.size <= 200) ? Math.round(o.size) : null;
+  const scale = (typeof o.scale === 'number' && isFinite(o.scale) && o.scale >= 0.2 && o.scale <= 5) ? Math.round(o.scale * 100) / 100 : null;
+  return { pos: pos, size: size, scale: scale };
+}
+
+// v2.21.0：播放中回采到的字幕样式写回设置（1.2s 合并，避免拖动字幕时反复落盘）。
+let __mpvSubStyleTimer = null;
+function saveMpvSubStyle(style) {
+  try {
+    if (!style || typeof style !== 'object') return;
+    const cur = getMpvSettings();
+    const prev = cur.subStyle || {};
+    const next = mpvSubStyleNorm(prev);
+    if (typeof style.pos === 'number') next.pos = mpvSubStyleNorm({ pos: style.pos }).pos;
+    if (typeof style.size === 'number') next.size = mpvSubStyleNorm({ size: style.size }).size;
+    if (typeof style.scale === 'number') next.scale = mpvSubStyleNorm({ scale: style.scale }).scale;
+    if (next.pos === prev.pos && next.size === prev.size && next.scale === prev.scale) return;
+    const merged = {
+      enabled: cur.enabled, alwaysUse: cur.alwaysUse, hwDecode: cur.hwDecode, cacheLevel: cur.cacheLevel,
+      exePath: cur.exePath, extraArgs: cur.extraArgs, configMode: cur.configMode,
+      perfPreset: cur.perfPreset, subStyle: next
+    };
+    if (__mpvSubStyleTimer) { try { clearTimeout(__mpvSubStyleTimer); } catch (_) {} }
+    __mpvSubStyleTimer = setTimeout(() => {
+      __mpvSubStyleTimer = null;
+      try {
+        saveSettings({ mpv: merged });
+        global.__mpvSettings = merged;
+        dlog('info', 'mpv.substyle.saved', next);
+      } catch (_) {}
+    }, 1200);
+    if (__mpvSubStyleTimer.unref) __mpvSubStyleTimer.unref();
+  } catch (_) {}
 }
 
 // 把 #RRGGBB 转成 Electron titleBarOverlay 需要的 [r,g,b,a]
@@ -9343,15 +9404,27 @@ ipcMain.handle('lock:get-info', async (e) => {
 ipcMain.handle('settings:set-vlc', async (_e, patch) => {
   try {
     const cur = getMpvSettings();
+    const p = patch || {};
     const next = {
-      enabled: patch && typeof patch.enabled === 'boolean' ? patch.enabled : cur.enabled,
-      alwaysUse: patch && typeof patch.alwaysUse === 'boolean' ? patch.alwaysUse : cur.alwaysUse === true,
-      hwDecode: ['auto', 'd3d11va', 'dxva2', 'no'].includes(patch && patch.hwDecode) ? patch.hwDecode : cur.hwDecode,
-      cacheLevel: ['standard', 'smooth', 'unlimited'].includes(patch && patch.cacheLevel) ? patch.cacheLevel : cur.cacheLevel,
+      enabled: typeof p.enabled === 'boolean' ? p.enabled : cur.enabled,
+      alwaysUse: typeof p.alwaysUse === 'boolean' ? p.alwaysUse : cur.alwaysUse === true,
+      hwDecode: ['auto', 'd3d11va', 'dxva2', 'no'].includes(p.hwDecode) ? p.hwDecode : cur.hwDecode,
+      cacheLevel: ['standard', 'smooth', 'unlimited'].includes(p.cacheLevel) ? p.cacheLevel : cur.cacheLevel,
+      // v2.21.0：自定义内核 / 附加参数 / 配置来源 / 低功耗预设 / 字幕样式
+      exePath: typeof p.exePath === 'string' ? p.exePath.trim().slice(0, 400) : cur.exePath,
+      extraArgs: typeof p.extraArgs === 'string' ? p.extraArgs.slice(0, 2000) : cur.extraArgs,
+      configMode: (p.configMode === 'own' || p.configMode === 'builtin') ? p.configMode : cur.configMode,
+      perfPreset: (typeof p.perfPreset === 'boolean' || p.perfPreset === null) ? p.perfPreset : cur.perfPreset,
+      subStyle: mpvSubStyleNorm(Object.assign({}, cur.subStyle || {}, (p.subStyle && typeof p.subStyle === 'object') ? p.subStyle : {}))
     };
     saveSettings({ mpv: next });
     try { global.__mpvSettings = next; } catch (_) {}
-    return { ok: true, mpv: next, vlc: next };
+    // 填了外部内核但文件不存在时给前端一个提示（播放时会自动回退内置，不影响可用性）
+    let warning = '';
+    if (next.exePath) {
+      try { if (!fs.existsSync(next.exePath)) warning = '该路径下没有找到文件，播放时会自动回退内置内核'; } catch (_) {}
+    }
+    return { ok: true, mpv: next, vlc: next, warning };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -9361,18 +9434,48 @@ ipcMain.handle('settings:set-vlc', async (_e, patch) => {
 ipcMain.handle('settings:vlc-runtime', async () => {
   try {
     const settings = getMpvSettings();
-    let info = { available: false, reason: '', version: '', source: '', hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel, alwaysUse: settings.alwaysUse === true, gpu: {}, settings, mpv: true };
+    let info = {
+      available: false, reason: '', version: '', source: '',
+      hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel,
+      alwaysUse: settings.alwaysUse === true, gpu: {}, settings, mpv: true,
+      subStyle: settings.subStyle, exePath: settings.exePath, custom: false, customMissing: false
+    };
     if (MpvPlayerMod && process.platform === 'win32') {
-      const exe = MpvPlayerMod.getMpvExe();
+      let exe = MpvPlayerMod.getMpvExe();
+      let custom = false;
+      // v2.21.0：设置了自定义 mpv.exe 且文件确实存在 → 以它为准
+      const want = String(settings.exePath || '').trim();
+      if (want) {
+        try { if (fs.existsSync(want)) { exe = want; custom = true; } } catch (_) {}
+      }
       info.available = !!exe;
       info.source = exe || '';
-      info.reason = exe ? '' : '未找到内置 mpv.exe';
+      info.custom = custom;
+      info.customMissing = !!(want && !custom);
+      if (exe) info.reason = '';
+      else info.reason = want ? '自定义 mpv 路径无效，且内置内核缺失' : '未找到内置 mpv.exe';
     } else if (process.platform !== 'win32') {
       info.reason = 'MPV 外部播放器仅在 Windows 平台启用';
     }
     return info;
   } catch (e) {
     return { available: false, reason: e.message, settings: getMpvSettings() };
+  }
+});
+
+// v2.21.0：设置页「浏览…」选择自定义 MPV 内核（mpv.exe）
+ipcMain.handle('settings:pick-mpv-exe', async () => {
+  try {
+    const owner = (settingsWindow && !settingsWindow.isDestroyed()) ? settingsWindow : mainWindow;
+    const r = await dialog.showOpenDialog(owner, {
+      title: '选择 mpv 内核（mpv.exe）',
+      properties: ['openFile'],
+      filters: [{ name: 'mpv 内核', extensions: ['exe'] }, { name: '所有文件', extensions: ['*'] }]
+    });
+    if (!r || r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
   }
 });
 
@@ -13133,6 +13236,8 @@ async function playMediaWithMpv(mediaUrl, opts) {
       surf = new MpvSurfaceMod.MpvSurface(null, null, {
         standalone: true,
         settings: st,
+        // v2.21.0：字幕样式回采（用户调过的字幕位置/字号写回设置，下次起播沿用）
+        onSubStyle: saveMpvSubStyle,
         // v1.48.0：拖回吸附——返回当前飞牛主窗口内容区屏幕几何，独立播放器窗口拖入即自动贴合跟随。
         resolveDockTarget: () => {
           try {
@@ -13759,7 +13864,14 @@ async function embedMpvPlay(hostWin, payload) {
     dlog('warn', 'mpv.embed.skip', { reason: 'platform-or-module', platform: process.platform, hasSurface: !!MpvSurfaceMod, hasPlayer: !!MpvPlayerMod });
     return { ok: false, reason: 'MPV 仅支持 Windows/macOS 且模块已加载' };
   }
-  const exePath = MpvPlayerMod.getMpvExe();
+  let exePath = MpvPlayerMod.getMpvExe();
+  if (!exePath) {
+    // v2.21.0：内置内核缺失但用户配了可用的自定义 mpv.exe → 仍然可以播放
+    try {
+      const want = String(getMpvSettings().exePath || '').trim();
+      if (want && fs.existsSync(want)) exePath = want;
+    } catch (_) {}
+  }
   if (!exePath) {
     // mpv.exe 缺失（如 CI 未下载内置内核/打包遗漏）：明确记录，避免静默无任何日志
     dlog('warn', 'mpv.embed.skip', { reason: 'mpv.exe-missing', resourcesPath: process.resourcesPath || '' });
@@ -13812,6 +13924,8 @@ async function embedMpvPlay(hostWin, payload) {
       viewOffsetX: viewOffset.x, viewOffsetY: viewOffset.y,
       titlebarHeight: hostWin === mainWindow ? 36 : 34,
       settings: st,
+      // v2.21.0：字幕样式回采（同上）
+      onSubStyle: saveMpvSubStyle,
       onNeedFreshUrl
     });
     mpvSurfaces.set(hostId, surf);

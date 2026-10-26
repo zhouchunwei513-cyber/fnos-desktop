@@ -411,6 +411,8 @@
         内置 <b>MPV</b> 播放器（自带完整 ffmpeg 解码器）在<b>应用内视频区</b>直接播放，通吃绝大多数视频，无需跳出外部窗口。
         <b>默认用 MPV 播放</b>开启时，飞牛影视的所有视频都直接交给 MPV；关闭时仅当网页内核解不了的格式（HEVC/H.265 10bit、4K、MKV、特殊音轨）才自动切换。
         播放剧集时，MPV 控制条支持上一集 / 下一集，并可在播完后自动连播下一集。MPV 运行库随应用打包。
+        也支持换成<b>你自己的 MPV 内核</b>（如 mpv-lazy 懒人包，自带插帧 / 超分），并把它的启动参数原样透传；
+        字幕位置、字号、缩放调整后会<b>自动记住</b>，下次播放无需重调。
       </p>
 
       <div id="vlc-runtime" class="hotkey-sub" style="margin:10px 0;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,0.05);line-height:1.7">
@@ -477,6 +479,74 @@
               <div class="glass-select-option" data-value="unlimited">超大（512MB / 300s）</div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">自定义 MPV 内核（可选）</div>
+          <div class="hotkey-sub">留空则用内置 MPV。填外部 mpv.exe 的完整路径即可换用你自己的内核（如 mpv-lazy 懒人包，自带插帧/超分插件）；路径无效时自动回退内置，不影响播放</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;gap:8px">
+          <input type="text" id="vlc-exe" class="hotkey-input glass-input" placeholder="D:\mpv-lazy\mpv.exe" style="width:100%;min-width:0" />
+          <button type="button" class="btn-ghost" id="vlc-exe-browse" style="flex:0 0 auto;white-space:nowrap">浏览</button>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">附加启动参数</div>
+          <div class="hotkey-sub">原样透传给 mpv：空格分隔，成对引号包裹的片段整体保留（含中文/空格路径安全）。例：--vf=vapoursynth="D:\插帧.vpy" --tscale=oversample。用外部内核做插帧/超分时，把它的参数填这里</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <input type="text" id="vlc-args" class="hotkey-input glass-input" placeholder="--tscale=oversample" style="width:100%" />
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">MPV 配置来源</div>
+          <div class="hotkey-sub">内置中文配置：自带中文右键菜单与中文控制条（推荐）；MPV 自身配置：不干预，直接读外部内核自己的 mpv.conf（懒人包常用，里面已配好插帧/超分/着色器）</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <div class="glass-select hotkey-input" data-select="vlc-config" data-value="builtin" tabindex="0" style="width:100%">
+            <span class="glass-select-value">内置中文配置（推荐）</span>
+            <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="glass-select-menu">
+              <div class="glass-select-option" data-value="builtin">内置中文配置（推荐）</div>
+              <div class="glass-select-option" data-value="own">MPV 自身配置</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">低功耗预设</div>
+          <div class="hotkey-sub">开启后用「快速渲染档」（关高质量缩放/插值），弱 CPU 双路 4K 更省资源；自动 = 内置内核开、自定义内核关（避免覆盖插帧/超分）</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <div class="glass-select hotkey-input" data-select="vlc-perf" data-value="auto" tabindex="0" style="width:100%">
+            <span class="glass-select-value">自动（推荐）</span>
+            <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="glass-select-menu">
+              <div class="glass-select-option" data-value="auto">自动（推荐）</div>
+              <div class="glass-select-option" data-value="on">强制开启</div>
+              <div class="glass-select-option" data-value="off">强制关闭（画质优先）</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
+          <div class="hotkey-title">字幕样式（自动记住）</div>
+          <div class="hotkey-sub">播放中拖动字幕高度、调字号后会自动记住，换片/换集/重启都沿用；也可在此直接设定默认值。位置 0-150（100 贴底）、字号 8-200、缩放 0.2-5；留空表示用 MPV 默认</div>
+        </div>
+        <div style="flex:0 0 260px;display:flex;gap:6px">
+          <input type="number" id="vlc-sub-pos" class="hotkey-input glass-input" min="0" max="150" placeholder="位置" style="width:100%;min-width:0" />
+          <input type="number" id="vlc-sub-size" class="hotkey-input glass-input" min="8" max="200" placeholder="字号" style="width:100%;min-width:0" />
+          <input type="number" id="vlc-sub-scale" class="hotkey-input glass-input" min="0.2" max="5" step="0.05" placeholder="缩放" style="width:100%;min-width:0" />
         </div>
       </div>
 

@@ -930,6 +930,18 @@ module.exports = function injectTitleBar(ctx) {
           // therefore the 20px clip-path radius) lands below the window bottom -- the
           // top two corners look round while the bottom two are cut square.
           'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin:0 !important;}',
+          // v3.0.12（用户反馈：飞牛音乐播放控制栏的提示气泡「下一首」盖住按钮）——
+          // 根因：body 的 transform 下移 34px 会创建包含块，Semi Design 把 tooltip portal 到
+          // document.body（.semi-portal 自身 position:absolute;top:0;left:0），其内部的 top/left
+          // 是 JS 按 getBoundingClientRect（viewport 坐标）写入的；包含块变成 body 后原点从 0
+          // 变成 34px，气泡整体下移 34px，正好从「按钮上方」落到「按钮身上」。
+          // 修法：不动让位机制（改 padding/margin 会让 body 内 fixed 顶栏、全高侧栏钻回标题栏
+          // 底下，v2.15.56 已踩过），只把 body 直接子级的 Semi 浮层容器的 absolute top 反向
+          // 偏 34px，让它的原点重新落在 viewport 顶边 —— 气泡、下拉、弹窗一并对齐。
+          'html>body>.semi-portal{top:calc(-34px / var(--fnos-f, 1)) !important;}',
+          // 全屏态 body 不再下移 34px（__fsBody 会写 transform:none），此时 portal 不该再补偿，
+          // 否则气泡反而上移 34px。
+          'html[data-fnos-fs="1"]>body>.semi-portal{top:0 !important;}',
           // v2.16.0: fixed-viewport SPA apps (Tailwind h-dvh / h-screen / min-h-dvh) size their
           // root to 100vh/dvh, ignoring the 34px titlebar. The body is already shrunk to
           // calc(100vh-34px), but a child at height:100vh still spans the full window, so its

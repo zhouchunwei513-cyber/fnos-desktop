@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.8';
+const APP_VERSION = '3.0.9';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -236,20 +236,18 @@ const __FNOS_FRAME_SCRIPT26 = [
   'if(!e.isConnected)continue;if(e.closest&&e.closest(KEEP))continue;',
   'if(e.getAttribute&&e.getAttribute("data-fnos-killed26"))continue;',
   'var rc=e.getBoundingClientRect();',
-  'if(rc.width<6||rc.width>170||rc.height<6||rc.height>72)continue;',
-  'if(rc.top<0||rc.top>140)continue;if(vw-rc.right>120||rc.right>vw+2)continue;',
+  'if(rc.width<4||rc.width>58||rc.height<4||rc.height>64)continue;',
+  'if(rc.top<0||rc.top>150)continue;if(vw-rc.right>140||rc.right>vw+2)continue;',
   'var t=(e.textContent||"").trim();',
   'if(!(t===""||CH.test(t)))continue;',
   'var hasSvg=!!e.querySelector&&!!e.querySelector("svg");',
   'if(t===""&&!hasSvg)continue;',
-  'var rk=Math.round(rc.top/12);if(!rows[rk])rows[rk]=[];rows[rk].push({e:e,ch:t!==""});',
+  'var rk=Math.round(rc.top/8);if(!rows[rk])rows[rk]=[];rows[rk].push({e:e});',
   '}catch(_){}}',
-  'if(__KILLON29__)for(var rk2 in rows){try{var g=rows[rk2];var charHit=false;',
-  'for(var q=0;q<g.length;q++){if(g[q].ch){charHit=true;break;}}',
-  'var kill=(g.length>=2&&(charHit||g.length>=3))||(g.length===1&&g[0].ch);',
-  'if(kill){for(var z=0;z<g.length;z++){try{var ez=g[z].e;if(ez.getAttribute&&ez.getAttribute("data-fnos-killed26"))continue;',
-  'ez.setAttribute("data-fnos-killed26","1");ez.style.setProperty("display","none","important");out.h++;}catch(_){}}}',
-  '}catch(_){}}',
+  'if(__KILLON29__){var k303=[];for(var rk3 in rows){k303.push(+rk3);}k303.sort(function(a,b){return a-b;});',
+  'if(k303.length){var g=rows[k303[0]];',
+  'if(g&&g.length>=2&&g.length<=4){for(var z=0;z<g.length;z++){try{var ez=g[z].e;if(ez.getAttribute&&ez.getAttribute("data-fnos-killed26"))continue;',
+  'ez.setAttribute("data-fnos-killed26","1");ez.style.setProperty("display","none","important");out.h++;}catch(_){}}}}}',
   '}catch(_){}',
   'return out;',
   '}catch(e){return{err:String(e).slice(0,80)}}})()'
@@ -262,7 +260,12 @@ function __frameSweep26(win, tag) {
     let frames = [];
     try { frames = mf.framesInSubtree || []; } catch (_) { frames = []; }
     // v2.10.0 r30（问题1 根修）：同 __frameSweep25——杀除段只在 --fnos-app-window 应用窗内生效。
-    const __script = __FNOS_FRAME_SCRIPT26.split('__DARK24__').join(__darkExpr28()).split('__KILLON29__').join(win.__fnosAppWin29 ? '1' : '0');
+    // v3.0.9：杀除段再收紧——仅「应用窗 + 当前页是 appview 中转页」时启用。appview 页是飞牛
+    // 桌面自绘的"假窗口"，自带一层 header 与窗控（— ✕）；放进客户端独立窗就是用户实拍的双
+    // 标题栏。飞牛已把窗控由字符改成 SVG 图标，旧规则（需 ≥3 个或含字符）永不命中 → 改为
+    // 「只处理最顶部一行的 2~4 个无字图标/窗控按钮组」，其余页面（真应用页）完全不动。
+    const __killGo309 = (function () { try { return !!(win.__fnosAppWin29 && /\/appview(\?|$)/i.test(String(win.webContents.getURL() || ''))); } catch (_) { return false; } })();
+    const __script = __FNOS_FRAME_SCRIPT26.split('__DARK24__').join(__darkExpr28()).split('__KILLON29__').join(__killGo309 ? '1' : '0');
     let __done = 0; let __hidden = 0; let __sub = 0; let __bg = 0;
     const __t0 = Date.now();
     for (const f of frames) {
@@ -1673,9 +1676,17 @@ const launchArgs = parseAppArgs();
 // v2.0.7：运行模式标记——日志中区分主程序/独立子应用
 const __RUN_MODE = launchArgs.appId ? 'subapp:' + launchArgs.appId : 'main';
 
-// v2.1.17: PreAuth 缓存 - 同一 origin 认证成功后 5 分钟内不再重复
-const __preAuthCache = new Map(); // key: origin, value: { ts: number, navSteps: number }
-const PREAUTH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// v2.1.17: PreAuth 缓存
+// v3.0.9：key 由 origin 改为 origin+pathname（per-app）——per-app OAuth 按应用路径授权，
+// origin 级共享会让 A 应用的授权冒充 B 应用（漏授权=白板），且 5 分钟即过期（每次重跑 12s）。
+const __preAuthCache = new Map(); // key: origin+pathname, value: { ts, navSteps }
+const PREAUTH_CACHE_TTL = 6 * 60 * 60 * 1000; // 同一应用 6 小时内不重复预认证
+function __preAuthKeyOf(u) {
+  try {
+    const o = new URL(String(u));
+    return o.origin + (o.pathname || '/').replace(/\/+$/, '');
+  } catch (_) { return String(u || ''); }
+}
 
 // ---------------------- 设置持久化 ----------------------
 function defaultSettings() {
@@ -6403,16 +6414,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       } catch (_) {}
 
       let __shouldPreAuth = !__isAppview && !__isExternalApp && typeof url === 'string';
-      // v2.1.17: 检查 PreAuth 缓存
+      // v3.0.9：缓存命中不再整段跳过（NAS session 过期会白板），改为「轻量校验」——
+      // 隐藏窗载真实 URL，1.0s 内未落 login 即完成；落 login 则 2.0s 内自动补 appview 授权。
+      let __preAuthFast308 = false;
       try {
         if (__shouldPreAuth) {
-          const __cachedOrigin = new URL(url).origin;
-          const __cached = __preAuthCache.get(__cachedOrigin);
+          const __cacheKey308 = __preAuthKeyOf(url);
+          const __cached = __preAuthCache.get(__cacheKey308);
           if (__cached && (Date.now() - __cached.ts < PREAUTH_CACHE_TTL)) {
-            __shouldPreAuth = false;
+            __preAuthFast308 = true;
             __plog('info', 'appwin.preauth.cache-hit', {
               app: __appLabel,
-              origin: __cachedOrigin,
+              key: __cacheKey308,
               cachedAt: new Date(__cached.ts).toISOString(),
               navSteps: __cached.navSteps,
             });
@@ -6427,6 +6440,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       if (__shouldPreAuth) {
         try {
           const __preAuthT0 = Date.now();
+          // v3.0.9：裸路径流媒体应用（/music、/v）必走 per-app OAuth（实测 302 到 /xxx/login）——
+          // 无缓存时直接以 appview?anchor 起步完成授权，省掉"载真实 URL 干等超时"的一整轮。
+          const __fastOauth308 = (function () {
+            try {
+              if (__preAuthFast308 || !__appName) return false;
+              return /^\/(music|v)(\/|$)/i.test(new URL(url).pathname);
+            } catch (_) { return false; }
+          })();
+          // 缓存命中：1.6s 内读到应用页即完成（session 过期会落 login → 2.6s 兜底补授权）；
+          // fast-oauth：改由 appview 的 did-finish-load 事件收尾，fallback 定时器不抢跑。
+          const __preAuthFallbackMs308 = __preAuthFast308 ? 1600 : (__fastOauth308 ? 15000 : 1500);
+          const __preAuthTimeoutMs308 = __preAuthFast308 ? 2600 : 4000;
           __plog('info', 'appwin.preauth.start', { app: __appLabel, url: String(url).slice(0, 120), partition: String(partition || 'default') });
           // v3.0.7：预认证前快照该 partition 的 cookie，用于判断 per-app session 是否缺失
           try {
@@ -6502,8 +6527,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 });
                 // v2.1.17: 写入 PreAuth 缓存
                 try {
-                  const __cacheOrigin = new URL(url).origin;
-                  __preAuthCache.set(__cacheOrigin, { ts: Date.now(), navSteps: __preAuthNavCount });
+                  __preAuthCache.set(__preAuthKeyOf(url), { ts: Date.now(), navSteps: __preAuthNavCount });
                 } catch (_) {}
                 // OAuth 完成，刷新 cookie 存储后加载真实 URL
                 clearTimeout(__preAuthFallbackTimer);
@@ -6532,7 +6556,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
             try { __curRealUrl = String(__preAuthWin.webContents.getURL() || ''); } catch (_) {}
             __plog('warn', 'appwin.preauth.timeout', {
               app: __appLabel,
-              timeoutMs: 8000,
+              timeoutMs: __preAuthTimeoutMs308,
               elapsedMs: Date.now() - __preAuthT0,
               navSteps: __preAuthNavCount,
               lastUrl: __lastPreAuthUrl.slice(0, 120),
@@ -6550,25 +6574,31 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                   from: String(url).slice(0, 120), to: __appviewUrl.slice(0, 140),
                   base: __fdBase ? 'fndesk' : 'origin',
                 });
-                try { __preAuthWin.loadURL(__appviewUrl, { userAgent: getNasUA() }).catch(() => {}); } catch (_) {}
-                setTimeout(() => {
+                let __appviewFinished308 = false;
+                const __finishAppview308 = () => {
+                  if (__appviewFinished308) return;
+                  __appviewFinished308 = true;
                   let __oUrl = '';
                   try { __oUrl = String(__preAuthWin.webContents.getURL() || ''); } catch (_) {}
                   __plog('info', 'appwin.preauth.appview-oauth-done', {
                     app: __appLabel, curUrl: __oUrl.slice(0, 140),
                     elapsedMs: Date.now() - __preAuthT0,
                   });
-                  // 本次 origin 已走 appview 中转：写缓存，后续打开跳过 preAuth 等待
-                  try { __preAuthCache.set(new URL(url).origin, { ts: Date.now(), navSteps: __preAuthNavCount }); } catch (_) {}
+                  // 该应用已走 appview 中转：写 per-app 缓存，后续打开直接秒开
+                  try { __preAuthCache.set(__preAuthKeyOf(url), { ts: Date.now(), navSteps: __preAuthNavCount }); } catch (_) {}
                   __loadRealUrl();
-                }, 4000);
+                };
+                // v3.0.9：事件驱动完成（did-finish-load 后 700ms），兜底 3000ms——原固定 4s
+                try { __preAuthWin.webContents.once('did-finish-load', () => setTimeout(__finishAppview308, 700)); } catch (_) {}
+                setTimeout(__finishAppview308, 3000);
+                try { __preAuthWin.loadURL(__appviewUrl, { userAgent: getNasUA() }).catch(() => {}); } catch (_) {}
                 return;
               } catch (_) {}
             }
             // appview 中转不可用（无 anchor / 已在 appview / 异常）→ 直接加载真实 URL
             __plog('info', 'appwin.preauth.loadReal-direct', { app: __appLabel, reason: __needOauth ? 'appview-error' : 'no-oauth-needed', realUrl: __curRealUrl.slice(0, 120) });
             __loadRealUrl();
-          }, 8000);
+          }, __preAuthTimeoutMs308);
 
           // v2.17.38: 3 秒后若仍在应用路径（服务端未 302 到登录页），说明应用可直接访问、
           // 无需 per-app OAuth（如相册 /p）。此前 v2.1.17 会强制跳 /login，导致这类应用被
@@ -6587,15 +6617,14 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                     elapsedMs: Date.now() - __preAuthT0,
                   });
                   try {
-                    const __cacheOrigin = new URL(url).origin;
-                    __preAuthCache.set(__cacheOrigin, { ts: Date.now(), navSteps: 0 });
+                    __preAuthCache.set(__preAuthKeyOf(url), { ts: Date.now(), navSteps: 0 });
                   } catch (_) {}
                   clearTimeout(__preAuthTimeout);
                   __loadRealUrl();
                 }
               }
             } catch (_) {}
-          }, 3000);
+          }, __preAuthFallbackMs308);
 
           function __loadRealUrl() {
             clearTimeout(__preAuthTimeout);
@@ -6629,7 +6658,33 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
           win.loadURL(__loadingHtml).catch(() => {});
 
           // 在隐藏窗口开始 OAuth 流程
-          __preAuthWin.loadURL(url, { userAgent: getNasUA() }).catch(() => {});
+          // v3.0.9：/music、/v 无缓存时直接以 appview?anchor 起步完成 per-app 授权
+          let __preAuthFirst308 = url;
+          try {
+            if (__fastOauth308) {
+              __preAuthFirst308 = new URL(url).origin + '/appview?anchor=' + encodeURIComponent(__appName);
+              __plog('info', 'appwin.preauth.fast-oauth', { app: __appLabel, to: String(__preAuthFirst308).slice(0, 140) });
+              // v3.0.9：appview 中转页首帧落地后再等 1.8s，让 per-app OAuth 的 set-cookie 完全
+              // 写入（appview 内 iframe 首次响应即带 token），随后才载真实 URL——避免抢跑导致
+              // 可见窗仍落 /xxx/login。兜底仍由 4s 超时分支负责。
+              try {
+                __preAuthWin.webContents.once('did-finish-load', () => setTimeout(() => {
+                  try {
+                    if (__preAuthDone) return;
+                    __preAuthDone = true;
+                    let __fu = '';
+                    try { __fu = String(__preAuthWin.webContents.getURL() || ''); } catch (_) {}
+                    __plog('info', 'appwin.preauth.fast-oauth-done', {
+                      app: __appLabel, curUrl: __fu.slice(0, 140), elapsedMs: Date.now() - __preAuthT0,
+                    });
+                    try { __preAuthCache.set(__preAuthKeyOf(url), { ts: Date.now(), navSteps: __preAuthNavCount }); } catch (_) {}
+                    __loadRealUrl();
+                  } catch (_) {}
+                }, 1800));
+              } catch (_) {}
+            }
+          } catch (_) {}
+          __preAuthWin.loadURL(__preAuthFirst308, { userAgent: getNasUA() }).catch(() => {});
 
         } catch (err) {
           try { dlog && dlog('error', 'appwin.preauth.error', { app: __appLabel, error: String(err).slice(0, 200) }); } catch (_) {}
@@ -12564,7 +12619,10 @@ function __appsPathForAnchor(anchor) {
     const a = String(anchor || '').trim();
     if (!a) return '';
     const m = /^trim\.([a-z0-9._-]+)$/i.exec(a);
-    const WL = ['setting', 'app-center', 'docker', 'file-manager', 'file-manager.trash', 'log-center', 'resource-manager', 'backup-and-sync', 'download-center'];
+    // v3.0.9：白名单按真机实测收敛——只有 /apps/docker/ 与 /apps/download-center/ 返回 200，
+    // 其余 trim.* 系统应用（setting/app-center/file-manager/log-center 等）在 /apps/ 下不存
+    // 在（404），必须走 appview 中转，强行直连只会白屏再回退。
+    const WL = ['docker', 'download-center'];
     if (m) {
       const p = m[1].toLowerCase();
       if (WL.indexOf(p) < 0) return '';
@@ -12647,6 +12705,22 @@ function __resolveLaunchUrl(raw, nasAddr) {
     } catch (_) {}
     return __rootUrlFallback(__truthRewrite28(appName, ''), fpkAppNameFromUrl(appName) || '');
   }
+  // 1.5) v3.0.9：embed 类系统应用直连真入口 {origin}/apps/{name}/——必须放在 FPK 缓存之前，
+  //     因为 fpk-apps-cache 里这些应用的 url 全是 appview?anchor（中转页，含假窗控）。
+  try {
+    const __ap309 = __appsPathForAnchor(appName);
+    if (__ap309) {
+      let __b309 = String(nasAddr || '').trim().replace(/\/+$/, '');
+      try { const __lo309 = __liveOriginBase(); if (__lo309) __b309 = __lo309; } catch (_) {}
+      if (!__b309) { try { __b309 = String(loadSettings().origin || '').trim().replace(/\/+$/, ''); } catch (_) {} }
+      if (__b309) {
+        if (!/^https?:/i.test(__b309)) __b309 = 'http://' + __b309;
+        const __u309 = __b309 + __ap309;
+        fnosLog('info', 'launch', 'resolve.apps-direct', { name: String(appName).slice(0, 80), url: String(__u309).slice(0, 140) });
+        return __u309;
+      }
+    }
+  } catch (_) {}
   // 2) v2.4.0（需求 2.1）：快捷方式统一传 --launch-app={应用唯一 ID} 后，FPK 第三方应用的
   //    真实打开地址（端口/路径）以 FPK 图标管理器 url 字段为准——先同步查 FPK 内存缓存
   //    （refreshFpkApps.__cache，5 分钟 TTL）。缓存未就绪（冷启动）回退下方 manifest / appview。
@@ -12711,17 +12785,6 @@ function __resolveLaunchUrl(raw, nasAddr) {
           fnosLog('info', 'launch', 'resolve.truth28', { name: __trR28.name, url: String(__uR28).slice(0, 140) });
           return __uR28;
         }
-      }
-    } catch (_) {}
-    // v3.0.8：快捷方式打开 embed 类系统应用时直连真入口 {origin}/apps/{name}/，不走
-    // appview 内嵌中转——appview 页自带一层「假窗口」标题栏，放进独立窗口就是双标题栏
-    // （用户实拍）。appview 仅作兜底。
-    try {
-      const __ap308 = __appsPathForAnchor(appName);
-      if (__ap308) {
-        const __au308 = base.replace(/\/+$/, '') + __ap308;
-        fnosLog('info', 'launch', 'resolve.apps-direct', { name: String(appName).slice(0, 80), url: String(__au308).slice(0, 140) });
-        return __au308;
       }
     } catch (_) {}
     const __fdBase308 = __fndeskAppviewBase();

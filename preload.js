@@ -177,6 +177,9 @@ function __fnosLaunchByClick(appId, url, labels) {
     // v2.10.0 r30（问题1 根修）：清扫只在 --fnos-app-window 应用窗内生效——主窗整棵 frame 树
     //（web 桌面内嵌窗的真 —□✕ 与拖动手柄）全豁免；无旗标默认不杀（安全方向，宁漏不误杀）。
     try { if (!process || !process.argv || process.argv.indexOf('--fnos-app-window') < 0) return; } catch (_) { return; }
+    // v3.0.9：进一步限定「当前页是 appview 中转页」——只有 appview 页自带飞牛桌面样式的假窗口
+    // header 与窗控（— ✕）；真应用页（/apps/、/app/xxx、外部端口）一概不动。
+    try { if (String(location.pathname || '').indexOf('/appview') < 0) return; } catch (_) { return; }
     var KEEP = '[data-fnos-tb],[id^=fnos-],[class*=fnos-]';
     var CH = /^[\u2014_\u229F\u25A1\u25FB\u25A2\u2922\u2923\u2715Xx\u00D7\u00B7.,\-\/\\| ]{1,4}$/;
     var sweep = function () {
@@ -191,24 +194,27 @@ function __fnosLaunchByClick(appId, url, labels) {
             if (e.closest && e.closest(KEEP)) continue;
             if (e.getAttribute && e.getAttribute('data-fnos-killed26')) continue;
             var rc = e.getBoundingClientRect();
-            if (rc.width < 6 || rc.width > 170 || rc.height < 6 || rc.height > 72) continue;
-            if (rc.top < 0 || rc.top > 140) continue;
-            if (vw - rc.right > 120 || rc.right > vw + 2) continue;
+            if (rc.width < 4 || rc.width > 58 || rc.height < 4 || rc.height > 64) continue;
+            if (rc.top < 0 || rc.top > 150) continue;
+            if (vw - rc.right > 140 || rc.right > vw + 2) continue;
             var t = (e.textContent || '').trim();
             if (!(t === '' || CH.test(t))) continue;
             var hasSvg = !!(e.querySelector && e.querySelector('svg'));
             if (t === '' && !hasSvg) continue;
-            var rk = Math.round(rc.top / 12);
+            var rk = Math.round(rc.top / 8);
             if (!rows[rk]) rows[rk] = [];
             rows[rk].push({ e: e, ch: t !== '' });
           } catch (_) {}
         }
-        for (var rk2 in rows) {
+        var rks = [];
+        for (var rk0 in rows) { rks.push(+rk0); }
+        rks.sort(function (a, b) { return a - b; });
+        for (var rk3 = 0; rk3 < rks.length; rk3++) {
           try {
-            var g = rows[rk2];
-            var charHit = false;
-            for (var q = 0; q < g.length; q++) { if (g[q].ch) { charHit = true; break; } }
-            var kill = (g.length >= 2 && (charHit || g.length >= 3)) || (g.length === 1 && g[0].ch);
+            // v3.0.9：只处理最顶部那一行（appview 假窗口 header 行）的 2~4 个无字图标/窗控按钮组
+            if (rk3 > 0) break;
+            var g = rows[rks[rk3]];
+            var kill = !!(g && g.length >= 2 && g.length <= 4);
             if (kill) {
               for (var z = 0; z < g.length; z++) {
                 try {

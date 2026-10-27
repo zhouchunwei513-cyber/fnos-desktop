@@ -306,10 +306,20 @@ body::-webkit-scrollbar-thumb:hover {
 
   <section class="card">
     <h2>软件简介</h2>
-    <p>FNOS 桌面客户端是飞牛私有云（fnOS）的<b>非官方第三方</b> Windows 桌面端。基于 Electron 22 构建，原生支持 Windows 7 SP1 x64 / Windows 10 / Windows 11，把飞牛 NAS 的文件、相册、影视、Docker 等全部应用收进一个独立客户端，不跳系统浏览器；支持多账号、启动密码、一键隐藏，并内置 MPV 播放器做显卡硬解 4K。</p>
+    <p>FNOS 桌面客户端是飞牛私有云（fnOS）的<b>非官方第三方</b> Windows 桌面端。基于 <b>Electron 44</b> 构建，支持 <b>Windows 10 / Windows 11（64 位）</b>，把飞牛 NAS 的文件、相册、影视、Docker 等全部应用收进一个独立客户端，不跳系统浏览器；支持多账号、启动密码、一键隐藏，内置 MPV 播放器做显卡硬解 4K，并可为 Docker 等第三方应用一键创建 Windows 桌面快捷方式。</p>
     <div class="tip">本软件<b>不收集、不上传、不转发</b>任何用户数据；无埋点、无崩溃上报、无静默下载。NAS 登录信息与你设置的启动密码均保存在本机（密码经系统 DPAPI + scrypt 加密）。</div>
   </section>
 
+  <section class="card">
+    <h2>3.0 版本更新</h2>
+    <ul>
+      <li><b>Docker / 第三方应用也能建桌面快捷方式</b>：在 NAS 上用 fndesk 把 Docker 应用放到飞牛桌面后，本客户端「设置 → 应用快捷方式创建」里就能看到这些应用，一键生成 Windows 桌面快捷方式，双击直达应用窗口。</li>
+      <li><b>快捷方式启动链路修复</b>：3.0 起双击快捷方式会直接解析出应用的真实地址，不再先弹出「应用不存在或未安装」的中间页——Docker / 第三方应用由「先报错一个窗、再开一个窗」变为单窗直达。</li>
+      <li><b>启动更快</b>：应用真实地址会落盘缓存，冷启动与快捷方式唤起都能本地秒查，不必等刷新应用列表。</li>
+      <li><b>关于与帮助页</b>：帮助页补齐 3.0 的能力说明，并修正了旧版遗留的系统要求描述（本版起支持 Windows 10 / 11 64 位）。</li>
+    </ul>
+    <div class="tip">Docker 应用建快捷方式的前提：① NAS 安装 fndesk，并在飞牛桌面创建 Docker 应用图标；② NAS 安装最新版 FNTB 图标管理器（提供图标与快捷方式图标来源）；③ 安装本客户端 3.0；④ 「设置 → 应用快捷方式创建」里找到该 Docker 应用并生成快捷方式。</div>
+  </section>
   <section class="card">
     <h2>快速开始</h2>
     <div class="step">
@@ -432,6 +442,7 @@ body::-webkit-scrollbar-thumb:hover {
       <li><b>设置 → 应用快捷方式创建</b> 列出 NAS 上已安装的应用，可为每个应用创建 Windows 桌面快捷方式；双击快捷方式由主程序代为打开对应应用（依赖主程序登录态）。</li>
       <li>可选「打开应用后主程序：<b>隐藏到托盘</b> / 最小化到任务栏」，应用窗口仍正常显示。</li>
       <li><b>设置 → 图标管理器（FPK API）</b>：填入 FPK 图标管理器地址和端口（默认 <code>18080</code>）并启用后，快捷方式与任务栏图标会优先使用 FPK 中的自定义图标。</li>
+      <li><b>Docker / 第三方应用</b>：凡是在飞牛桌面上出现过的应用（含 fndesk 创建的 Docker 应用图标）都会列在「应用快捷方式创建」里，生成快捷方式后双击即可打开该应用的独立窗口；应用真实地址会本地缓存，启动更快。</li>
     </ul>
   </section>
 
@@ -541,6 +552,8 @@ body::-webkit-scrollbar-thumb:hover {
     <p>设置与登录信息都在 <code>%APPDATA%\FNOS</code>，密码经系统 DPAPI 加密。卸载程序不会删除该目录，重装后登录数据仍在。</p>
     <h3>桌面 / 开始菜单图标还是旧的？</h3>
     <p>安装程序会自动调用 <code>SHChangeNotify</code> 与 <code>ie4uinit -show</code> 刷新图标缓存。极少数情况下仍未刷新，可在任务管理器里重启「Windows 资源管理器」，或注销重登一次。</p>
+    <h3>双击桌面快捷方式先闪一下「不存在或未安装」，或者蹦出两个窗口？</h3>
+    <p>这是 3.0 之前版本的启动链路问题：解析不到应用真实地址时，客户端先打开中间页、随后再补开真实页面。3.0 已改为直接解析真实地址并落盘缓存，升级到 3.0 后即可恢复正常，<b>快捷方式无需重建</b>。</p>
   </section>
 
   <section class="card">
@@ -566,7 +579,7 @@ body::-webkit-scrollbar-thumb:hover {
 
 </main>
 
-<div class="footer">FNOS CLIENT · <span id="ver-label">2.18.0</span></div>
+<div class="footer">FNOS CLIENT · <span id="ver-label">3.0.0</span></div>
 
 <script>
 /* v2.18.0：版本号由主进程 loadFile 的 query 传入（v=APP_VERSION），页脚自动跟随，不再手写死值。 */

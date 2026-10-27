@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.7';
+const APP_VERSION = '3.0.8';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5428,6 +5428,38 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
         });
       } catch (_) {}
     }
+  } catch (_) {}
+  // v3.0.8：/apps/{name}/ 直连自愈——若该真入口不存在（页面空白或跳登录），4s 后自动回退
+  // 到 {origin}/appview?anchor= 中转（只回退一次），保证「去内嵌窗」不会变成白板。
+  try {
+    win.webContents.on('did-finish-load', () => {
+      try {
+        const __u = String(win.webContents.getURL() || '');
+        const __am = /\/apps\/([a-z0-9._-]+)\//i.exec(__u);
+        if (!__am || win.__fnAppsHeal308) return;
+        win.__fnAppsHeal308 = true;
+        setTimeout(() => {
+          try {
+            if (win.isDestroyed() || win.webContents.isDestroyed()) return;
+            win.webContents.executeJavaScript('(function(){try{var t=document.body?String(document.body.innerText||""):"";t=t.replace(/\\s+/g,"");return {len:t.length,path:String(location.pathname||""),title:String(document.title||"")}}catch(_){return {len:0,path:"",title:""}}})()').then((r) => {
+              try {
+                const __len = (r && r.len) || 0;
+                const __path = String((r && r.path) || '');
+                const __bad = __len < 20 || /login|signin/i.test(__path);
+                require('./logger.js').log(__bad ? 'warn' : 'info', 'appwin', 'appwin.apps-direct-check', { params: { winId: win.id, name: __am[1], len: __len, path: __path.slice(0, 80), title: String((r && r.title) || '').slice(0, 60), ok: !__bad } }, __RUN_MODE);
+                if (!__bad) return;
+                const __o = (function () { try { return new URL(__u).origin; } catch (_) { return ''; } })();
+                if (!__o) return;
+                const __nm = /^trim\./i.test(__am[1]) ? __am[1] : ('trim.' + __am[1]);
+                const __bk = __o + '/appview?anchor=' + encodeURIComponent(__nm);
+                require('./logger.js').log('warn', 'appwin', 'appwin.apps-direct-fallback', { params: { winId: win.id, name: __nm, to: String(__bk).slice(0, 140) } }, __RUN_MODE);
+                try { win.loadURL(__bk, { userAgent: getNasUA() }).catch(() => {}); } catch (_) {}
+              } catch (_) {}
+            }).catch(() => {});
+          } catch (_) {}
+        }, 4000);
+      } catch (_) {}
+    });
   } catch (_) {}
   // v2.8.0 r28（问题①根治）：truth 真入口命中时初始 URL 直接改写——appview?anchor 页会先行加载
   // 并弹"应用不存在或未安装"toast（r27 仅把真入口置顶为候选，切换发生在错误页检测之后）。
@@ -12109,6 +12141,9 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
         }
       }
     } catch (_) {}
+    // v3.0.8：NAS 别名 host 归一——所有开窗链路（快捷方式/程序内/冷启动）最终地址统一到
+    // 主窗 host，避免跨 host 丢 cookie（跳 login）与 DDNS 域名绕公网导致的 5~20s 慢加载。
+    try { if (cand) cand = __preferNasHost(cand); } catch (_) {}
     if (!cand) {
       try { const fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (fe && __validEntry(fe.url)) cand = String(fe.url); } catch (_) {}
     }
@@ -12513,26 +12548,81 @@ function __launchAccountFix(u, tag) {
 // {FNDESK}/v/appview?anchor={appId}（程序内点击由飞牛桌面前端同源构造 = 10300/v/appview）。
 // 旧兜底用主站 origin 拼 /appview?anchor（5666/appview）→ 缺 FNDESK 端口(10300)与 /v 前缀，
 // 独立窗加载 5666/appview 一直转圈/跳登录（真机 2026-10-27 实证"程序内能开、快捷方式打不开"）。
+// v3.0.8：撤销 v3.0.5 的「FNDESK = host/v」假设。真机日志（2026-10-27 16:47）证实
+// {host}/v 是「飞牛影视」应用自己的路径：{host}/v/appview 会被影视服务接走并 302 到
+// /v/login?redirect_uri=.../v，独立窗直接白板（日志 appview-oauth curUrl 实证）。
+// 飞牛 appview 中转页始终位于站点根 {origin}/appview?anchor=（apps-manifest 与
+// fpk-apps-cache 全量一致，程序内点击亦同），故此处恒返回空，调用方回退 origin。
 function __fndeskAppviewBase() {
+  return '';
+}
+// v3.0.8：embed 类飞牛系统应用的真入口路径（appview 内部 iframe 加载的就是它）。
+// 依据：apps-manifest 中 trim.docker 的 preset windowTypeUrl = {origin}/apps/docker/。
+// 白名单限定系统应用，避免把 docker 应用（OpenList/xte/qBittorrent 等）误判。
+function __appsPathForAnchor(anchor) {
   try {
-    for (const rec of fnosGuests.values()) {
-      const u = String((rec && rec.url) || '');
-      if (!/^https?:\/\//i.test(u)) continue;
+    const a = String(anchor || '').trim();
+    if (!a) return '';
+    const m = /^trim\.([a-z0-9._-]+)$/i.exec(a);
+    const WL = ['setting', 'app-center', 'docker', 'file-manager', 'file-manager.trash', 'log-center', 'resource-manager', 'backup-and-sync', 'download-center'];
+    if (m) {
+      const p = m[1].toLowerCase();
+      if (WL.indexOf(p) < 0) return '';
+      return '/apps/' + p + '/';
+    }
+    const p2 = a.toLowerCase();
+    if (WL.indexOf(p2) < 0) return '';
+    return '/apps/' + p2 + '/';
+  } catch (_) { return ''; }
+}
+// v3.0.8：同一台 NAS 的地址别名集合（内网 IP / DDNS 域名 / 公网 IP / IPv6 都存在 accounts 里）
+function __nasAliasHosts() {
+  const s = new Set();
+  const push = (o) => {
+    try {
+      const t = String(o || '').trim();
+      if (!t) return;
+      const u = new URL(/^https?:/i.test(t) ? t : 'http://' + t);
+      if (u.hostname) s.add(u.hostname.toLowerCase());
+    } catch (_) {}
+  };
+  try {
+    const st = loadSettings() || {};
+    push(st.origin);
+    push(st.server);
+    if (Array.isArray(st.accounts)) st.accounts.forEach((a) => { if (a) { push(a.origin); push(a.href); push(a.serverInput); } });
+    if (Array.isArray(st.history)) st.history.forEach((a) => { if (a) { push(a.origin); push(a.href); } });
+    push(lastConnectHref);
+  } catch (_) {}
+  return s;
+}
+// v3.0.8：把 NAS 别名 host 归一为当前主窗 host（端口保持不变）。
+// 根因：cookie 按 host 隔离，同一台 NAS 换 host 就丢登录态（真机 16:47 partition 属
+// 192.168.31.101，URL 却是 nas.xn--yet060e.com → /music、/v 全部 302 到 /xxx/login）；
+// 且 DDNS 域名在内网常绕公网解析，实测单页 5~20s。
+function __preferNasHost(url) {
+  try {
+    const rawS = String(url || '');
+    if (!/^https?:\/\//i.test(rawS)) return rawS;
+    const main = __liveOriginBase();
+    if (!main || !/^https?:\/\//i.test(main)) return rawS;
+    const u = new URL(rawS);
+    const mu = new URL(main);
+    if (!mu.hostname || !u.hostname) return rawS;
+    if (u.hostname.toLowerCase() === mu.hostname.toLowerCase()) return rawS;
+    const aliases = __nasAliasHosts();
+    if (!aliases.has(u.hostname.toLowerCase())) return rawS;
+    if (!aliases.has(mu.hostname.toLowerCase())) return rawS;
+    const beforeHost = u.host;
+    u.hostname = mu.hostname;
+    const out = u.toString();
+    if (out !== rawS) {
       try {
-        const pu = new URL(u);
-        if (/^\/v(\/|$|\?)/i.test(pu.pathname)) return pu.origin + '/v';
+        require('./logger.js').log('info', 'appwin', 'appwin.host-normalize', { params: { from: String(beforeHost).slice(0, 90), to: String(u.host).slice(0, 90), url: String(rawS).slice(0, 150) } }, __RUN_MODE);
       } catch (_) {}
     }
-  } catch (_) {}
-  try {
-    const fe = __fpkLookupSync('trim.media');
-    if (fe && /^https?:/i.test(fe.url)) {
-      const po = new URL(fe.url);
-      if (/^\/v(\/|$|\?)/i.test(po.pathname)) return po.origin + '/v';
-    }
-  } catch (_) {}
-  try { const b = __liveOriginBase(); if (b) return b.replace(/\/+$/, '') + '/v'; } catch (_) {}
-  return '';
+    return out;
+  } catch (_) { return String(url || ''); }
 }
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
@@ -12623,8 +12713,19 @@ function __resolveLaunchUrl(raw, nasAddr) {
         }
       }
     } catch (_) {}
-    const __fdBase305 = __fndeskAppviewBase();
-    return (__fdBase305 ? __fdBase305.replace(/\/+$/, '') : base) + '/appview?anchor=' + encodeURIComponent(appName);
+    // v3.0.8：快捷方式打开 embed 类系统应用时直连真入口 {origin}/apps/{name}/，不走
+    // appview 内嵌中转——appview 页自带一层「假窗口」标题栏，放进独立窗口就是双标题栏
+    // （用户实拍）。appview 仅作兜底。
+    try {
+      const __ap308 = __appsPathForAnchor(appName);
+      if (__ap308) {
+        const __au308 = base.replace(/\/+$/, '') + __ap308;
+        fnosLog('info', 'launch', 'resolve.apps-direct', { name: String(appName).slice(0, 80), url: String(__au308).slice(0, 140) });
+        return __au308;
+      }
+    } catch (_) {}
+    const __fdBase308 = __fndeskAppviewBase();
+    return (__fdBase308 ? __fdBase308.replace(/\/+$/, '') : base) + '/appview?anchor=' + encodeURIComponent(appName);
   }
   return appName;
 }

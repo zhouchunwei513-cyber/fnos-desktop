@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.12';
+const APP_VERSION = '2.24.13';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -14378,16 +14378,29 @@ async function embedMpvPlay(hostWin, payload) {
       } catch (err) { dlog('warn', 'mpv.epnav.go.err', { err: String(err && err.message || err) }); }
     });
     // v2.20.0：正常播完（eof）且网页报告还有下一集 → 自动连播
+    // v2.24.13（用户反馈：菜单开「自动播放下一集」不生效）——
+    // 根因：mpv 带 --keep-open=yes 播完不发 end-file(reason=eof)，只在随后切集/卸载时
+    // 以 reason=stop 发；用户机日志实测 379 次 end-file 全是 stop/error/quit、eof 为 0 次，
+    // 所以原来 if(reason==='eof') 的连播分支永远不成立。改由 player 的 natural-eof
+    // （eof-reached 属性且非提前断流）触发，end-file(eof) 保留兼容，二者 3s 内去重。
+    let __autoNextAt = 0;
+    const __tryAutoNext = (src) => {
+      try {
+        if (!surf.__hasNext) { dlog('info', 'mpv.epnav.autonext.skip', { host: hostId, src, why: 'no-next' }); return; }
+        if (getMpvSettings().autoNext === false) { dlog('info', 'mpv.epnav.autonext.skip', { host: hostId, src, why: 'off' }); return; }
+        if (Date.now() - __autoNextAt < 3000) { dlog('info', 'mpv.epnav.autonext.dedup', { host: hostId, src }); return; }
+        __autoNextAt = Date.now();
+        dlog('info', 'mpv.epnav.autonext', { host: hostId, src });
+        guestWc.send('mpv:episode-nav', { dir: 'next', auto: true });
+      } catch (err) { dlog('warn', 'mpv.epnav.autonext.err', { err: String(err && err.message || err) }); }
+    };
+    surf.player.on('natural-eof', () => {
+      dlog('info', 'mpv.player.natural-eof', { host: hostId });
+      __tryAutoNext('eof-reached');
+    });
     surf.player.on('end-file', reason => {
       dlog('info', 'mpv.player.end', { reason: String(reason) });
-      try {
-        if (String(reason) === 'eof' && surf.__hasNext && getMpvSettings().autoNext !== false) {
-          dlog('info', 'mpv.epnav.autonext', { host: hostId });
-          guestWc.send('mpv:episode-nav', { dir: 'next', auto: true });
-        } else if (String(reason) === 'eof' && surf.__hasNext) {
-          dlog('info', 'mpv.epnav.autonext.skip', { host: hostId });
-        }
-      } catch (err) { dlog('warn', 'mpv.epnav.autonext.err', { err: String(err && err.message || err) }); }
+      if (String(reason) === 'eof') __tryAutoNext('end-file');
     });
     // exit 第三参 userClosed：true=用户点 mpv 窗口 X（正常关闭），false=进程崩溃
     surf.player.on('exit', (code, _sig, userClosed) => {

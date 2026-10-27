@@ -894,7 +894,18 @@ class MpvPlayer extends EventEmitter {
         if (val) {
           this._userPause = false; // 提前 EOF 时的暂停是 keep-open 自动暂停，非用户主动
           this.emit('ended');
-          this._handlePrematureEof();
+          const premature = this._handlePrematureEof();
+          // v2.24.13（用户反馈：菜单开「自动播放下一集」不生效）——
+          // mpv 带 --keep-open=yes 时播完不发 end-file(reason=eof)：实测 379 次 end-file
+          // 全是 stop/error/quit，eof 为 0 次，只在随后切集/卸载时才以 stop 发。
+          // 所以连播不能靠 end-file，必须用 eof-reached 属性；这里确认"真播完"
+          // （非提前断流、未在 re-sign 重载）时发 natural-eof 供主进程连播。
+          // 守卫：直播/用户主动停/退出/正在重签 都不算"真播完"，绝不能触发连播。
+          if (!premature && !this._isLive && !this._manualStop && !this._quitByUser && !this._refreshing) {
+            const pos = (typeof this._timePosVal === 'number') ? this._timePosVal : 0;
+            this.emit('log', 'natural eof at ' + Math.round(pos) + 's / ' + Math.round(this._duration) + 's');
+            this.emit('natural-eof');
+          }
         }
       }
       else if (id === 11) {
@@ -1148,18 +1159,21 @@ class MpvPlayer extends EventEmitter {
   // 点播提前 EOF：HTTP 长连接被服务端中途断开、lavf 重连耗尽后，mpv 在远未到片尾时
   // 触发 eof-reached（配合 keep-open 自动暂停）。表现为"播着播着停住、点播放没反应、
   // 拖进度条画面只动一下"。此时若进度明显未到 duration，则重新签名取流并续播到断点。
+  // v2.24.13：返回值改为 bool —— true=判定为提前断流并已重签重载（不可连播），
+  // false=真播完或无需处理（由调用方决定是否发 natural-eof）。
   _handlePrematureEof() {
     try {
-      if (this._isLive || this._quitByUser || this._manualStop || this._refreshing) return;
-      if (this._earlyEofTries >= 8) return;
+      if (this._isLive || this._quitByUser || this._manualStop || this._refreshing) return false;
+      if (this._earlyEofTries >= 8) return false;
       const pos = (typeof this._timePosVal === 'number') ? this._timePosVal : 0;
       // duration 已知且离片尾还差 10s 以上 = 非正常播完；duration 未知则交给卡死看护兜底。
-      if (!(this._duration > 0 && pos < this._duration - 10)) return;
+      if (!(this._duration > 0 && pos < this._duration - 10)) return false;
       this._earlyEofTries++;
       this.emit('log', 'premature EOF at ' + Math.round(pos) + 's / ' + Math.round(this._duration)
         + 's (retry #' + this._earlyEofTries + '), re-signing + resume');
       this._reloadStream();
-    } catch (_) {}
+      return true;
+    } catch (_) { return false; }
   }
 
   // 断流/卡死恢复：点播优先让主进程重新签名取新鲜地址（飞牛 media/range 签名约 10 分钟失效），

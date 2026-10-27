@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '2.24.15';
+const APP_VERSION = '2.24.16';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -9381,6 +9381,8 @@ async function refreshFpkApps(force) {
     if (Array.isArray(list) && list.length) {
       __fpkApps = list;
       __fpkAppsAt = now;
+      // v2.24.16：落盘一份（含真实 url），供冷启动 / loopback /launch 同步解析
+      try { __saveFpkAppsCache(list); } catch (_) {}
       dlog && dlog('info', 'fpk.applist', { count: list.length, host: nasHost });
       // v2.4.13 r15：登录后/列表刷新后自动探测应用窗口类型标记（元信息优先，缓存供快捷方式分支）
       try { if (!refreshFpkApps.__wtProbedAt || (now - refreshFpkApps.__wtProbedAt > FPK_APPS_TTL)) { refreshFpkApps.__wtProbedAt = now; probeAppWindowTypes().catch(() => {}); } } catch (_) {}
@@ -11451,7 +11453,7 @@ function __startLaunchServer() {
       if (req.method !== 'POST' || String(req.url || '').split('?')[0] !== '/launch') { try { res.writeHead(404); res.end(); } catch (_) {} return; }
       let body = '';
       req.on('data', (c) => { body += String(c); if (body.length > 2048) { try { req.destroy(); } catch (_) {} } });
-      req.on('end', () => {
+      req.on('end', async () => {
         try {
           const q = new URLSearchParams(body);
           const token = String(q.get('token') || '');
@@ -11497,7 +11499,19 @@ function __startLaunchServer() {
           // v2.17.31：基准取运行时实际 origin（FNID 域名与真实登录域不同，跨域会丢 Cookie）
           try { nas = __liveOriginBase(); } catch (_) {}
           if (!nas) { try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {} }
-          const u = __resolveLaunchUrl(appId, nas);
+          let u = __resolveLaunchUrl(appId, nas);
+          // v2.24.16：解析落到 appview 兜底页时，先等一次 FPK 列表刷新（上限 800ms，vbs 接收超时 1s）
+          // 再解析——让 docker/第三方应用直接拿到真实端口地址，不再多开一个报错窗。
+          if (u && /\/appview\?anchor=/i.test(u)) {
+            try {
+              await Promise.race([refreshFpkApps(true), new Promise((r) => setTimeout(r, 800))]);
+              const u2 = __resolveLaunchUrl(appId, nas);
+              if (u2 && /^https?:\/\//i.test(u2) && !/\/appview\?anchor=/i.test(u2)) {
+                u = u2;
+                try { require('./logger.js').log('info', 'launch', 'launch.http resolve-after-refresh', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
+              }
+            } catch (_) {}
+          }
           if (u && /^https?:/i.test(u)) {
             // v2.4.17 r15d：快捷方式 HTTP 入口统一收口——窗口类型标记直开对应形态窗
             // （内嵌=壳 iframe 壳窗；跳出=独立应用窗），无标记回落模拟点击兜底（观测回填）；
@@ -12143,12 +12157,54 @@ function __truthRewrite28(u, name) {
     return out || sU;
   } catch (_) { return String(u || ''); }
 }
+// v2.24.16: FPK 应用列表持久化缓存（含每个应用的真实 url）。
+// 背景：快捷方式 vbs 只把 appId 传给客户端，/launch 与冷启动都要走 __resolveLaunchUrl；
+// 旧 __fpkLookupSync 读的是从未赋值的 refreshFpkApps.__cache，恒 miss，导致 docker/第三方
+// 应用被回退到 appview?anchor 兜底页（先弹"应用不存在或未安装"再二次打开 → 双窗，
+// 文件管理这类系统应用则在同一窗内先报错后自愈）。
+function __fpkAppsCachePath() {
+  try { return path.join(app.getPath('userData'), 'fpk-apps-cache.json'); } catch (_) { return ''; }
+}
+function __saveFpkAppsCache(list) {
+  try {
+    const p = __fpkAppsCachePath();
+    if (!p || !Array.isArray(list) || !list.length) return;
+    const slim = list.map((a) => ({
+      name: String((a && (a.name || a.appName || a.appId)) || ''),
+      title: String((a && a.title) || ''),
+      url: String((a && a.url) || ''),
+    })).filter((a) => a.name && /^https?:\/\//i.test(a.url));
+    if (slim.length) fs.writeFileSync(p, JSON.stringify({ at: Date.now(), apps: slim }), 'utf-8');
+  } catch (_) {}
+}
+function __loadFpkAppsCache() {
+  try {
+    const p = __fpkAppsCachePath();
+    if (!p || !fs.existsSync(p)) return [];
+    const d = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    return (d && Array.isArray(d.apps)) ? d.apps : [];
+  } catch (_) { return []; }
+}
 function __fpkLookupSync(name) {
   try {
-    if (!name) return null;
-    const cache = refreshFpkApps.__cache;
-    if (!Array.isArray(cache) || !cache.length) return null;
-    return cache.find((f) => f && String(f.name || f.appname || '') === String(name)) || null;
+    const q = String(name || '').trim();
+    if (!q) return null;
+    const nq = q.toLowerCase();
+    // 键同时支持 appId(name)、展示名 title 与完整 url，覆盖设置页/桌面项两种 appId 形态
+    const pick = (list) => {
+      if (!Array.isArray(list) || !list.length) return null;
+      let hit = list.find((f) => {
+        if (!f) return false;
+        const n = String(f.name || f.appname || f.appId || '').trim().toLowerCase();
+        return !!n && n === nq;
+      });
+      if (!hit) hit = list.find((f) => f && String(f.title || '').trim().toLowerCase() === nq);
+      if (!hit) hit = list.find((f) => f && String(f.url || '').trim().toLowerCase() === nq);
+      return hit || null;
+    };
+    const fromMem = pick(__fpkApps) || pick(refreshFpkApps.__cache);
+    if (fromMem) return fromMem;
+    return pick(__loadFpkAppsCache());
   } catch (_) { return null; }
 }
 // v2.5.4 r20：根地址型 URL 修正——命中 app-center 官方启动地址则替换，否则原样返回

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.1';
+const APP_VERSION = '3.0.2';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -7833,8 +7833,13 @@ function tryOpenPendingApp() {
 }
 
 function doConnectTo(serverInput) {
+  const __t0Acc = Date.now();
   const parsed = normalizeServer(serverInput);
   const targetPartition = partitionForServer(parsed);
+  // v3.0.2 r134：账号连接/切换链路留痕（之前只有"账号列表已更新"一条，切换是否真的切了看不到）
+  try {
+    require('./logger.js').log('info', 'account', 'account.connect', { params: { input: String(serverInput || '').slice(0, 120), origin: String(parsed.origin || '').slice(0, 120), partition: String(targetPartition).slice(0, 60), curPartition: String(currentPartition || '').slice(0, 60), isSwitch: currentPartition !== targetPartition, accounts: getAccounts().length } }, __RUN_MODE);
+  } catch (_) {}
   upsertHistory(serverInput, parsed);
   // v2.0.0：同步记录到多账号列表
   upsertAccount(serverInput, parsed);
@@ -7843,9 +7848,13 @@ function doConnectTo(serverInput) {
 
   if (currentPartition !== targetPartition) {
     // 关闭所有旧窗口，用新 partition 重建
+    let __closedAcc = 0;
     appWindows.filter((e) => e.win && !e.win.isDestroyed() && !e.isHome).forEach((e) => {
-      try { e.win.destroy(); } catch (_) {}
+      try { e.win.destroy(); __closedAcc++; } catch (_) {}
     });
+    try {
+      require('./logger.js').log('info', 'account', 'account.switch', { params: { from: String(currentPartition || '').slice(0, 60), to: String(targetPartition).slice(0, 60), closedWindows: __closedAcc, ms: Date.now() - __t0Acc } }, __RUN_MODE);
+    } catch (_) {}
     createMainWindow(targetPartition, { origin: parsed.origin, href: parsed.href });
     return;
   }
@@ -9591,6 +9600,9 @@ function upsertAccount(serverInput, parsed) {
     
     // 将所有账号设为非活跃，当前账号设为活跃
     accounts.forEach(a => a.isActive = false);
+    try {
+      require('./logger.js').log('info', 'account', 'account.upsert', { params: { origin: String(key || '').slice(0, 120), total: accounts.length, partition: String(partition || '').slice(0, 60) } }, __RUN_MODE);
+    } catch (_) {}
     
     if (idx >= 0) {
       accounts[idx] = { ...accounts[idx], ...entry };
@@ -11503,6 +11515,7 @@ function __startLaunchServer() {
           try { nas = __liveOriginBase(); } catch (_) {}
           if (!nas) { try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {} }
           let u = __resolveLaunchUrl(appId, nas);
+          try { u = __launchUrlNormalize(u, 'launch:' + String(appId || '').slice(0, 40)); } catch (_) {}
           try { require('./logger.js').log('info', 'launch', 'launch.resolve', { params: { appId: appId.slice(0, 120), url: String(u || '').slice(0, 160), ms: Date.now() - __t0L } }, __RUN_MODE); } catch (_) {}
           // v2.24.16：解析落到 appview 兜底页时，先等一次 FPK 列表刷新（上限 800ms，vbs 接收超时 1s）
           // 再解析——让 docker/第三方应用直接拿到真实端口地址，不再多开一个报错窗。
@@ -12360,6 +12373,8 @@ function __launchUrlNormalize(u, tag) {
       if (s !== __rawS) { try { pu = new URL(s); } catch (_) {} }
     } catch (_) {}
   }
+  // 规则4（r134）：目标 host 属于另一个已登录账号 → 归位当前账号，避免多账号串号
+  try { s = __launchAccountFix(s, tag); } catch (_) {}
   try {
     if (rules.length) {
       require('./logger.js').log('info', 'launch', 'launch.url.normalize', { params: { tag: String(tag || '').slice(0, 60), before: String(u).slice(0, 150), after: String(s).slice(0, 160), rules: rules.slice(0, 4).join(',') } }, __RUN_MODE);
@@ -12368,6 +12383,48 @@ function __launchUrlNormalize(u, tag) {
     }
   } catch (_) {}
   return s;
+}
+// ===== v3.0.2 r134：多账号 host 归位 =====
+// 现场（网友远控复现）：客户端登录 A 账号、快捷方式/缓存却带着 B 账号（另一台 NAS）的地址，
+// 结果"快捷方式启动应用后连的不是当前账号的服务器"。根因：apps-manifest 的 windowTypeUrl、
+// fpk-apps-cache 与 .lnk 里的 --nas 都是全局的，不随账号切换；只换窗口 partition 不改这些缓存。
+function __launchKnownAccountHosts() {
+  const out = [];
+  try {
+    const live = __liveOriginBase();
+    let curHost = '';
+    try { if (live) curHost = String(new URL(live).hostname || '').toLowerCase(); } catch (_) {}
+    const list = getAccounts();
+    (Array.isArray(list) ? list : []).forEach((a) => {
+      try {
+        const o = new URL(String((a && (a.origin || a.href)) || ''));
+        const h = String(o.hostname || '').toLowerCase();
+        if (h && h !== curHost && out.indexOf(h) < 0) out.push(h);
+      } catch (_) {}
+    });
+  } catch (_) {}
+  return out;
+}
+function __launchAccountFix(u, tag) {
+  try {
+    const s = String(u || '');
+    if (!/^https?:\/\//i.test(s)) return s;
+    const live = __liveOriginBase();
+    if (!live) return s;
+    const lu = new URL(live);
+    const pu = new URL(s);
+    const lh = String(lu.hostname || '').toLowerCase();
+    const ph = String(pu.hostname || '').toLowerCase();
+    if (!ph || !lh || ph === lh) return s;
+    const others = __launchKnownAccountHosts();
+    if (others.indexOf(ph) < 0) return s;
+    const port = pu.port || lu.port;
+    const nw = lu.protocol + '//' + lu.hostname + (port ? ':' + port : '') + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+    try {
+      require('./logger.js').log('info', 'launch', 'launch.account-fix', { params: { tag: String(tag || '').slice(0, 60), fromHost: ph.slice(0, 80), toHost: lh.slice(0, 80), before: s.slice(0, 150), after: String(nw).slice(0, 160) } }, __RUN_MODE);
+    } catch (_) {}
+    return nw;
+  } catch (_) { return u; }
 }
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
@@ -12483,7 +12540,9 @@ function launchSubAppFromArgs() {
     require('./logger.js').log('info', 'launch', 'launch.cold-args', { params: { appId: String(launchArgs.appId || '').slice(0, 120), nas: String(nasAddr || '').slice(0, 100), argv: (process.argv || []).slice(1, 7).map((x) => String(x).slice(0, 120)) } }, __RUN_MODE);
   } catch (_) {}
   // v2.3.3: 统一用 __resolveLaunchUrl 解析启动目标（支持 --launch-app=appname / --app=URL）
-  const appUrl = __resolveLaunchUrl(launchArgs.appId, url);
+  let appUrl = __resolveLaunchUrl(launchArgs.appId, url);
+  // v3.0.2 r134：冷启动的 --nas 是建快捷方式时固化的，切账号后会指向旧服务器 → 归位当前账号
+  try { appUrl = __launchUrlNormalize(appUrl, 'cold:' + String(launchArgs.appId || '').slice(0, 40)); } catch (_) {}
   fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl, isAppview: /\/appview(\?|$)/i.test(appUrl) });
   if (!url && !/^https?:\/\//i.test(appUrl)) {
     fnosLog('warn', 'launch', '缺少 nas 地址参数且无法解析启动地址，转普通主程序启动');

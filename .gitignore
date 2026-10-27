@@ -35,3 +35,7 @@ mpv/*.com
 # ZDY fpk 鏋勫缓浜х墿
 zdy-fpk/dist/
 zdy-fpk/app.tgz
+ 
+# 本地临时脚本与备份(禁止提交) 
+_fnpatch/ 
+*.bak*

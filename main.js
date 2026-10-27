@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.0.1';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5354,6 +5354,7 @@ const APP_UI_INJECT_CSS = [
 // 独立窗口、全程单窗口"。embedStyle 仅保留参数兼容与日志语义，壳 iframe 停用；
 // 内嵌/跳出窗型一律顶层 loadURL 独立跳出窗。
 function __appLoadTarget(win, url, embedStyle) {
+  try { win.__fnLoadT0 = Date.now(); } catch (_) {}
   try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle } }, __RUN_MODE); } catch (_) {}
   // v2.5.9 r25（问题8）：加载挂起自愈——popout.load 后 did-finish-load 迟迟不来
   // （20:41:27 music 实锤：loadURL 后无 did-finish-load/失败事件=黑屏挂起），15s 未加载完
@@ -11495,11 +11496,14 @@ function __startLaunchServer() {
             }
             __launchDedupe.set(appId, __nowL);
           } catch (_) {}
+          const __t0L = Date.now();
+          try { require('./logger.js').log('info', 'launch', 'launch.recv', { params: { appId: appId.slice(0, 120), at: new Date().toISOString() } }, __RUN_MODE); } catch (_) {}
           let nas = '';
           // v2.17.31：基准取运行时实际 origin（FNID 域名与真实登录域不同，跨域会丢 Cookie）
           try { nas = __liveOriginBase(); } catch (_) {}
           if (!nas) { try { const __st = loadSettings(); nas = String((__st && __st.origin) || ''); } catch (_) {} }
           let u = __resolveLaunchUrl(appId, nas);
+          try { require('./logger.js').log('info', 'launch', 'launch.resolve', { params: { appId: appId.slice(0, 120), url: String(u || '').slice(0, 160), ms: Date.now() - __t0L } }, __RUN_MODE); } catch (_) {}
           // v2.24.16：解析落到 appview 兜底页时，先等一次 FPK 列表刷新（上限 800ms，vbs 接收超时 1s）
           // 再解析——让 docker/第三方应用直接拿到真实端口地址，不再多开一个报错窗。
           if (u && /\/appview\?anchor=/i.test(u)) {
@@ -11519,6 +11523,7 @@ function __startLaunchServer() {
             let __wth = ''; let __wthUrl = '';
             try { const __eh = __windowTypeGetEntry(appId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__eh) { __wth = __eh.type; __wthUrl = __eh.url; } } catch (_) {}
             const __openedH = __openAppByWindowType(appId, appId, u, __wth, __wthUrl);
+            try { require('./logger.js').log('info', 'launch', 'launch.open', { params: { appId: appId.slice(0, 120), ok: !!__openedH, windowType: String(__wth || ''), url: String(u).slice(0, 160), ms: Date.now() - __t0L } }, __RUN_MODE); } catch (_) {}
             __notifyOpenFpkApp(appId, true, u, __openedH ? (__wth || 'popout') : '');
             try { hideMainToBackground(); } catch (_) {}
             try { require('./logger.js').log('info', 'launch', 'launch.http trigger', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
@@ -12006,6 +12011,16 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
     let cand = __validEntry(appUrl) ? String(appUrl) : (__validEntry(realUrl) ? String(realUrl) : '');
     // v2.17.31：清单/预设里可能残留旧 origin（FNID 域名），按运行时 origin 归一化
     try { if (cand) cand = __liveOriginFixUrl(cand); } catch (_) {}
+    // v3.0.1 r133：所有开窗链路（快捷方式 / 程序内点击 / 冷启动）最终地址统一归一化
+    try {
+      const __beforeN = String(cand || '');
+      if (__beforeN) {
+        cand = __launchUrlNormalize(__beforeN, 'open:' + nm);
+        if (cand !== __beforeN) {
+          try { require('./logger.js').log('info', 'appwin', 'appwin.open-target', { params: { app: nm, before: __beforeN.slice(0, 140), after: String(cand).slice(0, 150) } }, __RUN_MODE); } catch (_) {}
+        }
+      }
+    } catch (_) {}
     if (!cand) {
       try { const fe = __fpkLookupSync(nm) || __fpkLookupSync(String(appId || '')); if (fe && __validEntry(fe.url)) cand = String(fe.url); } catch (_) {}
     }
@@ -12269,6 +12284,91 @@ function __liveOriginFixUrl(u) {
     return out;
   } catch (_) { return String(u || ''); }
 }
+// ===== v3.0.1 r133：启动地址归一化（端口补齐 / 私网换公网）与全链路日志 =====
+// 背景（真机日志 2026-10-27 外网 121.40.186.165 实证）：
+//   ① 桌面快捷方式 /launch 解析出的地址是 http://121.40.186.165/music（缺 10300 端口）
+//      → 外网 80 端口不通，窗一直加载不出来；
+//   ② 程序内行为缓存给的是 http://121.40.186.165:10300/music（带端口，可开）
+//      → 同一应用两条链路结果不一致，用户感知"程序内要等一会、快捷方式完全打不开"；
+//   ③ fndesk 的 docker 图标目标参数 uB1=192.168.31.101:8081（内网地址）→ 外网必然超时。
+function __launchIsPrivateHost(h) {
+  const s = String(h || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!s) return false;
+  if (s === 'localhost' || s === '127.0.0.1' || s === '::1') return true;
+  if (/\.local$/.test(s)) return true;
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = +m[1], b = +m[2];
+  if (a === 10 || a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+}
+function __launchUrlNormalize(u, tag) {
+  let s = String(u || '');
+  if (!/^https?:\/\//i.test(s)) return s;
+  const rules = [];
+  let live = '';
+  try { live = __liveOriginBase(); } catch (_) {}
+  let lu = null;
+  try { if (live) lu = new URL(live); } catch (_) { lu = null; }
+  let pu = null;
+  try { pu = new URL(s); } catch (_) { return s; }
+  // 规则1：目标内网 + 当前登录公网 → 换 host（保留端口/路径）。fndesk docker 图标最常踩。
+  if (lu && pu.hostname !== lu.hostname && __launchIsPrivateHost(pu.hostname) && !__launchIsPrivateHost(lu.hostname)) {
+    try {
+      s = lu.protocol + '//' + lu.hostname + (pu.port ? ':' + pu.port : '') + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+      rules.push('private-host:' + pu.hostname + '->' + lu.hostname);
+      pu = new URL(s);
+    } catch (_) {}
+  }
+  // 规则2：同主机缺端口（隐含 80）→ 补运行时 origin 端口（快捷方式 vbs 只带 host 时高发）
+  if (lu && lu.port && pu.hostname === lu.hostname && !pu.port) {
+    try {
+      s = lu.protocol + '//' + lu.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+      rules.push('port+:' + lu.port);
+      pu = new URL(s);
+    } catch (_) {}
+  }
+  // 规则3：fndesk 类 cgi 的目标参数（uB1/uB2/uB3）里的内网 host[:port] → 同端口换当前 host
+  if (lu && !__launchIsPrivateHost(lu.hostname)) {
+    try {
+      const __fw = (dec) => {
+        const s0 = String(dec || '');
+        let m = s0.match(/^(https?|rtsp|rtmp):\/\/([^\/:?#]+)(:\d+)?([\s\S]*)$/i);
+        if (m) {
+          if (!__launchIsPrivateHost(m[2])) return s0;
+          rules.push('param-host:' + m[2] + '->' + lu.hostname);
+          return m[1] + '://' + lu.hostname + (m[3] || '') + (m[4] || '');
+        }
+        m = s0.match(/^([A-Za-z0-9.\-]+)(:\d+)?(\/[\s\S]*)?$/);
+        if (m && __launchIsPrivateHost(m[1])) {
+          rules.push('param-host:' + m[1] + '->' + lu.hostname);
+          return lu.hostname + (m[2] || '') + (m[3] || '');
+        }
+        return s0;
+      };
+      const __rawS = s;
+      s = __rawS.replace(/([?&]uB\d=)([^&]*)/g, (_m, k, v) => {
+        let dec = '';
+        try { dec = decodeURIComponent(v); } catch (_) { dec = v; }
+        const nv = __fw(dec);
+        return (nv === dec) ? _m : (k + encodeURIComponent(nv));
+      });
+      if (s !== __rawS) { try { pu = new URL(s); } catch (_) {} }
+    } catch (_) {}
+  }
+  try {
+    if (rules.length) {
+      require('./logger.js').log('info', 'launch', 'launch.url.normalize', { params: { tag: String(tag || '').slice(0, 60), before: String(u).slice(0, 150), after: String(s).slice(0, 160), rules: rules.slice(0, 4).join(',') } }, __RUN_MODE);
+    } else if (__launchIsPrivateHost(pu.hostname) && lu && !__launchIsPrivateHost(lu.hostname)) {
+      require('./logger.js').log('warn', 'launch', 'launch.private-host', { params: { tag: String(tag || '').slice(0, 60), host: String(pu.hostname), url: String(s).slice(0, 150) } }, __RUN_MODE);
+    }
+  } catch (_) {}
+  return s;
+}
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
@@ -12301,6 +12401,18 @@ function __resolveLaunchUrl(raw, nasAddr) {
       const __ru2 = __rootUrlFallback(__liveOriginFixUrl(fe.url), appName);
       try { dlog && dlog('info', 'shortcut.url.fpk-cache', { name: String(appName).slice(0, 80), url: String(__ru2).slice(0, 140) }); } catch (_) {}
       return __ru2;
+    }
+  } catch (_) {}
+  // 2.5) v3.0.1 r133：manifest 里 behavior 观测到的实际地址（含端口）优先——外网/端口
+  //     漂移时 FPK url 常缺端口（真机：FPK 给 http://121.40.186.165/music，实际 10300）。
+  try {
+    const __ehN = __windowTypeGetEntry(appName);
+    if (__ehN && __ehN.url && /^https?:/i.test(__ehN.url)) {
+      const __unN = __launchUrlNormalize(__liveOriginFixUrl(__ehN.url), 'manifest.behavior');
+      if (__unN && /^https?:/i.test(__unN)) {
+        fnosLog('info', 'launch', 'resolve.source', { app: String(appName).slice(0, 80), src: 'manifest.behavior', to: String(__unN).slice(0, 140) });
+        return __rootUrlFallback(__unN, appName);
+      }
     }
   } catch (_) {}
   // 3) appId/appname 命中 manifest entry
@@ -12366,6 +12478,10 @@ function launchSubAppFromArgs() {
 
   const nasAddr = launchArgs.nas ? decodeURIComponent(launchArgs.nas) : '';
   const url = nasAddr || '';
+  // v3.0.1 r133：冷启动（进程未运行 → vbs/kiosk 拉起）参数留痕
+  try {
+    require('./logger.js').log('info', 'launch', 'launch.cold-args', { params: { appId: String(launchArgs.appId || '').slice(0, 120), nas: String(nasAddr || '').slice(0, 100), argv: (process.argv || []).slice(1, 7).map((x) => String(x).slice(0, 120)) } }, __RUN_MODE);
+  } catch (_) {}
   // v2.3.3: 统一用 __resolveLaunchUrl 解析启动目标（支持 --launch-app=appname / --app=URL）
   const appUrl = __resolveLaunchUrl(launchArgs.appId, url);
   fnosLog('info', 'launch', 'resolved app URL', { original: launchArgs.appId, resolved: appUrl, isAppview: /\/appview(\?|$)/i.test(appUrl) });

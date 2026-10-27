@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.4';
+const APP_VERSION = '3.0.5';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -12468,6 +12468,32 @@ function __launchAccountFix(u, tag) {
     return nw;
   } catch (_) { return u; }
 }
+// v3.0.5 r137：快捷方式 appview 兜底地址根修——飞牛系统应用（设置/Docker/文件管理/应用中心/
+// 下载中心/日志中心/备份同步/资源监控/回收站）无独立端口 entry，真入口是 FNDESK 应用视图
+// {FNDESK}/v/appview?anchor={appId}（程序内点击由飞牛桌面前端同源构造 = 10300/v/appview）。
+// 旧兜底用主站 origin 拼 /appview?anchor（5666/appview）→ 缺 FNDESK 端口(10300)与 /v 前缀，
+// 独立窗加载 5666/appview 一直转圈/跳登录（真机 2026-10-27 实证"程序内能开、快捷方式打不开"）。
+function __fndeskAppviewBase() {
+  try {
+    for (const rec of fnosGuests.values()) {
+      const u = String((rec && rec.url) || '');
+      if (!/^https?:\/\//i.test(u)) continue;
+      try {
+        const pu = new URL(u);
+        if (/^\/v(\/|$|\?)/i.test(pu.pathname)) return pu.origin + '/v';
+      } catch (_) {}
+    }
+  } catch (_) {}
+  try {
+    const fe = __fpkLookupSync('trim.media');
+    if (fe && /^https?:/i.test(fe.url)) {
+      const po = new URL(fe.url);
+      if (/^\/v(\/|$|\?)/i.test(po.pathname)) return po.origin + '/v';
+    }
+  } catch (_) {}
+  try { const b = __liveOriginBase(); if (b) return b.replace(/\/+$/, '') + '/v'; } catch (_) {}
+  return '';
+}
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
@@ -12557,7 +12583,8 @@ function __resolveLaunchUrl(raw, nasAddr) {
         }
       }
     } catch (_) {}
-    return base + '/appview?anchor=' + encodeURIComponent(appName);
+    const __fdBase305 = __fndeskAppviewBase();
+    return (__fdBase305 ? __fdBase305.replace(/\/+$/, '') : base) + '/appview?anchor=' + encodeURIComponent(appName);
   }
   return appName;
 }

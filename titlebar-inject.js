@@ -1127,18 +1127,27 @@ module.exports = function injectTitleBar(ctx) {
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级
         //      被其它内容干扰时也能触发）。进入顶部 34px 显示，移出后延迟隐藏（常驻模式永不隐藏） ----
         let __inTop = false;
+        // v2.24.12（用户反馈：自动隐藏后鼠标触顶立即弹出太灵敏）——触顶需停留 1.5s 才调出标题栏；
+        // 停留期间移出顶部即取消，避免误弹。常驻模式（非自动隐藏）照旧立即显示。
+        let __topShowTimer = null;
+        const __cancelTopShow = () => { if (__topShowTimer) { try { clearTimeout(__topShowTimer); } catch (_) {} __topShowTimer = null; } };
+        const __scheduleTopShow = () => {
+          if (!AUTO_HIDE) { __cancelTopShow(); show(bar); return; }
+          if (__topShowTimer) return;
+          __topShowTimer = setTimeout(() => { __topShowTimer = null; try { show(bar); } catch (_) {} }, 1500);
+        };
         document.addEventListener('mousemove', (ev) => {
           try {
             const inTop = (ev.clientY != null && ev.clientY <= 34);
-            if (inTop && !__inTop) { __inTop = true; show(bar); }
-            else if (!inTop && __inTop) { __inTop = false; scheduleHide(bar, 450); }
+            if (inTop && !__inTop) { __inTop = true; __scheduleTopShow(); }
+            else if (!inTop && __inTop) { __inTop = false; __cancelTopShow(); scheduleHide(bar, 450); }
           } catch (_) {}
         }, true);
         // 元素级 hover 兜底（某些场景 mousemove target 为窗口按钮等不冒泡到 document 时）
-        bar.addEventListener('mouseenter', () => show(bar));
+        bar.addEventListener('mouseenter', () => { __cancelTopShow(); show(bar); });
         bar.addEventListener('mouseleave', () => scheduleHide(bar, 450));
-        hot.addEventListener('mouseenter', () => show(bar));
-        hot.addEventListener('mouseleave', () => scheduleHide(bar, 450));
+        hot.addEventListener('mouseenter', () => { __inTop = true; __scheduleTopShow(); });
+        hot.addEventListener('mouseleave', () => { __inTop = false; __cancelTopShow(); scheduleHide(bar, 450); });
 
         // ALT 键调出标题栏（自动隐藏模式下），2.2s 后收回
         window.addEventListener('keydown', (ev) => {
@@ -1395,23 +1404,28 @@ module.exports = function injectTitleBar(ctx) {
         const style = document.createElement('style');
         style.textContent = `
           #fnos-account-switcher {
-            position: fixed; left: 0; top: 50%; transform: translateY(-50%);
+            position: fixed; left: 8px; top: 50%; transform: translateY(-50%);
             z-index: 99999; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
           }
           #fnos-acct-trigger {
-            width: 24px; height: 48px; display: flex; align-items: center; justify-content: center;
-            background: rgba(255,255,255,0.08);
+            width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+            background: rgba(255,255,255,0.10);
             backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 0 12px 12px 0;
-            color: rgba(255,255,255,0.7); cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 50%;
+            color: rgba(255,255,255,0.72); cursor: pointer;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+            user-select: none;
+            transition: background 0.25s, color 0.25s, box-shadow 0.25s, transform 0.25s;
           }
           #fnos-acct-trigger:hover {
-            width: 32px; background: rgba(255,255,255,0.15); color: #fff;
+            background: rgba(255,255,255,0.18); color: #fff;
+            transform: scale(1.06);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.35);
           }
+          #fnos-acct-trigger:active { cursor: grabbing; }
           #fnos-acct-dropdown {
-            position: absolute; left: 32px; top: 50%; transform: translateY(-50%);
+            position: absolute; left: 48px; top: 50%; transform: translateY(-50%);
             min-width: 200px; max-width: 280px;
             background: rgba(30, 27, 46, 0.85);
             backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
@@ -1421,7 +1435,8 @@ module.exports = function injectTitleBar(ctx) {
             padding: 8px 0;
             transition: opacity 0.2s, transform 0.2s;
           }
-          .fnos-acct-hidden { opacity: 0 !important; pointer-events: none !important; transform: translateY(-50%) translateX(-8px) !important; }
+          .fnos-acct-hidden { opacity: 0 !important; pointer-events: none !important; }
+          #fnos-account-switcher.acct-on-right #fnos-acct-dropdown { left: auto; right: 48px; }
           .fnos-acct-header {
             padding: 8px 16px 6px; font-size: 11px; color: rgba(255,255,255,0.4);
             text-transform: uppercase; letter-spacing: 0.5px;
@@ -1462,9 +1477,78 @@ module.exports = function injectTitleBar(ctx) {
           hideTimer = setTimeout(() => dropdown.classList.add('fnos-acct-hidden'), 300);
         }
 
-        trigger.addEventListener('mouseenter', showDropdown);
+        // v2.24.12（用户反馈：账号切换竖条贴边遮挡内容区）——改成可拖动圆形悬浮球：
+        // 圆形玻璃球，可拖到任意位置，松手靠近左右边缘自动吸附，位置写 localStorage 下次还原；
+        // 下拉面板按球在左半/右半自动向右/左展开。
+        const ACCT_POS_KEY = 'fnos-acct-ball-pos';
+        const ACCT_BALL = 40;
+        function applyAcctSide() {
+          try {
+            const r = panel.getBoundingClientRect();
+            panel.classList.toggle('acct-on-right', (r.left + r.width / 2) > window.innerWidth / 2);
+          } catch (_) {}
+        }
+        function placeAcctBall(x, y) {
+          const nx = Math.max(0, Math.min(window.innerWidth - ACCT_BALL, x));
+          const ny = Math.max(0, Math.min(window.innerHeight - ACCT_BALL, y));
+          panel.style.left = nx + 'px';
+          panel.style.top = ny + 'px';
+          panel.style.transform = 'none';
+          applyAcctSide();
+          return { x: nx, y: ny };
+        }
+        try {
+          const saved = localStorage.getItem(ACCT_POS_KEY);
+          if (saved) {
+            const p = JSON.parse(saved);
+            if (p && typeof p.x === 'number' && typeof p.y === 'number') placeAcctBall(p.x, p.y);
+          }
+        } catch (_) {}
+
+        let acctDrag = null;
+        let acctJustDragged = false;
+        trigger.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          const r = panel.getBoundingClientRect();
+          acctDrag = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false };
+          e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+          if (!acctDrag) return;
+          const dx = e.clientX - acctDrag.sx, dy = e.clientY - acctDrag.sy;
+          if (!acctDrag.moved && (Math.abs(dx) + Math.abs(dy) < 4)) return;
+          acctDrag.moved = true;
+          dropdown.classList.add('fnos-acct-hidden');
+          placeAcctBall(acctDrag.ox + dx, acctDrag.oy + dy);
+        }, true);
+        document.addEventListener('mouseup', () => {
+          if (!acctDrag) return;
+          const moved = acctDrag.moved;
+          acctDrag = null;
+          if (!moved) return;
+          acctJustDragged = true;
+          setTimeout(() => { acctJustDragged = false; }, 0);
+          try {
+            const r = panel.getBoundingClientRect();
+            let nx = r.left, ny = r.top;
+            if (r.left < 24) nx = 8;
+            else if ((window.innerWidth - r.right) < 24) nx = window.innerWidth - ACCT_BALL - 8;
+            const pos = placeAcctBall(nx, ny);
+            localStorage.setItem(ACCT_POS_KEY, JSON.stringify(pos));
+          } catch (_) {}
+        }, true);
+        window.addEventListener('resize', () => {
+          try {
+            const r = panel.getBoundingClientRect();
+            const pos = placeAcctBall(r.left, r.top);
+            localStorage.setItem(ACCT_POS_KEY, JSON.stringify(pos));
+          } catch (_) {}
+        });
+
+        trigger.addEventListener('mouseenter', () => { if (!acctDrag) showDropdown(); });
         trigger.addEventListener('click', (e) => {
           e.stopPropagation();
+          if (acctJustDragged) return;
           if (dropdown.classList.contains('fnos-acct-hidden')) showDropdown();
           else hideDropdown();
         });

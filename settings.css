@@ -15,21 +15,19 @@ body {
   position: relative;
   width: 100%; min-height: 100vh;
   display: flex; align-items: flex-start; justify-content: center;
-  /* v2.24.14（用户反馈：设置页两侧空白比帮助页宽，要求一致）——
-     帮助页 help.html 的左右留白约 40px（body padding 24 + .wrap padding 24 的外层视觉量）；
-     这里把 body 左右 padding 由 12px 提到 40px，配合下面卡片改 100% 宽，
-     让「窗口边 → 内容卡片边」的距离与帮助页对齐。 */
-  padding: 20px 40px 30px;
+  /* v2.24.14：设置页两侧留白对齐帮助页（约 40px）。
+     v2.24.15（用户反馈「再窄 1/3」）：40px * 2/3 ≈ 26.7 → 取 27px。 */
+  padding: 20px 27px 30px;
   overflow-y: visible;
 }
 
 /* v2.0.5：去掉 .settings-card 的玻璃背景，只保留布局；背景框由 .settings-section 负责 */
 .settings-card {
   position: relative; z-index: 1;
-  /* v2.24.14：原固定 640px 在 780 宽设置窗里左右各空 70px，比帮助页宽；
-     改 100% 撑满 .settings-body 的内宽（780 - 40*2 = 700），留白与帮助页一致。 */
+  /* v2.24.14：原固定 640px 在 780 宽设置窗里左右各空 70px，改为撑满 .settings-body 内宽。
+     v2.24.15：随留白收到 27px，上限改为 780 - 27*2 = 726px。 */
   width: 100%;
-  max-width: 700px;
+  max-width: 726px;
   padding: 4px 0 12px;
   animation: pop .35s cubic-bezier(.2,.9,.3,1.2);
 }

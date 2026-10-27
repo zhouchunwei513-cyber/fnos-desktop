@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.11';
+const APP_VERSION = '3.0.12';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6587,6 +6587,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           // 此前直接 win.loadURL(origin + '/appview?anchor') 让用户看到中转空白页/报错，
           // 且超时不写缓存 → 每次打开都要重等 8 秒 = 「启动好几次才能正常」。
           let __preAuthAppviewTried = false;
+          // v3.0.12：可见窗直开真 URL（秒开），预认证在隐藏窗并行；落 login 才在补权后 reload
+          let __visibleDirect312 = false;
+          let __visibleLoginStuck312 = false;
           // v3.0.11：把「落 login → appview 补权」抽成函数，供 timeout 与 did-navigate 共用
           const __startAppview308 = (reason) => {
             try {
@@ -6685,8 +6688,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 app: __appLabel,
                 totalElapsedMs: Date.now() - __preAuthT0,
                 totalFromEntryMs: Date.now() - __cw_t0,
+                direct: __visibleDirect312 ? 1 : 0,
+                stuck: __visibleLoginStuck312 ? 1 : 0,
               });
             } catch (_) {}
+            // v3.0.12：可见窗已直开真 URL 且从未落 login → 不再重复加载（用户侧真秒开、无闪断）
+            if (__visibleDirect312 && !__visibleLoginStuck312) {
+              try { __plog('info', 'appwin.preauth.loadReal.skip', { app: __appLabel, reason: 'already-direct' }); } catch (_) {}
+              setTimeout(() => {
+                try { if (!__preAuthWin.isDestroyed()) __preAuthWin.destroy(); } catch (_) {}
+              }, 1000);
+              return;
+            }
             __appLoadTarget(win, url, opts.embedStyle, opts).catch(() => {});
             // 延迟关闭隐藏窗口，确保 cookies 已完全写入（v2.1.17: 从 3s 优化到 1s）
             setTimeout(() => {
@@ -6706,7 +6719,28 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
 </style></head><body>
 <div class="wrap"><div class="spinner"></div><div class="text">正在连接应用…</div></div>
 </body></html>`;
-          win.loadURL(__loadingHtml).catch(() => {});
+          // v3.0.12：可见窗直接加载真实 URL——不再显示「正在连接应用」遮罩（用户明确要求秒开）。
+          // 预认证在隐藏窗并行进行；只有当可见窗自己落到 login/signin/oauth 时，才在补权完成后 reload。
+          __visibleDirect312 = true;
+          try {
+            win.webContents.on('did-navigate', (_e, __vu312) => {
+              try {
+                if (__preAuthDone) return;
+                const __vs312 = String(__vu312 || '');
+                if (!/(\/login([\/?#]|$)|\/signin|\/oauth)/i.test(__vs312)) return;
+                if (__visibleLoginStuck312) return;
+                __visibleLoginStuck312 = true;
+                __plog('info', 'appwin.visible.login-stuck', {
+                  app: __appLabel, url: __vs312.slice(0, 120), elapsedMs: Date.now() - __preAuthT0,
+                });
+              } catch (_) {}
+            });
+          } catch (_) {}
+          try {
+            __appLoadTarget(win, url, opts.embedStyle, opts).catch(() => {});
+          } catch (_) {
+            try { win.loadURL(url).catch(() => {}); } catch (_) {}
+          }
 
           // 在隐藏窗口开始 OAuth 流程
           // v3.0.9：/music、/v 无缓存时直接以 appview?anchor 起步完成 per-app 授权

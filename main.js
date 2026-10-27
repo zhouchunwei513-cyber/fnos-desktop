@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.9';
+const APP_VERSION = '3.0.10';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -212,7 +212,7 @@ function __armFrameInject25(win, tag) {
 const __FNOS_FRAME_SCRIPT26 = [
   '(function(){try{',
   'var D=__DARK24__;var out={h:0,bg:0,sub:(window.top!==window),href:String(location.href||"").slice(0,80)};',
-  'var KEEP="[data-fnos-tb],[id^=fnos-],[class*=fnos-]";',
+  'var KEEP=__KILLON29__?"[data-fnos-tb],[id^=fnos-]":"[data-fnos-tb],[id^=fnos-],[class*=fnos-]";',
   'if(!__KILLON29__){try{var r=document.documentElement;',
   'r.setAttribute("data-fnos-theme",D?"dark":"light");r.setAttribute("data-theme",D?"dark":"light");',
   'r.style.colorScheme=D?"dark":"light";',
@@ -231,12 +231,12 @@ const __FNOS_FRAME_SCRIPT26 = [
   'try{',
   'var vw=window.innerWidth;var rows={};',
   'var all=document.querySelectorAll("button,[role=button],a,span,i,div,svg");',
-  'var CH=/^[\\u2014_\\u229F\\u25A1\\u25FB\\u25A2\\u2922\\u2923\\u2715Xx\\u00D7\\u00B7.,\\-\\/\\\\| ]{1,4}$/;',
+  'var CH=/^[\\u2014_\\u229F\\u25A1\\u25FB\\u25A2\\u2922\\u2923\\u2715Xx\\u00D7\\u00B7.,\\-\\/\\\\| ]{1,4}$/;var MW=__KILLON29__?80:58,MH=__KILLON29__?80:64;',
   'for(var k=0;k<all.length;k++){var e=all[k];try{',
   'if(!e.isConnected)continue;if(e.closest&&e.closest(KEEP))continue;',
   'if(e.getAttribute&&e.getAttribute("data-fnos-killed26"))continue;',
   'var rc=e.getBoundingClientRect();',
-  'if(rc.width<4||rc.width>58||rc.height<4||rc.height>64)continue;',
+  'if(rc.width<4||rc.width>MW||rc.height<4||rc.height>MH)continue;',
   'if(rc.top<0||rc.top>150)continue;if(vw-rc.right>140||rc.right>vw+2)continue;',
   'var t=(e.textContent||"").trim();',
   'if(!(t===""||CH.test(t)))continue;',
@@ -244,7 +244,26 @@ const __FNOS_FRAME_SCRIPT26 = [
   'if(t===""&&!hasSvg)continue;',
   'var rk=Math.round(rc.top/8);if(!rows[rk])rows[rk]=[];rows[rk].push({e:e});',
   '}catch(_){}}',
-  'if(__KILLON29__){var k303=[];for(var rk3 in rows){k303.push(+rk3);}k303.sort(function(a,b){return a-b;});',
+  'if(__KILLON29__){',
+'var dbg={c:[],k:[],x:0};',
+'try{var all2=document.querySelectorAll("button,[role=button],a,span,i,div,svg");',
+'for(var k2=0;k2<all2.length;k2++){var e2=all2[k2];try{',
+'if(!e2.isConnected)continue;',
+'if(e2.getAttribute&&e2.getAttribute("data-fnos-killed26")){dbg.x++;continue;}',
+'var rc2=e2.getBoundingClientRect();',
+'if(rc2.width<2||rc2.height<2)continue;',
+'if(rc2.top<0||rc2.top>200)continue;',
+'if(vw-rc2.right>220)continue;',
+'var t2=(e2.textContent||"").trim();',
+'var s2=!!(e2.querySelector&&e2.querySelector("svg"));',
+'var isKeep=!!(e2.closest&&e2.closest("[class*=fnos-],[id^=fnos-],[data-fnos-tb]"));',
+'var rec={t:e2.tagName.toLowerCase(),c:(typeof e2.className==="string"?e2.className:"").slice(0,48),y:Math.round(rc2.top),w:Math.round(rc2.width),h:Math.round(rc2.height),r:Math.round(rc2.right),tx:(t2||"").slice(0,8),s:s2?1:0};',
+'if(isKeep){dbg.k.push(rec);}else{dbg.c.push(rec);}',
+'}catch(_){}}',
+'dbg.c=dbg.c.slice(0,40);dbg.k=dbg.k.slice(0,40);',
+'}catch(_){}',
+'out.dbg=dbg;',
+'var k303=[];for(var rk3 in rows){k303.push(+rk3);}k303.sort(function(a,b){return a-b;});',
   'if(k303.length){var g=rows[k303[0]];',
   'if(g&&g.length>=2&&g.length<=4){for(var z=0;z<g.length;z++){try{var ez=g[z].e;if(ez.getAttribute&&ez.getAttribute("data-fnos-killed26"))continue;',
   'ez.setAttribute("data-fnos-killed26","1");ez.style.setProperty("display","none","important");out.h++;}catch(_){}}}}}',
@@ -266,7 +285,7 @@ function __frameSweep26(win, tag) {
     // 「只处理最顶部一行的 2~4 个无字图标/窗控按钮组」，其余页面（真应用页）完全不动。
     const __killGo309 = (function () { try { return !!(win.__fnosAppWin29 && /\/appview(\?|$)/i.test(String(win.webContents.getURL() || ''))); } catch (_) { return false; } })();
     const __script = __FNOS_FRAME_SCRIPT26.split('__DARK24__').join(__darkExpr28()).split('__KILLON29__').join(__killGo309 ? '1' : '0');
-    let __done = 0; let __hidden = 0; let __sub = 0; let __bg = 0;
+    let __done = 0; let __hidden = 0; let __sub = 0; let __bg = 0; let __dbg = null;
     const __t0 = Date.now();
     for (const f of frames) {
       try {
@@ -274,9 +293,9 @@ function __frameSweep26(win, tag) {
         f.executeJavaScript(__script).then((r) => {
           try {
             __done++;
-            if (r && typeof r === 'object') { __hidden += (r.h | 0); if (r.sub) __sub++; __bg += (r.bg | 0); }
+            if (r && typeof r === 'object') { __hidden += (r.h | 0); if (r.sub) __sub++; __bg += (r.bg | 0); if (r.dbg) __dbg = r.dbg; }
             if (__done >= frames.length) {
-              fnosLog('info', 'frame-inject26', { winId: win.id, tag: String(tag || ''), frames: frames.length, hidden: __hidden, sub: __sub, bgFixed: __bg, theme: __FNOS_APP_DARK ? 'dark' : 'light', ms: Date.now() - __t0 });
+              fnosLog('info', 'frame-inject26', { winId: win.id, tag: String(tag || ''), frames: frames.length, hidden: __hidden, sub: __sub, bgFixed: __bg, theme: __FNOS_APP_DARK ? 'dark' : 'light', ms: Date.now() - __t0, dbg: __dbg || undefined });
             }
           } catch (_) {}
         }).catch(() => {
@@ -6445,7 +6464,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           const __fastOauth308 = (function () {
             try {
               if (__preAuthFast308 || !__appName) return false;
-              return /^\/(music|v)(\/|$)/i.test(new URL(url).pathname);
+              return /^\/music(\/|$)/i.test(new URL(url).pathname);
             } catch (_) { return false; }
           })();
           // 缓存命中：1.6s 内读到应用页即完成（session 过期会落 login → 2.6s 兜底补授权）；

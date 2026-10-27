@@ -180,7 +180,7 @@ function __fnosLaunchByClick(appId, url, labels) {
     // v3.0.9：进一步限定「当前页是 appview 中转页」——只有 appview 页自带飞牛桌面样式的假窗口
     // header 与窗控（— ✕）；真应用页（/apps/、/app/xxx、外部端口）一概不动。
     try { if (String(location.pathname || '').indexOf('/appview') < 0) return; } catch (_) { return; }
-    var KEEP = '[data-fnos-tb],[id^=fnos-],[class*=fnos-]';
+    var KEEP = '[data-fnos-tb],[id^=fnos-]';
     var CH = /^[\u2014_\u229F\u25A1\u25FB\u25A2\u2922\u2923\u2715Xx\u00D7\u00B7.,\-\/\\| ]{1,4}$/;
     var sweep = function () {
       try {
@@ -194,7 +194,7 @@ function __fnosLaunchByClick(appId, url, labels) {
             if (e.closest && e.closest(KEEP)) continue;
             if (e.getAttribute && e.getAttribute('data-fnos-killed26')) continue;
             var rc = e.getBoundingClientRect();
-            if (rc.width < 4 || rc.width > 58 || rc.height < 4 || rc.height > 64) continue;
+            if (rc.width < 4 || rc.width > 80 || rc.height < 4 || rc.height > 80) continue;
             if (rc.top < 0 || rc.top > 150) continue;
             if (vw - rc.right > 140 || rc.right > vw + 2) continue;
             var t = (e.textContent || '').trim();

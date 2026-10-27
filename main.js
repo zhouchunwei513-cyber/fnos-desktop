@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.2';
+const APP_VERSION = '3.0.3';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5354,8 +5354,38 @@ const APP_UI_INJECT_CSS = [
 // 独立窗口、全程单窗口"。embedStyle 仅保留参数兼容与日志语义，壳 iframe 停用；
 // 内嵌/跳出窗型一律顶层 loadURL 独立跳出窗。
 function __appLoadTarget(win, url, embedStyle) {
+  // v3.0.3 r135：应用窗加载的唯一收口——所有来源（快捷方式 / 程序内点磁贴 / behavior 探测 /
+  // 主窗内嵌 / 冷启动）的地址都在这里再归一化一次。实测（3.0.2 外网日志）：fndesk 磁贴走
+  // wintype behavior 直开，绕过了 __openAppByWindowType，uB1 参数里的内网 192.168.x:端口
+  // 原样落到窗口，必然 -118 超时。
+  try {
+    const __bA = String(url || '');
+    if (__bA) {
+      const __nA = __launchUrlNormalize(__bA, 'load:' + String((win && win.__fnAppId) || '').slice(0, 40));
+      if (__nA && __nA !== __bA) {
+        url = __nA;
+        try { require('./logger.js').log('info', 'appwin', 'appwin.target-fix', { params: { winId: (win && win.id) || 0, before: __bA.slice(0, 150), after: String(__nA).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
+      }
+    }
+  } catch (_) {}
   try { win.__fnLoadT0 = Date.now(); } catch (_) {}
   try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle } }, __RUN_MODE); } catch (_) {}
+  // v3.0.3 r135：加载结果留证（配合 popout.load 的 __fnLoadT0 算 totalMs）——
+  // 下次「快捷方式打不开」可直接判定是没加载完 / 被中止 / 真失败。
+  try {
+    if (win && !win.isDestroyed() && !win.__fnLoadDoneHooked) {
+      win.__fnLoadDoneHooked = true;
+      win.webContents.on('did-finish-load', () => {
+        try {
+          const __ms = win.__fnLoadT0 ? (Date.now() - win.__fnLoadT0) : -1;
+          require('./logger.js').log('info', 'appwin', 'appwin.load.done', { params: { winId: win.id, ms: __ms, url: String(win.webContents.getURL() || '').slice(0, 140) } }, __RUN_MODE);
+        } catch (_) {}
+      });
+      win.webContents.on('did-fail-load', (e, code, desc, vurl, isMain) => {
+        try { require('./logger.js').log('warn', 'appwin', 'appwin.load.fail', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 60), url: String(vurl || '').slice(0, 140), main: !!isMain } }, __RUN_MODE); } catch (_) {}
+      });
+    }
+  } catch (_) {}
   // v2.5.9 r25（问题8）：加载挂起自愈——popout.load 后 did-finish-load 迟迟不来
   // （20:41:27 music 实锤：loadURL 后无 did-finish-load/失败事件=黑屏挂起），15s 未加载完
   // 强制 reload，再 12s 仍未加载完走复用窗黑屏自愈。
@@ -6653,6 +6683,15 @@ function __armBlackScan(win, tag) {
       const __t = setTimeout(async () => {
         try {
           if (!win || win.isDestroyed() || !win.isVisible()) return;
+          // v3.0.3 r135：页面仍在加载时截图必是空白，绝不能判黑屏——否则 reload 会中止正在
+          // 进行的导航（nav-error -3 ERR_ABORTED），外网大应用（iscsi 2.3MB JS）永远打不开。
+          // 3.0.2 外网实锤：10:32:36 判 black:true → heal reload → 450ms 后 -3。
+          try {
+            if (win.webContents.isLoading()) {
+              try { require('./logger.js').log('info', 'window', 'black-scan.skip', { params: { tag: String(tag || ''), ms: __ms, reason: 'loading' } }, __RUN_MODE); } catch (_) {}
+              return;
+            }
+          } catch (_) {}
           const img = await win.webContents.capturePage();
           const bmp = (img && !img.isEmpty()) ? img.getBitmap() : null;
           let black = false; let white = false;

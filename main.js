@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.5';
+const APP_VERSION = '3.0.6';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5353,7 +5353,7 @@ const APP_UI_INJECT_CSS = [
 // v2.5.0 r16：应用窗口统一加载入口——用户定案"放弃内嵌单窗方案，统一从主程序跳出的
 // 独立窗口、全程单窗口"。embedStyle 仅保留参数兼容与日志语义，壳 iframe 停用；
 // 内嵌/跳出窗型一律顶层 loadURL 独立跳出窗。
-function __appLoadTarget(win, url, embedStyle) {
+function __appLoadTarget(win, url, embedStyle, loadOpts) {
   // v3.0.3 r135：应用窗加载的唯一收口——所有来源（快捷方式 / 程序内点磁贴 / behavior 探测 /
   // 主窗内嵌 / 冷启动）的地址都在这里再归一化一次。实测（3.0.2 外网日志）：fndesk 磁贴走
   // wintype behavior 直开，绕过了 __openAppByWindowType，uB1 参数里的内网 192.168.x:端口
@@ -5369,7 +5369,7 @@ function __appLoadTarget(win, url, embedStyle) {
     }
   } catch (_) {}
   try { win.__fnLoadT0 = Date.now(); } catch (_) {}
-  try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle, appId: String((win && win.__fnAppId) || '').slice(0, 100), source: String((win && win.__fnSource) || '') } }, __RUN_MODE); } catch (_) {}
+  try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle, appId: String(((loadOpts && loadOpts.appId) || (win && win.__fnAppId)) || '').slice(0, 100), source: String(((loadOpts && loadOpts.source) || (win && win.__fnSource)) || '') } }, __RUN_MODE); } catch (_) {}
   // v3.0.3 r135：加载结果留证（配合 popout.load 的 __fnLoadT0 算 totalMs）——
   // 下次「快捷方式打不开」可直接判定是没加载完 / 被中止 / 真失败。
   try {
@@ -6542,7 +6542,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 totalFromEntryMs: Date.now() - __cw_t0,
               });
             } catch (_) {}
-            __appLoadTarget(win, url, opts.embedStyle).catch(() => {});
+            __appLoadTarget(win, url, opts.embedStyle, opts).catch(() => {});
             // 延迟关闭隐藏窗口，确保 cookies 已完全写入（v2.1.17: 从 3s 优化到 1s）
             setTimeout(() => {
               try { if (!__preAuthWin.isDestroyed()) __preAuthWin.destroy(); } catch (_) {}
@@ -6569,11 +6569,11 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
         } catch (err) {
           try { dlog && dlog('error', 'appwin.preauth.error', { app: __appLabel, error: String(err).slice(0, 200) }); } catch (_) {}
           // 预认证出错，直接加载真实 URL（回退到原有行为）
-          __appLoadTarget(win, url, opts.embedStyle).catch(() => {});
+          __appLoadTarget(win, url, opts.embedStyle, opts).catch(() => {});
         }
       } else {
         // appview 应用或本地 URL，直接加载（无需预认证）
-        __appLoadTarget(win, url, opts.embedStyle).catch(() => {});
+        __appLoadTarget(win, url, opts.embedStyle, opts).catch(() => {});
       }
     } else {
       win.loadFile(url).catch(() => {});

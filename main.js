@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.3';
+const APP_VERSION = '3.0.4';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5369,7 +5369,7 @@ function __appLoadTarget(win, url, embedStyle) {
     }
   } catch (_) {}
   try { win.__fnLoadT0 = Date.now(); } catch (_) {}
-  try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle } }, __RUN_MODE); } catch (_) {}
+  try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle, appId: String((win && win.__fnAppId) || '').slice(0, 100), source: String((win && win.__fnSource) || '') } }, __RUN_MODE); } catch (_) {}
   // v3.0.3 r135：加载结果留证（配合 popout.load 的 __fnLoadT0 算 totalMs）——
   // 下次「快捷方式打不开」可直接判定是没加载完 / 被中止 / 真失败。
   try {
@@ -5378,11 +5378,11 @@ function __appLoadTarget(win, url, embedStyle) {
       win.webContents.on('did-finish-load', () => {
         try {
           const __ms = win.__fnLoadT0 ? (Date.now() - win.__fnLoadT0) : -1;
-          require('./logger.js').log('info', 'appwin', 'appwin.load.done', { params: { winId: win.id, ms: __ms, url: String(win.webContents.getURL() || '').slice(0, 140) } }, __RUN_MODE);
+          require('./logger.js').log('info', 'appwin', 'appwin.load.done', { params: { winId: win.id, ms: __ms, url: String(win.webContents.getURL() || '').slice(0, 140), appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE);
         } catch (_) {}
       });
       win.webContents.on('did-fail-load', (e, code, desc, vurl, isMain) => {
-        try { require('./logger.js').log('warn', 'appwin', 'appwin.load.fail', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 60), url: String(vurl || '').slice(0, 140), main: !!isMain } }, __RUN_MODE); } catch (_) {}
+        try { require('./logger.js').log('warn', 'appwin', 'appwin.load.fail', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 60), url: String(vurl || '').slice(0, 140), main: !!isMain, appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE); } catch (_) {}
       });
     }
   } catch (_) {}
@@ -6625,6 +6625,9 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
 
   // v2.5.1 r17：同应用窗复用标记（__openAppByWindowType 防同应用双开叠加=双标题栏按钮）
   try { win.__fnAppId = String(opts.appId || ''); } catch (_) {}
+  // v3.0.4：来源标记（shortcut=快捷方式 launch / in-app=程序内点击 / cold-start=冷启动），
+  // 供 popout.load / load.done / load.fail 日志对比同应用不同打开路径。
+  try { win.__fnSource = String(opts.source || ''); } catch (_) {}
   win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch (_) {} });
   // 兜底：极端情况下 ready-to-show 未触发（如隧道握手卡住），6s 后也展示窗口，避免"看不见窗口"
   setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 6000);
@@ -12100,7 +12103,7 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
         }
       }
     } catch (_) {}
-    createAppWindow(target, { appId: nm });
+    createAppWindow(target, { appId: nm, source: __keepMain ? 'in-app' : 'shortcut' });
     try { require('./logger.js').log('info', 'wintype', 'open.unified-popout', { params: { app: nm, type: String(windowType || ''), url: target.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
     // 快捷方式链 keepMain=false 才藏托盘；主页面链（keepMain）主页面保留显示
     if (!__keepMain) { try { hideMainToBackground(); } catch (_) {} }
@@ -14340,9 +14343,14 @@ try {
       // 主窗口 / createAppWindow / 直播窗 在自身创建后会再次 setWindowOpenHandler，
       // 后设置的会覆盖此兜底，故不影响它们的既有逻辑。
       try {
-        contents.setWindowOpenHandler(({ url, frameName }) => {
+        contents.setWindowOpenHandler(({ url, frameName, features }) => {
           try {
             const u = String(url || '');
+            // v3.0.4：程序内打开（guest window.open）也解析 fnos-anchor / fnos-embed-style，
+            // 让 catchall 链路反推出 appId + 窗口形态，日志可与快捷方式 launch 链对齐对比。
+            let __anchorIn = '';
+            try { const __mIn = /fnos-anchor=([^,]+)/.exec(String(features || '')); if (__mIn) { try { __anchorIn = decodeURIComponent(__mIn[1]); } catch (_) { __anchorIn = __mIn[1]; } } } catch (_) {}
+            const __embedIn = /fnos-embed-style/.test(String(features || ''));
             // DevTools / chrome 内部页交给默认处理
             if (/^(devtools|chrome-extension:|chrome:)/i.test(u)) {
               return { action: 'allow' };
@@ -14401,10 +14409,17 @@ try {
               } catch (_) {}
               // v2.4.7：流程期拦截已随复用窗方案移除——模拟点击后前端 window.open 应正常
               // 走 createAppWindow = 跳出窗（用户定案形态），拦截会破坏等价点击链路。
+              // v3.0.4：程序内打开收口——反推 appId（fnos-anchor 优先，URL 反查兜底），
+              // 带 source=in-app，让 popout.load / load.done 日志可与快捷方式 launch 链对比。
+              const __appIdIn = (() => {
+                try { if (__anchorIn) return String(__anchorIn).slice(0, 120); } catch (_) {}
+                try { return String(fpkAppNameFromUrl(u) || '').slice(0, 120); } catch (_) {}
+                return '';
+              })();
               setImmediate(() => {
-                try { createAppWindow(u, { partition: SHARED_PARTITION, title: APP_NAME }); } catch (_) {}
+                try { createAppWindow(u, { partition: SHARED_PARTITION, title: APP_NAME, appId: __appIdIn, source: 'in-app' }); } catch (_) {}
               });
-              dlog('info', 'appwin.open.catchall', { url: u.slice(0, 120) });
+              dlog('info', 'appwin.open.catchall', { url: u.slice(0, 120), appId: __appIdIn, windowType: __embedIn ? 'embed' : 'popout', source: 'in-app' });
               return { action: 'deny' };
             }
             // mailto/tel/sms 等外部协议交给系统

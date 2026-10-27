@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.6';
+const APP_VERSION = '3.0.7';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6329,6 +6329,13 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         });
       } catch (_) {}
 
+      // v3.0.7：preAuth / 应用窗首次加载的关键节点同时写主日志（此前只写 diag 日志，
+      // 用户查主日志看不到 preauth 记录，无法定位「正在连接应用 → 报错/白板」）。
+      const __plog = (lv, ev, ex) => {
+        try { dlog && dlog(lv, ev, ex); } catch (_) {}
+        try { require('./logger.js').log(lv === 'warn' ? 'warn' : (lv === 'error' ? 'error' : 'info'), 'appwin', ev, { params: ex || {} }, __RUN_MODE); } catch (_) {}
+      };
+
       // v2.1.16：非 appview 应用预认证优化——
       // 非 appview 应用（如影视、音乐等）首次打开需要 OAuth 认证链（/v → /v/login → /signin → /v/oauth/result → /v），
       // 整个过程约 15 秒。如果在可见窗口中执行，用户会看到多次重定向页面，体验很差。
@@ -6348,7 +6355,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         const __isFnosDomain = __urlHost === 'https://fnos.net' || __urlHost.endsWith('.fnos.net');
         if (__nasOrigin && __urlOrigin !== __nasOrigin && !__isFnosDomain) {
           __isExternalApp = true;
-          try { dlog && dlog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'external-app', urlOrigin: __urlOrigin, nasOrigin: __nasOrigin }); } catch (_) {}
+          try { __plog('info', 'appwin.preauth.skip', { app: __appLabel, reason: 'external-app', urlOrigin: __urlOrigin, nasOrigin: __nasOrigin }); } catch (_) {}
         }
       } catch (_) {}
       // v2.2.2：主窗口已登录（当前 URL 已是主页而非 /login）时，理论上认证 cookie 已在共享
@@ -6371,7 +6378,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           const __cached = __preAuthCache.get(__cachedOrigin);
           if (__cached && (Date.now() - __cached.ts < PREAUTH_CACHE_TTL)) {
             __shouldPreAuth = false;
-            dlog && dlog('info', 'appwin.preauth.cache-hit', {
+            __plog('info', 'appwin.preauth.cache-hit', {
               app: __appLabel,
               origin: __cachedOrigin,
               cachedAt: new Date(__cached.ts).toISOString(),
@@ -6383,12 +6390,22 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // v2.17.38：主窗口已登录但该 origin 无 OAuth 缓存（应用首次打开）→ 仍需 PreAuth 完成
       // per-app OAuth 认证。
       if (__shouldPreAuth && __alreadyLoggedIn) {
-        dlog && dlog('info', 'appwin.preauth.first-oauth', { app: __appLabel, reason: 'logged-in-no-cache', url: String(url).slice(0, 120) });
+        __plog('info', 'appwin.preauth.first-oauth', { app: __appLabel, reason: 'logged-in-no-cache', url: String(url).slice(0, 120) });
       }
       if (__shouldPreAuth) {
         try {
           const __preAuthT0 = Date.now();
-          dlog && dlog('info', 'appwin.preauth.start', { app: __appLabel, url: String(url).slice(0, 120) });
+          __plog('info', 'appwin.preauth.start', { app: __appLabel, url: String(url).slice(0, 120), partition: String(partition || 'default') });
+          // v3.0.7：预认证前快照该 partition 的 cookie，用于判断 per-app session 是否缺失
+          try {
+            const __snapSess = (partition && partition !== 'default') ? session.fromPartition(partition) : session.defaultSession;
+            Promise.resolve(__snapSess.cookies.get({})).then((__cs) => {
+              try {
+                const __names = (__cs || []).slice(0, 12).map((c) => String(c.name)).join(',');
+                __plog('info', 'appwin.preauth.cookies', { app: __appLabel, count: (__cs || []).length, names: __names.slice(0, 200), urlOrigin: (function () { try { return new URL(url).origin; } catch (_) { return ''; } })() });
+              } catch (_) {}
+            }).catch(() => {});
+          } catch (_) {}
 
           // 创建隐藏预认证窗口（共享同一 partition，cookies 互通）
           const __preAuthWin = new BrowserWindow({
@@ -6445,7 +6462,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
 
               if (isOAuthDone && !__preAuthDone) {
                 __preAuthDone = true;
-                dlog && dlog('info', 'appwin.preauth.done', {
+                __plog('info', 'appwin.preauth.done', {
                   app: __appLabel,
                   finalUrl: String(curUrl).slice(0, 120),
                   elapsedMs: Date.now() - __preAuthT0,
@@ -6467,42 +6484,58 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           });
 
           // 超时保护：最多等待 8 秒（v2.1.17: 从 20s 优化到 8s）
+          // v3.0.7：超时且停在 login 时，改为「隐藏窗加载 appview?anchor 完成 per-app OAuth
+          //（主站 SSO 已登录、cookie 同 partition）→ 4 秒后加载真实 URL」。
+          // 此前直接 win.loadURL(origin + '/appview?anchor') 让用户看到中转空白页/报错，
+          // 且超时不写缓存 → 每次打开都要重等 8 秒 = 「启动好几次才能正常」。
+          let __preAuthAppviewTried = false;
           const __preAuthTimeout = setTimeout(() => {
             clearTimeout(__preAuthFallbackTimer);
-            if (!__preAuthDone) {
-              __preAuthDone = true;
-              // v2.17.44：SPA 型裸路径应用（音乐 /music、视频 /v 等）加载后会客户端跳转到
-              // /xxx/login（history.pushState 不触发 did-navigate，__lastPreAuthUrl 停在旧值），
-              // 需实时读 getURL 才能拿到真实落点。
-              let __curRealUrl = '';
-              try { __curRealUrl = String(__preAuthWin.webContents.getURL() || ''); } catch (_) {}
-              dlog && dlog('warn', 'appwin.preauth.timeout', {
-                app: __appLabel,
-                timeoutMs: 8000,
-                elapsedMs: Date.now() - __preAuthT0,
-                navSteps: __preAuthNavCount,
-                lastUrl: __lastPreAuthUrl.slice(0, 120),
-                realUrl: __curRealUrl.slice(0, 120),
-              });
-              // v2.17.44：per-app OAuth 需交互式登录的应用（音乐/视频），隐藏窗口无法静默完成
-              // OAuth，会停在 /xxx/login。此时改走 appview?anchor 中转（主站 SSO 完整、与程序内
-              // 打开一致），避免 loadReal 裸路径再次停在登录页=「快捷图标启动不加载」。
-              // 直接 win.loadURL 绕过 __appLoadTarget 的 truth 改写（避免被改回裸路径死循环）。
-              const __anchor = __appName || '';
-              if (__anchor && !/\/appview(\?|$)/i.test(url) && /(\/login([\/?#]|$)|\/signin|\/oauth)/i.test(__curRealUrl)) {
-                try {
-                  const __appviewUrl = new URL(url).origin + '/appview?anchor=' + encodeURIComponent(__anchor);
-                  dlog && dlog('info', 'appwin.preauth.login-fallback', {
-                    app: __appLabel, anchor: __anchor,
-                    from: String(url).slice(0, 120), to: __appviewUrl.slice(0, 140),
+            if (__preAuthDone) return;
+            __preAuthDone = true;
+            // v2.17.44：SPA 型裸路径应用（音乐 /music、视频 /v 等）加载后会客户端跳转到
+            // /xxx/login（history.pushState 不触发 did-navigate，__lastPreAuthUrl 停在旧值），
+            // 需实时读 getURL 才能拿到真实落点。
+            let __curRealUrl = '';
+            try { __curRealUrl = String(__preAuthWin.webContents.getURL() || ''); } catch (_) {}
+            __plog('warn', 'appwin.preauth.timeout', {
+              app: __appLabel,
+              timeoutMs: 8000,
+              elapsedMs: Date.now() - __preAuthT0,
+              navSteps: __preAuthNavCount,
+              lastUrl: __lastPreAuthUrl.slice(0, 120),
+              realUrl: __curRealUrl.slice(0, 120),
+            });
+            const __anchor = __appName || '';
+            const __needOauth = !!__anchor && !/\/appview(\?|$)/i.test(url) && /(\/login([\/?#]|$)|\/signin|\/oauth)/i.test(__curRealUrl);
+            if (__needOauth) {
+              try {
+                const __fdBase = (function () { try { return __fndeskAppviewBase(); } catch (_) { return ''; } })();
+                const __appviewUrl = (__fdBase ? String(__fdBase).replace(/\/+$/, '') : new URL(url).origin) + '/appview?anchor=' + encodeURIComponent(__anchor);
+                __preAuthAppviewTried = true;
+                __plog('info', 'appwin.preauth.appview-oauth', {
+                  app: __appLabel, anchor: __anchor,
+                  from: String(url).slice(0, 120), to: __appviewUrl.slice(0, 140),
+                  base: __fdBase ? 'fndesk' : 'origin',
+                });
+                try { __preAuthWin.loadURL(__appviewUrl, { userAgent: getNasUA() }).catch(() => {}); } catch (_) {}
+                setTimeout(() => {
+                  let __oUrl = '';
+                  try { __oUrl = String(__preAuthWin.webContents.getURL() || ''); } catch (_) {}
+                  __plog('info', 'appwin.preauth.appview-oauth-done', {
+                    app: __appLabel, curUrl: __oUrl.slice(0, 140),
+                    elapsedMs: Date.now() - __preAuthT0,
                   });
-                  try { win.loadURL(__appviewUrl, { userAgent: getNasUA() }).catch(() => {}); } catch (_) {}
-                  setTimeout(() => { try { if (!__preAuthWin.isDestroyed()) __preAuthWin.destroy(); } catch (_) {} }, 1000);
-                  return;
-                } catch (_) {}
-              }
-              __loadRealUrl();
+                  // 本次 origin 已走 appview 中转：写缓存，后续打开跳过 preAuth 等待
+                  try { __preAuthCache.set(new URL(url).origin, { ts: Date.now(), navSteps: __preAuthNavCount }); } catch (_) {}
+                  __loadRealUrl();
+                }, 4000);
+                return;
+              } catch (_) {}
             }
+            // appview 中转不可用（无 anchor / 已在 appview / 异常）→ 直接加载真实 URL
+            __plog('info', 'appwin.preauth.loadReal-direct', { app: __appLabel, reason: __needOauth ? 'appview-error' : 'no-oauth-needed', realUrl: __curRealUrl.slice(0, 120) });
+            __loadRealUrl();
           }, 8000);
 
           // v2.17.38: 3 秒后若仍在应用路径（服务端未 302 到登录页），说明应用可直接访问、
@@ -6516,7 +6549,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 // 如果还在应用路径下（没进入 OAuth 流程），说明无需 OAuth，直接完成
                 if (!__curUrl.includes('/login') && !__curUrl.includes('/signin') && !__curUrl.includes('/oauth')) {
                   __preAuthDone = true;
-                  dlog && dlog('info', 'appwin.preauth.direct', {
+                  __plog('info', 'appwin.preauth.direct', {
                     app: __appLabel,
                     url: __curUrl.slice(0, 120),
                     elapsedMs: Date.now() - __preAuthT0,
@@ -6536,7 +6569,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
             clearTimeout(__preAuthTimeout);
             clearTimeout(__preAuthFallbackTimer);
             try {
-              dlog && dlog('info', 'appwin.preauth.loadReal', {
+              __plog('info', 'appwin.preauth.loadReal', {
                 app: __appLabel,
                 totalElapsedMs: Date.now() - __preAuthT0,
                 totalFromEntryMs: Date.now() - __cw_t0,
@@ -12089,7 +12122,14 @@ function __openAppByWindowType(appId, appName, appUrl, windowType, realUrl, opts
       } catch (_) {}
     }
     if (cand) target = cand;
-    else if (id && /^https?:/i.test(origin)) target = origin + '/appview?anchor=' + encodeURIComponent(id);
+    else if (id && /^https?:/i.test(origin)) {
+      // v3.0.7：与 __resolveLaunchUrl 第 6 步对齐——appview 中转必须落在飞牛桌面前端
+      //（FNDESK = host:10300/v，程序内点击即 10300/v/appview），此前用主站 origin
+      //（5666）拼 /appview，打开的是无应用内容的中转页 = 「快捷方式打不开」。
+      const __fdBase307 = (function () { try { return __fndeskAppviewBase(); } catch (_) { return ''; } })();
+      target = (__fdBase307 ? String(__fdBase307).replace(/\/+$/, '') : origin) + '/appview?anchor=' + encodeURIComponent(id);
+      try { require('./logger.js').log('info', 'appwin', 'appwin.appview-base', { params: { app: nm, base: __fdBase307 ? 'fndesk' : 'origin', target: String(target).slice(0, 150) } }, __RUN_MODE); } catch (_) {}
+    }
     if (!/^https?:/i.test(target) || !nm) return false;
     // v2.5.1 r17：同应用窗复用——已开同应用窗则聚焦前置不重复开窗（防同应用双窗叠加）
     try {

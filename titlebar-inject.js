@@ -408,16 +408,24 @@ module.exports = function injectTitleBar(ctx) {
     let __skinHeight = 34;
 
     // 读皮肤素材文件 -> blob URL（避开 file:// 受 webSecurity 限制）
+    const __skinAssetCache = new Map();
     function __loadSkinAsset(skinDir, src) {
       try {
         if (!__fs || !__path || !skinDir || !src) return null;
         const p = __path.join(skinDir, String(src));
         if (!__fs.existsSync(p)) return null;
+        let __stamp = 0;
+        try { __stamp = __fs.statSync(p).mtimeMs || 0; } catch (_) {}
+        const __ck = p + '|' + __stamp;
+        const __hit = __skinAssetCache.get(__ck);
+        if (__hit) return __hit;
         const buf = __fs.readFileSync(p);
         const ext = String(src).toLowerCase().split('.').pop();
         const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm' }[ext] || 'application/octet-stream';
         const blob = new Blob([buf], { type: mime });
-        return URL.createObjectURL(blob);
+        const __u = URL.createObjectURL(blob);
+        __skinAssetCache.set(__ck, __u);
+        return __u;
       } catch (_) { return null; }
     }
 
@@ -441,10 +449,10 @@ module.exports = function injectTitleBar(ctx) {
         if (!bar || bar.__shapeLayer) return;
         const bgLayer = document.createElement('div');
         bgLayer.id = 'fnos-tb-bg';
-        bgLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:-2;display:none;background-size:cover;background-position:center;background-repeat:no-repeat;overflow:hidden;border-radius:inherit;';
+        bgLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-2;display:none;background-size:cover;background-position:center;background-repeat:no-repeat;overflow:hidden;border-radius:inherit;';
         const shapeLayer = document.createElement('div');
         shapeLayer.id = 'fnos-tb-shape';
-        shapeLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:-1;display:none;background-size:100% 100%;background-position:center;background-repeat:no-repeat;border-radius:inherit;';
+        shapeLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-1;display:none;background-size:100% 100%;background-position:center;background-repeat:no-repeat;border-radius:inherit;';
         bar.appendChild(bgLayer);
         bar.appendChild(shapeLayer);
         bar.__bgLayer = bgLayer;
@@ -461,6 +469,16 @@ module.exports = function injectTitleBar(ctx) {
         const tb = __skinState.skin && __skinState.skin.titlebar;
         const bg = tb && tb.background;
         const shape = tb && tb.shape;
+        const __sig = (function () {
+          try {
+            const d = String((__skinState && __skinState.skinDir) || '');
+            const mt = [bg && bg.src, shape && shape.src].map(function (x) {
+              try { return x ? (__fs.statSync(__path.join(d, String(x))).mtimeMs || 0) : 0; } catch (_) { return 0; }
+            }).join(',');
+            return d + '|' + JSON.stringify(bg || null) + '|' + JSON.stringify(shape || null) + '|' + mt;
+          } catch (_) { return ''; }
+        })();
+        if (__sig && bar.__skinSig === __sig) return !!bar.__skinHasBg;
         if (bgLayer) { bgLayer.style.display = 'none'; bgLayer.style.backgroundImage = 'none'; bgLayer.style.backgroundColor = 'transparent'; bgLayer.innerHTML = ''; }
         if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; }
         let hasBg = false;
@@ -470,7 +488,7 @@ module.exports = function injectTitleBar(ctx) {
             if (url && bgLayer) {
               const v = document.createElement('video');
               v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
-              v.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;';
+              v.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;pointer-events:none;-webkit-app-region:no-drag;';
               v.src = url;
               bgLayer.appendChild(v);
               bgLayer.style.display = 'block';
@@ -502,6 +520,8 @@ module.exports = function injectTitleBar(ctx) {
             shapeLayer.style.display = 'block';
           }
         }
+        bar.__skinSig = __sig;
+        bar.__skinHasBg = hasBg;
         return hasBg;
       } catch (_) { return false; }
     }
@@ -565,6 +585,8 @@ module.exports = function injectTitleBar(ctx) {
       try {
         if (!bar) return;
         if (__applySkinLayers(bar)) {
+          bar.style.setProperty('-webkit-app-region', 'no-drag');
+          bar.__skinNoDrag = true;
           bar.style.background = 'transparent';
           bar.style.backgroundImage = 'none';
           bar.style.backdropFilter = 'none';
@@ -581,6 +603,7 @@ module.exports = function injectTitleBar(ctx) {
           return;
         }
         {
+          if (bar.__skinNoDrag) { bar.__skinNoDrag = false; try { bar.style.setProperty('-webkit-app-region', 'drag'); } catch (_) {} }
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
           const a = TB.opacity / 100;
           // v2.19.0（用户要求）：磨砂玻璃材质。三层叠加做出"雾面玻璃"：
@@ -691,18 +714,18 @@ module.exports = function injectTitleBar(ctx) {
     let forceShow = false; // v1.63：主进程光标轮询判定"鼠标在宿主顶部带"时强制显示
     function show(bar) {
       try {
-        if (window.__fnosFsOn) return; // v2.17.36：全屏态不出标题栏（只有 ESC 能退出全屏）
         if (bar.__hideTimer) { clearTimeout(bar.__hideTimer); bar.__hideTimer = null; }
         bar.style.transform = 'translateY(0)';
         bar.style.opacity = '1';
         bar.style.pointerEvents = 'auto';
+        if (window.__fnosFsOn) return;
         // v2.15.43: 自动隐藏调出后 -webkit-app-region:drag 的拖拽区域可能因 transform 过渡失效，
         // 强制 no-drag→drag 重注册拖拽区域，恢复可拖动
         if (window.__fnosFsOn) {
           // v2.17.35：全屏态标题栏一律 no-drag。drag 区会让 Windows 把整屏窗口"拖出全屏"，
           // 而用户要求全屏只能由 ESC / 菜单「退出全屏」结束，所以全屏时不再注册拖拽区。
           bar.style.setProperty('-webkit-app-region', 'no-drag');
-        } else if (AUTO_HIDE) {
+        } else if (AUTO_HIDE && !bar.__skinNoDrag) {
           bar.style.setProperty('-webkit-app-region', 'no-drag');
           void bar.offsetHeight; // 强制同步 reflow，确保 no-drag 先生效
           bar.style.setProperty('-webkit-app-region', 'drag');

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.16';
+const APP_VERSION = '3.0.17';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -12886,22 +12886,6 @@ function __resolveLaunchUrl(raw, nasAddr) {
     } catch (_) {}
     return __rootUrlFallback(__truthRewrite28(appName, ''), fpkAppNameFromUrl(appName) || '');
   }
-  // 1.5) v3.0.9：embed 类系统应用直连真入口 {origin}/apps/{name}/——必须放在 FPK 缓存之前，
-  //     因为 fpk-apps-cache 里这些应用的 url 全是 appview?anchor（中转页，含假窗控）。
-  try {
-    const __ap309 = __appsPathForAnchor(appName);
-    if (__ap309) {
-      let __b309 = String(nasAddr || '').trim().replace(/\/+$/, '');
-      try { const __lo309 = __liveOriginBase(); if (__lo309) __b309 = __lo309; } catch (_) {}
-      if (!__b309) { try { __b309 = String(loadSettings().origin || '').trim().replace(/\/+$/, ''); } catch (_) {} }
-      if (__b309) {
-        if (!/^https?:/i.test(__b309)) __b309 = 'http://' + __b309;
-        const __u309 = __b309 + __ap309;
-        fnosLog('info', 'launch', 'resolve.apps-direct', { name: String(appName).slice(0, 80), url: String(__u309).slice(0, 140) });
-        return __u309;
-      }
-    }
-  } catch (_) {}
   // 2) v2.4.0（需求 2.1）：快捷方式统一传 --launch-app={应用唯一 ID} 后，FPK 第三方应用的
   //    真实打开地址（端口/路径）以 FPK 图标管理器 url 字段为准——先同步查 FPK 内存缓存
   //    （refreshFpkApps.__cache，5 分钟 TTL）。缓存未就绪（冷启动）回退下方 manifest / appview。

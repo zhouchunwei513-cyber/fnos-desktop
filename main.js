@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.14';
+const APP_VERSION = '3.0.15';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -11306,17 +11306,31 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
     // 拼 appview URL 必须带 http://，否则 Electron loadURL 当文件路径 -> chrome-error
     let __nasBase = String(nasAddress || '').trim().replace(/\/+$/, '');
     if (__nasBase && !/^https?:/i.test(__nasBase)) __nasBase = 'http://' + __nasBase;
-    // v2.3.6: nasAddress 可能丢端口（旧设置页传裸 host），按 settings.origin 补正端口，
-    // 否则快捷方式参数 --nas=host 启动后 appview 打到 80 端口（行为怪异/误判 external-app）
+    // v2.3.6: nasAddress 可能丢端口（旧设置页传裸 host），补正端口，
+    // 否则快捷方式参数 --nas=host 启动后 appview 打到 80 端口（行为怪异/误判 external-app）。
+    // v3.0.15 r147：基准改用运行时 origin（__liveOriginBase 含真实端口，如外网 :10300），
+    // settings.origin 仅兜底——真机 .lnk 里固化的是 http://192.168.31.101（裸 host，无端口），
+    // 启动后靠运行时补端口只能补到内网 5666，外网照样连不上。
     try {
-      const __stP = loadSettings();
-      const __origP = String((__stP && __stP.origin) || '').trim();
-      if (__origP && __nasBase) {
-        const __oP = new URL(/^https?:/i.test(__origP) ? __origP : 'http://' + __origP);
-        const __bP = new URL(__nasBase);
-        if (__oP.hostname === __bP.hostname && __oP.port) {
+      let __base147 = '';
+      try { __base147 = String(__liveOriginBase() || ''); } catch (_) {}
+      if (!__base147) {
+        try { const __stP = loadSettings(); __base147 = String((__stP && __stP.origin) || '').trim(); } catch (_) {}
+      }
+      if (__base147 && /^https?:\/\//i.test(__base147)) {
+        const __oP = new URL(__base147);
+        if (!__nasBase) {
           __nasBase = __oP.protocol + '//' + __oP.host;
-          try { fnosLog('info', 'shortcut', 'shortcut.url.port-fixed', { from: String(nasAddress), to: __nasBase }); } catch (_) {}
+        } else {
+          const __bP = new URL(__nasBase);
+          // 同一台机器（host 相同）或传入地址缺端口 → 用运行时 origin 的完整 host:port
+          if (__bP.hostname === __oP.hostname || !__bP.port) {
+            const __n147 = __oP.protocol + '//' + __oP.host;
+            if (__n147 !== __nasBase) {
+              __nasBase = __n147;
+              try { fnosLog('info', 'shortcut', 'shortcut.url.port-fixed', { from: String(nasAddress), to: __nasBase }); } catch (_) {}
+            }
+          }
         }
       }
     } catch (_) {}
@@ -12488,7 +12502,15 @@ function __truthRewrite28(u, name) {
       // 不再经 appview?anchor 中转页（toast 根源）+加载提速（少一跳+不走候选轮换）。
       try {
         const acU = __appCenterUrlCache.get(String(nm || '')) || '';
+        // v3.0.15 r147：app-center 的 urls.port 不一定是站点入口（真机：Lucky 被缓存成
+        // host:10304/，而实际入口是 host:10300/app/Lucky/，10304 是飞牛自身服务端口）。
+        // 缓存地址若命中「本站不可达的假地址」，就不改写——否则真理改写把好地址改坏，
+        // 快捷方式反而打不开（外网 10304 无响应 = 白窗）。
         if (acU && /^https?:/i.test(acU) && !/\/appview\?anchor=/i.test(acU)) {
+          if (__launchUrlSpaOnly146(acU)) {
+            try { fnosLog('warn', 'truth29', 'url-rewrite-ac.skip', { name: String(nm || '').slice(0, 60), ac: acU.slice(0, 140), keep: sU.slice(0, 140) }); } catch (_) {}
+            return sU;
+          }
           try { fnosLog('info', 'truth29', 'url-rewrite-ac', { name: String(nm || '').slice(0, 60), from: sU.slice(0, 120), to: acU.slice(0, 140) }); } catch (_) {}
           return acU;
         }
@@ -12563,7 +12585,8 @@ function __rootUrlFallback(u, name) {
     const pp = String(pu.pathname || '').replace(/\/+$/, '');
     if ((pp === '' || pp === '/') && !pu.search && !pu.hash) {
       const ac = __appCenterUrlCache.get(String(name || '')) || '';
-      if (ac && /^https?:/i.test(ac)) {
+      // v3.0.15 r147：同 __truthRewrite28——缓存可能是本站不可达的假端口，不拿来替换
+      if (ac && /^https?:/i.test(ac) && !__launchUrlSpaOnly146(ac)) {
         fnosLog('info', 'shortcut.url', 'root-url fallback app-center', { name: String(name || '').slice(0, 60), to: ac.slice(0, 140) });
         return ac;
       }
@@ -12595,6 +12618,30 @@ function __liveOriginBase() {
   } catch (_) {}
   return '';
 }
+// v3.0.15 r147：残留旧服务器 host 归位。
+// 真机：apps-manifest.json 的 windowTypeUrl 还停留在 10-17 那台 47.103.112.252，
+// __liveOriginFixUrl 的「同 host 换 origin」和 __launchAccountFix 的「另一账号 host
+// 归位」都命中不了 → 快捷方式一直去连一台早已下线的机器，必然超时白窗。
+// 依据：settings.accounts + settings.history（连过的服务器，servers.json 已并入）。
+function __launchStaleHosts147() {
+  const out = [];
+  const add = (v) => {
+    try {
+      const x = String(v || '').trim();
+      if (!x) return;
+      const h = String(new URL(/^https?:/i.test(x) ? x : 'http://' + x).hostname || '').toLowerCase();
+      if (h && out.indexOf(h) < 0) out.push(h);
+    } catch (_) {}
+  };
+  let cur = '';
+  try { const __lv = __liveOriginBase(); if (__lv) cur = String(new URL(__lv).hostname || '').toLowerCase(); } catch (_) {}
+  try { (getAccounts() || []).forEach((a) => { add(a && a.origin); add(a && a.href); }); } catch (_) {}
+  try {
+    const st = loadSettings();
+    (Array.isArray(st && st.history) ? st.history : []).forEach((h) => { add(h && h.origin); add(h && h.href); });
+  } catch (_) {}
+  return out.filter((h) => h !== cur);
+}
 // v2.17.31：URL origin 归一化——历史清单/窗口类型预设里按旧 settings.origin 拼出的地址
 // （host 与旧 origin 相同）统一替换为运行时实际 origin；独立服务地址（端口不同）不动。
 function __liveOriginFixUrl(u) {
@@ -12609,7 +12656,19 @@ function __liveOriginFixUrl(u) {
     let oldHost = '';
     try { oldHost = new URL(/^https?:/i.test(oldO) ? oldO : 'http://' + oldO).host; } catch (_) { return s; }
     const pu = new URL(s);
-    if (String(pu.host || '') !== String(oldHost)) return s;
+    if (String(pu.host || '') !== String(oldHost)) {
+      // v3.0.15 r147：不是"旧 settings.origin 同 host"，但可能是更早的服务器 → 归位当前
+      try {
+        const __ph147 = String(pu.hostname || '').toLowerCase();
+        const __lu147 = new URL(live);
+        if (__ph147 && String(__lu147.hostname || '').toLowerCase() !== __ph147 && __launchStaleHosts147().indexOf(__ph147) >= 0) {
+          const __out147 = __lu147.protocol + '//' + __lu147.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+          try { fnosLog('info', 'launch', 'url.stale-host-fix', { from: s.slice(0, 120), to: __out147.slice(0, 140) }); } catch (_) {}
+          return __out147;
+        }
+      } catch (_) {}
+      return s;
+    }
     const lu = new URL(live);
     if (lu.host === pu.host) return s;
     const out = lu.protocol + '//' + lu.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');

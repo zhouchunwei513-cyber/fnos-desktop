@@ -480,7 +480,7 @@ module.exports = function injectTitleBar(ctx) {
         })();
         if (__sig && bar.__skinSig === __sig) return !!bar.__skinHasBg;
         if (bgLayer) { bgLayer.style.display = 'none'; bgLayer.style.backgroundImage = 'none'; bgLayer.style.backgroundColor = 'transparent'; bgLayer.innerHTML = ''; }
-        if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; }
+        if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; shapeLayer.innerHTML = ''; }
         let hasBg = false;
         if (bg && bg.type && bg.type !== 'none') {
           if (bg.type === 'video' && bg.src) {
@@ -513,11 +513,54 @@ module.exports = function injectTitleBar(ctx) {
         if (shape && shape.type && shape.type !== 'none' && shape.src) {
           const url = __loadSkinAsset(__skinState.skinDir, shape.src);
           if (url && shapeLayer) {
-            shapeLayer.style.backgroundImage = 'url("' + url + '")';
-            shapeLayer.style.backgroundSize = shape.stretch === false ? (shape.size || 'auto') : '100% 100%';
-            shapeLayer.style.backgroundPosition = shape.position || 'center';
-            shapeLayer.style.backgroundRepeat = shape.repeat || 'no-repeat';
             shapeLayer.style.display = 'block';
+            const __stok = String(Date.now()) + '_' + Math.random();
+            bar.__shapeToken = __stok;
+            // shape.mode:
+            //   fill = 素材本身就是标题栏比例的长图，整条铺满
+            //   ends = 素材是单只装饰，两端各一只、等比高度、绝不拉伸（右端水平镜像）
+            //   缺省 = 按素材宽高比自适应（>= 8 走 fill，否则 ends）
+            const __fill = function () {
+              try {
+                shapeLayer.innerHTML = '';
+                shapeLayer.style.backgroundImage = 'url("' + url + '")';
+                shapeLayer.style.backgroundSize = shape.stretch === false ? (shape.size || 'auto') : '100% 100%';
+                shapeLayer.style.backgroundPosition = shape.position || 'center';
+                shapeLayer.style.backgroundRepeat = shape.repeat || 'no-repeat';
+              } catch (_) {}
+            };
+            const __ends = function () {
+              try {
+                shapeLayer.innerHTML = '';
+                shapeLayer.style.backgroundImage = 'none';
+                const mk = function (isRight) {
+                  const im = document.createElement('img');
+                  im.src = url;
+                  im.draggable = false;
+                  im.style.cssText = 'position:absolute;top:0;height:100%;width:auto;pointer-events:none;-webkit-app-region:no-drag;' + (isRight ? 'right:0;' : 'left:0;');
+                  if (isRight) im.style.transform = 'scaleX(-1)';
+                  shapeLayer.appendChild(im);
+                };
+                mk(false);
+                if (shape.mirror !== false) mk(true);
+              } catch (_) {}
+            };
+            const __mode = (shape.mode === 'ends' || shape.mode === 'fill') ? shape.mode : '';
+            if (__mode === 'fill') {
+              __fill();
+            } else if (__mode === 'ends') {
+              __ends();
+            } else {
+              const probe = new Image();
+              probe.onload = function () {
+                if (bar.__shapeToken !== __stok) return;
+                const nw = probe.naturalWidth || 1;
+                const nh = probe.naturalHeight || 1;
+                if (nw / nh >= 8) { __fill(); } else { __ends(); }
+              };
+              probe.onerror = function () { if (bar.__shapeToken === __stok) __fill(); };
+              probe.src = url;
+            }
           }
         }
         bar.__skinSig = __sig;

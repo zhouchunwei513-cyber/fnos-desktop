@@ -404,6 +404,8 @@ module.exports = function injectTitleBar(ctx) {
     // v2.19.0：material = 'solid'（纯色）| 'frosted'（磨砂玻璃）；blur = 磨砂强度 0~40px
     // 标题栏皮肤状态（主进程 settings:get-titlebar / settings:titlebar-changed 下发）
     let __skinState = { skinDir: '', skin: null };
+    // 标题栏有效高度（body 下移量），皮肤 titlebar.height 覆盖，默认 34
+    let __skinHeight = 34;
 
     // 读皮肤素材文件 -> blob URL（避开 file:// 受 webSecurity 限制）
     function __loadSkinAsset(skinDir, src) {
@@ -417,6 +419,20 @@ module.exports = function injectTitleBar(ctx) {
         const blob = new Blob([buf], { type: mime });
         return URL.createObjectURL(blob);
       } catch (_) { return null; }
+    }
+
+    // 标题栏有效高度：皮肤 titlebar.height（20~80，默认 34）→ --fnos-bar-h（body 下移量）+ bar inline 高度
+    function __applyTitlebarHeight() {
+      try {
+        const s = __skinState.skin;
+        const h = s && s.titlebar ? Number(s.titlebar.height) : NaN;
+        __skinHeight = (isFinite(h) && h >= 20 && h <= 80) ? Math.round(h) : 34;
+        const el = document.documentElement;
+        if (el && el.style) el.style.setProperty('--fnos-bar-h', __skinHeight + 'px');
+        // 同步 bar inline 高度（主窗 +2px 盖接缝，其余不变），保持 __barHeight() 的 parseFloat 可读
+        const bar = document.getElementById('fnos-titlebar');
+        if (bar) bar.style.height = (__skinHeight + (bar.__tbIsMain ? 2 : 0)) + 'px';
+      } catch (_) {}
     }
 
     // 给标题栏挂背景层(z-index:-2) + 形状层(z-index:-1)子元素（绝对定位，不参与 flex）
@@ -505,6 +521,7 @@ module.exports = function injectTitleBar(ctx) {
         if (r.skin && typeof r.skin === 'object') __skinState.skin = r.skin;
       }
     } catch (_) {}
+    __applyTitlebarHeight();
     let AUTO_HIDE = TB.autoHide;
 
     const root = () => document.documentElement || document.body || document;
@@ -655,6 +672,7 @@ module.exports = function injectTitleBar(ctx) {
             if (val.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(val.highlight)));
             if (val.skinDir != null) __skinState.skinDir = String(val.skinDir);
             if (val.skin != null) __skinState.skin = (val.skin && typeof val.skin === 'object') ? val.skin : null;
+            __applyTitlebarHeight();
             const bar0 = document.getElementById('fnos-titlebar');
             if (bar0) {
               applyStyle(bar0);
@@ -742,8 +760,9 @@ module.exports = function injectTitleBar(ctx) {
         // v2.15.71：主窗口标题栏高度 34->35px，标题栏本体向下侵入内容区 1px 盖住接缝，
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
+        bar.__tbIsMain = __isMainWin; // 皮肤高度联动：主窗视觉高度 = 有效高度 + 2px 盖接缝
         bar.style.cssText = [
-          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__isMainWin ? '36px' : '34px'),
+          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + (__isMainWin ? 2 : 0)) + 'px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
@@ -934,7 +953,7 @@ module.exports = function injectTitleBar(ctx) {
         // v2.17.47：上一版漏了主进程实现——window-drag 里调用的 w.startDrag() 不是 BrowserWindow
         // 的 API，永远抛异常被 catch 吞掉，于是本层彻底不能拖（用户反馈：主程序和应用窗都拖不动）。
         // 现在拖动改为主进程 setPosition 跟随鼠标（win-drag-start/move/end）。
-        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
+        dragStrip.style.cssText = 'flex:1;height:100%;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
         (function () {
           const W = window;
           W.__fnosDsDown = null;
@@ -1028,7 +1047,7 @@ module.exports = function injectTitleBar(ctx) {
         // 四角 clip-path 由 10px 改回 20px，与主窗口、应用窗口完全同一数值。
         // v2.18.0 曾为了与标题栏 bar 的 10px 同比例收到 10px，实测观感偏方，现按用户回归 20px。
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
-          'html>body{transform:translateY(34px) !important;height:calc(100vh - 34px) !important;min-height:0 !important;max-height:calc(100vh - 34px) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}';
+          'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}';
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [
@@ -1041,7 +1060,7 @@ module.exports = function injectTitleBar(ctx) {
           // so the body box grows back to the full viewport and its bottom edge (and
           // therefore the 20px clip-path radius) lands below the window bottom -- the
           // top two corners look round while the bottom two are cut square.
-          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin:0 !important;}',
+          'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin:0 !important;}',
           // v3.0.12（用户反馈：飞牛音乐播放控制栏的提示气泡「下一首」盖住按钮）——
           // 根因：body 的 transform 下移 34px 会创建包含块，Semi Design 把 tooltip portal 到
           // document.body（.semi-portal 自身 position:absolute;top:0;left:0），其内部的 top/left
@@ -1050,7 +1069,7 @@ module.exports = function injectTitleBar(ctx) {
           // 修法：不动让位机制（改 padding/margin 会让 body 内 fixed 顶栏、全高侧栏钻回标题栏
           // 底下，v2.15.56 已踩过），只把 body 直接子级的 Semi 浮层容器的 absolute top 反向
           // 偏 34px，让它的原点重新落在 viewport 顶边 —— 气泡、下拉、弹窗一并对齐。
-          'html>body>.semi-portal{top:calc(-34px / var(--fnos-f, 1)) !important;}',
+          'html>body>.semi-portal{top:calc(-1 * var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // 全屏态 body 不再下移 34px（__fsBody 会写 transform:none），此时 portal 不该再补偿，
           // 否则气泡反而上移 34px。
           'html[data-fnos-fs="1"]>body>.semi-portal{top:0 !important;}',
@@ -1060,14 +1079,14 @@ module.exports = function injectTitleBar(ctx) {
           // bottom 34px overflows the body and is clipped (fnOS music: progress bar and the
           // bottom of "recently added" cut off, and the page's scrollbar-width:none hides the
           // scrollbar). Re-anchor viewport units to the visible area below the titlebar.
-          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
-          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
+          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // v2.17.20: 上面只认 .h-screen/.h-dvh/.min-h-screen 这几个精确类名，而 Semi / Tailwind
           // 应用常用任意值写法（h-[100dvh]、h-[100vh]、min-h-[100vh]），命中不了就比 body 高出
           // 标题栏那 34px，撑出额外滚动条。这里按 class 子串补一层 max-height 兜底：只限上限，
           // 写了更大 min-height 的元素按 CSS 规则仍以 min-height 为准，不会被误裁。
-          'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
-          'html>body [style*="100vh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}',
+          'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // v2.17.20: webkit 侧把 body 自身滚动条轨道压到 0（是否启用由脚本按需挂
           // scrollbar-width，见 __ensureContentOffset），避免残留 1px 轨道。
           'html>body.fnos-no-body-scroll::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
@@ -1082,7 +1101,7 @@ module.exports = function injectTitleBar(ctx) {
           // 现在与普通应用窗完全同一套几何：body 下移标题栏高度、高度扣掉标题栏、锁死溢出。
           __padStyle.textContent = [
             'html{overflow:hidden !important;' + __gifBg + '}',
-            'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;overflow:hidden !important;overflow-x:hidden !important;padding:0 !important;margin:0 !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}',
+            'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important;overflow:hidden !important;overflow-x:hidden !important;padding:0 !important;margin:0 !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}',
             'html>body::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
           ].join('');
         }
@@ -1096,7 +1115,7 @@ module.exports = function injectTitleBar(ctx) {
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。
           // 深色兜底后，即使有 1px 偏差也与标题栏同色，不再看得出灰条。
-          'html>body{transform:translateY(calc(34px / var(--fnos-f, 1))) !important;height:calc(100vh - 34px / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}',
+          'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}',
           // v2.17.0（DPI 方案 A）：飞牛桌面主页是远程 React SPA（cqfndesk），应用图标为 52px 位图，
           // 客户端无法改源码，只能注入覆盖：图标/卡片/文字/间距统一 x--ui-scale（0.8），图标 52->约 42px。
           // 选择器用 [class~="..."] 精确匹配 Tailwind token（规避 [ ] ! 转义），仅作用于主窗口主 frame。
@@ -1117,15 +1136,15 @@ module.exports = function injectTitleBar(ctx) {
           // --fnos-app-window，主窗分支漏了，故在此补齐同一套规则，让 in-main 应用与外开应用窗
           // 得到完全一致的几何；同时补 overflow-y 让超出内容内部滚动而不是被硬裁。
           'html>body{overflow-y:auto !important;}' +
-          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}' +
-          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}' +
+          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
           // v2.17.40（用户反馈：内嵌窗最大化后底部显示不出来）——主窗分支此前只覆盖 .h-screen/.h-dvh
           // 这两个精确类名，缺应用窗 v2.17.20 那套 [class*="100vh"] 子串兜底。飞牛桌面里的内嵌窗最大化
           // 时用任意值写法（h-[100vh]/h-[100dvh]）或 inline style 把容器撑到整个视口，而 body 已经下移
           // 34px，容器底部就超出 body 底边 34px 被 clip-path 裁掉（副标题/播放条/底栏被切一半）。
           // 补同两条 max-height 上限规则，让内嵌窗最大化后完整落在主程序窗口内容区内。
-          'html>body [class*="100vh"],html>body [class*="100dvh"],html>body [class*="h-screen"],html>body [class*="h-dvh"],html>body [class*="dvh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}' +
-          'html>body [style*="100vh"],html>body [style*="100dvh"],html>body [style*="dvh"]{max-height:calc(100vh - 34px / var(--fnos-f, 1)) !important;}'
+          'html>body [class*="100vh"],html>body [class*="100dvh"],html>body [class*="h-screen"],html>body [class*="h-dvh"],html>body [class*="dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+          'html>body [style*="100vh"],html>body [style*="100dvh"],html>body [style*="dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);
@@ -1332,7 +1351,7 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:drag;user-select:none;';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:drag;user-select:none;';
         // 左：应用 logo + 标题
         const left = document.createElement('div');
         left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';
@@ -1381,7 +1400,7 @@ module.exports = function injectTitleBar(ctx) {
         // v2.17.47：上一版漏了主进程实现——window-drag 里调用的 w.startDrag() 不是 BrowserWindow
         // 的 API，永远抛异常被 catch 吞掉，于是本层彻底不能拖（用户反馈：主程序和应用窗都拖不动）。
         // 现在拖动改为主进程 setPosition 跟随鼠标（win-drag-start/move/end）。
-        dragStrip.style.cssText = 'flex:1;height:34px;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
+        dragStrip.style.cssText = 'flex:1;height:100%;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
         (function () {
           const W = window;
           W.__fnosDsDown = null;

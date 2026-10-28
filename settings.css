@@ -655,3 +655,31 @@ body::-webkit-scrollbar-thumb:hover {
 #tb-hl-row.is-off { opacity: 0.45; }
 #tb-blur-row.is-off .hotkey-sub,
 #tb-hl-row.is-off .hotkey-sub { color: rgba(255, 255, 255, 0.28); }
+
+/* v3.0.19：标题栏皮肤 */
+.skin-card {
+  width: 152px;
+  border: 2px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.04);
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .1s;
+  flex: 0 0 auto;
+}
+.skin-card:hover { border-color: rgba(255,255,255,0.3); transform: translateY(-1px); }
+.skin-card.active { border-color: #6d8dff; background: rgba(109,141,255,0.14); }
+.skin-thumb {
+  height: 74px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, rgb(6,9,21), rgb(3,6,16));
+  overflow: hidden;
+}
+.skin-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.skin-thumb-ph { font-size: 11px; color: rgba(233,239,255,.45); }
+.skin-meta { padding: 8px 10px 9px; }
+.skin-name { font-size: 12px; font-weight: 700; color: #f2f6ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.skin-ver { font-size: 10px; color: rgba(233,239,255,.45); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.skin-default .skin-thumb { background: rgba(255,255,255,0.05); }

@@ -322,6 +322,22 @@
           <span id="tb-hl-val" class="tb-range-val">55</span>
         </div>
       </div>
+
+      <!-- v3.0.19：标题栏皮肤 -->
+      <div class="skin-wrap" style="padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">标题栏皮肤</div>
+          <div class="hotkey-sub">选择标题栏皮肤（背景图 / 牛角异形 / 高度自定义），点击即应用；「默认」为原生标题栏</div>
+        </div>
+        <div id="skin-list" class="skin-list" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px">
+          <div id="skin-loading" style="color:#94a3b8;font-size:12px;padding:8px 0;">加载中...</div>
+        </div>
+        <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+          <button type="button" class="btn-ghost" id="skin-install">安装皮肤包（.fskin.zip）</button>
+          <span id="skin-status" class="lock-status"></span>
+        </div>
+      </div>
+
       <div class="setup-actions" style="margin-top:14px">
         <button type="button" class="btn-primary" id="opt-save">保存界面设置</button>
         <span id="opt-status" class="lock-status" style="margin-left:12px"></span>

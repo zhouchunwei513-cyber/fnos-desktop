@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.18';
+const APP_VERSION = '3.0.19';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2804,6 +2804,47 @@ function resolveSkinConfig() {
   } catch (_) {
     return { skinDir: '', skin: null };
   }
+}
+
+// 皮肤名安全化：去非法字符、防路径穿越，供皮肤安装用
+function __safeSkinName(n) {
+  const s = String(n || '').trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\.\./g, '_').replace(/\s+/g, ' ');
+  return s ? s.slice(0, 64) : '';
+}
+
+// 标题栏有效高度（body 下移量 + 主窗比例锁定 + MPV 顶部带），皮肤 titlebar.height 覆盖，默认 34
+let __titlebarStrip = 34;
+function refreshTitlebarStrip() {
+  try {
+    const s = loadSettings();
+    const skinName = String((s && s.activeSkin) || '').trim();
+    let h = 34;
+    if (skinName) {
+      const manifestPath = path.join(SKINS_DIR, skinName, 'manifest.json');
+      if (fs.existsSync(manifestPath)) {
+        const skin = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        const hh = Number(skin && skin.titlebar && skin.titlebar.height);
+        if (isFinite(hh) && hh >= 20 && hh <= 80) h = Math.round(hh);
+      }
+    }
+    __titlebarStrip = h;
+  } catch (_) {
+    __titlebarStrip = 34;
+  }
+  return __titlebarStrip;
+}
+
+// 主窗比例锁定：画面=内容区减标题栏高，内容区高=round(宽×553/900)+标题栏高，再反推外框
+function __mainAspectFix(win) {
+  const [cw, ch] = win.getContentSize();
+  const [w, h] = win.getSize();
+  const dx = w - cw, dy = h - ch;
+  const tch = Math.round(cw * 553 / 900) + __titlebarStrip;
+  const tcw = Math.round((ch - __titlebarStrip) * 900 / 553);
+  const errH = Math.abs(ch - tch), errW = Math.abs(cw - tcw);
+  let nw = w, nh = h;
+  if (errW <= errH) { nh = tch + dy; } else { nw = tcw + dx; }
+  return [nw, nh];
 }
 
 // v1.17.7：本地 IPTV 代理已彻底移除。
@@ -7377,12 +7418,13 @@ function createMainWindow(partition, loadTarget) {
   }
 
 
-  // v2.15.68：主窗口锁定用户实测「桌面画面」比例 45:27.65（画面=内容区减自绘标题栏34px）。
-  // 画面高=round(画面宽×553/900)，窗口高=画面高+34；savedBounds 是外框，边框差≈0 此处忽略。
+  refreshTitlebarStrip();
+  // v2.15.68：主窗口锁定用户实测「桌面画面」比例 45:27.65（画面=内容区减自绘标题栏）。
+  // 画面高=round(画面宽×553/900)，窗口高=画面高+标题栏高；savedBounds 是外框，边框差≈0 此处忽略。
   if (savedBounds) {
     try {
-      const targetH = Math.round(savedBounds.width * 553 / 900) + 34;
-      const targetW = Math.round((savedBounds.height - 34) * 900 / 553);
+      const targetH = Math.round(savedBounds.width * 553 / 900) + __titlebarStrip;
+      const targetW = Math.round((savedBounds.height - __titlebarStrip) * 900 / 553);
       const errH = Math.abs(savedBounds.height - targetH);
       const errW = Math.abs(savedBounds.width - targetW);
       if (errW <= errH) { savedBounds.height = targetH; }
@@ -7441,17 +7483,6 @@ function createMainWindow(partition, loadTarget) {
   // v2.17.32/2.17.33：全屏切换窗口期由模块级 __fsGuardUntil 控制（供入口函数与还原逻辑共享），
   // 全屏/退全屏瞬间及其后的还原 setBounds 都不能被比例锁改写尺寸
   let __lockAspect = false;
-  const __aspectFix = (win) => {
-    const [cw, ch] = win.getContentSize();
-    const [w, h] = win.getSize();
-    const dx = w - cw, dy = h - ch;
-    const tch = Math.round(cw * 553 / 900) + 34;
-    const tcw = Math.round((ch - 34) * 900 / 553);
-    const errH = Math.abs(ch - tch), errW = Math.abs(cw - tcw);
-    let nw = w, nh = h;
-    if (errW <= errH) { nh = tch + dy; } else { nw = tcw + dx; }
-    return [nw, nh];
-  };
   try {
     // v2.15.76：拖动全程零干预，只在拖动结束校正一次比例。
     // 灰条根因（用户实测对照）：应用窗口不做任何 resize 干预，拖动全程无灰条；
@@ -7467,7 +7498,7 @@ function createMainWindow(partition, loadTarget) {
         // 直接跳过比例锁校正，切断放大链；移动结束（win-drag-end 置空）后恢复正常校正。
         if (__winDragState) return;
         if (Date.now() < __fsGuardUntil) return;
-        const [nw, nh] = __aspectFix(mainWindow);
+        const [nw, nh] = __mainAspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
         // v2.24.9（用户反馈：拖动主窗“越拖越大”，加尺寸日志取证）——
         // 记录拖动结束后的外框/内容区尺寸 + 比例锁是否校正（校正到 nw,nh）。
@@ -10387,6 +10418,20 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.titleBarHighlight = tbHighlight;
     cachedSettings.themeColor = accent;
     cachedSettings.activeSkin = activeSkin;
+    {
+      const __oldStrip = __titlebarStrip;
+      refreshTitlebarStrip();
+      // 标题栏高度变化时主窗重新校正比例（内容区高随标题栏高度调整，保持桌面画面 553/900）
+      if (__oldStrip !== __titlebarStrip) {
+        try {
+          if (mainWindow && !mainWindow.isDestroyed() && !__isFsOn(mainWindow) && !__maxOn(mainWindow)) {
+            const [nw, nh] = __mainAspectFix(mainWindow);
+            const [w, h] = mainWindow.getSize();
+            if (Math.abs(nw - w) > 1 || Math.abs(nh - h) > 1) mainWindow.setSize(nw, nh);
+          }
+        } catch (_) {}
+      }
+    }
     // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
     const __skinCfg = resolveSkinConfig();
@@ -10413,6 +10458,90 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err?.message || '保存失败' };
+  }
+});
+
+// v3.0.19：设置页皮肤入口 —— 列出已安装皮肤（含 preview.png 预览）
+ipcMain.handle('settings:list-skins', async () => {
+  try {
+    const list = [];
+    const activeSkin = String((loadSettings().activeSkin) || '').trim();
+    if (fs.existsSync(SKINS_DIR)) {
+      let names = [];
+      try { names = fs.readdirSync(SKINS_DIR); } catch (_) {}
+      for (const name of names) {
+        const dir = path.join(SKINS_DIR, name);
+        let isDir = false;
+        try { isDir = fs.statSync(dir).isDirectory(); } catch (_) {}
+        if (!isDir) continue;
+        const manifestPath = path.join(dir, 'manifest.json');
+        if (!fs.existsSync(manifestPath)) continue;
+        try {
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          let preview = '';
+          const pvPath = path.join(dir, 'preview.png');
+          if (fs.existsSync(pvPath)) {
+            try {
+              const buf = fs.readFileSync(pvPath);
+              if (buf && buf.length > 0 && buf.length < 2 * 1024 * 1024) preview = 'data:image/png;base64,' + buf.toString('base64');
+            } catch (_) {}
+          }
+          list.push({ name, manifest, preview });
+        } catch (_) {}
+      }
+    }
+    return { ok: true, skins: list, activeSkin };
+  } catch (err) {
+    return { ok: false, error: err?.message || '读取皮肤列表失败' };
+  }
+});
+
+// v3.0.19：安装皮肤包（.fskin.zip）—— 解压到 skins/<name>/，覆盖同名皮肤
+ipcMain.handle('settings:install-skin', async () => {
+  try {
+    const owner = (settingsWindow && !settingsWindow.isDestroyed()) ? settingsWindow : mainWindow;
+    const r = await dialog.showOpenDialog(owner, {
+      title: '选择皮肤包（.fskin.zip）',
+      properties: ['openFile'],
+      filters: [{ name: 'FNOS 皮肤包', extensions: ['zip'] }]
+    });
+    if (!r || r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, canceled: true };
+    const zipPath = r.filePaths[0];
+    let AdmZip = null;
+    try { AdmZip = require('adm-zip'); } catch (_) {}
+    if (!AdmZip) return { ok: false, error: '缺少解压组件 adm-zip' };
+    const zip = new AdmZip(zipPath);
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fnos-skin-'));
+    try {
+      zip.extractAllTo(tmpDir, true);
+      // 找 manifest.json（可能在 zip 根，也可能包了一层目录）
+      let root = tmpDir;
+      let manifestPath = path.join(root, 'manifest.json');
+      if (!fs.existsSync(manifestPath)) {
+        let sub = [];
+        try { sub = fs.readdirSync(tmpDir); } catch (_) {}
+        for (const d of sub) {
+          const p = path.join(tmpDir, d, 'manifest.json');
+          if (fs.existsSync(p)) { root = path.join(tmpDir, d); manifestPath = p; break; }
+        }
+      }
+      if (!fs.existsSync(manifestPath)) return { ok: false, error: '皮肤包内缺少 manifest.json' };
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      if (!manifest || typeof manifest !== 'object') return { ok: false, error: 'manifest.json 格式错误' };
+      const rawName = String(manifest.name || '').trim() || path.basename(zipPath).replace(/\.fskin\.zip$/i, '').replace(/\.zip$/i, '');
+      const skinName = __safeSkinName(rawName);
+      if (!skinName) return { ok: false, error: '皮肤名称无效' };
+      const destDir = path.join(SKINS_DIR, skinName);
+      try { fs.rmSync(destDir, { recursive: true, force: true }); } catch (_) {}
+      try { fs.mkdirSync(SKINS_DIR, { recursive: true }); } catch (_) {}
+      fs.cpSync(root, destDir, { recursive: true });
+      if (!fs.existsSync(path.join(destDir, 'manifest.json'))) return { ok: false, error: '安装失败：manifest.json 缺失' };
+      return { ok: true, name: skinName };
+    } finally {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    }
+  } catch (err) {
+    return { ok: false, error: err?.message || '安装失败' };
   }
 });
 
@@ -14436,9 +14565,8 @@ try { global.__mpvSettings = getMpvSettings(); } catch (_) {}
 
 // v1.63：嵌入 mpv 存活时，置顶 mpv 会挡住宿主顶部标题栏区域的鼠标事件，渲染进程的
 // mouseenter/mousemove 有时收不到，导致"自动隐藏标题栏后打开 mpv，鼠标推到顶部调不出来"。
-// 主进程用全局光标位置兜底：光标进入【聚焦宿主】的顶部 34px 带内 -> 通知强制显示标题栏；
+// 主进程用全局光标位置兜底：光标进入【聚焦宿主】的顶部标题栏带内 -> 通知强制显示标题栏；
 // 离开 -> 通知恢复（由标题栏模块按自动隐藏设置决定是否淡出）。不依赖渲染进程是否收到鼠标事件。
-const TITLEBAR_STRIP = 34;
 let _titlebarForceShow = false; // 当前是否处于"顶部强制显示"
 let _titlebarForceWin = null;   // 被强制显示标题栏的宿主窗口
 function _broadcastTitlebarForce(hostWin, show) {
@@ -14475,7 +14603,7 @@ setInterval(() => {
     const pt = screen.getCursorScreenPoint();
     const cb = activeHost.getContentBounds();
     const inStrip = pt.x >= cb.x && pt.x <= cb.x + cb.width &&
-                    pt.y >= cb.y && pt.y <= cb.y + TITLEBAR_STRIP;
+                    pt.y >= cb.y && pt.y <= cb.y + __titlebarStrip;
     if (inStrip && !__mpvMenuOpening) {
       // 用户鼠标推到顶部标题栏带（正要去点最小化/最大化/关闭或拖动）：
       // 立即把嵌入 mpv 强制对齐到标题栏【下方】(y=34) 并置顶，确保顶部 34px 按钮区

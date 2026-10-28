@@ -491,6 +491,93 @@
     });
   }
 
+  // v3.0.19：标题栏皮肤 —— 列出已安装皮肤、选择 activeSkin（即时应用）、安装 .fskin.zip
+  const skinList = document.getElementById('skin-list');
+  const skinLoading = document.getElementById('skin-loading');
+  const skinInstall = document.getElementById('skin-install');
+  const skinStatus = document.getElementById('skin-status');
+  const __skinMsg = (m) => { if (skinStatus) skinStatus.textContent = m || ''; };
+  const __escHtml = (v) => String(v || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function renderSkinList(skins, activeSkin) {
+    if (!skinList) return;
+    const active = String(activeSkin || '').trim();
+    skinList.innerHTML = '';
+    const defCard = document.createElement('div');
+    defCard.className = 'skin-card skin-default' + (active ? '' : ' active');
+    defCard.innerHTML = '<div class="skin-thumb"><span class="skin-thumb-ph">默认</span></div>' +
+      '<div class="skin-meta"><div class="skin-name">原生标题栏</div><div class="skin-ver">无皮肤</div></div>';
+    defCard.addEventListener('click', () => __applySkin(''));
+    skinList.appendChild(defCard);
+    (skins || []).forEach((sk) => {
+      const card = document.createElement('div');
+      card.className = 'skin-card' + (sk && sk.name === active ? ' active' : '');
+      const label = __escHtml((sk && sk.manifest && sk.manifest.name) || (sk && sk.name));
+      const ver = __escHtml(sk && sk.manifest && sk.manifest.version);
+      const thumb = (sk && sk.preview)
+        ? '<img src="' + sk.preview + '" alt="" />'
+        : '<span class="skin-thumb-ph">' + label + '</span>';
+      card.innerHTML = '<div class="skin-thumb">' + thumb + '</div>' +
+        '<div class="skin-meta"><div class="skin-name">' + label + '</div><div class="skin-ver">' + ver + '</div></div>';
+      card.addEventListener('click', () => __applySkin(sk.name));
+      skinList.appendChild(card);
+    });
+  }
+
+  async function __applySkin(name) {
+    __skinMsg('应用中…');
+    try {
+      const res = await fnosSettings.setUIOptions({ activeSkin: name });
+      if (res && res.ok) {
+        __skinMsg('已应用' + (name ? '：' + name : '默认皮肤'));
+        setTimeout(() => __skinMsg(''), 1800);
+        await loadSkins();
+      } else {
+        __skinMsg((res && res.error) || '应用失败');
+      }
+    } catch (err) {
+      __skinMsg(err?.message || '应用失败');
+    }
+  }
+
+  async function loadSkins() {
+    try {
+      const res = await fnosSettings.listSkins();
+      if (res && res.ok) {
+        renderSkinList(res.skins, res.activeSkin);
+      } else if (skinLoading) {
+        skinLoading.textContent = (res && res.error) || '加载失败';
+      }
+    } catch (err) {
+      if (skinLoading) skinLoading.textContent = err?.message || '加载失败';
+    }
+  }
+
+  if (skinInstall) {
+    skinInstall.addEventListener('click', async () => {
+      skinInstall.disabled = true;
+      __skinMsg('安装中…');
+      try {
+        const res = await fnosSettings.installSkin();
+        if (res && res.ok) {
+          __skinMsg('已安装：' + res.name);
+          setTimeout(() => __skinMsg(''), 2200);
+          await loadSkins();
+        } else if (res && res.canceled) {
+          __skinMsg('');
+        } else {
+          __skinMsg((res && res.error) || '安装失败');
+        }
+      } catch (err) {
+        __skinMsg(err?.message || '安装失败');
+      } finally {
+        skinInstall.disabled = false;
+      }
+    });
+  }
+
+  loadSkins();
+
   // v1.59：界面主题色选项已移除（标题栏颜色独立可配），不再设置 accentColor
   btnClose.addEventListener('click', () => fnosSettings.close());
 

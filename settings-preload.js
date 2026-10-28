@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
       // v2.19.2：磨砂高光强度
       titleBarHighlight: opts?.titleBarHighlight != null ? Number(opts.titleBarHighlight) : undefined,
+      // v3.0.19：标题栏皮肤（空字符串 = 默认无皮肤）
+      activeSkin: opts?.activeSkin != null ? String(opts.activeSkin) : undefined,
     }),
   // v2.17.24：标题栏颜色实时预览（只广播，不落盘；保存仍走 setUIOptions）
   previewTitleBar: (opts) =>
@@ -89,6 +91,9 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   setFpkApi: (patch) => ipcRenderer.invoke('settings:set-fpk-api', patch || {}),
   testFpkApi: () => ipcRenderer.invoke('settings:test-fpk-api'),
   restartApp: () => ipcRenderer.invoke('app:restart'),
+  // v3.0.19：皮肤管理 —— 列出已安装皮肤 / 安装 .fskin.zip（选择皮肤走 setUIOptions activeSkin）
+  listSkins: () => ipcRenderer.invoke('settings:list-skins'),
+  installSkin: () => ipcRenderer.invoke('settings:install-skin'),
   close: () => ipcRenderer.send('settings:close'),
 });
 

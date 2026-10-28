@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.15';
+const APP_VERSION = '3.0.16';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -8068,25 +8068,9 @@ function tryOpenPendingApp() {
       // v2.4.13 r15 冷启动快捷方式同款分支：标记优先直开对应形态窗口；无标记行为兜底。
       let __wt15c = ''; let __wt15cUrl = '';
       try { const __e15c = __windowTypeGetEntry(__pendingAppId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__e15c) { __wt15c = __e15c.type; __wt15cUrl = __e15c.url; } } catch (_) {}
-      // v3.0.14 r146：冷启动同样是"URL 假→交桌面摹仿点击"，否则快捷方式冷启必然白窗。
-      if (__launchUrlSpaOnly146(u)) {
-        try { require('./logger.js').log('warn', 'launch', 'launch.defer-to-spa', { params: { appId: String(__pendingAppId || '').slice(0, 120), url: String(u).slice(0, 160), cold: true, elapsedMs: elapsed } }, __RUN_MODE); } catch (_) {}
-        let __lb146c = [];
-        try { const __fe146c = __fpkLookupSync(__pendingAppId); if (__fe146c && __fe146c.name) __lb146c = [String(__fe146c.name).slice(0, 40)]; } catch (_) {}
-        __notifyOpenFpkApp(__pendingAppId, true, u, '', __lb146c);
-        // 同上：SPA 内部组件只能在桌面里渲染，主窗要可见。
-        try {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            if (mainWindow.isMinimized()) mainWindow.restore();
-            mainWindow.show();
-            mainWindow.focus();
-          }
-        } catch (_) {}
-      } else {
-        const __opened15c = __openAppByWindowType(__pendingAppId, __pendingAppId, u, __wt15c, __wt15cUrl);
-        __notifyOpenFpkApp(__pendingAppId, true, u, __opened15c ? (__wt15c || 'popout') : '');
-        try { hideMainToBackground(); } catch (_) {}
-      }
+      const __opened15c = __openAppByWindowType(__pendingAppId, __pendingAppId, u, __wt15c, __wt15cUrl);
+      __notifyOpenFpkApp(__pendingAppId, true, u, __opened15c ? (__wt15c || 'popout') : '');
+      try { hideMainToBackground(); } catch (_) {}
       if (__pendingFromShortcut) {
         __pendingFromShortcut = false;
         __pendingAppId = '';
@@ -11812,27 +11796,6 @@ function __startLaunchServer() {
             // 无论分支与否主页面藏托盘/最小化（单窗口体验，快捷方式=触发器定案）。
             let __wth = ''; let __wthUrl = '';
             try { const __eh = __windowTypeGetEntry(appId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__eh) { __wth = __eh.type; __wthUrl = __eh.url; } } catch (_) {}
-            // v3.0.14 r146：URL 是假地址时不自己开窗（否则白窗 5s），改交飞牛桌面临摹点击。
-            if (__launchUrlSpaOnly146(u)) {
-              try { require('./logger.js').log('warn', 'launch', 'launch.defer-to-spa', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160), nas: String(nas || '').slice(0, 80), cold: false, ms: Date.now() - __t0L } }, __RUN_MODE); } catch (_) {}
-              // 补中文显示名：桌面图标 alt 是显示名（如「系统设置」），__fnosFindIconNode 第 1 轮
-              // 精确匹配即命中，不必等第 2 轮靠图标 URL 模糊匹配（更稳更快）。
-              let __lb146 = [];
-              try { const __fe146 = __fpkLookupSync(appId); if (__fe146 && __fe146.name) __lb146 = [String(__fe146.name).slice(0, 40)]; } catch (_) {}
-              __notifyOpenFpkApp(appId, true, u, '', __lb146);
-              // 这类应用在 NAS 新版桌面里是 SPA 内部组件：没有独立 HTTP 页面（/appview 在 HTTP
-              // 层 404），只能在飞牛桌面里渲染 → 主窗必须可见，否则用户什么都看不到。
-              try {
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                  if (mainWindow.isMinimized()) mainWindow.restore();
-                  mainWindow.show();
-                  mainWindow.focus();
-                }
-              } catch (_) {}
-              try { require('./logger.js').log('info', 'launch', 'launch.http trigger', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160), via: 'spa' } }, __RUN_MODE); } catch (_) {}
-              try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
-              return;
-            }
             const __openedH = __openAppByWindowType(appId, appId, u, __wth, __wthUrl);
             try { require('./logger.js').log('info', 'launch', 'launch.open', { params: { appId: appId.slice(0, 120), ok: !!__openedH, windowType: String(__wth || ''), url: String(u).slice(0, 160), ms: Date.now() - __t0L } }, __RUN_MODE); } catch (_) {}
             __notifyOpenFpkApp(appId, true, u, __openedH ? (__wth || 'popout') : '');
@@ -12721,6 +12684,17 @@ function __launchUrlNormalize(u, tag) {
     try {
       s = lu.protocol + '//' + lu.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
       rules.push('port+:' + lu.port);
+      pu = new URL(s);
+    } catch (_) {}
+  }
+  // 规则5（v3.0.16 r148）：系统应用 appview 中转页端口归一化。appview 中转页只在站点根
+  // （live origin）存在，FPK 缓存里系统应用 url = host:5666/appview?anchor=xxx（5666 是 NAS
+  // 管理端口，外网未映射 → 独立窗 5s 断连白窗）。同 hostname 但端口不同时，端口改回 live
+  // origin 端口（10300）；仅匹配 /appview 路径，不影响 OpenList/xte 等有独立端口服务的应用。
+  if (lu && lu.port && pu.hostname === lu.hostname && pu.port && pu.port !== lu.port && /\/appview(\/|\?|$)/i.test(pu.pathname || '')) {
+    try {
+      s = lu.protocol + '//' + lu.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+      rules.push('appview-port:' + pu.port + '->' + lu.port);
       pu = new URL(s);
     } catch (_) {}
   }

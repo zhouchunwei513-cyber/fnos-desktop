@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.17';
+const APP_VERSION = '3.0.18';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -709,6 +709,8 @@ const XTE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟缓存
 let g_lastLiveInvokeAt = 0;
 let g_lastLiveInvokeUrl = '';
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
+// 标题栏皮肤目录：%APPDATA%/<app>/skins/<skinName>/
+const SKINS_DIR = path.join(app.getPath('userData'), 'skins');
 // v1.12.1：历史服务器列表单独存一份到 servers.json，并写 .bak 备份。
 // 这是"历史地址不记录"的兜底：即使 settings.json 因 DPAPI/损坏/写入失败而读空，
 // servers.json 仍是明文、原子写入、带备份，历史与上次连接信息不会丢。
@@ -1736,6 +1738,8 @@ function defaultSettings() {
     // v1.10.2：主题色（仅影响标题栏叠加色，不动页面内配色）
     // 可选：'#1e1b2e'（默认深紫黑）、'#0f172a'（深蓝）、'#101828'（纯黑）、'#1f2937'（石墨）、'#312e81'（靛蓝）、'#831843'（酒红）
     themeColor: '#1e1b2e',
+    // 标题栏皮肤目录名（%APPDATA%/<app>/skins/<activeSkin>），空 = 默认标题栏
+    activeSkin: '',
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: 0,
     // v1.17.7：本地代理模块已彻底移除。保留 iptv 段仅用于收藏/线路等用户数据，
@@ -2783,6 +2787,23 @@ function loadSettings() {
   // v2.1.11：快捷方式后台化方式只允许 tray / minimize
   cachedSettings.shortcutHideMode = cachedSettings.shortcutHideMode === 'minimize' ? 'minimize' : 'tray';
   return cachedSettings;
+}
+
+// 标题栏皮肤：解析当前激活皮肤的 manifest，返回 { skinDir, skin }（skin 为 null 表示无皮肤）
+function resolveSkinConfig() {
+  try {
+    const s = loadSettings();
+    const skinName = String((s && s.activeSkin) || '').trim();
+    if (!skinName) return { skinDir: '', skin: null };
+    const skinDir = path.join(SKINS_DIR, skinName);
+    const manifestPath = path.join(skinDir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) return { skinDir: '', skin: null };
+    const skin = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    if (!skin || typeof skin !== 'object' || !skin.titlebar) return { skinDir: '', skin: null };
+    return { skinDir, skin };
+  } catch (_) {
+    return { skinDir: '', skin: null };
+  }
 }
 
 // v1.17.7：本地 IPTV 代理已彻底移除。
@@ -10170,6 +10191,7 @@ ipcMain.handle('settings:get', async () => {
     titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 20),
     titleBarHighlight: clampInt(s.titleBarHighlight, 0, 100, 55),
     themeColor: String(s.themeColor || '#4F6EF7'),
+    activeSkin: String(s.activeSkin || ''),
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
     // v2.1.11：快捷方式打开应用后主程序后台化方式
@@ -10312,6 +10334,9 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
       blur: clampInt(opts?.titleBarBlur, 0, 40, 20),
       highlight: clampInt(opts?.titleBarHighlight, 0, 100, 55),
     };
+    const __skinCfgP = resolveSkinConfig();
+    tbPayload.skinDir = __skinCfgP.skinDir;
+    tbPayload.skin = __skinCfgP.skin;
     for (const wc of require('electron').webContents.getAllWebContents()) {
       try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
     }
@@ -10341,6 +10366,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       ? clampInt(opts.titleBarHighlight, 0, 100, 55)
       : clampInt(cachedSettings.titleBarHighlight, 0, 100, 55);
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
+    const activeSkin = opts && typeof opts.activeSkin === 'string' ? String(opts.activeSkin).trim() : String(cachedSettings.activeSkin || '');
     saveSettings({
       autoHideMenuBar: autoHide,
       titleBarAutoHide: tbAutoHide,
@@ -10350,6 +10376,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       titleBarBlur: tbBlur,
       titleBarHighlight: tbHighlight,
       themeColor: accent,
+      activeSkin: activeSkin,
     });
     cachedSettings.autoHideMenuBar = autoHide;
     cachedSettings.titleBarAutoHide = tbAutoHide;
@@ -10359,9 +10386,11 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.titleBarBlur = tbBlur;
     cachedSettings.titleBarHighlight = tbHighlight;
     cachedSettings.themeColor = accent;
+    cachedSettings.activeSkin = activeSkin;
     // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
-    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight };
+    const __skinCfg = resolveSkinConfig();
+    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
@@ -10401,6 +10430,9 @@ ipcMain.on('settings:get-titlebar', (e) => {
       blur: clampInt(s.titleBarBlur, 0, 40, 20),
       highlight: clampInt(s.titleBarHighlight, 0, 100, 55),
     };
+    const __sk = resolveSkinConfig();
+    e.returnValue.skinDir = __sk.skinDir;
+    e.returnValue.skin = __sk.skin;
   } catch (_) {
     e.returnValue = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20 };
   }

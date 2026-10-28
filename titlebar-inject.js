@@ -7,6 +7,9 @@
 
 module.exports = function injectTitleBar(ctx) {
   let ipcRenderer = ctx && ctx.ipcRenderer;
+  let __fs = null, __path = null;
+  try { __fs = require('fs'); } catch (_) {}
+  try { __path = require('path'); } catch (_) {}
   if (!ipcRenderer) { try { ipcRenderer = require('electron').ipcRenderer; } catch (_) {} }
   if (!ipcRenderer) return;
   try {
@@ -399,6 +402,94 @@ module.exports = function injectTitleBar(ctx) {
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
     // v2.19.0：material = 'solid'（纯色）| 'frosted'（磨砂玻璃）；blur = 磨砂强度 0~40px
+    // 标题栏皮肤状态（主进程 settings:get-titlebar / settings:titlebar-changed 下发）
+    let __skinState = { skinDir: '', skin: null };
+
+    // 读皮肤素材文件 -> blob URL（避开 file:// 受 webSecurity 限制）
+    function __loadSkinAsset(skinDir, src) {
+      try {
+        if (!__fs || !__path || !skinDir || !src) return null;
+        const p = __path.join(skinDir, String(src));
+        if (!__fs.existsSync(p)) return null;
+        const buf = __fs.readFileSync(p);
+        const ext = String(src).toLowerCase().split('.').pop();
+        const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm' }[ext] || 'application/octet-stream';
+        const blob = new Blob([buf], { type: mime });
+        return URL.createObjectURL(blob);
+      } catch (_) { return null; }
+    }
+
+    // 给标题栏挂背景层(z-index:-2) + 形状层(z-index:-1)子元素（绝对定位，不参与 flex）
+    function __attachSkinLayers(bar) {
+      try {
+        if (!bar || bar.__shapeLayer) return;
+        const bgLayer = document.createElement('div');
+        bgLayer.id = 'fnos-tb-bg';
+        bgLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:-2;display:none;background-size:cover;background-position:center;background-repeat:no-repeat;overflow:hidden;border-radius:inherit;';
+        const shapeLayer = document.createElement('div');
+        shapeLayer.id = 'fnos-tb-shape';
+        shapeLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:-1;display:none;background-size:100% 100%;background-position:center;background-repeat:no-repeat;border-radius:inherit;';
+        bar.appendChild(bgLayer);
+        bar.appendChild(shapeLayer);
+        bar.__bgLayer = bgLayer;
+        bar.__shapeLayer = shapeLayer;
+      } catch (_) {}
+    }
+
+    // 应用皮肤背景/形状到子元素；返回是否有皮肤背景接管（true = 背景层渲染，bar 自身透明）
+    function __applySkinLayers(bar) {
+      try {
+        if (!bar) return false;
+        const bgLayer = bar.__bgLayer || null;
+        const shapeLayer = bar.__shapeLayer || null;
+        const tb = __skinState.skin && __skinState.skin.titlebar;
+        const bg = tb && tb.background;
+        const shape = tb && tb.shape;
+        if (bgLayer) { bgLayer.style.display = 'none'; bgLayer.style.backgroundImage = 'none'; bgLayer.style.backgroundColor = 'transparent'; bgLayer.innerHTML = ''; }
+        if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; }
+        let hasBg = false;
+        if (bg && bg.type && bg.type !== 'none') {
+          if (bg.type === 'video' && bg.src) {
+            const url = __loadSkinAsset(__skinState.skinDir, bg.src);
+            if (url && bgLayer) {
+              const v = document.createElement('video');
+              v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
+              v.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;';
+              v.src = url;
+              bgLayer.appendChild(v);
+              bgLayer.style.display = 'block';
+              hasBg = true;
+            }
+          } else if ((bg.type === 'image' || bg.type === 'gif') && bg.src) {
+            const url = __loadSkinAsset(__skinState.skinDir, bg.src);
+            if (url && bgLayer) {
+              bgLayer.style.backgroundImage = 'url("' + url + '")';
+              bgLayer.style.backgroundSize = bg.size || 'cover';
+              bgLayer.style.backgroundPosition = bg.position || 'center';
+              bgLayer.style.backgroundRepeat = bg.repeat || 'no-repeat';
+              bgLayer.style.display = 'block';
+              hasBg = true;
+            }
+          } else if (bg.type === 'color') {
+            if (bgLayer) { bgLayer.style.backgroundColor = bg.color || '#3B82F6'; bgLayer.style.display = 'block'; hasBg = true; }
+          } else if (bg.type === 'gradient') {
+            if (bgLayer) { bgLayer.style.backgroundImage = bg.gradient || bg.css || ''; bgLayer.style.display = 'block'; hasBg = true; }
+          }
+        }
+        if (shape && shape.type && shape.type !== 'none' && shape.src) {
+          const url = __loadSkinAsset(__skinState.skinDir, shape.src);
+          if (url && shapeLayer) {
+            shapeLayer.style.backgroundImage = 'url("' + url + '")';
+            shapeLayer.style.backgroundSize = shape.stretch === false ? (shape.size || 'auto') : '100% 100%';
+            shapeLayer.style.backgroundPosition = shape.position || 'center';
+            shapeLayer.style.backgroundRepeat = shape.repeat || 'no-repeat';
+            shapeLayer.style.display = 'block';
+          }
+        }
+        return hasBg;
+      } catch (_) { return false; }
+    }
+
     const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55 };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
@@ -410,6 +501,8 @@ module.exports = function injectTitleBar(ctx) {
         TB.material = (r.material === 'frosted') ? 'frosted' : 'solid';
         if (r.blur != null) TB.blur = Math.max(0, Math.min(40, Number(r.blur) || 0));
         if (r.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(r.highlight)));
+        if (r.skinDir) __skinState.skinDir = String(r.skinDir);
+        if (r.skin && typeof r.skin === 'object') __skinState.skin = r.skin;
       }
     } catch (_) {}
     let AUTO_HIDE = TB.autoHide;
@@ -454,6 +547,22 @@ module.exports = function injectTitleBar(ctx) {
     function applyStyle(bar) {
       try {
         if (!bar) return;
+        if (__applySkinLayers(bar)) {
+          bar.style.background = 'transparent';
+          bar.style.backgroundImage = 'none';
+          bar.style.backdropFilter = 'none';
+          bar.style.webkitBackdropFilter = 'none';
+          bar.style.boxShadow = 'none';
+          const __skinIconDark = !!(__skinState.skin && __skinState.skin.titlebar && __skinState.skin.titlebar.content && __skinState.skin.titlebar.content.iconDark);
+          bar.__useDarkIcon = !__skinIconDark;
+          const __skStroke = __skinIconDark ? 'rgba(20,20,20,0.92)' : 'rgba(255,255,255,0.95)';
+          const __skShadow = __skinIconDark ? 'drop-shadow(0 1px 1px rgba(255,255,255,0.6))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))';
+          bar.querySelectorAll('svg').forEach((svg) => {
+            svg.querySelectorAll('path,line,rect').forEach((p) => { try { p.style.setProperty('stroke', __skStroke, 'important'); } catch (_) { p.setAttribute('stroke', __skStroke); } });
+            svg.style.filter = __skShadow;
+          });
+          return;
+        }
         {
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
           const a = TB.opacity / 100;
@@ -544,6 +653,8 @@ module.exports = function injectTitleBar(ctx) {
             if (val.material) TB.material = (val.material === 'frosted') ? 'frosted' : 'solid';
             if (val.blur != null) TB.blur = Math.max(0, Math.min(40, Number(val.blur) || 0));
             if (val.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(val.highlight)));
+            if (val.skinDir != null) __skinState.skinDir = String(val.skinDir);
+            if (val.skin != null) __skinState.skin = (val.skin && typeof val.skin === 'object') ? val.skin : null;
             const bar0 = document.getElementById('fnos-titlebar');
             if (bar0) {
               applyStyle(bar0);
@@ -880,6 +991,7 @@ module.exports = function injectTitleBar(ctx) {
         })();
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
+        __attachSkinLayers(bar);
         root().appendChild(bar);
     // v2.15.51：四角 R 角 + 修复飞牛主页底部裁切 + 滚动条顶部落到标题栏下方。
     // 1) 四角 R 角：body 加 clip-path:inset(0 round 20px)（标题栏保持长方形直角，仅 body 四角圆角），
@@ -1326,6 +1438,7 @@ module.exports = function injectTitleBar(ctx) {
         })();
         bar.appendChild(dragStrip);
         bar.appendChild(btns);
+        __attachSkinLayers(bar);
         root2.appendChild(bar);
         // 原生拖拽兜底（与普通标题栏同款）
         // v2.17.45：双击标题栏最大化/还原（drag region 上 dblclick 不触发，改用 mousedown

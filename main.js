@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.25';
+const APP_VERSION = '3.0.26';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -10716,6 +10716,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     const activeSkin = opts && typeof opts.activeSkin === 'string' ? String(opts.activeSkin).trim() : String(cachedSettings.activeSkin || '');
     // v3.0.23：悬浮球隐藏开关（改完立即下发，不需要重启）
     const hideBall = (opts && typeof opts.hideAccountBall === 'boolean') ? opts.hideAccountBall : (cachedSettings.hideAccountBall === true);
+    fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', { fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'), value: hideBall });
     saveSettings({
       autoHideMenuBar: autoHide,
       titleBarAutoHide: tbAutoHide,
@@ -10874,6 +10875,7 @@ ipcMain.on('ball:get-pos', (e) => {
     const p = s.ballPos;
     e.returnValue = (p && Number.isFinite(Number(p.fx)) && Number.isFinite(Number(p.fy)))
       ? { fx: Number(p.fx), fy: Number(p.fy) } : null;
+    fnosLog('info', 'ball', 'get-pos', { ret: e.returnValue });
   } catch (_) {
     e.returnValue = null;
   }
@@ -10881,11 +10883,12 @@ ipcMain.on('ball:get-pos', (e) => {
 
 ipcMain.on('ball:set-pos', (_e, p) => {
   try {
-    if (!p || typeof p !== 'object') return;
+    if (!p || typeof p !== 'object') { fnosLog('warn', 'ball', 'set-pos bad-payload', { p: String(p) }); return; }
     const fx = Number(p.fx), fy = Number(p.fy);
-    if (!Number.isFinite(fx) || !Number.isFinite(fy)) return;
+    if (!Number.isFinite(fx) || !Number.isFinite(fy)) { fnosLog('warn', 'ball', 'set-pos non-finite', { fx: p.fx, fy: p.fy }); return; }
     const clamp01 = (v) => Math.max(0, Math.min(1, v));
     const next = { fx: clamp01(fx), fy: clamp01(fy) };
+    fnosLog('info', 'ball', 'set-pos', { raw: { fx: fx, fy: fy }, saved: next });
     saveSettings({ ballPos: next });
     cachedSettings.ballPos = next;
   } catch (_) {}

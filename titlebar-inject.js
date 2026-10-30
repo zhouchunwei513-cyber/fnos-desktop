@@ -1763,11 +1763,18 @@ module.exports = function injectTitleBar(ctx) {
         //   ③ 窗口 resize 时把夹紧后的绝对像素写回存储，反复抖动把位置一点点带歪。
         // 现在统一：body 内坐标 + 归一化比例持久化（同时同步主进程，换 origin 也记得住）。
         const ACCT_POS_KEY = 'fnos-acct-ball-pos';
+        // v3.0.26：悬浮球诊断日志（走 fnos:media-log -> logger.js 落盘），定位位置乱跑/隐藏失效
+        const __ballLog = function (stage, extra) {
+          try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'ball.' + stage, level: 'info' }, extra || {})); } catch (_) {}
+        };
         const ACCT_BALL = 40;
         const ACCT_EDGE = 6;   // 贴边也留 6px，不给窗口圆角/边框裁掉的机会
         function acctBox() {
           let w = window.innerWidth || 0;
-          let h = window.innerHeight || 0;
+          // v3.0.26：body 被 translateY(标题栏高) 下移，球 top 是 body 内坐标；body 未布局时
+          // 用 window.innerHeight 兜底会把球放到 body 之外 34px，被窗口底部裁掉（'贴底/左下角
+          // 拉不出来'根因之一）。兜底高度减去标题栏高，保证球任何时刻都不越出可视区。
+          let h = Math.max(0, (window.innerHeight || 0) - (__skinHeight || 34));
           try {
             const br = document.body.getBoundingClientRect();
             if (br.height > 120) h = Math.round(br.height);
@@ -1817,6 +1824,10 @@ module.exports = function injectTitleBar(ctx) {
         }
         function acctSave() {
           try {
+            const box = acctBox();
+            // v3.0.26：布局未稳定时不落盘，否则会把「极小可用区算出的假比例」写成持久位置，
+            // 之后每次启动都恢复到左下角/贴底。
+            if (box.w < 200 || box.h < 200) { __ballLog('save.skip', { w: box.w, h: box.h }); return; }
             const cur = acctCur();
             const rg = acctRange();
             const p = {
@@ -1828,6 +1839,7 @@ module.exports = function injectTitleBar(ctx) {
             // 主进程按比例再存一份：不同 NAS 地址 / 不同分区的 localStorage 互不相通，
             // 只靠 localStorage 会出现"换个页面登录，球又回默认位置"的错觉
             try { ipcRenderer.send('ball:set-pos', { fx: p.fx, fy: p.fy }); } catch (_) {}
+            __ballLog('save', { fx: p.fx, fy: p.fy, x: Math.round(cur.x), y: Math.round(cur.y), w: box.w, h: box.h });
           } catch (_) {}
         }
         function acctRestore(fx, fy) {
@@ -1836,23 +1848,28 @@ module.exports = function injectTitleBar(ctx) {
                                ACCT_EDGE + Math.max(0, Math.min(1, fy)) * rg.my);
         }
         function acctInitPos() {
-          let fx = null, fy = null;
+          let fx = null, fy = null, srcPos = 'none';
           try {
             const sp = ipcRenderer.sendSync('ball:get-pos');
-            if (sp && typeof sp.fx === 'number' && typeof sp.fy === 'number') { fx = sp.fx; fy = sp.fy; }
+            if (sp && typeof sp.fx === 'number' && typeof sp.fy === 'number') { fx = sp.fx; fy = sp.fy; srcPos = 'main'; }
           } catch (_) {}
           if (fx === null) {
             try {
               const saved = JSON.parse(localStorage.getItem(ACCT_POS_KEY) || 'null');
               if (saved && typeof saved.fx === 'number' && typeof saved.fy === 'number') {
-                fx = saved.fx; fy = saved.fy;
+                fx = saved.fx; fy = saved.fy; srcPos = 'local';
               }
               // 旧版存的是绝对像素（{x,y}）：那些值多半是被上一版裁到窗口外/被 34px 偏移
               // 带歪的脏数据，直接沿用会把这个 bug 一直继承下去，所以不迁移 —— 首次升级
               // 统一回到默认位置一次，之后用户拖动的位置才会被记住。
             } catch (_) {}
           }
-          if (fx === null) { fx = 1; fy = 0.5; }   // 默认贴右侧中部（左侧是应用列表，最容易被挡）
+          if (fx === null) { fx = 1; fy = 0.5; srcPos = 'default'; }   // 默认贴右侧中部（左侧是应用列表，最容易被挡）
+          // v3.0.26：恢复前再校验比例合法，脏数据直接回默认
+          if (!Number.isFinite(Number(fx)) || !Number.isFinite(Number(fy))) { fx = 1; fy = 0.5; srcPos = 'default-fix'; }
+          fx = Math.max(0, Math.min(1, Number(fx))); fy = Math.max(0, Math.min(1, Number(fy)));
+          const __box = acctBox();
+          __ballLog('init', { fx: fx, fy: fy, src: srcPos, w: __box.w, h: __box.h, hidden: TB.hideAccountBall === true });
           acctRestore(fx, fy);
         }
 
@@ -1896,13 +1913,24 @@ module.exports = function injectTitleBar(ctx) {
         let __acctBox = acctBox();
         window.addEventListener('resize', () => {
           try {
+            const oldBox = __acctBox;
+            const newBox = acctBox();
+            // v3.0.26：旧 box 未稳定（<200）时反推比例会把 fy 放大到 1（贴底），
+            // 直接改用持久化比例重新恢复，杜绝左下角漂移。
+            if (oldBox.w < 200 || oldBox.h < 200) {
+              __acctBox = newBox;
+              acctInitPos();
+              __ballLog('resize.reinit', { w: newBox.w, h: newBox.h });
+              return;
+            }
             const cur = acctCur();
-            const mx0 = Math.max(1, __acctBox.w - ACCT_BALL - ACCT_EDGE * 2);
-            const my0 = Math.max(1, __acctBox.h - ACCT_BALL - ACCT_EDGE * 2);
-            const fx = (cur.x - ACCT_EDGE) / mx0;
-            const fy = (cur.y - ACCT_EDGE) / my0;
-            __acctBox = acctBox();
+            const mx0 = Math.max(1, oldBox.w - ACCT_BALL - ACCT_EDGE * 2);
+            const my0 = Math.max(1, oldBox.h - ACCT_BALL - ACCT_EDGE * 2);
+            const fx = Math.max(0, Math.min(1, (cur.x - ACCT_EDGE) / mx0));
+            const fy = Math.max(0, Math.min(1, (cur.y - ACCT_EDGE) / my0));
+            __acctBox = newBox;
             acctRestore(fx, fy);
+            __ballLog('resize', { fx: fx, fy: fy, ow: oldBox.w, oh: oldBox.h, nw: newBox.w, nh: newBox.h });
           } catch (_) {}
         });
         // 早期 body 高度可能还是 0，等布局有高度再放，避免球先闪到左上角
@@ -1984,8 +2012,10 @@ module.exports = function injectTitleBar(ctx) {
           window.__fnApplyBallHidden = function (h) {
             var shown = (h !== true);
             panel.style.display = shown ? '' : 'none';
+            __ballLog('hidden.apply', { hide: h === true, shown: shown });
             if (shown) { try { acctInitPos(); } catch (_) {} }
           };
+          __ballLog('hidden.init', { hide: TB.hideAccountBall === true });
           window.__fnApplyBallHidden(TB.hideAccountBall === true);
         } catch (_) {}
       } catch (_) {}

@@ -1116,7 +1116,9 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
   const appListLoading = document.getElementById('app-list-loading');
   const appListEmpty = document.getElementById('app-list-empty');
   const appActionStatus = document.getElementById('app-action-status');
-  async function loadAppList() {
+  // v3.0.25（需求 2）：列表签名——用于静默比对，避免每次轮询都重绘导致闪烁/按钮状态丢失
+  let __appListSig = null;
+  async function loadAppList(silent) {
     try {
       if (!window.fnosSettings || !window.fnosSettings.getInstalledApps) {
         if (appListLoading) appListLoading.textContent = '应用快捷方式创建功能不可用';
@@ -1126,9 +1128,24 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       if (appListLoading) appListLoading.style.display = 'none';
       if (!res.success || !res.data || !res.data.length) {
         if (appListEmpty) appListEmpty.style.display = 'block';
+        // v3.0.25（需求 2）：应用被卸载后自动清空旧卡片（此前只能靠关掉再打开设置页）
+        if (__appListSig !== null && __appListSig !== '') {
+          appListEl.innerHTML = '';
+          appListEl.style.display = 'none';
+          __appListSig = '';
+        }
         return;
       }
       if (appListEmpty) appListEmpty.style.display = 'none';
+      // v3.0.25（需求 2）：自动感知——应用增删/改名/换图标都会改变签名；签名未变则静默跳过重绘
+      const __sig = res.data.map(function (a) {
+        return [a.appId, a.appName || a.name || a.title || '', a.iconPath || ''].join('~');
+      }).join('|');
+      if (silent && __appListSig === __sig) {
+        try { if (appActionStatus && !appActionStatus.textContent) appActionStatus.textContent = ''; } catch (_) {}
+        return;
+      }
+      __appListSig = __sig;
       appListEl.innerHTML = '';
       appListEl.style.display = 'grid';
       res.data.forEach((app) => {
@@ -1186,6 +1203,18 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
     }
   }
   loadAppList();
+  // v3.0.25（需求 2）：自动感知与联动改造——
+  //   以前只在设置页初始化时拉一次列表，新增应用后必须反复开关偏好设置才能看到；
+  //   现在：① 打开后 1.2s / 3.5s 补偿刷新（首次数据常未就绪）；
+  //        ② 每 10s 静默轮询（面板可见时）；③ 窗口重新聚焦 / 从隐藏恢复时立即刷新。
+  //   签名未变时不会重绘，因此轮询对用户完全无感。
+  try {
+    setTimeout(function () { loadAppList(true); }, 1200);
+    setTimeout(function () { loadAppList(true); }, 3500);
+    setInterval(function () { try { if (!document.hidden) loadAppList(true); } catch (_) {} }, 10000);
+    window.addEventListener('focus', function () { try { loadAppList(true); } catch (_) {} });
+    document.addEventListener('visibilitychange', function () { try { if (!document.hidden) loadAppList(true); } catch (_) {} });
+  } catch (_) {}
 
   // ---- v2.1.17: FPK 图标管理器 API 配置 ----
   const fpkEnabled = document.getElementById('fpk-enabled');

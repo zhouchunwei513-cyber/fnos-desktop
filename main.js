@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.24';
+const APP_VERSION = '3.0.25';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -7080,7 +7080,34 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
   // v3.0.4：来源标记（shortcut=快捷方式 launch / in-app=程序内点击 / cold-start=冷启动），
   // 供 popout.load / load.done / load.fail 日志对比同应用不同打开路径。
   try { win.__fnSource = String(opts.source || ''); } catch (_) {}
-  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch (_) {} });
+  // v3.0.25（需求 4）：快捷方式启动 appview 中转页时，NAS 侧 appview 会先渲染
+  // 「这里暂时没有装入页面 / 可能服务异常 / 先返回桌面吧」占位，再由页面内 JS 跳到真实应用；
+  // 于是用户先看到一个错误提示界面，随后才跳到正确页面。
+  // 处理：目标是 appview 且来源为快捷方式时，窗口先以不可见状态装载，等页面内跳转/首帧
+  //       稳定后再 show（450ms/250ms 两个时机，最长 2.2s 兜底），用户不再看到中间态。
+  const __fnAppviewTarget = /\/appview\?anchor=/i.test(String(url || ''));
+  const __fnIsShortcut = String(opts.source || '') === 'shortcut';
+  if (__fnAppviewTarget && __fnIsShortcut) {
+    try {
+      let __fnShown25 = false;
+      const __fnShow25 = (why) => {
+        if (__fnShown25) return;
+        __fnShown25 = true;
+        try {
+          if (win.isDestroyed()) return;
+          win.show(); win.focus();
+          dlog && dlog('info', 'appwin.deferred-show', { app: __appLabel, winId: win.id, why, totalMs: Date.now() - __t0 });
+        } catch (_) {}
+      };
+      win.once('ready-to-show', () => { setTimeout(() => __fnShow25('ready'), 450); });
+      try { win.webContents.once('did-finish-load', () => setTimeout(() => __fnShow25('load'), 250)); } catch (_) {}
+      setTimeout(() => __fnShow25('timeout'), 2200);
+    } catch (_) {
+      try { win.once('ready-to-show', () => { win.show(); win.focus(); }); } catch (_) {}
+    }
+  } else {
+    win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch (_) {} });
+  }
   // 兜底：极端情况下 ready-to-show 未触发（如隧道握手卡住），6s 后也展示窗口，避免"看不见窗口"
   setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) win.show(); }, 6000);
 
@@ -9957,7 +9984,7 @@ async function fetchFpkAppList(nasHost) {
 // ---- v2.1.18: FPK 应用列表缓存 + URL→应用名映射 ----
 let __fpkApps = [];
 let __fpkAppsAt = 0;
-const FPK_APPS_TTL = 5 * 60 * 1000; // 5分钟缓存
+const FPK_APPS_TTL = 20 * 1000; // v3.0.25（需求 2）：原 5 分钟 → 20 秒，新增/卸载应用后快捷方式面板与主页注入能及时感知 // 5分钟缓存
 
 // 刷新 FPK 应用列表（懒加载，带 TTL 缓存）
 async function refreshFpkApps(force) {
@@ -11335,11 +11362,27 @@ ipcMain.handle('get-installed-apps', async () => {
           // 下载 FPK 高清图标（256）到本地，settings 页 file:// 直接显示
           let iconPath = '';
           try {
-            const __buf = await fetchFpkIcon(fpkName, 256);
-            if (__buf && __buf.length > 100) {
-              const __safe = 'fpklist_' + Buffer.from(fpkName).toString('base64url').slice(0, 40);
-              iconPath = path.join(ASSETS_DIR, __safe + '.png');
-              fs.writeFileSync(iconPath, __buf);
+            const __safe = 'fpklist_' + Buffer.from(fpkName).toString('base64url').slice(0, 40);
+            const __iconFile = path.join(ASSETS_DIR, __safe + '.png');
+            let __reuse = false;
+            try {
+              if (fs.existsSync(__iconFile)) {
+                const __st5 = fs.statSync(__iconFile);
+                // v3.0.25（需求 2）：图标缓存复用——此前每次打开设置页都对全部应用逐个重新下载
+                // 256 图标，几十个应用串行下载导致「快捷方式面板要关几次设置页才出列表」。
+                if (__st5.size > 100 && (Date.now() - __st5.mtimeMs) < 6 * 3600 * 1000) __reuse = true;
+              }
+            } catch (_) {}
+            if (__reuse) {
+              iconPath = __iconFile;
+            } else {
+              const __buf = await fetchFpkIcon(fpkName, 256);
+              if (__buf && __buf.length > 100) {
+                iconPath = __iconFile;
+                fs.writeFileSync(iconPath, __buf);
+              } else if (fs.existsSync(__iconFile)) {
+                iconPath = __iconFile;
+              }
             }
           } catch (e) { fnosLog('warn', 'icon.fpk-list', { app: fpkName, err: e.message }); }
           out.push({
@@ -12181,7 +12224,7 @@ function __ensureLauncherVbs() {
       "    port = Trim(tf.ReadLine): token = Trim(tf.ReadLine): tf.Close",
       "    Set http = CreateObject(\"MSXML2.ServerXMLHTTP\")",
       "    If Err.Number = 0 Then",
-      "      http.setTimeouts 300, 300, 1000, 1000",
+      "      http.setTimeouts 500, 500, 4000, 4000",
       "      url = \"http://127.0.0.1:\" & port & \"/launch\"",
       "      body = \"app=\" & appId & \"&token=\" & token",
       "      http.open \"POST\", url, False",
@@ -12276,6 +12319,31 @@ function __startLaunchServer() {
             } catch (_) {}
           }
           if (u && /^https?:/i.test(u)) {
+          // v3.0.25（需求 3/4）：快捷方式开窗前先问页面要权威地址，再做一次可达性预检。
+          //   * 页面给的 <a href> 就是程序内点击用的地址（含公网端口/完整 query），命中即用；
+          //   * 页面拿不到（冷启动/主窗未载主页）或地址不通 → 退同源 appview 中转（同源必通），
+          //     不再出现「先弹错误页、几秒后自愈到正确页」。
+          try {
+            const __pageU = await __queryPageAppUrl(appId);
+            if (__pageU) {
+              const __pageN = __launchUrlNormalize(__pageU, 'launch:page:' + String(appId || '').slice(0, 40));
+              if (__pageN && /^https?:\/\//i.test(__pageN) && __pageN !== u) {
+                try { require('./logger.js').log('info', 'launch', 'launch.page-authority', { params: { appId: String(appId || '').slice(0, 60), before: String(u).slice(0, 150), after: String(__pageN).slice(0, 150) } }, __RUN_MODE); } catch (_) {}
+                u = __pageN;
+              }
+            }
+          } catch (_) {}
+          try {
+            const __pr = await __launchProbeUrl(u, 700);
+            try { require('./logger.js').log(__pr.ok ? 'info' : 'warn', 'launch', 'launch.probe', { params: { appId: String(appId || '').slice(0, 60), url: String(u).slice(0, 150), ok: !!__pr.ok, status: __pr.status || 0, ms: __pr.ms || 0, err: __pr.err || '' } }, __RUN_MODE); } catch (_) {}
+            if (!__pr.ok) {
+              const __av = __appviewFallbackUrl(appId);
+              if (__av && __av !== u) {
+                try { require('./logger.js').log('warn', 'launch', 'launch.probe.fallback-appview', { params: { appId: String(appId || '').slice(0, 60), from: String(u).slice(0, 130), to: String(__av).slice(0, 130) } }, __RUN_MODE); } catch (_) {}
+                u = __av;
+              }
+            }
+          } catch (_) {}
             // v2.4.17 r15d：快捷方式 HTTP 入口统一收口——窗口类型标记直开对应形态窗
             // （内嵌=壳 iframe 壳窗；跳出=独立应用窗），无标记回落模拟点击兜底（观测回填）；
             // 无论分支与否主页面藏托盘/最小化（单窗口体验，快捷方式=触发器定案）。
@@ -13348,6 +13416,103 @@ function __preferNasHost(url) {
     return out;
   } catch (_) { return String(url || ''); }
 }
+// ===== v3.0.25：快捷方式「当前网络下的真实地址」解析基础件 =====
+// 现场（2026-10-30 用户反馈 3/4/5）：程序内点击能打开、桌面快捷方式打不开或先闪错误页。
+// 根因链：apps-manifest / fpk-apps-cache 是全局文件、不区分网络环境——内网期扫描到的
+//   http://192.168.31.101:34600/ 之类地址被原样用于公网(FRP)链路，公网只映射 10300~10307，
+//   34600/34500/18080 在公网不可达 → 先弹「连接已断开/这里暂时没有装入页面」再自愈到正确页。
+// 三条修法：
+//   ① __manifestSameHostUrl：优先取 manifest 里「与当前 live host 相同」的记录（页面实测地址，
+//      含公网映射端口 10301/10303/10304/10307），内网期外部端口不再跨环境串用；
+//   ② __queryPageAppUrl：直接问主窗口页面「这个应用的 <a href> 是什么」（程序内点击用的就是它）；
+//   ③ __launchProbeUrl：开窗前做一次可达性探测，不通就退到同源 appview 中转（同源必通），
+//      不再把错误页当作第一屏。
+function __manifestSameHostUrl(name) {
+  try {
+    const live = __liveOriginBase();
+    if (!live) return '';
+    const lh = String(new URL(live).hostname || '').toLowerCase();
+    const q = String(name || '').trim().toLowerCase();
+    if (!lh || !q) return '';
+    const mf = readManifest();
+    const list = (mf && Array.isArray(mf.apps)) ? mf.apps : [];
+    let best = '';
+    let bestAt = -1;
+    for (const a of list) {
+      if (!a) continue;
+      const idn = String(a.appId || a.name || '').trim().toLowerCase();
+      const an = String(a.appName || '').trim().toLowerCase();
+      if (idn !== q && an !== q) continue;
+      const u = String(a.url || '');
+      if (!/^https?:\/\//i.test(u)) continue;
+      let hu = null;
+      try { hu = new URL(u); } catch (_) { continue; }
+      if (String(hu.hostname || '').toLowerCase() !== lh) continue;
+      const at = Number(a.windowTypeAt || a.at || 0) || 0;
+      if (!best || at >= bestAt) { best = u; bestAt = at; }
+    }
+    return best;
+  } catch (_) { return ''; }
+}
+async function __queryPageAppUrl(appId) {
+  const q = String(appId || '').trim();
+  if (!q) return '';
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return '';
+    const wc = mainWindow.webContents;
+    if (!wc || wc.isDestroyed()) return '';
+    const js = '(function(){try{var q=' + JSON.stringify(q) + ';var want=q.toLowerCase();' +
+      'var as=document.querySelectorAll("a[href]");var hit="";' +
+      'for(var i=0;i<as.length;i++){var h=as[i].href||"";if(!/^https?:/i.test(h))continue;' +
+      'var an="";try{an=decodeURIComponent(new URL(h).searchParams.get("anchor")||"");}catch(e){}' +
+      'if(an.toLowerCase()===want){hit=h;break;}' +
+      'var p="";try{p=decodeURIComponent(new URL(h).pathname||"").toLowerCase();}catch(e){}' +
+      'if(!hit&&p&&p.indexOf(want)>=0){hit=h;}}' +
+      'return hit;}catch(e){return "";}})()';
+    const r = await Promise.race([
+      wc.executeJavaScript(js, true).catch(function () { return ''; }),
+      new Promise(function (res) { setTimeout(function () { res(''); }, 350); }),
+    ]);
+    const s = String(r || '');
+    return /^https?:\/\//i.test(s) ? s : '';
+  } catch (_) { return ''; }
+}
+async function __launchProbeUrl(u, ms) {
+  const t0 = Date.now();
+  const budget = Math.max(300, Math.min(2500, Number(ms) || 700));
+  const target = String(u || '');
+  if (!/^https?:\/\//i.test(target)) return { ok: true, status: 0, ms: 0, reason: 'not-http' };
+  let ses = null;
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) ses = mainWindow.webContents.session;
+  } catch (_) {}
+  if (!ses) { try { ses = session.defaultSession; } catch (_) {} }
+  if (!ses) return { ok: true, status: 0, ms: 0, reason: 'no-session' };
+  let ctrl = null;
+  try { if (typeof AbortController !== 'undefined') ctrl = new AbortController(); } catch (_) {}
+  const timer = setTimeout(function () { try { if (ctrl) ctrl.abort(); } catch (_) {} }, budget);
+  try {
+    const res = await ses.fetch(target, {
+      method: 'GET',
+      cache: 'no-store',
+      redirect: 'follow',
+      headers: { 'X-FNOS-Client': 'desktop' },
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+    const st = (res && res.status) ? Number(res.status) : 0;
+    try { if (res && res.body && res.body.cancel) res.body.cancel(); } catch (_) {}
+    return { ok: st > 0 && st < 500, status: st, ms: Date.now() - t0 };
+  } catch (e) {
+    return { ok: false, status: 0, ms: Date.now() - t0, err: String((e && e.message) || e).slice(0, 80) };
+  } finally { clearTimeout(timer); }
+}
+function __appviewFallbackUrl(name) {
+  try {
+    const base = __liveOriginBase();
+    if (!base) return '';
+    return String(base).replace(/\/+$/, '') + '/appview?anchor=' + encodeURIComponent(String(name || ''));
+  } catch (_) { return ''; }
+}
 function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
@@ -13371,6 +13536,16 @@ function __resolveLaunchUrl(raw, nasAddr) {
     } catch (_) {}
     return __rootUrlFallback(__truthRewrite28(appName, ''), fpkAppNameFromUrl(appName) || '');
   }
+  // 2.0) v3.0.25：同 host 权威地址优先——FPK 缓存/旧 manifest 可能是内网期的外部端口
+  //      （192.168.31.101:34600 之类），公网(FRP)只映射 10300~10307，原样使用必打不开。
+  //      manifest 里同一 appId「与当前 live host 相同」的记录来自页面实测，才是程序内能打开的地址。
+  try {
+    const __shu = __manifestSameHostUrl(appName);
+    if (__shu) {
+      fnosLog('info', 'launch', 'resolve.source', { app: String(appName).slice(0, 80), src: 'manifest.same-host', to: String(__shu).slice(0, 140) });
+      return __shu;
+    }
+  } catch (_) {}
   // 2) v2.4.0（需求 2.1）：快捷方式统一传 --launch-app={应用唯一 ID} 后，FPK 第三方应用的
   //    真实打开地址（端口/路径）以 FPK 图标管理器 url 字段为准——先同步查 FPK 内存缓存
   //    （refreshFpkApps.__cache，5 分钟 TTL）。缓存未就绪（冷启动）回退下方 manifest / appview。

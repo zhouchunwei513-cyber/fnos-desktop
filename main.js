@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.30';
+const APP_VERSION = '3.0.31';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6604,16 +6604,24 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 // 自动 302 官方图标，fetchFpkIcon 跟随重定向拿到官方图标，来源始终是 FPK。
                 let fpkBuf = await fetchFpkIcon(__fpkName, 256);
                 if (fpkBuf && !win.isDestroyed()) {
-                  const img = nativeImage.createFromBuffer(fpkBuf);
+                  // v3.0.31（任务栏图标错乱）：FPK 图标可能返回 WebP/GIF/ICO/SVG 等非 PNG 格式，
+                  // nativeImage.createFromBuffer 只稳定认 PNG/JPEG，直接建会 isEmpty -> 图标设置失败
+                  // -> 任务栏保持默认/错乱图标。先统一转干净 PNG（__decodeToPngAny canvas 万能转换），
+                  // 再进 nativeImage；转换失败则退回原 buffer（保持旧行为）。
+                  let __fpkSafe = fpkBuf;
+                  try { if (__safeIconBuf(fpkBuf) !== 'png') { const __cnv = await __decodeToPngAny(fpkBuf); if (__cnv) __fpkSafe = __cnv; } } catch (_) {}
+                  const img = nativeImage.createFromBuffer(__fpkSafe);
                   if (!img.isEmpty()) {
                     win.setIcon(img);
                     win.__appFpkIcon = true;
-                    dlog && dlog('info', 'appwin.icon.fpk', { app: __appLabel, name: __fpkName, winId: win.id, inList: __fpkInList });
+                    dlog && dlog('info', 'appwin.icon.fpk', { app: __appLabel, name: __fpkName, winId: win.id, inList: __fpkInList, converted: __fpkSafe !== fpkBuf });
                     return;
                   }
                 }
                 // v2.2.5: FPK 图标获取失败日志（便于排查任务栏图标缺失）
-                dlog && dlog('warn', 'appwin.icon.fpk-empty', { app: __appLabel, name: __fpkName, winId: win.id, bufLen: fpkBuf ? fpkBuf.length : 0, inList: __fpkInList });
+                let __fpkMagic = '';
+                try { __fpkMagic = fpkBuf && fpkBuf.length >= 8 ? Buffer.from(fpkBuf.slice(0, 8)).toString('hex') : ''; } catch (_) {}
+                dlog && dlog('warn', 'appwin.icon.fpk-empty', { app: __appLabel, name: __fpkName, winId: win.id, bufLen: fpkBuf ? fpkBuf.length : 0, inList: __fpkInList, kind: __safeIconBuf(fpkBuf) || 'unknown', magic: __fpkMagic });
                 // v2.3.6（用户要求"任务栏图标只能调用 FPK 图标管理器的对应应用图标"）：
                 // FPK 图标获取失败时彻底禁用页面 favicon 降级（favicon 是 fnOS 默认图标，
                 // 会覆盖 FPK 语义）；保持缓存图标/默认图标，由 1.5s/4s 重试再取 FPK 图标。
@@ -7418,6 +7426,11 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
       const __fnOk28 = () => {
         try {
           if (__fnIsErrPage(win)) return true;
+          // v3.0.31（公网慢/不跳转）：appview 是 OAuth 中转壳，公网下 anchor 是内网 FPK 映射、
+          // 中转不认会返回 404/502，但页面仍是可用的 SPA 壳（内部自行加载/跳转真实内容）。
+          // 继续按 4xx 压窗会让用户白等 4.5s（deferred-show why:timeout）。
+          // 故 appview 目标一律放行显示，让页面自行处理跳转。
+          if (__fnAppviewTarget) return true;
           const __c = parseInt(win.__fnLastHttp, 10);
           return !(__c >= 400);
         } catch (_) { return true; }

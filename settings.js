@@ -335,7 +335,8 @@
   // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
   // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
   // v2.19.0：material = 纯色/磨砂玻璃，blur = 磨砂强度
-  const tbState = { opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55 };
+  // v3.0.24：默认值与主进程一致（新装默认 96% 不透明 + 深色，避免标题栏看不见）
+const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55 };
   const tbOpacity = document.getElementById('tb-opacity');
   const tbOpacityVal = document.getElementById('tb-opacity-val');
   const tbColorInput = document.getElementById('tb-color-input');
@@ -465,8 +466,8 @@
       if (!info) return;
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
       if (optHideBall) { optHideBall.checked = info.hideAccountBall === true; syncHideBallLabel(); }
-      tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 0);
-      tbState.color = hexNorm6(info.titleBarColor) || '#3B82F6';
+      tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 96);
+      tbState.color = hexNorm6(info.titleBarColor) || '#101426';
       tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'solid';
       tbState.blur = clampInt(info.titleBarBlur, 0, 40, 20);
       if (tbBlur) tbBlur.value = String(tbState.blur);

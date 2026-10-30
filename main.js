@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.23';
+const APP_VERSION = '3.0.24';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1794,6 +1794,10 @@ function defaultSettings() {
     // v1.10.2：主题色（仅影响标题栏叠加色，不动页面内配色）
     // 可选：'#1e1b2e'（默认深紫黑）、'#0f172a'（深蓝）、'#101828'（纯黑）、'#1f2937'（石墨）、'#312e81'（靛蓝）、'#831843'（酒红）
     themeColor: '#1e1b2e',
+    // v3.0.24：标题栏默认样式（新安装即不透明，避免用户找不到标题栏）
+    titleBarOpacity: 96,
+    titleBarColor: '#101426',
+    titleBarMaterial: 'solid',
     // 标题栏皮肤目录名（%APPDATA%/<app>/skins/<activeSkin>），空 = 默认标题栏
     activeSkin: '',
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
@@ -2845,17 +2849,57 @@ function loadSettings() {
   return cachedSettings;
 }
 
+// v3.0.24（用户反馈：皮肤包安装后关闭窗口/退出程序皮肤就不加载，设置页/帮助页也加载不了）
+//  - manifest.json 带 UTF-8 BOM 时 JSON.parse 会直接抛错，表现为「皮肤装了但永远不生效」；
+//  - activeSkin 与 skins/ 下的目录名存在大小写/Unicode 规范化差异时 existsSync 找不到目录。
+// 两处都做容错，并把解析结果写进诊断日志，便于后续按窗口定位。
+function __readJsonLoose(p) {
+  try {
+    let txt = fs.readFileSync(p, 'utf-8');
+    if (txt.charCodeAt(0) === 0xFEFF) txt = txt.slice(1);
+    txt = txt.replace(/^\uFEFF/, '').trim();
+    if (!txt) return null;
+    return JSON.parse(txt);
+  } catch (_) { return null; }
+}
+
+// 在 SKINS_DIR 下按名称定位皮肤目录，兼容大小写 / Unicode NFC-NFD 差异
+function __findSkinDir(name) {
+  try {
+    const exact = path.join(SKINS_DIR, name);
+    if (fs.existsSync(path.join(exact, 'manifest.json'))) return exact;
+    const dirs = fs.readdirSync(SKINS_DIR);
+    const norm = function (x) {
+      let v = String(x);
+      try { if (v.normalize) v = v.normalize('NFC'); } catch (_) {}
+      return v.toLowerCase();
+    };
+    const want = norm(name);
+    for (const d of dirs) {
+      if (norm(d) !== want) continue;
+      const p = path.join(SKINS_DIR, d);
+      if (fs.existsSync(path.join(p, 'manifest.json'))) return p;
+    }
+  } catch (_) {}
+  return '';
+}
+
 // 标题栏皮肤：解析当前激活皮肤的 manifest，返回 { skinDir, skin }（skin 为 null 表示无皮肤）
 function resolveSkinConfig() {
   try {
     const s = loadSettings();
     const skinName = String((s && s.activeSkin) || '').trim();
     if (!skinName) return { skinDir: '', skin: null };
-    const skinDir = path.join(SKINS_DIR, skinName);
-    const manifestPath = path.join(skinDir, 'manifest.json');
-    if (!fs.existsSync(manifestPath)) return { skinDir: '', skin: null };
-    const skin = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    if (!skin || typeof skin !== 'object' || !skin.titlebar) return { skinDir: '', skin: null };
+    const skinDir = __findSkinDir(skinName);
+    if (!skinDir) {
+      dlog('warn', 'skin.resolve', { name: skinName, hit: false });
+      return { skinDir: '', skin: null };
+    }
+    const skin = __readJsonLoose(path.join(skinDir, 'manifest.json'));
+    if (!skin || typeof skin !== 'object' || !skin.titlebar) {
+      dlog('warn', 'skin.resolve', { name: skinName, hit: true, manifest: false });
+      return { skinDir: '', skin: null };
+    }
     return { skinDir, skin };
   } catch (_) {
     return { skinDir: '', skin: null };
@@ -2876,9 +2920,9 @@ function refreshTitlebarStrip() {
     const skinName = String((s && s.activeSkin) || '').trim();
     let h = 34;
     if (skinName) {
-      const manifestPath = path.join(SKINS_DIR, skinName, 'manifest.json');
-      if (fs.existsSync(manifestPath)) {
-        const skin = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      const sd = __findSkinDir(skinName);
+      if (sd) {
+        const skin = __readJsonLoose(path.join(sd, 'manifest.json'));
         const hh = Number(skin && skin.titlebar && skin.titlebar.height);
         if (isFinite(hh) && hh >= 20 && hh <= 80) h = Math.round(hh);
       }
@@ -5024,6 +5068,7 @@ function createSettingsWindow() {
     },
   });
   settingsWindow.__isSettings = true; // 供 refreshMpvLayer 识别为应浮于 mpv 之上的子弹窗
+  settingsWindow.__noTop = true; // v3.0.24（用户要求）：设置页不再被强行系统级置顶，按正常窗口层级
   settingsWindow.setMenuBarVisibility(false);
   settingsWindow.loadFile(SETTINGS_PAGE).catch(() => {});
   // 设置窗移动到前台/获焦/显示时立即让 mpv 降层（防止置顶 mpv 盖住设置页）
@@ -10454,8 +10499,9 @@ ipcMain.handle('settings:get', async () => {
     // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示（默认）
     titleBarAutoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
     // v1.58：标题栏不透明度/颜色（标题栏颜色独立于界面主题色）
-    titleBarOpacity: clampInt(s.titleBarOpacity, 0, 100, 0),
-    titleBarColor: String(s.titleBarColor || '#3B82F6'),
+    // v3.0.24（用户反馈：新装默认标题栏透明，用户找不到标题栏）——未配置时默认 96% 不透明 + 深色底
+    titleBarOpacity: clampInt(s.titleBarOpacity, 0, 100, 96),
+    titleBarColor: String(s.titleBarColor || '#101426'),
     // v2.19.0：标题栏材质（solid 纯色 / frosted 磨砂玻璃）+ 磨砂强度 0~40px
     titleBarMaterial: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
     titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 20),
@@ -10626,9 +10672,9 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // v1.54/v1.58：标题栏自动隐藏（默认 false=常驻）+ 不透明度/颜色
     const tbAutoHide = opts && typeof opts.titleBarAutoHide === 'boolean' ? opts.titleBarAutoHide : (cachedSettings.titleBarAutoHide === true);
     const tbOpacity = opts && opts.titleBarOpacity != null && Number.isFinite(Number(opts.titleBarOpacity))
-      ? clampInt(opts.titleBarOpacity, 0, 100, 0)
-      : clampInt(cachedSettings.titleBarOpacity, 0, 100, 0);
-    const tbColor = opts?.titleBarColor ? String(opts.titleBarColor) : String(cachedSettings.titleBarColor || '#3B82F6');
+      ? clampInt(opts.titleBarOpacity, 0, 100, 96)
+      : clampInt(cachedSettings.titleBarOpacity, 0, 100, 96);
+    const tbColor = opts?.titleBarColor ? String(opts.titleBarColor) : String(cachedSettings.titleBarColor || '#101426');
     // v2.19.0：标题栏材质 + 磨砂强度
     const tbMaterial = (opts?.titleBarMaterial === 'frosted' || opts?.titleBarMaterial === 'solid')
       ? opts.titleBarMaterial
@@ -10824,8 +10870,9 @@ ipcMain.on('settings:get-titlebar', (e) => {
     // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；返回不透明度/颜色样式
     e.returnValue = {
       autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
-      opacity: clampInt(s.titleBarOpacity, 0, 100, 0),
-      color: String(s.titleBarColor || '#3B82F6'),
+      // v3.0.24：新装（未配置）默认 96% 不透明 + 深色底，用户一眼能看到标题栏
+      opacity: clampInt(s.titleBarOpacity, 0, 100, 96),
+      color: String(s.titleBarColor || '#101426'),
       // v2.19.0：材质 + 磨砂强度
       material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
       blur: clampInt(s.titleBarBlur, 0, 40, 20),
@@ -10836,7 +10883,7 @@ ipcMain.on('settings:get-titlebar', (e) => {
     e.returnValue.skinDir = __sk.skinDir;
     e.returnValue.skin = __sk.skin;
   } catch (_) {
-    e.returnValue = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20 };
+    e.returnValue = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20 };
   }
 });
 
@@ -10891,14 +10938,17 @@ function __showUpdChecking() {
     x: Math.round((wa.width - w) / 2), y: Math.round((wa.height - h) / 2),
     frame: false, transparent: true, resizable: false, minimizable: false,
     maximizable: false, fullscreenable: false, skipTaskbar: true,
-    alwaysOnTop: true, show: false, hasShadow: true, icon: ICON_PATH,
+    // v3.0.24（用户反馈：检查更新提示框前置等级太高，要按正常逻辑）——不再系统级置顶，
+    // 只靠 mpv 降层 + 正常 z-order 浮在程序窗之上，不压其它程序。
+    alwaysOnTop: false, show: false, hasShadow: true, icon: ICON_PATH,
     backgroundColor: '#00000000',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   win.__isGlassDialog = true;
+  win.__noTop = true; // v3.0.24：不参与「阻挡窗强行 screen-saver 置顶」（见 _applyMpvLayer）
   const html = '<!doctype html><html><head><meta charset="utf-8"><style>'
     + 'html,body{margin:0;height:100%;background:transparent;overflow:hidden}'
-    + '.c{box-sizing:border-box;height:100%;border-radius:14px;display:flex;align-items:center;gap:12px;padding:0 18px;'
+    + '.c{box-sizing:border-box;height:100%;border-radius:14px;display:flex;align-items:center;gap:12px;padding:0 18px;-webkit-app-region:drag;'
     + 'background:linear-gradient(160deg,rgba(24,32,54,.97),rgba(10,14,26,.98));border:1px solid rgba(255,255,255,.13);'
     + 'box-shadow:0 20px 50px -18px rgba(0,0,0,.85),inset 0 1px 0 rgba(255,255,255,.08);'
     + 'color:#e9efff;font-family:"Microsoft YaHei",system-ui,sans-serif}'
@@ -10913,7 +10963,7 @@ function __showUpdChecking() {
     win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {});
   } catch (_) {}
   win.once('ready-to-show', () => {
-    try { win.showInactive(); win.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
+    try { win.showInactive(); win.setAlwaysOnTop(false); } catch (_) {} // v3.0.24：保持普通层级
   });
   win.on('closed', () => { if (__updCheckingWin === win) __updCheckingWin = null; });
   __updCheckingWin = win;
@@ -10937,7 +10987,7 @@ function __showUpdProgress(ver) {
     x: Math.round((wa.width - w) / 2), y: Math.round((wa.height - h) / 2),
     frame: false, transparent: true, resizable: false, minimizable: false,
     maximizable: false, fullscreenable: false, skipTaskbar: true,
-    alwaysOnTop: true, show: false, hasShadow: true, icon: ICON_PATH,
+    alwaysOnTop: false, show: false, hasShadow: true, icon: ICON_PATH, // v3.0.24：用户反馈层级过高，改普通层级
     backgroundColor: '#00000000',
     webPreferences: {
       preload: UPD_PROGRESS_PRELOAD,
@@ -10945,9 +10995,10 @@ function __showUpdProgress(ver) {
     },
   });
   win.__isGlassDialog = true;
+  win.__noTop = true; // v3.0.24：不参与「阻挡窗强行 screen-saver 置顶」
   win.loadFile(UPD_PROGRESS_PAGE, { query: { v: String(ver || '') } }).catch(() => {});
   win.once('ready-to-show', () => {
-    try { win.show(); win.setAlwaysOnTop(true, 'screen-saver'); win.focus(); } catch (_) {}
+    try { win.show(); win.setAlwaysOnTop(false); win.focus(); } catch (_) {} // v3.0.24：普通层级，不压其它程序
   });
   win.on('closed', () => { if (__updProgressWin === win) __updProgressWin = null; });
   __updProgressWin = win;
@@ -15072,8 +15123,17 @@ function _applyMpvLayer(shouldSuppress, reason, focusedHostId) {
   _forEachBlockingWindow((w) => {
     try {
       if (shouldSuppress) {
-        // 'screen-saver' 层级高于 mpv 普通 ontop(=floating)，确保设置窗在最上
-        if (!w.isAlwaysOnTop()) w.setAlwaysOnTop(true, 'screen-saver');
+        // v3.0.24（用户反馈「偏好设置页 / 下载进度条前置等级太高，按正常逻辑」）——
+        // 不再给这类窗口设 screen-saver（Windows 上会压住本程序以外的所有窗口，
+        // 连任务管理器都顶不起来）。这里 mpv 已经被 setAllMpvOntop(false) 降层，
+        // 普通 z-order 足够让对话框浮在最上面；标了 __noTop 的窗口顺手清掉历史置顶。
+        if (w.__noTop) {
+          if (w.isAlwaysOnTop()) w.setAlwaysOnTop(false);
+          // 非置顶也要浮在 mpv / 主窗之上：把窗口提到本程序 z-order 顶部即可
+          try { w.moveTop(); } catch (_) {}
+        } else if (!w.isAlwaysOnTop()) {
+          w.setAlwaysOnTop(true, 'screen-saver');
+        }
       } else {
         if (w.isAlwaysOnTop()) w.setAlwaysOnTop(false);
       }
@@ -15091,7 +15151,13 @@ function refreshMpvLayer() {
       else {
         // 状态未变但仍有阻挡窗（如新弹窗替换旧弹窗）：确保它们处于置顶
         _forEachBlockingWindow((w) => {
-          try { if (!w.isAlwaysOnTop()) w.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
+          try {
+            // v3.0.24：__noTop 窗口保持普通层级（只提到本程序 z-order 顶部，不做系统级置顶）
+            if (w.__noTop) {
+              if (w.isAlwaysOnTop()) w.setAlwaysOnTop(false);
+              try { w.moveTop(); } catch (_) {}
+            } else if (!w.isAlwaysOnTop()) w.setAlwaysOnTop(true, 'screen-saver');
+          } catch (_) {}
         });
       }
       return;

@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "3.0.23",
+  "version": "3.0.24",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -104,6 +104,7 @@
       "createStartMenuShortcut": true,
       "shortcutName": "FNOS",
       "runAfterFinish": true,
+      "include": "installer-custom.nsi",
       "artifactName": "FNOS-${version}-setup.${ext}"
     },
     "mac": {

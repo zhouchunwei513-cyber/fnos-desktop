@@ -443,6 +443,25 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
+    // v3.0.24（用户反馈：皮肤包装完当场有效，关窗/退出程序后就不加载；设置页/帮助页/部分
+    // 应用窗也不加载）——冷启动早期视频首帧未解析、图片未解码、层被页面重排清掉时，皮肤会应用
+    // 失败；旧实现用「签名相同即返回」把失败状态永久固化，只有重新安装皮肤包（文件 mtime 变化）
+    // 才会重试。这里做几次延迟补应用，冷启动后自动恢复。
+    function __skinReloadSoon() {
+      try {
+        [0, 260, 900, 2200].forEach(function (ms) {
+          setTimeout(function () {
+            try {
+              const b = document.getElementById('fnos-titlebar');
+              if (!b) return;
+              __applyTitlebarHeight();
+              applyStyle(b);
+            } catch (_) {}
+          }, ms);
+        });
+      } catch (_) {}
+    }
+
     // 给标题栏挂背景层(z-index:-2) + 形状层(z-index:-1)子元素（绝对定位，不参与 flex）
     function __attachSkinLayers(bar) {
       try {
@@ -478,7 +497,18 @@ module.exports = function injectTitleBar(ctx) {
             return d + '|' + JSON.stringify(bg || null) + '|' + JSON.stringify(shape || null) + '|' + mt;
           } catch (_) { return ''; }
         })();
-        if (__sig && bar.__skinSig === __sig) return !!bar.__skinHasBg;
+        // v3.0.24：命中签名也要确认皮肤层还活着、视频真的出画面，否则重新应用（否则
+        // 首次失败会被永久缓存，表现为「重启后皮肤不加载，重装皮肤包才恢复」）
+        if (__sig && bar.__skinSig === __sig) {
+          let __ok = !!(bgLayer && bgLayer.isConnected) && !!(shapeLayer && shapeLayer.isConnected);
+          if (__ok && bar.__skinHasBg && bgLayer) {
+            // 视频还在缓冲（readyState<1）时不要重建，否则会反复销毁正在加载的 video 元素；
+            // 它在 DOM 里解码完成后会自己出画面，这里只负责把它们重新 play 起来。
+            const __v = bgLayer.querySelector('video');
+            if (__v && __v.paused) { try { __v.play().catch(function () {}); } catch (_) {} }
+          }
+          if (__ok) return !!bar.__skinHasBg;
+        }
         if (bgLayer) { bgLayer.style.display = 'none'; bgLayer.style.backgroundImage = 'none'; bgLayer.style.backgroundColor = 'transparent'; bgLayer.innerHTML = ''; }
         if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; shapeLayer.innerHTML = ''; }
         let hasBg = false;
@@ -488,10 +518,23 @@ module.exports = function injectTitleBar(ctx) {
             if (url && bgLayer) {
               const v = document.createElement('video');
               v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
+              // v3.0.24：显式补齐属性 + preload，冷启动时首个 play() 常因文档未显示被挂起，
+              // 出画面后再补一次，避免视频皮肤黑屏（图片皮肤不受影响）
+              v.setAttribute('muted', ''); v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
+              v.preload = 'auto';
               v.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;pointer-events:none;-webkit-app-region:no-drag;';
               v.src = url;
               bgLayer.appendChild(v);
               bgLayer.style.display = 'block';
+              // v3.0.24：视频首帧没出来之前铺一层深色底，避免标题栏变成「看不见的透明条」
+              // （素材解码完成后 video 会整体盖住这层底色，不影响最终观感）
+              try { bgLayer.style.backgroundColor = 'rgba(12,16,30,.94)'; } catch (_) {}
+              try {
+                const __tryPlay = function () { try { if (v.paused) v.play().catch(function () {}); } catch (_) {} };
+                v.addEventListener('loadeddata', __tryPlay);
+                v.addEventListener('canplay', __tryPlay);
+                __tryPlay();
+              } catch (_) {}
               hasBg = true;
             }
           } else if ((bg.type === 'image' || bg.type === 'gif') && bg.src) {
@@ -565,6 +608,17 @@ module.exports = function injectTitleBar(ctx) {
         }
         bar.__skinSig = __sig;
         bar.__skinHasBg = hasBg;
+        // v3.0.24：把「这个窗口有没有套上皮肤」落进诊断日志，便于按窗口/页面排查
+        try {
+          ipcRenderer.send('fnos:media-log', {
+            stage: 'titlebar.skin',
+            hasBg: hasBg,
+            kind: String((bg && bg.type) || ''),
+            hasShape: !!shape,
+            dir: String(__skinState.skinDir || ''),
+            path: String(location.pathname || '').slice(0, 40),
+          });
+        } catch (_) {}
         return hasBg;
       } catch (_) { return false; }
     }
@@ -1377,6 +1431,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // 初始状态：先应用材质/颜色样式，再按自动隐藏决定显隐
         applyStyle(bar);
+        __skinReloadSoon(); // v3.0.24：冷启动补应用（视频首帧/图片解码未就绪时首轮会失败）
         if (AUTO_HIDE) hide(bar); else show(bar);
 
         // ---- 防 SPA 重渲染清除：v2.10.0 r30（问题1 次因）全件检查+整件重建+解除防重入死锁 ----
@@ -1532,6 +1587,10 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(btns);
         __attachSkinLayers(bar);
         root2.appendChild(bar);
+        // v3.0.24（用户反馈：皮肤只主程序加载，打开一些应用时不加载）——内嵌窗标题栏
+        // 原来从未调用 applyStyle，皮肤/牛角/图标配色永远套不上，这里补上。
+        try { applyStyle(bar); } catch (_) {}
+        try { __skinReloadSoon(); } catch (_) {}
         // 原生拖拽兜底（与普通标题栏同款）
         // v2.17.45：双击标题栏最大化/还原（drag region 上 dblclick 不触发，改用 mousedown
         // 时间/位置间隔自判双击）。

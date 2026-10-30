@@ -36,6 +36,8 @@ html, body {
 }
 
 .card {
+  /* v3.0.24（用户要求：提示框可拖动）——卡片整体作为拖动区域，按钮/可选中区域单独排除 */
+  -webkit-app-region: drag;
   width: 460px; max-width: calc(100vw - 40px);
   max-height: 88vh;
   display: flex; flex-direction: column;
@@ -110,6 +112,7 @@ html, body {
 }
 .detail[hidden] { display: none !important; }
 .detail-text {
+  -webkit-app-region: no-drag;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font);
@@ -119,6 +122,7 @@ html, body {
 .detail::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 3px; }
 
 .foot {
+  -webkit-app-region: no-drag;
   display: flex;
   justify-content: center;
   flex-wrap: wrap;

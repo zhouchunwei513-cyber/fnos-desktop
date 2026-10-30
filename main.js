@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.29';
+const APP_VERSION = '3.0.30';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -4509,7 +4509,9 @@ function showGlassDialog(parent, options = {}) {
       transparent: true,
       modal: false,
       parent: undefined,
-      alwaysOnTop: true,
+      // v3.0.30（问题1）：更新提示等对话框不再强制置顶——用户反馈"前置等级太高"，
+      // 改为普通窗口层级（获得焦点即可，Ctrl+Tab/任务栏都能正常切走）。
+      alwaysOnTop: false,
       skipTaskbar: true,
       focusable: true,
       show: false,
@@ -4525,6 +4527,8 @@ function showGlassDialog(parent, options = {}) {
       },
     });
 
+    // v3.0.30（问题1）：标记为非置顶窗，refreshMpvLayer 等提层逻辑跳过它
+    try { win.__noTop = true; } catch (_) {}
     const centerIn = (w, h) => {
       let x, y;
       if (parentBounds) {
@@ -4577,7 +4581,8 @@ function showGlassDialog(parent, options = {}) {
         }
       } else if (channel === 'dlg:ready') {
         if (!win.isDestroyed()) {
-          try { win.showInactive(); win.setAlwaysOnTop(true, 'screen-saver'); win.focus(); win.moveTop(); } catch (_) {}
+          // v3.0.30（问题1）：去掉 setAlwaysOnTop(screen-saver)+moveTop，正常层级显示并取焦点。
+          try { win.show(); win.focus(); } catch (_) {}
         }
       }
     };
@@ -6297,10 +6302,69 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       } catch (_) {}
       try { __armBlackScan(win, 'app:' + String(__appLabel || '')); } catch (_) {}
       try { __armFrameInject26(win, 'app:' + String(__appLabel || '')); } catch (_) {}
+      // v3.0.30（问题5 日志）：窗口首次可见时间——"启动慢"直接量化到毫秒
+      try {
+        win.once('show', () => {
+          try {
+            dlog && dlog('info', 'appwin.show', {
+              app: __appLabel, winId: win.id,
+              fromCreateMs: Date.now() - __t0,
+              fromNavMs: win.__appNavStart ? (Date.now() - win.__appNavStart) : -1,
+              url: String(win.webContents.getURL() || '').slice(0, 130),
+              http: win.__fnLastHttp || 0,
+              cacheUsed: !!__cacheUsed29,
+            });
+          } catch (_) {}
+        });
+      } catch (_) {}
+      // v3.0.30（问题3）：内容区空白检测——"只有一个标题栏、既不加载也不提示"的兜底。
+      // 页面加载完成后 2.6s 取样：正文文字 <30 字符 且 无可视的 iframe/webview/video/canvas/img/表格 → 判空白 → 弹友好提示。
+      try {
+        win.webContents.on('did-finish-load', () => {
+          setTimeout(() => {
+            try {
+              if (win.isDestroyed()) return;
+              const __cur30 = String(win.webContents.getURL() || '');
+              if (!/^https?:/i.test(__cur30)) return;
+              if (win.__fnBlankAlerted30 || __fnIsErrPage(win)) return;
+              win.webContents.executeJavaScript("(function(){try{var b=document.body;if(!b)return -1;var t=(b.innerText||b.textContent||'').replace(/\\s+/g,'').trim();var e=b.querySelectorAll('iframe,webview,video,canvas,img,input,button,table,svg');var vis=0;for(var i=0;i<e.length;i++){var r=e[i].getBoundingClientRect();if(r.width>40&&r.height>40){vis=1;break;}}if(vis)return 0;if(t.length>30)return 0;return 1;}catch(_){return -1}})()")
+                .then((__r30) => {
+                  try {
+                    if (__r30 !== 1) return;
+                    if (win.isDestroyed() || win.__fnBlankAlerted30) return;
+                    win.__fnBlankAlerted30 = true;
+                    dlog && dlog('warn', 'appwin.blank', { app: __appLabel, winId: win.id, url: __cur30.slice(0, 130) });
+                    try { __fnShowErrPage(win, { app: __appLabel, kind: 'blank', url: __cur30, retryUrl: __cur30, http: (win.__fnLastHttp >= 400 ? win.__fnLastHttp : '') }); } catch (_) {}
+                  } catch (_) {}
+                })
+                .catch(() => {});
+            } catch (_) {}
+          }, 2600);
+        });
+      } catch (_) {}
       // v2.6.0 r26（问题5 日志）：导航失败全程埋点（-102 连接拒绝等根因直击加载挂起）
       try {
         win.webContents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
           try { require('./logger.js').log('warn', 'appwin', 'appwin.nav-error', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 80), url: String(url || '').slice(0, 120), main: !!isMainFrame } }, __RUN_MODE); } catch (_) {}
+          // v3.0.30（问题2c）：连接层失败（超时/拒绝/域名解析失败/不可达）自动改用同源 appview 中转，
+          // 窗口不再停在报错页。moontv 这类 docker 映射端口(3000)在客户端网络不可达是实锤场景。
+          try {
+            if (isMainFrame && (code === -118 || code === -102 || code === -105 || code === -7 || code === -106)) {
+              win.__fnConnFail30 = (win.__fnConnFail30 || 0) + 1;
+              if (win.__fnConnFail30 === 1 && !win.__fnConnSwap30) {
+                let __aid30 = '';
+                try { __aid30 = String((opts && (opts.appId || opts.name)) || __appLabel || ''); } catch (_) {}
+                const __av30 = __aid30 ? __appviewFallbackUrl(__aid30) : '';
+                if (__av30 && __av30 !== String(url || '')) {
+                  win.__fnConnSwap30 = true;
+                  try { require('./logger.js').log('warn', 'appwin', 'appwin.conn-fallback30', { params: { winId: win.id, app: __aid30.slice(0, 60), code: code, from: String(url || '').slice(0, 120), to: __av30.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+                  setTimeout(() => { try { if (!win.isDestroyed()) win.loadURL(__av30); } catch (_) {} }, 120);
+                } else {
+                  try { require('./logger.js').log('warn', 'appwin', 'appwin.conn-fallback30.skip', { params: { winId: win.id, app: __aid30.slice(0, 60), code: code, reason: __av30 ? 'same-url' : 'no-appid' } }, __RUN_MODE); } catch (_) {}
+                }
+              }
+            }
+          } catch (_) {}
         });
       } catch (_) {}
       // v2.5.5 r21（问题2）："应用不存在或未安装"错误页检测→自动换下一候选入口（每窗逐候选一次）
@@ -6321,11 +6385,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
               // v3.0.22：错误页不是应用页，不能再做入口探测，否则会把错误页正文当"坏页"继续跳候选
               if (__fnIsErrPage(win)) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
               if (String(win.webContents.getURL() || '').indexOf('data:text/html') === 0) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
-              win.webContents.executeJavaScript("(function(){try{var t=(document.body?document.body.innerText:'')||'';var u=String(location.href||'');if(u.indexOf('/appview')>=0){var st=/\u4e0d\u5b58\u5728\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|\u5e94\u7528\u4e0d\u5b58\u5728/.test(t);var ha=!!document.querySelector('webview,iframe,[id*=app],[class*=app]');return (st&&!ha)?1:0}var bad=/\u4e0d\u5b58\u5728?\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|Not Found|404|\u9875\u9762\u4e0d\u5b58\u5728|\u65e0\u6cd5\u627e\u5230|\u6ca1\u6709\u627e\u5230|\u65e0\u6cd5\u8bbf\u95ee/i.test(t);return bad?1:0}catch(_){return false}})()")
-                .then((bad) => {
+              // v3.0.30（问题3）：判据补充——appview 页只要已有实质内容（文字>600 或含可视嵌入元素/object/embed）
+              // 就算可用，不再因为文案里恰好有"未安装"三字而误判为坏入口来回跳；
+              // 同时把 bodyLen / hasEmbed / isLogin 一起回传，日志能直接看出是"真坏"还是"误判"。
+              win.webContents.executeJavaScript("(function(){try{var t=(document.body?document.body.innerText:'')||'';var u=String(location.href||'');var ln=t.replace(/\\s+/g,'').length;var login=/\\/login|\\/signin/i.test(u)?1:0;if(u.indexOf('/appview')>=0){var st=/\u4e0d\u5b58\u5728\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|\u5e94\u7528\u4e0d\u5b58\u5728/.test(t);var ha=!!document.querySelector('webview,iframe,object,embed,[id*=app],[class*=app]');return [(st&&!ha&&ln<600)?1:0,ln,ha?1:0,login]}var bad=/\u4e0d\u5b58\u5728?\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|Not Found|404|\u9875\u9762\u4e0d\u5b58\u5728|\u65e0\u6cd5\u627e\u5230|\u6ca1\u6709\u627e\u5230|\u65e0\u6cd5\u8bbf\u95ee/i.test(t);return [bad?1:0,ln,0,login]}catch(_){return [-1,0,0,0]}})()")
+                .then((__r30) => {
+                  const bad = Array.isArray(__r30) ? (__r30[0] === 1) : !!__r30;
+                  const __len30 = Array.isArray(__r30) ? (__r30[1] || 0) : -1;
+                  const __has30 = Array.isArray(__r30) ? (__r30[2] || 0) : 0;
+                  const __login30 = Array.isArray(__r30) ? (__r30[3] || 0) : 0;
                   try { win.__fnEntryCheck = false; } catch (_) {}
                   try {
-                    dlog && dlog('info', 'appwin.entry-check', { app: __appLabel, winId: win.id, bad: !!bad, left: __urlCandidates.length, url: String(win.webContents.getURL() || '').slice(0, 120) });
+                    dlog && dlog('info', 'appwin.entry-check', { app: __appLabel, winId: win.id, bad: !!bad, len: __len30, has: __has30, login: __login30, left: __urlCandidates.length, url: String(win.webContents.getURL() || '').slice(0, 120) });
                     if (win.isDestroyed()) return;
                     if (!bad) {
                       // v3.0.29：探测到正确入口 → 记住，下次直接按这个方式启动（不再撞 404 中间态）
@@ -6348,16 +6419,33 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                     // v2.5.7 r23（问题2）：候选预检+耗尽友好错误页——r22 逐候选裸跳连环 404
                     // "跳转了也不起作用"实锤。加载前 HTTP 预检过滤无效候选；全部耗尽后渲染本地
                     // 错误页明确告知"NAS 上不存在或未安装"，不再无限跳。
+                    // v3.0.30（问题2 首启慢）：候选预检由「逐条串行」改为「每批 4 条并发、按原优先级取首个可用」。
+                    // 实测候选链常达 7~9 条，串行时每条 100~700ms，首启光探测就要 1.5~3s。
                     const __tryNext23 = async () => {
+                      const __BATCH30 = 4;
                       while (!win.isDestroyed() && __urlCandidates.length) {
-                        const __nx = __urlCandidates.shift();
-                        if (!__nx) break;
-                        if (String(__nx) === String(win.webContents.getURL() || '')) { dlog && dlog('info', 'appwin.entry-preflight', { app: __appLabel, winId: win.id, url: String(__nx).slice(0, 120), ok: false, skip: 'same-url' }); continue; }
-                        const __ok = await __preflightEntry23(__nx);
-                        dlog && dlog(__ok ? 'warn' : 'info', 'appwin.entry-preflight', { app: __appLabel, winId: win.id, url: String(__nx).slice(0, 120), ok: !!__ok });
-                        if (__ok) {
-                          dlog && dlog('warn', 'appwin.entry-fallback', { app: __appLabel, winId: win.id, from: String(win.webContents.getURL() || '').slice(0, 140), to: String(__nx).slice(0, 140) });
-                          win.loadURL(__nx);
+                        const __batch30 = [];
+                        while (__batch30.length < __BATCH30 && __urlCandidates.length) {
+                          const __c = __urlCandidates.shift();
+                          if (__c) __batch30.push(__c);
+                        }
+                        if (!__batch30.length) break;
+                        const __curU30 = String(win.webContents.getURL() || '');
+                        const __bt30 = Date.now();
+                        const __res30 = await Promise.all(__batch30.map(async (__u30) => {
+                          if (String(__u30) === __curU30) return { u: __u30, ok: false, skip: 'same-url' };
+                          let __ok30 = false;
+                          try { __ok30 = !!(await __preflightEntry23(__u30)); } catch (_) {}
+                          return { u: __u30, ok: __ok30 };
+                        }));
+                        let __pick30 = null;
+                        for (const __r30b of __res30) {
+                          dlog && dlog(__r30b.ok ? 'warn' : 'info', 'appwin.entry-preflight', { app: __appLabel, winId: win.id, url: String(__r30b.u).slice(0, 120), ok: !!__r30b.ok, skip: __r30b.skip || '', batch: __batch30.length, ms: Date.now() - __bt30 });
+                          if (__r30b.ok && !__pick30) __pick30 = __r30b.u;
+                        }
+                        if (__pick30 && !win.isDestroyed()) {
+                          dlog && dlog('warn', 'appwin.entry-fallback', { app: __appLabel, winId: win.id, from: __curU30.slice(0, 140), to: String(__pick30).slice(0, 140), batchMs: Date.now() - __bt30 });
+                          try { win.loadURL(__pick30); } catch (_) {}
                           return;
                         }
                       }
@@ -6919,7 +7007,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           })();
           // 缓存命中：1.6s 内读到应用页即完成（session 过期会落 login → 2.6s 兜底补授权）；
           // fast-oauth：改由 appview 的 did-finish-load 事件收尾，fallback 定时器不抢跑。
-          const __preAuthFallbackMs308 = __preAuthFast308 ? 800 : (__fastOauth308 ? 15000 : 1000);
+          const __preAuthFallbackMs308 = __preAuthFast308 ? 500 : (__fastOauth308 ? 15000 : 750);
           const __preAuthTimeoutMs308 = __preAuthFast308 ? 1800 : 2600;
           __plog('info', 'appwin.preauth.start', { app: __appLabel, url: String(url).slice(0, 120), partition: String(partition || 'default') });
           // v3.0.7：预认证前快照该 partition 的 cookie，用于判断 per-app session 是否缺失
@@ -7107,28 +7195,37 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           // v2.17.38: 3 秒后若仍在应用路径（服务端未 302 到登录页），说明应用可直接访问、
           // 无需 per-app OAuth（如相册 /p）。此前 v2.1.17 会强制跳 /login，导致这类应用被
           // 误判为需要 OAuth 而白等 8 秒超时；现改为直接判完成并写缓存，避免无谓等待。
-          const __preAuthFallbackTimer = setTimeout(() => {
+          // v3.0.30（问题2 启动慢）：原实现只在 fallback 定时器（800~1000ms）到期时判一次
+          // "是否已直接落到应用页"，实测 preauth.direct 恒为 1013ms —— 白等满 1 秒。
+          // 现抽成函数，并在预认证窗 did-finish-load 后 120ms 就判一次（此时 URL 已定稿）。
+          const __preAuthTryDirect30 = () => {
             try {
-              if (!__preAuthDone && __preAuthNavCount <= 1) {
-                const __curUrl = __preAuthWin.webContents.getURL();
-                const __curObj = new URL(__curUrl);
-                // 如果还在应用路径下（没进入 OAuth 流程），说明无需 OAuth，直接完成
-                if (!__curUrl.includes('/login') && !__curUrl.includes('/signin') && !__curUrl.includes('/oauth')) {
-                  __preAuthDone = true;
-                  __plog('info', 'appwin.preauth.direct', {
-                    app: __appLabel,
-                    url: __curUrl.slice(0, 120),
-                    elapsedMs: Date.now() - __preAuthT0,
-                  });
-                  try {
-                    __preAuthCache.set(__preAuthKeyOf(url), { ts: Date.now(), navSteps: 0 });
-                  } catch (_) {}
-                  clearTimeout(__preAuthTimeout);
-                  __loadRealUrl();
-                }
+              if (__preAuthDone || __preAuthNavCount > 1) return;
+              const __curUrl = __preAuthWin.webContents.getURL();
+              if (!__curUrl) return;
+              const __curObj = new URL(__curUrl);
+              if (!__curUrl.includes('/login') && !__curUrl.includes('/signin') && !__curUrl.includes('/oauth')) {
+                __preAuthDone = true;
+                __plog('info', 'appwin.preauth.direct', {
+                  app: __appLabel,
+                  url: __curUrl.slice(0, 120),
+                  elapsedMs: Date.now() - __preAuthT0,
+                  via: 'direct-check',
+                });
+                try {
+                  __preAuthCache.set(__preAuthKeyOf(url), { ts: Date.now(), navSteps: 0 });
+                } catch (_) {}
+                clearTimeout(__preAuthTimeout);
+                __loadRealUrl();
               }
             } catch (_) {}
-          }, __preAuthFallbackMs308);
+          };
+          try {
+            __preAuthWin.webContents.once('did-finish-load', () => {
+              setTimeout(() => { try { __preAuthTryDirect30(); } catch (_) {} }, 120);
+            });
+          } catch (_) {}
+          const __preAuthFallbackTimer = setTimeout(__preAuthTryDirect30, __preAuthFallbackMs308);
 
           function __loadRealUrl() {
             clearTimeout(__preAuthTimeout);
@@ -12824,11 +12921,33 @@ function __startLaunchServer() {
               }
             }
           } catch (_) {}
+            // v3.0.30（问题4）：FPK embed 型应用的入口本质是「NAS 桌面 iframe 的 src」，
+            // 独立窗口直连会因缺宿主上下文（父窗 postMessage / 桌面样式 / 宿主 cookie 路径）而白屏，
+            // 这正是「应用内能开、快捷方式打不开」的差异来源。这类应用快捷方式统一改走同源 appview 壳窗。
+            try {
+              const __embedRelay30 = /^(trim\.snapshots|trim\.iscsi|trim\.file-manager|trim\.backup-and-sync)$/i;
+              if (__embedRelay30.test(String(appId || '')) && u && !/\/appview\?anchor=/i.test(String(u))) {
+                const __rv30 = __appviewFallbackUrl(appId);
+                if (__rv30) {
+                  try { require('./logger.js').log('warn', 'launch', 'launch.embed-relay', { params: { appId: String(appId || '').slice(0, 60), from: String(u).slice(0, 140), to: __rv30.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+                  u = __rv30;
+                }
+              }
+            } catch (_) {}
+            // v3.0.30（问题5 日志）：记录入口最终形态（直连真地址 / appview 同源中转）
+            try {
+              require('./logger.js').log('info', 'launch', 'launch.entry-final', { params: { appId: String(appId || '').slice(0, 60), url: String(u || '').slice(0, 150), kind: /\/appview\?anchor=/i.test(String(u || '')) ? 'appview-relay' : 'direct' } }, __RUN_MODE);
+            } catch (_) {}
             // v2.4.17 r15d：快捷方式 HTTP 入口统一收口——窗口类型标记直开对应形态窗
             // （内嵌=壳 iframe 壳窗；跳出=独立应用窗），无标记回落模拟点击兜底（观测回填）；
             // 无论分支与否主页面藏托盘/最小化（单窗口体验，快捷方式=触发器定案）。
             let __wth = ''; let __wthUrl = '';
             try { const __eh = __windowTypeGetEntry(appId) || __windowTypeGetEntry(fpkAppNameFromUrl(u) || ''); if (__eh) { __wth = __eh.type; __wthUrl = __eh.url; } } catch (_) {}
+            // v3.0.30（问题5 日志）：把"这一窗按什么形态开、用什么 URL、是否走过中转"一次记全，
+            // 便于对照 appwin.show / appwin.blank / appwin.nav-error 三段定位慢在哪。
+            try {
+              require('./logger.js').log('info', 'launch', 'launch.shape', { params: { appId: String(appId || '').slice(0, 60), windowType: String(__wth || 'popout'), wthUrl: String(__wthUrl || '').slice(0, 120), finalUrl: String(u || '').slice(0, 150), appview: /\/appview\?anchor=/i.test(String(u || '')) } }, __RUN_MODE);
+            } catch (_) {}
             const __openedH = __openAppByWindowType(appId, appId, u, __wth, __wthUrl);
             try { require('./logger.js').log('info', 'launch', 'launch.open', { params: { appId: appId.slice(0, 120), ok: !!__openedH, windowType: String(__wth || ''), url: String(u).slice(0, 160), ms: Date.now() - __t0L } }, __RUN_MODE); } catch (_) {}
             __notifyOpenFpkApp(appId, true, u, __openedH ? (__wth || 'popout') : '');

@@ -7325,6 +7325,8 @@ function __armMainHealth(reason) {
         if (__fnIsErrPage(win)) return;
         const u = String(win.webContents.getURL() || '');
         if (!/^https?:/i.test(u)) return;
+        // 登录页内容天然极少（输入框+按钮），绝不能当白板处理，否则会顶掉登录页
+        if (/\/login([\/?#]|$)/i.test(u)) return;
         win.webContents.executeJavaScript(__probe).then(function (r) {
           try {
             if (!r || typeof r !== 'object' || r.e) return;

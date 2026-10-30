@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.35';
+const APP_VERSION = '3.0.36';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6096,11 +6096,41 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     }
   } catch (_) {}
 
+  // v3.0.36（用户要求）：程序内打开的内嵌窗应用 —— 不再任由 Windows 层叠默认位甩到角上，
+  // 也不再一开就铺满主窗。位置＝在主窗内居中（四周各留 30px 以上）；尺寸＝主窗的 86%（下限 880x580），
+  // 四周始终能看到主窗边。主窗已销毁时退回工作区居中。
+  const __geo36 = (() => {
+    try {
+      const wa = screen.getPrimaryDisplay().workArea;
+      const mw = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.getBounds() : null;
+      const cw = mw ? mw.width : wa.width;
+      const ch = mw ? mw.height : wa.height;
+      let w = Number(opts && opts.width) || 1280;
+      let h = Number(opts && opts.height) || 820;
+      w = Math.max(880, Math.min(w, Math.round(cw * 0.86)));
+      h = Math.max(580, Math.min(h, Math.round(ch * 0.86)));
+      let x;
+      let y;
+      if (mw) {
+        x = mw.x + Math.round((mw.width - w) / 2);
+        y = mw.y + Math.round((mw.height - h) / 2);
+      } else {
+        x = wa.x + Math.round((wa.width - w) / 2);
+        y = wa.y + Math.round((wa.height - h) / 2);
+      }
+      x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
+      y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
+      return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
+    } catch (_) { return null; }
+  })();
+
   const win = new BrowserWindow({
-    width: opts.width || 1280,
-    height: opts.height || 820,
-    minWidth: 900,
-    minHeight: 600,
+    x: __geo36 ? __geo36.x : undefined,
+    y: __geo36 ? __geo36.y : undefined,
+    width: __geo36 ? __geo36.width : (opts.width || 1280),
+    height: __geo36 ? __geo36.height : (opts.height || 820),
+    minWidth: 880,
+    minHeight: 580,
     title: opts.title || APP_NAME,
     // v2.15.38：恢复应用窗透明（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板，透明窗口本身不是白板根因；应用窗内容由
@@ -11274,7 +11304,13 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // 旧逻辑在被传入空串（或 cached 尚未就绪）时会把 activeSkin 写成 ''，导致"装好的皮肤
     // 因为点了一次保存界面设置而丢失"，重启后就不加载。
     const __fileCfg = loadSettings();
-    const activeSkin = (opts && typeof opts.activeSkin === 'string' && String(opts.activeSkin).trim())
+    // v3.0.36：切回「默认皮肤」必须生效。v3.0.27 为了防止"点一次保存界面设置把装好的皮肤弄丢"，
+    // 把「传了空串」也当成「没传」，结果设置页点默认时传的 activeSkin:'' 被直接丢弃，activeSkin
+    // 永远停在上一套皮肤上（金鱼），保存无效、重启也不恢复，这就是"点了默认皮肤不管用"的根因。
+    // 改为按「字段是否真的出现在 opts 里」判断：显式传 activeSkin（含空串）＝用户在设置页的明确选择；
+    // 没传该字段＝保留 settings.json 里的值。
+    const __skinField36 = !!(opts && Object.prototype.hasOwnProperty.call(opts, 'activeSkin') && typeof opts.activeSkin === 'string');
+    const activeSkin = __skinField36
       ? String(opts.activeSkin).trim()
       : String((__fileCfg && __fileCfg.activeSkin) || '');
     // v3.0.23：悬浮球隐藏开关（改完立即下发，不需要重启）
@@ -11284,7 +11320,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', {
       fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'),
       value: hideBall,
-      skinSrc: (opts && typeof opts.activeSkin === 'string' && String(opts.activeSkin).trim()) ? 'opts' : 'file',
+      skinSrc: __skinField36 ? 'opts' : 'file',
       activeSkin: String(activeSkin).slice(0, 80),
     });
     saveSettings({

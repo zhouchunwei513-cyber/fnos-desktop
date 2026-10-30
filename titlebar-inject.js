@@ -520,8 +520,10 @@ module.exports = function injectTitleBar(ctx) {
                 try {
                   const r2 = ipcRenderer.sendSync('settings:get-titlebar');
                   if (r2 && typeof r2 === 'object') {
-                    if (r2.skinDir) __skinState.skinDir = String(r2.skinDir);
-                    if (r2.skin && typeof r2.skin === 'object') __skinState.skin = r2.skin;
+                    // v3.0.36：默认皮肤时 r2.skinDir='' / r2.skin=null，旧写法两个 if 都不进，
+                    // 旧皮肤被"保住"，切默认后一次延迟重绘又把它画回来。改为按字段存在更新。
+                    if (Object.prototype.hasOwnProperty.call(r2, 'skinDir')) __skinState.skinDir = String(r2.skinDir || '');
+                    if (Object.prototype.hasOwnProperty.call(r2, 'skin')) __skinState.skin = (r2.skin && typeof r2.skin === 'object') ? r2.skin : null;
                     if (typeof r2.hideAccountBall === 'boolean') {
                       TB.hideAccountBall = r2.hideAccountBall;
                       try { if (window.__fnApplyBallHidden) window.__fnApplyBallHidden(r2.hideAccountBall); } catch (_) {}
@@ -900,7 +902,9 @@ module.exports = function injectTitleBar(ctx) {
             if (val.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(val.highlight)));
             const __skBefore = String(__skinState.skinDir || '');
             if (val.skinDir != null) __skinState.skinDir = String(val.skinDir);
-            if (val.skin != null) __skinState.skin = (val.skin && typeof val.skin === 'object') ? val.skin : null;
+            // v3.0.36：切回默认皮肤时主进程下发 skin:null；旧写法 `val.skin != null` 为 false 会
+            // 直接跳过，已注入的皮肤层永远清不掉（点「默认」没反应的第二个原因）。改为「字段存在即更新」。
+            if (Object.prototype.hasOwnProperty.call(val, 'skin')) __skinState.skin = (val.skin && typeof val.skin === 'object') ? val.skin : null;
             // v3.0.27：皮肤刚下发时页面可能尚未布局稳定，补跑一轮延迟应用
             try {
               if (String(__skinState.skinDir || '') !== __skBefore) {
@@ -1007,8 +1011,11 @@ module.exports = function injectTitleBar(ctx) {
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
-          // v2.15.99：标题栏四角统一采用相同的小 R 角（四角均为 10px，小于窗口 clip-path 20px 大圆角）
-          'border-radius:10px',
+          // v3.0.36（用户反馈"标题栏四个角不是 R 角是直角"）：上两角必须与窗口 clip-path 的 20px
+          // 大圆角【完全重合】。v2.15.99 的 10px 在 34px 高的横条上视觉就是直角，而且在窗口顶角处
+          // 比窗口圆角小一半，会露出一圈缺口。下两角改 0，让 bar 直接压住与内容区的接缝。
+          // 最大化 / 全屏时由 __syncBarRadius36() 归零，否则屏幕两上角会露 20px 缺口。
+          'border-radius:20px 20px 0 0',
           'background:' + __barBg,
           // v2.15.74：主窗口底部 1px 同色实边，与 height 36px 配合把重叠 1px 加到 2px，
           // 吸收 Windows 高分 DPI 下窗口缩放产生的小数亚像素抗锯齿，根治间歇性灰线。
@@ -1022,6 +1029,44 @@ module.exports = function injectTitleBar(ctx) {
           // pixels stay identical while only the page content zooms.
           'zoom:calc(1 / var(--fnos-f, 1))'
         ].filter(Boolean).join(';'));
+
+        // v3.0.36：圆角随窗口状态对齐。窗口铺满屏幕（最大化）或全屏时窗口本身没有圆角，
+        // bar 若还留 20px 会露出两个缺口，因此归零；其余情况保持上两角 20px、下两角 0。
+        try {
+          if (!bar.__syncBarRadius36) {
+            bar.__syncBarRadius36 = function () {
+              try {
+                const iw = window.innerWidth || 0;
+                const ih = window.innerHeight || 0;
+                const aw = (typeof screen !== 'undefined' && screen && screen.availWidth) || 0;
+                const ah = (typeof screen !== 'undefined' && screen && screen.availHeight) || 0;
+                const full = aw > 0 && ah > 0 && iw >= aw - 2 && ih >= ah - 2;
+                const fsOn = document.documentElement.getAttribute('data-fnos-fs') === '1';
+                const zero = full || fsOn;
+                const r = zero ? '0' : '20px 20px 0 0';
+                if (bar.__r36 === r) return;
+                bar.__r36 = r;
+                bar.style.borderTopLeftRadius = zero ? '0' : '20px';
+                bar.style.borderTopRightRadius = zero ? '0' : '20px';
+                bar.style.borderBottomLeftRadius = '0';
+                bar.style.borderBottomRightRadius = '0';
+                try { __tbLog('radius36', { r: r, full: full, fs: fsOn, iw: iw, ih: ih, aw: aw, ah: ah }); } catch (_) {}
+              } catch (_) {}
+            };
+          }
+          bar.__syncBarRadius36();
+          if (!window.__r36Hooked) {
+            window.__r36Hooked = true;
+            window.addEventListener('resize', function () {
+              try {
+                const b = document.getElementById('fnos-titlebar');
+                if (b && b.__syncBarRadius36) b.__syncBarRadius36();
+              } catch (_) {}
+            });
+          }
+          setTimeout(function () { try { if (bar.__syncBarRadius36) bar.__syncBarRadius36(); } catch (_) {} }, 260);
+          setTimeout(function () { try { if (bar.__syncBarRadius36) bar.__syncBarRadius36(); } catch (_) {} }, 1200);
+        } catch (_) {}
 
         // v2.15.84: grey band at the top of the content area while the window geometry changes.
         // Four recordings analysed frame by frame (r65..r68) all show the same thing: the band is

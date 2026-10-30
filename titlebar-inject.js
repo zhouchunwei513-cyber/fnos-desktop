@@ -1003,16 +1003,12 @@ module.exports = function injectTitleBar(ctx) {
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
         bar.__tbIsMain = __isMainWin; // 皮肤高度联动：主窗视觉高度 = 有效高度 + 2px 盖接缝
         __setCss(bar, [
-          // v3.0.34：--fnos-f<1（页面缩小）时 calc(100vw * f) 会让标题栏比窗口窄，右侧露缺口，用 max() 兜底
-          'position:fixed', 'top:0', 'left:0', 'width:max(100vw, calc(100vw * var(--fnos-f, 1)))', 'height:' + (__skinHeight + (__isMainWin ? 2 : 0)) + 'px',
+          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + (__isMainWin ? 2 : 0)) + 'px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',
-          // v3.0.34：标题栏在顶,它的两个上角必须和窗口 clip-path 的 20px 大圆角完全重合。
-          // v2.15.99 起的 10px 小 R 角比窗口圆角小一半,视觉上就是"标题栏两角变直角"（用户第 2 条反馈）,
-          // 皮肤背景层 border-radius:inherit 也跟着变方。底部两角给 0:标题栏底边直接压在内容区上,
-          // 不留 v2.15.99 那圈 10px 缺角缝。最大化/全屏时由 __syncBarRadius34 归零。
-          'border-radius:20px 20px 0 0',
+          // v2.15.99：标题栏四角统一采用相同的小 R 角（四角均为 10px，小于窗口 clip-path 20px 大圆角）
+          'border-radius:10px',
           'background:' + __barBg,
           // v2.15.74：主窗口底部 1px 同色实边，与 height 36px 配合把重叠 1px 加到 2px，
           // 吸收 Windows 高分 DPI 下窗口缩放产生的小数亚像素抗锯齿，根治间歇性灰线。
@@ -1026,44 +1022,6 @@ module.exports = function injectTitleBar(ctx) {
           // pixels stay identical while only the page content zooms.
           'zoom:calc(1 / var(--fnos-f, 1))'
         ].filter(Boolean).join(';'));
-
-        // ===== v3.0.34：标题栏圆角随窗口状态同步 =====
-        // 窗口没有最大化/全屏时,标题栏两上角 = 20px（和窗口大圆角重合）;
-        // 最大化或 html[data-fnos-fs="1"] 全屏态时,窗口本身没有圆角,标题栏也必须归零,
-        // 否则屏幕两上角会露出 20px 缺口。resize 时重算,__tbLog 记 titlebar.radius34 便于下轮核对。
-        try {
-          const __syncBarRadius34 = () => {
-            try {
-              const __aw = Number(screen.availWidth || 0);
-              const __ah = Number(screen.availHeight || 0);
-              const __full = __aw > 0 && __ah > 0 && (window.innerWidth || 0) >= (__aw - 2) && (window.innerHeight || 0) >= (__ah - 2);
-              const __fsOn = document.documentElement.getAttribute('data-fnos-fs') === '1';
-              const __r = (__full || __fsOn) ? '0' : '20px 20px 0 0';
-              if (bar.__r34 === __r) return;
-              bar.__r34 = __r;
-              bar.style.borderTopLeftRadius = (__full || __fsOn) ? '0' : '20px';
-              bar.style.borderTopRightRadius = (__full || __fsOn) ? '0' : '20px';
-              bar.style.borderBottomLeftRadius = '0';
-              bar.style.borderBottomRightRadius = '0';
-              try { __tbLog('titlebar.radius34', { r: __r, full: __full, fs: __fsOn, iw: window.innerWidth, ih: window.innerHeight, aw: __aw, ah: __ah }); } catch (_) {}
-            } catch (_) {}
-          };
-          bar.__syncBarRadius34 = __syncBarRadius34;
-          __syncBarRadius34();
-          if (!window.__tbR34Hooked) {
-            window.__tbR34Hooked = true;
-            try {
-              window.addEventListener('resize', () => {
-                try {
-                  const __b = document.getElementById('fnos-titlebar');
-                  if (__b && typeof __b.__syncBarRadius34 === 'function') __b.__syncBarRadius34();
-                } catch (_) {}
-              });
-            } catch (_) {}
-          }
-          setTimeout(__syncBarRadius34, 260);
-          setTimeout(__syncBarRadius34, 1200);
-        } catch (_) {}
 
         // v2.15.84: grey band at the top of the content area while the window geometry changes.
         // Four recordings analysed frame by frame (r65..r68) all show the same thing: the band is
@@ -2688,52 +2646,7 @@ module.exports = function injectTitleBar(ctx) {
     if (__isSubFrame) {
       try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
     }
-    // ===== v3.0.33（用户反馈：标题栏四个角从 R 角变成了直角）=====
-    // 四角圆角完全由 body 的 clip-path: inset(0 round 20px) 绘制（见 v2.15.47 的注释：
-    // html 不加 clip-path，避免把标题栏顶部两角裁成圆角）。唯一会让它失效的是全屏态
-    // html[data-fnos-fs="1"]>body{clip-path:none !important;border-radius:0 !important}。
-    // 也就是 data-fnos-fs 残留 = 四角直角。主进程若漏发 window:fullscreen-changed(false)
-    // （真机历史已复现过：内嵌窗最大化、MPV 全屏后主窗按钮失效同源），这个属性就会一直挂着。
-    // 冷启动时窗口必然不是全屏，所以这里直接清一次；真全屏时主进程随后会再发一次 true。
-    const __coldClearFs33 = () => {
-      try {
-        if (document.documentElement.getAttribute('data-fnos-fs') !== '1') return;
-        document.documentElement.removeAttribute('data-fnos-fs');
-        try { if (typeof __fsBody === 'function') __fsBody(false); } catch (_) {}
-        try { if (typeof __fsBarStyle === 'function') __fsBarStyle(!!AUTO_HIDE); } catch (_) {}
-        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.fs-cold-clear33' }); } catch (_) {}
-      } catch (_) {}
-    };
-    const __reportRadius33 = () => {
-      try {
-        const b = document.body;
-        if (!b) return;
-        const cs = getComputedStyle(b);
-        ipcRenderer.send('fnos:media-log', {
-          stage: 'titlebar.radius33',
-          fs: String(document.documentElement.getAttribute('data-fnos-fs') || ''),
-          clip: String(cs.clipPath || '').slice(0, 48),
-          rad: String(cs.borderRadius || '').slice(0, 32),
-          ovf: String(cs.overflow || '').slice(0, 20),
-          barH: String(cs.getPropertyValue('--fnos-bar-h') || '').slice(0, 12),
-          f: String(cs.getPropertyValue('--fnos-f') || '').slice(0, 12),
-          bw: b.clientWidth || 0,
-          bh: b.clientHeight || 0,
-          iw: window.innerWidth || 0,
-          ih: window.innerHeight || 0,
-          bar: !!document.getElementById('fnos-titlebar'),
-          skin: !!document.getElementById('fnos-skin-bg'),
-        });
-      } catch (_) {}
-    };
-    const start = () => {
-      try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {}
-      // v3.0.33：冷启动清残留全屏态（→ 四角恢复 20px 圆角），并在 2s/6s 记录一次圆角实测值
-      setTimeout(__coldClearFs33, 500);
-      setTimeout(__coldClearFs33, 2500);
-      setTimeout(__reportRadius33, 2000);
-      setTimeout(__reportRadius33, 6000);
-    };
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

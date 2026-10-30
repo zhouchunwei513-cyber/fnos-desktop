@@ -1,4 +1,4 @@
-﻿/**
+/**
  * FNOS 桌面客户端 - 主进程 (v2.0.0)
  *
  * 核心设计：
@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.27';
+const APP_VERSION = '3.0.28';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5779,6 +5779,20 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v2.0.5：修复——子应用窗口必须与主窗口使用同一 partition，否则 cookie/session 不共享，
   // 导致子应用打开后被重定向到登录页。不再将 persist:nas-* 替换为 SHARED_PARTITION。
   let partition = opts.partition || currentPartition;
+  // v3.0.28（问题3 根因）：快捷方式/历史记录可能带「旧 host 派生」的 partition。
+  // partition 是 cookie 隔离边界，落在旧 host 分区就没有当前账号登录态 → 页面跳 /v/login、
+  // 静态资源 401 返回 HTML（fnExternalPlayer.js "Unexpected token '<'" 即此），
+  // 表现为「应用内能打开，快捷方式启动加载不全」。统一到当前登录分区（与主窗/设置窗一致）。
+  try {
+    if (currentPartition && partition && partition !== currentPartition) {
+      dlog('warn', 'appwin.partition.force', {
+        from: String(partition).slice(0, 44),
+        to: String(currentPartition).slice(0, 44),
+        url: String(url || '').slice(0, 100),
+      });
+      partition = currentPartition;
+    }
+  } catch (_) {}
   applyUA(partition);
 
   // v2.1.15：增强日志——记录 createAppWindow 入口
@@ -6134,7 +6148,21 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         try {
           const __c = parseInt(__httpCode, 10);
           if (__c > 0) win.__fnLastHttp = __c;
-          if (__c >= 400) dlog && dlog('warn', 'appwin.http-status', { app: __appLabel, winId: win.id, status: __c, url: String(_navUrl || '').slice(0, 120) });
+          // v3.0.28（问题2）：记录首屏/中间态是否为 4xx/5xx。原来入口探测固定等 1500ms，
+          // 期间 did-finish-load 已把 404 中间态 show 出来 —— 用户看到的
+          // "先跳一个错误提示界面、随后才跳正确页面" 就是这段窗口期。
+          if (__c >= 400) {
+            win.__fnHttpBad28 = true;
+            dlog && dlog('warn', 'appwin.http-status', { app: __appLabel, winId: win.id, status: __c, url: String(_navUrl || '').slice(0, 120) });
+          } else if (__c > 0) {
+            win.__fnHttpBad28 = false;
+          }
+          try {
+            if (win.__fnHttpBad28 && typeof win.__fnEntryPoke28 === 'function') {
+              win.__fnEntryPoke28();
+              dlog && dlog('warn', 'appwin.entry-http-poke', { app: __appLabel, winId: win.id, status: __c, url: String(_navUrl || '').slice(0, 110) });
+            }
+          } catch (_) {}
         } catch (_) {}
       });
     } catch (_) {}
@@ -6158,9 +6186,14 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         // 永不显示="跳转了也不起作用"实锤；改为每轮都检测，耗尽即显友好页。
         if (!win.__fnEntryCheck) {
           win.__fnEntryCheck = true;
-          setTimeout(() => {
+          // v3.0.28（问题2）：把「入口探测 + 候选切换」提成可复用函数挂在 win 上，
+          // did-navigate 命中 4xx/5xx 时可立即调用；首屏本身就是 4xx 时延迟从 1500ms 收到 60ms。
+          win.__fnPokeDone28 = false;
+          const __fnPoke28 = () => {
             try {
               if (win.isDestroyed()) return;
+              if (win.__fnPokeDone28) return;
+              win.__fnPokeDone28 = true;
               // v3.0.22：错误页不是应用页，不能再做入口探测，否则会把错误页正文当"坏页"继续跳候选
               if (__fnIsErrPage(win)) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
               if (String(win.webContents.getURL() || '').indexOf('data:text/html') === 0) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
@@ -6233,7 +6266,13 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                   } catch (_) {}
                 }).catch(() => { try { win.__fnEntryCheck = false; } catch (_) {} });
             } catch (_) {}
-          }, 1500);
+          };
+          try { win.__fnEntryPoke28 = () => { win.__fnEntryCheck = true; __fnPoke28(); }; } catch (_) {}
+          const __pokeDelay28 = win.__fnHttpBad28 ? 60 : 1500;
+          if (__pokeDelay28 === 60) {
+            dlog && dlog('warn', 'appwin.entry-fast-probe', { app: __appLabel, winId: win.id, delay: 60, http: win.__fnLastHttp || 0 });
+          }
+          setTimeout(() => { try { if (typeof win.__fnEntryPoke28 === 'function') win.__fnEntryPoke28(); else __fnPoke28(); } catch (_) {} }, __pokeDelay28);
         }
       } catch (_) {}
       // v2.0.7：注入 CSS 隐藏 NAS 页面的「连接已断开」弹窗（外网抖动时避免打扰用户）
@@ -6549,12 +6588,26 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
             // 截断懒加载 chunk 致页面 SyntaxError 瘫痪转圈（iSCSI LUN 实锤）；首次捕获后延时
             // reload 一次（每窗 guard 一次防循环），埋点 appwin.script-heal 可回查。
             const __msgS = String(message || '');
+            // v3.0.28（问题3 日志加强）：区分两类语法错误——
+            //   html-not-js：脚本请求返回 HTML（未鉴权被重定向到登录页 / MIME 错），reload 无意义；
+            //   syntax：懒加载 chunk 被截断，reload 可能恢复（保持原自愈行为）。
+            const __isHtmlNotJs28 = /Unexpected token '?<'|Unexpected end of input|missing \) after argument list/i.test(__msgS);
             if (/SyntaxError|Unexpected token/i.test(__msgS) && !win.__fnSynHeal29) {
               win.__fnSynHeal29 = true;
-              try { dlog && dlog('warn', 'appwin.script-heal', { app: __appLabel, winId: win.id, msg: __msgS.slice(0, 160), url: String(win.webContents.getURL() || '').slice(0, 160) }); } catch (_) {}
-              setTimeout(() => {
-                try { if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.reload(); } catch (_) {}
-              }, 2500);
+              try {
+                dlog && dlog('warn', 'appwin.script-heal', {
+                  app: __appLabel, winId: win.id,
+                  kind: __isHtmlNotJs28 ? 'html-not-js' : 'syntax',
+                  heal: __isHtmlNotJs28 ? 'skip' : 'reload',
+                  msg: __msgS.slice(0, 160),
+                  url: String(win.webContents.getURL() || '').slice(0, 160),
+                });
+              } catch (_) {}
+              if (!__isHtmlNotJs28) {
+                setTimeout(() => {
+                  try { if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.reload(); } catch (_) {}
+                }, 2500);
+              }
             }
             const now = Date.now();
             if (!win.__appConsoleErrTs || now - win.__appConsoleErrTs > 10000) {
@@ -7120,9 +7173,69 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
           dlog && dlog('info', 'appwin.deferred-show', { app: __appLabel, winId: win.id, why, totalMs: Date.now() - __t0 });
         } catch (_) {}
       };
-      win.once('ready-to-show', () => { setTimeout(() => __fnShow25('ready'), 450); });
-      try { win.webContents.once('did-finish-load', () => setTimeout(() => __fnShow25('load'), 250)); } catch (_) {}
-      setTimeout(() => __fnShow25('timeout'), 2200);
+      // v3.0.28（问题2）：中间态不 show——4xx/5xx 一律推迟，等候选切换到 2xx 再显示，
+      // 从根本上消除"先看到一个错误提示界面、随后才跳到正确页面"的观感。
+      // 错误页（error.html）必须放行，否则用户连错误提示都看不到。
+      const __fnOk28 = () => {
+        try {
+          if (__fnIsErrPage(win)) return true;
+          const __c = parseInt(win.__fnLastHttp, 10);
+          return !(__c >= 400);
+        } catch (_) { return true; }
+      };
+      win.once('ready-to-show', () => {
+        setTimeout(() => {
+          if (__fnOk28()) { __fnShow25('ready'); return; }
+          // 中间态：轮询等候选切换出 2xx（最多 4s），超时由下面的 timeout 兜底
+          let __wait28 = 0;
+          const __tick28 = setInterval(() => {
+            __wait28 += 1;
+            try {
+              if (win.isDestroyed() || __wait28 > 16) { clearInterval(__tick28); return; }
+              if (__fnOk28()) { clearInterval(__tick28); __fnShow25('ready-after-retry'); }
+            } catch (_) { clearInterval(__tick28); }
+          }, 250);
+        }, 450);
+      });
+      try { win.webContents.once('did-finish-load', () => setTimeout(() => { if (__fnOk28()) __fnShow25('load'); }, 250)); } catch (_) {}
+      try {
+        win.webContents.on('did-navigate', () => {
+          setTimeout(() => {
+            try { if (!win.isDestroyed() && __fnOk28()) __fnShow25('nav-ok'); } catch (_) {}
+          }, 280);
+        });
+      } catch (_) {}
+      setTimeout(() => __fnShow25('timeout'), 4500);
+      // v3.0.28（问题3 兜底）：应用窗落到登录页（/v/login、/seek/login、/login?redirect=）
+      // 说明该 host 上没有登录态（历史 host / 公网 FRP 地址 / 旧分区）。
+      // 换到当前生效 host 重试一次（含 query 里 URL 编码的 redirect 目标），只做一次防循环。
+      try {
+        win.webContents.on('did-navigate', (_e, __nu28) => {
+          try {
+            const __u = String(__nu28 || '');
+            if (!/\/login(\?|$|\/)/i.test(__u)) return;
+            if (win.__fnLoginSwap28) return;
+            const __base28 = String(__liveOriginBase() || '').replace(/\/+$/, '');
+            if (!/^https?:\/\//i.test(__base28)) return;
+            let __cu, __bu;
+            try { __cu = new URL(__u); __bu = new URL(__base28); } catch (_) { return; }
+            if (!__cu.host || !__bu.host || __cu.host === __bu.host) return;
+            if (!/^https?:$/.test(__cu.protocol) || !/^https?:$/.test(__bu.protocol)) return;
+            win.__fnLoginSwap28 = true;
+            const __oldHost = __cu.host;
+            let __to = __u.split(__oldHost).join(__bu.host);
+            try {
+              const __encOld = encodeURIComponent(__cu.protocol + '//' + __oldHost);
+              const __encNew = encodeURIComponent(__bu.protocol + '//' + __bu.host);
+              __to = __to.split(__encOld).join(__encNew);
+            } catch (_) {}
+            try { dlog('warn', 'appwin.login-host-swap', { app: __appLabel, winId: win.id, from: __u.slice(0, 120), to: __to.slice(0, 120) }); } catch (_) {}
+            setTimeout(() => {
+              try { if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.loadURL(__to).catch(() => {}); } catch (_) {}
+            }, 150);
+          } catch (_) {}
+        });
+      } catch (_) {}
     } catch (_) {
       try { win.once('ready-to-show', () => { win.show(); win.focus(); }); } catch (_) {}
     }
@@ -9085,22 +9198,65 @@ async function processScannedApps(apps) {
         const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
           ? mainWindow.webContents.session
           : null;
+        // v3.0.28（问题3 根因）：iconData 是【绝对地址】，其 host 可能不是当前登录 host
+        // （多账号 / 公网 FRP / 换过访问地址）。实测 504 次 401 → manifest iconPath 为空
+        // → 快捷方式图标缺 + 应用信息加载不全。改为按候选 host 依次尝试：
+        // 主窗口当前 host → 原 URL host → settings.origin host，任一成功即采用。
+        const __iconHosts = [];
+        try {
+          const __curUrl = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) ? (mainWindow.webContents.getURL() || '') : '');
+          if (/^https?:/i.test(__curUrl)) { const __cu = new URL(__curUrl); __iconHosts.push(__cu.protocol + '//' + __cu.host); }
+        } catch (_) {}
+        try {
+          const __so = String((loadSettings() || {}).origin || '');
+          if (/^https?:/i.test(__so)) { const __su = new URL(__so); const __soKey = __su.protocol + '//' + __su.host; if (__iconHosts.indexOf(__soKey) < 0) __iconHosts.push(__soKey); }
+        } catch (_) {}
+        const __iconVariants = (u) => {
+          const list = [String(u)];
+          try {
+            const pu = new URL(u);
+            for (const __oh of __iconHosts) {
+              try {
+                const ou = new URL(__oh);
+                if (ou.host === pu.host) continue;
+                list.push(ou.protocol + '//' + ou.host + pu.pathname + pu.search);
+              } catch (_) {}
+            }
+          } catch (_) {}
+          return list;
+        };
         await Promise.all(iconTasks.map(async (task) => {
           try {
             if (!iconSes) return;
-            const resp = await iconSes.fetch(task.fetchUrl, { credentials: 'include' });
-            if (resp.ok) {
-              const ab = await resp.arrayBuffer();
-              const buf = Buffer.from(ab);
-              if (buf.length > 100) {
-                fs.writeFileSync(task.iconFile, buf);
-                // Update manifest entry with the downloaded icon path
-                const entry = existingByUrl.get(task.url);
-                if (entry) entry.iconPath = task.iconFile;
-                fnosLog('info', 'icon.download', 'icon downloaded', { app: task.appName, ok: true, size: buf.length });
-              }
+            const __cands = __iconVariants(task.fetchUrl);
+            let __bufOk = null; let __usedUrl = ''; let __lastStatus = 0; let __errMsg = '';
+            for (const __cu2 of __cands) {
+              try {
+                const resp = await iconSes.fetch(__cu2, { credentials: 'include' });
+                if (resp.ok) {
+                  const ab = await resp.arrayBuffer();
+                  const buf = Buffer.from(ab);
+                  if (buf.length > 100) { __bufOk = buf; __usedUrl = __cu2; break; }
+                  __lastStatus = 0;
+                } else {
+                  __lastStatus = resp.status;
+                }
+              } catch (__e4) { __errMsg = String((__e4 && __e4.message) || __e4).slice(0, 80); }
+            }
+            if (__bufOk) {
+              fs.writeFileSync(task.iconFile, __bufOk);
+              // Update manifest entry with the downloaded icon path
+              const entry = existingByUrl.get(task.url);
+              if (entry) entry.iconPath = task.iconFile;
+              fnosLog('info', 'icon.download', 'icon downloaded', {
+                app: task.appName, ok: true, size: __bufOk.length,
+                swap: __usedUrl !== task.fetchUrl ? String(__usedUrl).slice(0, 110) : '',
+              });
             } else {
-              fnosLog('warn', 'icon.download', 'icon download bad status', { app: task.appName, status: resp.status, url: String(task.fetchUrl).slice(0, 120) });
+              fnosLog('warn', 'icon.download', 'icon download bad status', {
+                app: task.appName, status: __lastStatus, tries: __cands.length,
+                err: __errMsg, url: String(task.fetchUrl).slice(0, 120),
+              });
             }
           } catch (e) { fnosLog('warn', 'icon.download', 'icon download error', { app: task.appName, err: e.message }); }
         }));
@@ -11052,36 +11208,48 @@ ipcMain.on('ball:set-pos', (_e, p) => {
 });
 
 ipcMain.on('settings:get-titlebar', (e) => {
+  // v3.0.28（问题1 根因）：必须【一次性构造完整对象】再赋给 e.returnValue。
+  // 实证 v3.0.27：先 e.returnValue = {...} 再 e.returnValue.skinDir = ... 时，
+  // Electron 在首次赋值即完成结构化克隆，后续属性写入抛 TypeError → 落 catch →
+  // 日志里 titlebar get（成功）0 条 / get.fail 103 条；所有窗口 preload 冷启动同步
+  // 拿不到 skinDir/skin，只能靠主进程补推（中间那段窗口标题栏就没有皮肤）。
+  let __tb = null;
   try {
     const s = loadSettings();
-    // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；返回不透明度/颜色样式
-    e.returnValue = {
+    let __sk = { skinDir: '', skin: null };
+    try { __sk = resolveSkinConfig() || __sk; } catch (__e1) {
+      try { fnosLog('error', 'titlebar', 'get.skinfail', { err: String((__e1 && __e1.message) || __e1).slice(0, 140) }); } catch (_) {}
+    }
+    // v1.54/v1.58：默认【不】自动隐藏（常驻标题栏）；v3.0.24 新装默认 96% 不透明 + 深色底
+    __tb = {
       autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
-      // v3.0.24：新装（未配置）默认 96% 不透明 + 深色底，用户一眼能看到标题栏
       opacity: clampInt(s.titleBarOpacity, 0, 100, 96),
       color: String(s.titleBarColor || '#101426'),
       // v2.19.0：材质 + 磨砂强度
       material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
       blur: clampInt(s.titleBarBlur, 0, 40, 20),
       highlight: clampInt(s.titleBarHighlight, 0, 100, 55),
+      skinDir: String(__sk.skinDir || ''),
+      skin: __sk.skin || null,
       hideAccountBall: s.hideAccountBall === true,
     };
-    const __sk = resolveSkinConfig();
-    e.returnValue.skinDir = __sk.skinDir;
-    e.returnValue.skin = __sk.skin;
-    // v3.0.27：每次窗口 preload 拉取都留痕（冷启动拿不到皮肤时可直接对比）
-    try {
-      fnosLog('info', 'titlebar', 'get', {
-        skinDir: __sk.skinDir ? String(__sk.skinDir).slice(-30) : '',
-        hasSkin: !!__sk.skin,
-        hideBall: e.returnValue.hideAccountBall === true,
-        opacity: e.returnValue.opacity,
-      });
-    } catch (_) {}
-  } catch (_) {
-    e.returnValue = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20 };
-    try { fnosLog('error', 'titlebar', 'get.fail'); } catch (_) {}
+  } catch (__e2) {
+    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, skinDir: '', skin: null, hideAccountBall: false };
+    try { fnosLog('error', 'titlebar', 'get.fail', { err: String((__e2 && __e2.message) || __e2).slice(0, 140) }); } catch (_) {}
   }
+  try { e.returnValue = __tb; } catch (__e3) {
+    try { fnosLog('error', 'titlebar', 'get.setfail', { err: String((__e3 && __e3.message) || __e3).slice(0, 140) }); } catch (_) {}
+    try { e.returnValue = null; } catch (_) {}
+  }
+  // v3.0.27：每次窗口 preload 拉取都留痕（冷启动拿不到皮肤时可直接对比）
+  try {
+    fnosLog('info', 'titlebar', 'get', {
+      skinDir: __tb.skinDir ? String(__tb.skinDir).slice(-30) : '',
+      hasSkin: !!__tb.skin,
+      hideBall: __tb.hideAccountBall === true,
+      opacity: __tb.opacity,
+    });
+  } catch (_) {}
 });
 
 ipcMain.on('settings:close', (e) => {

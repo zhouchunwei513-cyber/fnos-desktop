@@ -1,4 +1,4 @@
-﻿// titlebar-inject.js — 统一的无边框自定义标题栏注入
+// titlebar-inject.js — 统一的无边框自定义标题栏注入
 // 被 preload.js / settings-preload.js / live-preload.js 复用，保证所有窗口标题栏一致。
 // 功能：顶部拖动热区、☰ 菜单、最小化/最大化/关闭（实心按钮）、自动隐藏（默认关闭）、
 //       ALT 键调出、设置实时更新、SPA 重渲染自愈。
@@ -408,29 +408,85 @@ module.exports = function injectTitleBar(ctx) {
       try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'titlebar.' + stage, level: 'info' }, extra || {})); } catch (_) {}
     };
     let __skinState = { skinDir: '', skin: null };
+
+  // v3.0.28（问题1）：CSP style-src 'self' 的页面（部分 NAS 应用 / 设置页）下，
+  // __setCss(el, '...'); 会被浏览器判为 inline style 并【整条拒绝】
+  // （控制台实证：src 指向 titlebar-inject.js，报 Applying inline style violates ... style-src 'self'），
+  // 结果就是这些应用的标题栏与皮肤样式全部不生效 = 用户反馈的"有些应用标题栏皮肤加载失败"。
+  // 处理：先试 cssText（一次写入、快）；若写了内容却一条样式都没落上，判定被 CSP 拦，
+  // 之后逐属性走 CSSOM setProperty（CSSOM 不受 style-src 限制），首次命中记日志。
+  let __cspBlocked28 = false;
+  let __cspLogged28 = false;
+  function __setCss(el, css) {
+    try {
+      if (!el || !css) return false;
+      const __css = String(css);
+      if (!__cspBlocked28) {
+        try {
+          __setCss(el, __css);
+          if (el.style && el.style.length > 0) return true;
+          if (/[a-z-]+\s*:/.test(__css)) {
+            __cspBlocked28 = true;
+            if (!__cspLogged28) {
+              __cspLogged28 = true;
+              try { __tbLog('titlebar.css.csp', { url: String(location.href || '').slice(0, 110), mode: 'perprop' }); } catch (_) {}
+            }
+          }
+        } catch (_) { __cspBlocked28 = true; }
+      }
+      try {
+        const __parts = __css.split(';');
+        for (let __i = 0; __i < __parts.length; __i++) {
+          const __p = __parts[__i];
+          const __k = __p.indexOf(':');
+          if (__k <= 0) continue;
+          const __prop = __p.slice(0, __k).trim();
+          const __val = __p.slice(__k + 1).trim();
+          if (__prop && __val) { try { el.style.setProperty(__prop, __val); } catch (_) {} }
+        }
+      } catch (_) {}
+      return !!(el.style && el.style.length > 0);
+    } catch (_) {}
+    return false;
+  }
+
+
     // 标题栏有效高度（body 下移量），皮肤 titlebar.height 覆盖，默认 34
     let __skinHeight = 34;
 
     // 读皮肤素材文件 -> blob URL（避开 file:// 受 webSecurity 限制）
     const __skinAssetCache = new Map();
     function __loadSkinAsset(skinDir, src) {
+      // v3.0.28（问题1 日志加强）：皮肤素材读取链路此前没有任何记录，
+      // 无法区分「没配置 / 文件不存在 / blob 失败 / 解码失败」，部分应用标题栏空条时无从排查。
       try {
-        if (!__fs || !__path || !skinDir || !src) return null;
+        if (!__fs || !__path || !skinDir || !src) {
+          __tbLog('skin.asset', { st: 'skip', src: String(src || '').slice(-28), hasFs: !!__fs, hasPath: !!__path, hasDir: !!skinDir });
+          return null;
+        }
         const p = __path.join(skinDir, String(src));
-        if (!__fs.existsSync(p)) return null;
+        if (!__fs.existsSync(p)) {
+          __tbLog('skin.asset', { st: 'miss', src: String(src).slice(-28), file: String(p).slice(-44) });
+          return null;
+        }
         let __stamp = 0;
         try { __stamp = __fs.statSync(p).mtimeMs || 0; } catch (_) {}
         const __ck = p + '|' + __stamp;
         const __hit = __skinAssetCache.get(__ck);
         if (__hit) return __hit;
+        const __t0 = Date.now();
         const buf = __fs.readFileSync(p);
         const ext = String(src).toLowerCase().split('.').pop();
         const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm' }[ext] || 'application/octet-stream';
         const blob = new Blob([buf], { type: mime });
         const __u = URL.createObjectURL(blob);
         __skinAssetCache.set(__ck, __u);
+        __tbLog('skin.asset', { st: 'ok', src: String(src).slice(-28), size: buf.length, mime: mime, ms: Date.now() - __t0 });
         return __u;
-      } catch (_) { return null; }
+      } catch (e) {
+        __tbLog('skin.asset', { st: 'err', src: String(src || '').slice(-28), err: String((e && e.message) || e).slice(0, 80) });
+        return null;
+      }
     }
 
     // 标题栏有效高度：皮肤 titlebar.height（20~80，默认 34）→ --fnos-bar-h（body 下移量）+ bar inline 高度
@@ -488,10 +544,10 @@ module.exports = function injectTitleBar(ctx) {
         if (!bar || bar.__shapeLayer) return;
         const bgLayer = document.createElement('div');
         bgLayer.id = 'fnos-tb-bg';
-        bgLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-2;display:none;background-size:cover;background-position:center;background-repeat:no-repeat;overflow:hidden;border-radius:inherit;';
+        __setCss(bgLayer, 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-2;display:none;background-size:cover;background-position:center;background-repeat:no-repeat;overflow:hidden;border-radius:inherit;');
         const shapeLayer = document.createElement('div');
         shapeLayer.id = 'fnos-tb-shape';
-        shapeLayer.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-1;display:none;background-size:100% 100%;background-position:center;background-repeat:no-repeat;border-radius:inherit;';
+        __setCss(shapeLayer, 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-1;display:none;background-size:100% 100%;background-position:center;background-repeat:no-repeat;border-radius:inherit;');
         bar.appendChild(bgLayer);
         bar.appendChild(shapeLayer);
         bar.__bgLayer = bgLayer;
@@ -542,7 +598,23 @@ module.exports = function injectTitleBar(ctx) {
               // 出画面后再补一次，避免视频皮肤黑屏（图片皮肤不受影响）
               v.setAttribute('muted', ''); v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
               v.preload = 'auto';
-              v.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;pointer-events:none;-webkit-app-region:no-drag;';
+              __setCss(v, 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;pointer-events:none;-webkit-app-region:no-drag;');
+              // v3.0.28（问题1 日志加强）：video 解码是异步的，旧实现失败时毫无记录。
+              // 同一皮肤在 53 个窗口里个别窗口黑屏，此前完全查不到是 codec、blob 还是 play 被拒。
+              try {
+                v.addEventListener('error', function () {
+                  try {
+                    const __er = v.error ? ('code' + v.error.code + ':' + String(v.error.message || '').slice(0, 40)) : 'unknown';
+                    __tbLog('skin.video.error', { src: String(bg.src).slice(-28), er: __er, w: v.videoWidth, h: v.videoHeight, rs: v.readyState });
+                  } catch (_) {}
+                });
+                v.addEventListener('loadeddata', function () {
+                  try { __tbLog('skin.video.ok', { src: String(bg.src).slice(-28), w: v.videoWidth, h: v.videoHeight, rs: v.readyState }); } catch (_) {}
+                });
+                v.addEventListener('stalled', function () {
+                  try { __tbLog('skin.video.stalled', { src: String(bg.src).slice(-28), rs: v.readyState }); } catch (_) {}
+                });
+              } catch (_) {}
               v.src = url;
               bgLayer.appendChild(v);
               bgLayer.style.display = 'block';
@@ -564,6 +636,13 @@ module.exports = function injectTitleBar(ctx) {
               bgLayer.style.backgroundSize = bg.size || 'cover';
               bgLayer.style.backgroundPosition = bg.position || 'center';
               bgLayer.style.backgroundRepeat = bg.repeat || 'no-repeat';
+              // v3.0.28（问题1 日志加强）：CSS 背景图不会抛错，用 Image 探针确认能否解码
+              try {
+                const __im = new Image();
+                __im.onload = function () { try { __tbLog('skin.img.ok', { src: String(bg.src).slice(-28), w: __im.naturalWidth, h: __im.naturalHeight }); } catch (_) {} };
+                __im.onerror = function () { try { __tbLog('skin.img.error', { src: String(bg.src).slice(-28) }); } catch (_) {} };
+                __im.src = url;
+              } catch (_) {}
               bgLayer.style.display = 'block';
               hasBg = true;
             }
@@ -600,7 +679,7 @@ module.exports = function injectTitleBar(ctx) {
                   const im = document.createElement('img');
                   im.src = url;
                   im.draggable = false;
-                  im.style.cssText = 'position:absolute;top:0;height:100%;width:auto;pointer-events:none;-webkit-app-region:no-drag;' + (isRight ? 'right:0;' : 'left:0;');
+                  __setCss(im, 'position:absolute;top:0;height:100%;width:auto;pointer-events:none;-webkit-app-region:no-drag;' + (isRight ? 'right:0;' : 'left:0;'));
                   if (isRight) im.style.transform = 'scaleX(-1)';
                   shapeLayer.appendChild(im);
                 };
@@ -637,6 +716,13 @@ module.exports = function injectTitleBar(ctx) {
             hasShape: !!shape,
             dir: String(__skinState.skinDir || ''),
             path: String(location.pathname || '').slice(0, 40),
+            // v3.0.28（问题1 日志加强）：记录「应用后到底可不可见」，
+            // 用于区分「配置没拿到」与「样式被 CSP 拦 / 被页面样式覆盖 / 层被移除」。
+            barH: (function () { try { return Math.round(bar.getBoundingClientRect().height) || 0; } catch (_) { return 0; } })(),
+            bgDisplay: (function () { try { return String(bgLayer ? getComputedStyle(bgLayer).display : ''); } catch (_) { return ''; } })(),
+            bgConn: !!(bgLayer && bgLayer.isConnected),
+            shapeConn: !!(shapeLayer && shapeLayer.isConnected),
+            csp: !!__cspBlocked28,
           });
         } catch (_) {}
         return hasBg;
@@ -895,11 +981,11 @@ module.exports = function injectTitleBar(ctx) {
         const hot = document.createElement('div');
         hot.id = 'fnos-titlebar-hotzone';
         hot.setAttribute('aria-hidden', 'true');
-        hot.style.cssText = [
+        __setCss(hot, [
           'position:fixed', 'top:0', 'left:0', 'right:0', 'height:6px',
           'z-index:2147483646', 'pointer-events:auto', 'background:transparent', '-webkit-app-region:drag',
           'user-select:none'
-        ].join(';');
+        ].join(';'));
         root().appendChild(hot);
 
         // ---- 标题栏 ----
@@ -916,7 +1002,7 @@ module.exports = function injectTitleBar(ctx) {
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
         bar.__tbIsMain = __isMainWin; // 皮肤高度联动：主窗视觉高度 = 有效高度 + 2px 盖接缝
-        bar.style.cssText = [
+        __setCss(bar, [
           'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + (__isMainWin ? 2 : 0)) + 'px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
@@ -935,7 +1021,7 @@ module.exports = function injectTitleBar(ctx) {
           // v2.17.15: every window type now cancels page zoom on the bar, so its
           // pixels stay identical while only the page content zooms.
           'zoom:calc(1 / var(--fnos-f, 1))'
-        ].filter(Boolean).join(';');
+        ].filter(Boolean).join(';'));
 
         // v2.15.84: grey band at the top of the content area while the window geometry changes.
         // Four recordings analysed frame by frame (r65..r68) all show the same thing: the band is
@@ -983,7 +1069,7 @@ module.exports = function injectTitleBar(ctx) {
             if (!__rcEl) {
               __rcEl = document.createElement('div');
               __rcEl.id = 'fnos-resize-cover';
-              __rcEl.style.cssText = 'position:fixed;top:34px;left:0;right:0;height:0;background:#05060a;z-index:2147483645;pointer-events:none;display:none;';
+              __setCss(__rcEl, 'position:fixed;top:34px;left:0;right:0;height:0;background:#05060a;z-index:2147483645;pointer-events:none;display:none;');
               (document.documentElement || document.body).appendChild(__rcEl);
             }
             if (!window.__fnosResizeCover) {
@@ -1017,11 +1103,11 @@ module.exports = function injectTitleBar(ctx) {
 
         // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
         const left = document.createElement('div');
-        left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;';
+        __setCss(left, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;');
         const menuBtn = document.createElement('button');
         menuBtn.id = 'fnos-tb-menu';
         menuBtn.title = '菜单（文件/下载/视图/工具/设置/帮助）';
-        menuBtn.style.cssText = 'width:46px;height:34px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.85));';
+        __setCss(menuBtn, 'width:46px;height:34px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:6px;padding:0;-webkit-app-region:no-drag;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.85));');
         menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="rgba(255,255,255,0.95)" stroke-width="1.5" stroke-linecap="round"/></svg>';
         menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = 'rgba(255,255,255,0.12)'; });
         menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
@@ -1036,23 +1122,23 @@ module.exports = function injectTitleBar(ctx) {
 
         // 右侧：最小化/最大化/关闭——实心 Windows 风格，按钮可点击区域充足
         const btns = document.createElement('div');
-        btns.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;overflow:hidden;';
+        __setCss(btns, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;overflow:hidden;');
 
         const mkBtn = (id, svg, hoverBg) => {
           const b = document.createElement('button');
           b.id = id;
           b.title = id === 'fnos-tb-min' ? '最小化' : id === 'fnos-tb-max' ? '最大化/还原' : '关闭';
-          b.style.cssText = [
+          __setCss(b, [
             'width:46px', 'height:34px', 'border:none', 'outline:none',
             'background:transparent', 'color:#fff',
             'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
             'padding:0', '-webkit-app-region:no-drag', 'flex:0 0 auto',
             'filter:drop-shadow(0 1px 2px rgba(0,0,0,0.85))'
-          ].join(';');
+          ].join(';'));
           b.innerHTML = svg;
           // v2.0.3：确保SVG图标不受页面CSS影响
           const svgEl = b.querySelector('svg');
-          if (svgEl) { svgEl.style.cssText = 'display:block;pointer-events:none;flex-shrink:0;'; }
+          if (svgEl) { __setCss(svgEl, 'display:block;pointer-events:none;flex-shrink:0;');; }
           b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
           b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
           return b;
@@ -1108,7 +1194,7 @@ module.exports = function injectTitleBar(ctx) {
         // v2.17.47：上一版漏了主进程实现——window-drag 里调用的 w.startDrag() 不是 BrowserWindow
         // 的 API，永远抛异常被 catch 吞掉，于是本层彻底不能拖（用户反馈：主程序和应用窗都拖不动）。
         // 现在拖动改为主进程 setPosition 跟随鼠标（win-drag-start/move/end）。
-        dragStrip.style.cssText = 'flex:1;height:100%;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
+        __setCss(dragStrip, 'flex:1;height:100%;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;');
         (function () {
           const W = window;
           W.__fnosDsDown = null;
@@ -1502,34 +1588,34 @@ module.exports = function injectTitleBar(ctx) {
         const hot = document.createElement('div');
         hot.id = 'fnos-titlebar-hotzone';
         hot.setAttribute('aria-hidden', 'true');
-        hot.style.cssText = 'position:fixed;top:0;left:0;right:0;height:6px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;';
+        __setCss(hot, 'position:fixed;top:0;left:0;right:0;height:6px;z-index:2147483646;pointer-events:auto;background:transparent;-webkit-app-region:drag;user-select:none;');
         root2.appendChild(hot);
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:drag;user-select:none;';
+        __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:drag;user-select:none;');
         // 左：应用 logo + 标题
         const left = document.createElement('div');
-        left.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;';
+        __setCss(left, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;');
         const logo = document.createElement('img');
         logo.id = 'fnos-embed-logo';
-        logo.style.cssText = 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;';
+        __setCss(logo, 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;');
         const titleEl = document.createElement('span');
         titleEl.id = 'fnos-embed-title';
-        titleEl.style.cssText = 'color:rgba(255,255,255,0.95);font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;';
+        __setCss(titleEl, 'color:rgba(255,255,255,0.95);font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;');
         left.appendChild(logo);
         left.appendChild(titleEl);
         // 右：↻ — □ ✕ 四钮（r15 硬规则移除 ↗ 跳出：内嵌窗绝不剥离 fnOS 框架转独立跳出窗）
         const btns = document.createElement('div');
-        btns.style.cssText = '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;';
+        __setCss(btns, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;');
         const mkBtn = (id, titleTxt, svg, hoverBg) => {
           const b = document.createElement('button');
           b.id = id;
           b.title = titleTxt;
-          b.style.cssText = 'width:40px;height:34px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;-webkit-app-region:no-drag;flex:0 0 auto;';
+          __setCss(b, 'width:40px;height:34px;border:none;outline:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;-webkit-app-region:no-drag;flex:0 0 auto;');
           b.innerHTML = svg;
           const svgEl = b.querySelector('svg');
-          if (svgEl) svgEl.style.cssText = 'display:block;pointer-events:none;flex-shrink:0;';
+          if (svgEl) __setCss(svgEl, 'display:block;pointer-events:none;flex-shrink:0;');;
           b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
           b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
           return b;
@@ -1556,7 +1642,7 @@ module.exports = function injectTitleBar(ctx) {
         // v2.17.47：上一版漏了主进程实现——window-drag 里调用的 w.startDrag() 不是 BrowserWindow
         // 的 API，永远抛异常被 catch 吞掉，于是本层彻底不能拖（用户反馈：主程序和应用窗都拖不动）。
         // 现在拖动改为主进程 setPosition 跟随鼠标（win-drag-start/move/end）。
-        dragStrip.style.cssText = 'flex:1;height:100%;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;';
+        __setCss(dragStrip, 'flex:1;height:100%;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;');
         (function () {
           const W = window;
           W.__fnosDsDown = null;
@@ -1989,7 +2075,14 @@ module.exports = function injectTitleBar(ctx) {
             
             listEl.innerHTML = '';
             if (accounts.length === 0) {
-              listEl.innerHTML = '<div style="padding:8px 16px;font-size:12px;color:rgba(255,255,255,0.3)">暂无已登录账号</div>';
+              // v3.0.28：CSP 页面下 innerHTML 里的 style 属性同样会被拒，改为 DOM 构造
+              try {
+                listEl.textContent = '';
+                const __empty28 = document.createElement('div');
+                __setCss(__empty28, 'padding:8px 16px;font-size:12px;color:rgba(255,255,255,0.3);');
+                __empty28.textContent = '暂无已登录账号';
+                listEl.appendChild(__empty28);
+              } catch (_) {}
               return;
             }
             accounts.forEach(acct => {

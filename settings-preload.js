@@ -1,4 +1,4 @@
-// 设置页 preload — 通过 contextBridge 暴露 fnosSettings API
+﻿// 设置页 preload — 通过 contextBridge 暴露 fnosSettings API
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('fnosSettings', {
@@ -40,6 +40,9 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       titleBarHighlight: opts?.titleBarHighlight != null ? Number(opts.titleBarHighlight) : undefined,
       // v3.0.19：标题栏皮肤（空字符串 = 默认无皮肤）
       activeSkin: opts?.activeSkin != null ? String(opts.activeSkin) : undefined,
+      // v3.0.27：悬浮球隐藏开关 —— v3.0.23 引入该开关时本白名单漏加此字段，
+      // 导致设置页勾选"隐藏"后主进程永远拿不到真值、回落 false（关不掉、也不落盘）。
+      hideAccountBall: typeof opts?.hideAccountBall === 'boolean' ? opts.hideAccountBall : undefined,
     }),
   // v2.17.24：标题栏颜色实时预览（只广播，不落盘；保存仍走 setUIOptions）
   previewTitleBar: (opts) =>

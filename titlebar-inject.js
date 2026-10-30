@@ -403,6 +403,10 @@ module.exports = function injectTitleBar(ctx) {
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。
     // v2.19.0：material = 'solid'（纯色）| 'frosted'（磨砂玻璃）；blur = 磨砂强度 0~40px
     // 标题栏皮肤状态（主进程 settings:get-titlebar / settings:titlebar-changed 下发）
+    // v3.0.27：标题栏/皮肤链路日志（IIFE 顶层，供 __skinReloadSoon / titlebar-changed 使用）
+    const __tbLog = function (stage, extra) {
+      try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: 'titlebar.' + stage, level: 'info' }, extra || {})); } catch (_) {}
+    };
     let __skinState = { skinDir: '', skin: null };
     // 标题栏有效高度（body 下移量），皮肤 titlebar.height 覆盖，默认 34
     let __skinHeight = 34;
@@ -454,6 +458,22 @@ module.exports = function injectTitleBar(ctx) {
             try {
               const b = document.getElementById('fnos-titlebar');
               if (!b) return;
+              // v3.0.27：skinDir 为空说明 preload 阶段那次 sendSync 没拿到（冷启动实测
+              // 109/121 次为空），旧实现只重画不重取，永远恢复不了。这里每次重试补拉一次。
+              if (!__skinState.skinDir || !__skinState.skin) {
+                try {
+                  const r2 = ipcRenderer.sendSync('settings:get-titlebar');
+                  if (r2 && typeof r2 === 'object') {
+                    if (r2.skinDir) __skinState.skinDir = String(r2.skinDir);
+                    if (r2.skin && typeof r2.skin === 'object') __skinState.skin = r2.skin;
+                    if (typeof r2.hideAccountBall === 'boolean') {
+                      TB.hideAccountBall = r2.hideAccountBall;
+                      try { if (window.__fnApplyBallHidden) window.__fnApplyBallHidden(r2.hideAccountBall); } catch (_) {}
+                    }
+                    __tbLog('skin.refetch', { ms: ms, hit: !!__skinState.skinDir, dir: String(__skinState.skinDir || '').slice(-24) });
+                  }
+                } catch (_) {}
+              }
               __applyTitlebarHeight();
               applyStyle(b);
             } catch (_) {}
@@ -792,8 +812,16 @@ module.exports = function injectTitleBar(ctx) {
             if (val.material) TB.material = (val.material === 'frosted') ? 'frosted' : 'solid';
             if (val.blur != null) TB.blur = Math.max(0, Math.min(40, Number(val.blur) || 0));
             if (val.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(val.highlight)));
+            const __skBefore = String(__skinState.skinDir || '');
             if (val.skinDir != null) __skinState.skinDir = String(val.skinDir);
             if (val.skin != null) __skinState.skin = (val.skin && typeof val.skin === 'object') ? val.skin : null;
+            // v3.0.27：皮肤刚下发时页面可能尚未布局稳定，补跑一轮延迟应用
+            try {
+              if (String(__skinState.skinDir || '') !== __skBefore) {
+                __tbLog('skin.changed', { from: __skBefore.slice(-24), to: String(__skinState.skinDir || '').slice(-24) });
+                __skinReloadSoon();
+              }
+            } catch (_) {}
             // v3.0.23：悬浮球隐藏开关（设置页勾选后立即隐藏 / 显示，不需要重启）
             if (typeof val.hideAccountBall === 'boolean') {
               TB.hideAccountBall = val.hideAccountBall;

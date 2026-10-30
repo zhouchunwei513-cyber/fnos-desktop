@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.26';
+const APP_VERSION = '3.0.27';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -2800,7 +2800,10 @@ function loadSettings() {
   let raw = {};
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
-      const text = fs.readFileSync(SETTINGS_FILE, 'utf-8').trim();
+      let text = fs.readFileSync(SETTINGS_FILE, 'utf-8').trim();
+      // v3.0.27：settings.json 若带 UTF-8 BOM，JSON.parse 必抛 -> 整份设置回默认
+      // （皮肤/悬浮球位置/主题全丢，且下次保存把默认值写回，形成"设置不保存"）。
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1).trim();
       if (text) {
         const parsed = JSON.parse(text);
         // 加密文件格式：{ __enc__: "base64(encrypt(JSON.stringify(settings)))" }
@@ -2813,7 +2816,16 @@ function loadSettings() {
         }
       }
     }
-  } catch (_) { raw = {}; }
+  } catch (e) {
+    // v3.0.27：解析失败必须留痕（此前静默回默认，是"设置不保存"最隐蔽的成因）
+    let __bom = false;
+    try {
+      const b = fs.readFileSync(SETTINGS_FILE);
+      __bom = !!(b.length > 2 && b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF);
+    } catch (_) {}
+    try { fnosLog('error', 'settings', 'load.parse-fail', { err: String((e && e.message) || e).slice(0, 200), bom: __bom }); } catch (_) {}
+    raw = {};
+  }
   raw = mergeHistoryStore(raw);
   cachedSettings = { ...defaultSettings(), ...raw };
   if (!Array.isArray(cachedSettings.history)) cachedSettings.history = [];
@@ -2889,17 +2901,26 @@ function resolveSkinConfig() {
   try {
     const s = loadSettings();
     const skinName = String((s && s.activeSkin) || '').trim();
-    if (!skinName) return { skinDir: '', skin: null };
+    if (!skinName) {
+      // v3.0.27：皮肤链路全量留痕 —— 冷启动拿不到皮肤时，先看这条是否 activeSkin 为空
+      let __dirs = -1;
+      try { __dirs = fs.existsSync(SKINS_DIR) ? fs.readdirSync(SKINS_DIR).length : -1; } catch (_) {}
+      try { fnosLog('info', 'skin', 'resolve.empty', { activeSkin: '', installedDirs: __dirs, skinsDir: String(SKINS_DIR || '').slice(-60) }); } catch (_) {}
+      return { skinDir: '', skin: null };
+    }
     const skinDir = __findSkinDir(skinName);
     if (!skinDir) {
       dlog('warn', 'skin.resolve', { name: skinName, hit: false });
+      try { fnosLog('warn', 'skin', 'resolve.miss', { name: String(skinName).slice(0, 120) }); } catch (_) {}
       return { skinDir: '', skin: null };
     }
     const skin = __readJsonLoose(path.join(skinDir, 'manifest.json'));
     if (!skin || typeof skin !== 'object' || !skin.titlebar) {
       dlog('warn', 'skin.resolve', { name: skinName, hit: true, manifest: false });
+      try { fnosLog('warn', 'skin', 'resolve.bad-manifest', { name: String(skinName).slice(0, 120), skinDir: String(skinDir).slice(-60) }); } catch (_) {}
       return { skinDir: '', skin: null };
     }
+    try { fnosLog('info', 'skin', 'resolve.ok', { name: String(skinName).slice(0, 80), hasBg: !!(skin.titlebar && skin.titlebar.background), height: Number(skin.titlebar && skin.titlebar.height) || 34 }); } catch (_) {}
     return { skinDir, skin };
   } catch (_) {
     return { skinDir: '', skin: null };
@@ -6143,7 +6164,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
               // v3.0.22：错误页不是应用页，不能再做入口探测，否则会把错误页正文当"坏页"继续跳候选
               if (__fnIsErrPage(win)) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
               if (String(win.webContents.getURL() || '').indexOf('data:text/html') === 0) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
-              win.webContents.executeJavaScript("(function(){try{var t=(document.body?document.body.innerText:'')||'';var bad=/\u4e0d\u5b58\u5728?\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|Not Found|404|\u9875\u9762\u4e0d\u5b58\u5728|\u65e0\u6cd5\u627e\u5230|\u6ca1\u6709\u627e\u5230|\u65e0\u6cd5\u8bbf\u95ee/i.test(t);return bad}catch(_){return false}})()")
+              win.webContents.executeJavaScript("(function(){try{var t=(document.body?document.body.innerText:'')||'';var u=String(location.href||'');if(u.indexOf('/appview')>=0){var st=/\u4e0d\u5b58\u5728\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|\u5e94\u7528\u4e0d\u5b58\u5728/.test(t);var ha=!!document.querySelector('webview,iframe,[id*=app],[class*=app]');return (st&&!ha)?1:0}var bad=/\u4e0d\u5b58\u5728?\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|Not Found|404|\u9875\u9762\u4e0d\u5b58\u5728|\u65e0\u6cd5\u627e\u5230|\u6ca1\u6709\u627e\u5230|\u65e0\u6cd5\u8bbf\u95ee/i.test(t);return bad?1:0}catch(_){return false}})()")
                 .then((bad) => {
                   try { win.__fnEntryCheck = false; } catch (_) {}
                   try {
@@ -7284,6 +7305,79 @@ function __fnShowErrPage(win, info) {
   }
 }
 
+// ==================== v3.0.27：主窗口加载失败/白板自愈 + 友好提示页 ====================
+// 用户反馈：切换登录账号后主页面白板、标题栏宽出一截，只能手动强制刷新；且此前"加载不了
+// 就提示"的页面只做在应用窗，主窗从来没有。这里给主窗补上：内容为空 -> 自愈重载（最多 2 次），
+// 仍空或遇到硬网络错误 -> 直接显示本地错误页（带重试），不再让用户对着白板。
+let __mainHealTries = 0;
+function __armMainHealth(reason) {
+  try {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    const __probe = "(function(){try{var b=document.body;if(!b)return {e:1};" +
+      "var t=(b.innerText||'').replace(/\\s+/g,'');" +
+      "var app=document.querySelector('webview,iframe,#app,.app-container,[class*=desktop]');" +
+      "var dw=document.documentElement?document.documentElement.clientWidth:0;var bw=b.clientWidth||0;" +
+      "return {len:t.length,hasApp:!!app,dw:dw,bw:bw};}catch(_){return {e:1};}})()";
+    const __check = function (tag) {
+      try {
+        if (!win || win.isDestroyed()) return;
+        if (__fnIsErrPage(win)) return;
+        const u = String(win.webContents.getURL() || '');
+        if (!/^https?:/i.test(u)) return;
+        win.webContents.executeJavaScript(__probe).then(function (r) {
+          try {
+            if (!r || typeof r !== 'object' || r.e) return;
+            const blank = (Number(r.len) < 30) && !r.hasApp;
+            const widthBad = (Number(r.dw) > 0 && Number(r.bw) > 0 && Math.abs(Number(r.dw) - Number(r.bw)) > 8);
+            fnosLog('info', 'mainhealth', 'check', {
+              tag: String(tag || ''), reason: String(reason || '').slice(0, 20),
+              len: Number(r.len) || 0, hasApp: !!r.hasApp, dw: Number(r.dw) || 0, bw: Number(r.bw) || 0, widthBad: widthBad,
+            });
+            if (blank) {
+              if (__mainHealTries < 2) {
+                __mainHealTries++;
+                fnosLog('warn', 'mainhealth', 'heal-reload', { tag: String(tag || ''), tries: __mainHealTries });
+                try { win.webContents.reload(); } catch (_) {}
+              } else {
+                fnosLog('error', 'mainhealth', 'blank-show-err', { tag: String(tag || '') });
+                try {
+                  __fnShowErrPage(win, { app: 'FNOS 主页面', kind: 'blank', url: u, retryUrl: (String(lastConnectHref || '') || u) });
+                } catch (_) {}
+              }
+            } else {
+              __mainHealTries = 0;
+            }
+          } catch (_) {}
+        }).catch(function () {});
+      } catch (_) {}
+    };
+    [2500, 7000].forEach(function (ms) { setTimeout(function () { __check('t' + ms); }, ms); });
+  } catch (_) {}
+}
+function __armMainFailLoad() {
+  try {
+    const win = mainWindow;
+    if (!win || win.isDestroyed() || win.__fnMainFailHooked) return;
+    win.__fnMainFailHooked = true;
+    win.webContents.on('did-fail-load', function (_e, code, desc, url, isMainFrame) {
+      try {
+        if (!isMainFrame) return;
+        if (code === -3) return;   // ERR_ABORTED：导航被新导航打断，不是失败
+        fnosLog('warn', 'mainhealth', 'fail-load', {
+          code: Number(code) || 0, desc: String(desc || '').slice(0, 80), url: String(url || '').slice(0, 120),
+        });
+        const hard = [-102, -105, -106, -107, -118, -137, -202];
+        if (hard.indexOf(Number(code)) >= 0) {
+          const retry = String(lastConnectHref || '') || String(url || '');
+          try { __fnShowErrPage(win, { app: 'FNOS 主页面', kind: 'net', code: Number(code) || '', url: String(url || ''), retryUrl: retry }); } catch (_) {}
+        }
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+
+
 let __pendingHomeReset = false;
 const __launchDedupe = new Map();
 function __restoreMainHome(reason, force) {
@@ -8072,7 +8166,13 @@ function createMainWindow(partition, loadTarget) {
     mainWindow.webContents.on('did-navigate', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
     mainWindow.webContents.on('did-navigate-in-page', (_e, navUrl) => { try { __appviewToPopout(navUrl); } catch (_) {} });
     // v2.5.1 r17：主窗加载完成即同步昼夜主题（应用跳出窗跟随主程序）
-mainWindow.webContents.on('did-finish-load', () => { try { __syncThemeFromMain(); } catch (_) {} try { __resyncFsUiForMain(); } catch (_) {} });
+mainWindow.webContents.on('did-finish-load', () => {
+  try { __syncThemeFromMain(); } catch (_) {}
+  try { __resyncFsUiForMain(); } catch (_) {}
+  // v3.0.27：主窗加载完成后做一次"白板/宽度"健康检查（切换账号后白板只能强制刷新 → 自动自愈）
+  try { __armMainHealth('did-finish'); } catch (_) {}
+});
+try { __armMainFailLoad(); } catch (_) {}
   } catch (_) {}
   try {
     mainWindow.webContents.on('dom-ready', () => {
@@ -10713,10 +10813,23 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       ? clampInt(opts.titleBarHighlight, 0, 100, 55)
       : clampInt(cachedSettings.titleBarHighlight, 0, 100, 55);
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
-    const activeSkin = opts && typeof opts.activeSkin === 'string' ? String(opts.activeSkin).trim() : String(cachedSettings.activeSkin || '');
+    // v3.0.27：只有"显式传了非空皮肤名"才改；否则保留 settings.json 里的值。
+    // 旧逻辑在被传入空串（或 cached 尚未就绪）时会把 activeSkin 写成 ''，导致"装好的皮肤
+    // 因为点了一次保存界面设置而丢失"，重启后就不加载。
+    const __fileCfg = loadSettings();
+    const activeSkin = (opts && typeof opts.activeSkin === 'string' && String(opts.activeSkin).trim())
+      ? String(opts.activeSkin).trim()
+      : String((__fileCfg && __fileCfg.activeSkin) || '');
     // v3.0.23：悬浮球隐藏开关（改完立即下发，不需要重启）
-    const hideBall = (opts && typeof opts.hideAccountBall === 'boolean') ? opts.hideAccountBall : (cachedSettings.hideAccountBall === true);
-    fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', { fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'), value: hideBall });
+    const hideBall = (opts && typeof opts.hideAccountBall === 'boolean')
+      ? opts.hideAccountBall
+      : (__fileCfg && __fileCfg.hideAccountBall === true);
+    fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', {
+      fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'),
+      value: hideBall,
+      skinSrc: (opts && typeof opts.activeSkin === 'string' && String(opts.activeSkin).trim()) ? 'opts' : 'file',
+      activeSkin: String(activeSkin).slice(0, 80),
+    });
     saveSettings({
       autoHideMenuBar: autoHide,
       titleBarAutoHide: tbAutoHide,
@@ -10869,6 +10982,48 @@ ipcMain.handle('settings:install-skin', async () => {
 // v1.52.0：preload 注入自定义标题栏时同步读取标题栏自动隐藏设置
 // v3.0.23（用户反馈：每次启动悬浮球位置都变，经常掉到左下角拉不出来）——
 // 位置改为主进程按【窗口比例】持久化，避免不同 origin / 不同窗口尺寸下坐标系不一致
+// ==================== v3.0.27：标题栏/皮肤统一推送 ====================
+// 背景：preload 顶层 sendSync('settings:get-titlebar') 在部分窗口/冷启动时刻拿不到皮肤
+// （日志实证：121 条 titlebar.skin 里 109 条 skinDir 为空，只有靠设置页广播才恢复），
+// 因此把"主进程主动推送"做成权威路径：窗口每次加载完成都下发一次完整 payload，
+// 主窗 / 设置页 / 帮助页 / 应用窗 / appview 一律覆盖。
+function __titlebarPayload() {
+  let s = {};
+  try { s = loadSettings() || {}; } catch (_) { s = {}; }
+  let sk = { skinDir: '', skin: null };
+  try { sk = resolveSkinConfig() || sk; } catch (_) {}
+  return {
+    autoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
+    opacity: clampInt(s.titleBarOpacity, 0, 100, 96),
+    color: String(s.titleBarColor || '#101426'),
+    material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
+    blur: clampInt(s.titleBarBlur, 0, 40, 20),
+    highlight: clampInt(s.titleBarHighlight, 0, 100, 55),
+    skinDir: String(sk.skinDir || ''),
+    skin: sk.skin || null,
+    hideAccountBall: s.hideAccountBall === true,
+  };
+}
+function __pushTitlebarTo(wc, why) {
+  try {
+    if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) return;
+    const p = __titlebarPayload();
+    wc.send('settings:titlebar-changed', p);
+    fnosLog('info', 'titlebar', 'push', {
+      why: String(why || '').slice(0, 24),
+      wcId: wc.id,
+      skin: p.skinDir ? 'yes' : 'no',
+      hideBall: p.hideAccountBall === true,
+    });
+  } catch (_) {}
+}
+function __pushTitlebarAll(why) {
+  try {
+    const wcs = require('electron').webContents.getAllWebContents();
+    for (const wc of wcs) { try { __pushTitlebarTo(wc, why); } catch (_) {} }
+  } catch (_) {}
+}
+
 ipcMain.on('ball:get-pos', (e) => {
   try {
     const s = loadSettings();
@@ -10912,8 +11067,18 @@ ipcMain.on('settings:get-titlebar', (e) => {
     const __sk = resolveSkinConfig();
     e.returnValue.skinDir = __sk.skinDir;
     e.returnValue.skin = __sk.skin;
+    // v3.0.27：每次窗口 preload 拉取都留痕（冷启动拿不到皮肤时可直接对比）
+    try {
+      fnosLog('info', 'titlebar', 'get', {
+        skinDir: __sk.skinDir ? String(__sk.skinDir).slice(-30) : '',
+        hasSkin: !!__sk.skin,
+        hideBall: e.returnValue.hideAccountBall === true,
+        opacity: e.returnValue.opacity,
+      });
+    } catch (_) {}
   } catch (_) {
     e.returnValue = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20 };
+    try { fnosLog('error', 'titlebar', 'get.fail'); } catch (_) {}
   }
 });
 
@@ -15402,6 +15567,15 @@ function pickMenuGuest() {
 try {
   app.on('web-contents-created', (_e, contents) => {
     try {
+      // v3.0.27：任何窗口/webContents 加载完成都主动下发一次标题栏+皮肤配置。
+      // preload 阶段那次 sendSync 在冷启动/部分窗口会拿不到皮肤（日志实证 109/121 次 skinDir 为空），
+      // 主进程主动推送是唯一可靠路径 —— 主窗 / 设置页 / 帮助页 / 应用窗 / appview 一律覆盖。
+      try {
+        if (contents.getType() === 'window') {
+          contents.on('did-finish-load', () => { try { __pushTitlebarTo(contents, 'loaded'); } catch (_) {} });
+          [900, 3000].forEach((ms) => setTimeout(() => { try { __pushTitlebarTo(contents, 'late' + ms); } catch (_) {} }, ms));
+        }
+      } catch (_) {}
       // 记录 webview guest（用于 mpv 嵌入坐标测量）
       if (contents.getType() === 'webview') {
         rememberGuest(contents, contents.getURL ? contents.getURL() : '');

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.28';
+const APP_VERSION = '3.0.29';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5750,6 +5750,107 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
   return win.loadURL(url, __optsApp);
 }
 
+// ===== v3.0.29：应用入口学习缓存 =====
+// 用户诉求：快捷方式打开应用时不要再出现"先跳一个错误提示界面"；第一次探测出正确入口后，
+// 后续直接按正确方式启动。这里把 entry-check 判定为正确的最终 URL 持久化，下次直接命中。
+// 键：anchor:<名字> / route:<名字> / app:<appId> / path:<路径>；值：完整 URL + 命中次数 + 时间。
+// 30 天未用自动失效；缓存命中后仍判失败会自动删除（不会因为写错一条就永久打不开）。
+const ENTRY_CACHE_FILE = path.join(app.getPath ? app.getPath('userData') : __dirname, 'entry-cache.json');
+let __entryCacheMem = null;
+
+function __entryCacheLoad() {
+  if (__entryCacheMem) return __entryCacheMem;
+  try {
+    const j = __readJsonLoose(ENTRY_CACHE_FILE);
+    if (j && typeof j === 'object' && j.items && typeof j.items === 'object') __entryCacheMem = j;
+    else __entryCacheMem = { ver: 1, items: {} };
+  } catch (_) { __entryCacheMem = { ver: 1, items: {} }; }
+  return __entryCacheMem;
+}
+
+function __entryCacheFlush() {
+  try {
+    const c = __entryCacheLoad();
+    const keys = Object.keys(c.items || {});
+    if (keys.length > 400) { keys.slice(0, keys.length - 400).forEach((k) => { delete c.items[k]; }); }
+    fs.writeFileSync(ENTRY_CACHE_FILE, JSON.stringify(c));
+  } catch (_) {}
+}
+
+function __entryCacheGet(key) {
+  try {
+    if (!key) return null;
+    const c = __entryCacheLoad();
+    const it = c.items[key];
+    if (!it || !it.url) return null;
+    if (Date.now() - (Number(it.at) || 0) > 30 * 24 * 3600 * 1000) { delete c.items[key]; return null; }
+    return it;
+  } catch (_) { return null; }
+}
+
+function __entryCacheSave(key, url) {
+  try {
+    if (!key || !url) return;
+    const u = String(url);
+    if (!/^https?:/i.test(u)) return;
+    if (/\/login(\?|$|\/)/i.test(u)) return;          // 登录页不是正确入口
+    if (/\/appview(\?|$)/i.test(u)) return;           // appview 外壳不是真入口，学它没意义
+    if (/\/app\/[^/?#]+\/login\.html/i.test(u)) return;
+    const c = __entryCacheLoad();
+    const prev = c.items[key] || {};
+    c.items[key] = {
+      url: u.slice(0, 300),
+      at: Date.now(),
+      hits: (Number(prev.hits) || 0) + 1,
+      port: (function () { try { return new URL(u).port || ''; } catch (_) { return ''; } })(),
+      path: (function () { try { return new URL(u).pathname || ''; } catch (_) { return ''; } })(),
+    };
+    __entryCacheFlush();
+    try { fnosLog('info', 'entry', 'cache.save', { key: String(key).slice(0, 60), url: u.slice(0, 120), hits: c.items[key].hits }); } catch (_) {}
+  } catch (_) {}
+}
+
+function __entryCacheDrop(key, why) {
+  try {
+    if (!key) return;
+    const c = __entryCacheLoad();
+    if (!c.items[key]) return;
+    const old = c.items[key];
+    delete c.items[key];
+    __entryCacheFlush();
+    try { fnosLog('warn', 'entry', 'cache.drop', { key: String(key).slice(0, 60), why: String(why || '').slice(0, 40), url: String(old && old.url || '').slice(0, 100) }); } catch (_) {}
+  } catch (_) {}
+}
+
+// 同一个应用在不同的启动入口下要归一到同一个键，才能"学一次、以后都命中"
+function __entryKeyOf(url, opts) {
+  try {
+    const u = String(url || '');
+    let m = /\/appview\?anchor=([^&#]+)/i.exec(u);
+    if (m) { try { return 'anchor:' + decodeURIComponent(m[1]).slice(0, 80); } catch (_) { return 'anchor:' + m[1].slice(0, 80); } }
+    m = /\/app\/([^/?#]+)/i.exec(u);
+    if (m) { try { return 'route:' + decodeURIComponent(m[1]).slice(0, 80); } catch (_) { return 'route:' + m[1].slice(0, 80); } }
+    if (opts && (opts.appId || opts.name)) return 'app:' + String(opts.appId || opts.name).slice(0, 80);
+    try { const p = new URL(u); return 'path:' + String(p.pathname || '/').slice(0, 80); } catch (_) {}
+  } catch (_) {}
+  return 'raw:' + String(url || '').slice(0, 80);
+}
+
+// 缓存存的是完整 URL；换过 host（内网/公网/换账号）时把 host 换成当前生效的，端口保持不变
+function __entryCacheHostFix(url) {
+  try {
+    const base = String(__liveOriginBase() || '').replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(base)) return String(url);
+    const cu = new URL(String(url));
+    const bu = new URL(base);
+    if (!cu.host || !bu.host || cu.host === bu.host) return String(url);
+    cu.protocol = bu.protocol;
+    cu.hostname = bu.hostname;
+    if (!cu.port) cu.port = bu.port;
+    return cu.toString();
+  } catch (_) { return String(url); }
+}
+
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
   try { global.__fnClickOpened25 = true; } catch (_) {}
@@ -5898,6 +5999,29 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         __urlCandidates.push(__origR21 + '/appview?anchor=' + encodeURIComponent(__nmG21));
         __urlCandidates.push(__origR21 + '/app/' + String(__nmG21).replace(/\./g, '-'));
       }
+    }
+  } catch (_) {}
+
+  // ===== v3.0.29：入口学习缓存命中则直接用它作首个 URL =====
+  // 没命中时保持原逻辑（真入口注册表 → FPK 真入口 → appview → 猜测候选）。
+  let __entryKey29 = '';
+  let __cacheUsed29 = false;
+  try {
+    __entryKey29 = __entryKeyOf(url, opts);
+    const __hit29 = __entryCacheGet(__entryKey29);
+    if (__hit29 && __hit29.url) {
+      const __fix29 = __entryCacheHostFix(__hit29.url);
+      if (/^https?:/i.test(__fix29) && !/\/appview(\?|$)/i.test(__fix29)) {
+        url = __fix29;
+        __cacheUsed29 = true;
+        dlog && dlog('info', 'appwin.entry-cache.hit', {
+          key: String(__entryKey29).slice(0, 60),
+          url: String(__fix29).slice(0, 120),
+          hits: Number(__hit29.hits) || 0,
+        });
+      }
+    } else {
+      dlog && dlog('info', 'appwin.entry-cache.miss', { key: String(__entryKey29).slice(0, 60), cand: __urlCandidates.length });
     }
   } catch (_) {}
 
@@ -6202,7 +6326,25 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                   try { win.__fnEntryCheck = false; } catch (_) {}
                   try {
                     dlog && dlog('info', 'appwin.entry-check', { app: __appLabel, winId: win.id, bad: !!bad, left: __urlCandidates.length, url: String(win.webContents.getURL() || '').slice(0, 120) });
-                    if (!bad || win.isDestroyed()) return;
+                    if (win.isDestroyed()) return;
+                    if (!bad) {
+                      // v3.0.29：探测到正确入口 → 记住，下次直接按这个方式启动（不再撞 404 中间态）
+                      try {
+                        const __okUrl29 = String(win.webContents.getURL() || '');
+                        const __was29 = __cacheUsed29 && __entryKey29;
+                        __entryCacheSave(__entryKey29, __okUrl29);
+                        if (__was29) {
+                          dlog && dlog('info', 'appwin.entry-cache.confirm', { app: __appLabel, winId: win.id, key: String(__entryKey29).slice(0, 60), url: __okUrl29.slice(0, 120) });
+                        }
+                      } catch (_) {}
+                      return;
+                    }
+                    if (__cacheUsed29 && __entryKey29) {
+                      // 缓存这条已不成立（应用换了入口/端口变了）→ 删除并回落原候选链
+                      try { __entryCacheDrop(__entryKey29, 'entry-check-bad'); } catch (_) {}
+                      try { dlog && dlog('warn', 'appwin.entry-cache.stale', { app: __appLabel, winId: win.id, key: String(__entryKey29).slice(0, 60), url: String(win.webContents.getURL() || '').slice(0, 120) }); } catch (_) {}
+                      __cacheUsed29 = false;
+                    }
                     // v2.5.7 r23（问题2）：候选预检+耗尽友好错误页——r22 逐候选裸跳连环 404
                     // "跳转了也不起作用"实锤。加载前 HTTP 预检过滤无效候选；全部耗尽后渲染本地
                     // 错误页明确告知"NAS 上不存在或未安装"，不再无限跳。

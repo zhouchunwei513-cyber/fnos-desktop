@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.21';
+const APP_VERSION = '3.0.22';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -274,6 +274,8 @@ const __FNOS_FRAME_SCRIPT26 = [
 function __frameSweep26(win, tag) {
   try {
     if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+    // v3.0.22：错误页是自己的 UI，不能让帧清扫脚本（假窗控杀除/暗色注入）碰它
+    if (__fnIsErrPage(win)) return;
     const mf = win.webContents.mainFrame;
     if (!mf) return;
     let frames = [];
@@ -5491,7 +5493,26 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
           require('./logger.js').log('warn', 'appwin', 'appwin.load-stall', { params: { winId: win.id, url: String(url || '').slice(0, 120), ms: Date.now() - __lsT0 } }, __RUN_MODE);
           try { win.webContents.reload(); } catch (_) {}
           setTimeout(() => {
-            try { if (!win.isDestroyed() && !win.__fnLoaded25) { require('./logger.js').log('warn', 'appwin', 'appwin.load-stall2', { params: { winId: win.id } }, __RUN_MODE); __healReuseWin24(win, 'load-stall2'); } } catch (_) {}
+            try {
+              if (!win.isDestroyed() && !win.__fnLoaded25) {
+                require('./logger.js').log('warn', 'appwin', 'appwin.load-stall2', { params: { winId: win.id } }, __RUN_MODE);
+                __healReuseWin24(win, 'load-stall2');
+                // v3.0.22：挂起 27s 仍无内容——正是用户反馈"只剩标题栏、窗口区空着"的场景。
+                // 给 1.2s 让自愈 reload 起效；仍空则落错误页，写明页面无响应与排查方向。
+                setTimeout(() => {
+                  try {
+                    if (win.isDestroyed() || win.__fnLoaded25 || __fnIsErrPage(win)) return;
+                    __fnShowErrPage(win, {
+                      app: String(win.__fnAppId || ''),
+                      url: String(win.webContents.getURL() || url || ''),
+                      retryUrl: String(url || win.webContents.getURL() || ''),
+                      desc: 'PAGE_LOAD_STALL',
+                      kind: 'stall',
+                    });
+                  } catch (_) {}
+                }, 1200);
+              }
+            } catch (_) {}
           }, 12000);
         } catch (_) {}
       }, 15000);
@@ -5947,6 +5968,16 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         }
       } catch (_) {}
     });
+    // v3.0.22：记录主框架最后一次 HTTP 状态，供错误页区分 404/401/5xx 与网络错误
+    try {
+      win.webContents.on('did-navigate', (_e, _navUrl, __httpCode) => {
+        try {
+          const __c = parseInt(__httpCode, 10);
+          if (__c > 0) win.__fnLastHttp = __c;
+          if (__c >= 400) dlog && dlog('warn', 'appwin.http-status', { app: __appLabel, winId: win.id, status: __c, url: String(_navUrl || '').slice(0, 120) });
+        } catch (_) {}
+      });
+    } catch (_) {}
     win.webContents.on('did-finish-load', () => {
       try {
         win.__appResPending = false;
@@ -5970,6 +6001,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           setTimeout(() => {
             try {
               if (win.isDestroyed()) return;
+              // v3.0.22：错误页不是应用页，不能再做入口探测，否则会把错误页正文当"坏页"继续跳候选
+              if (__fnIsErrPage(win)) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
               if (String(win.webContents.getURL() || '').indexOf('data:text/html') === 0) { try { win.__fnEntryCheck = false; } catch (_) {} return; }
               win.webContents.executeJavaScript("(function(){try{var t=(document.body?document.body.innerText:'')||'';var bad=/\u4e0d\u5b58\u5728?\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|Not Found|404|\u9875\u9762\u4e0d\u5b58\u5728|\u65e0\u6cd5\u627e\u5230|\u6ca1\u6709\u627e\u5230|\u65e0\u6cd5\u8bbf\u95ee/i.test(t);return bad}catch(_){return false}})()")
                 .then((bad) => {
@@ -6027,14 +6060,14 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                               try { require('./logger.js').log('info', 'appwin', 'appwin.entry-click-opened', { params: { winId: win.id } }, __RUN_MODE); } catch (_) {}
                               return;
                             }
-                            try { win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(__entryErrorPage23(__appLabel))); } catch (_) {}
+                            try { __fnShowErrPage(win, { app: __appLabel, kind: 'entry', url: String(win.webContents.getURL() || ''), retryUrl: '', http: (win.__fnLastHttp >= 400 ? win.__fnLastHttp : '') }); } catch (_) {}
                             dlog && dlog('error', 'appwin.entry-exhausted', { app: __appLabel, winId: win.id, last: 'click-fallback-no-window' });
                           } catch (_) {}
                         }, 3200);
                         return;
                       }
                       dlog && dlog('error', 'appwin.entry-exhausted', { app: __appLabel, winId: win.id, last: String(win.webContents.getURL() || '').slice(0, 120) });
-                      try { win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(__entryErrorPage23(__appLabel))); } catch (_) {}
+                      try { __fnShowErrPage(win, { app: __appLabel, kind: 'entry', url: String(win.webContents.getURL() || ''), retryUrl: '', http: (win.__fnLastHttp >= 400 ? win.__fnLastHttp : '') }); } catch (_) {}
                     };
                     __tryNext23();
                   } catch (_) {}
@@ -6863,15 +6896,28 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
         if (failUrl && /^file:/.test(failUrl)) return; // 本地页面失败交给各自逻辑
         // v2.0.0：记录到网络健康监控
         const isJitter = NetworkHealth.recordFailure(`appwin:${__appLabel}`, `${errorCode} ${errorDesc}`);
-        if (_loadFailTries >= 4) {
+        // v3.0.22：确定性错误（连接被拒绝/域名解析失败/网络断开/TLS 错误）重试也白等，
+        // 只补 1 次确认不是重启瞬间，然后立刻出错误页；超时类（-118/-7）仍保留 4 次退避重试。
+        const __hardErr = [-102, -105, -106, -107, -137, -202].indexOf(errorCode) >= 0;
+        const __failLimit = __hardErr ? 1 : 4;
+        if (_loadFailTries >= __failLimit) {
           // v1.70.0：重试耗尽，记录最终失败（含错误码），便于排查外网地址/端口映射问题
           dlog && dlog('error', 'appwin.fail-load.final', {
             app: __appLabel, winId: win.id, errorCode, errorDesc,
             url: String(failUrl || '').slice(0, 120),
           });
-          // v2.5.1 r17：应用窗加载失败耗尽——原生弹窗提示（黑屏页上内嵌对话框不可见），
-          // 杜绝应用窗静默黑屏；可重试或关闭。
-          try { dialog.showMessageBox(win, { type: 'error', title: '应用加载失败', message: '应用页面加载失败：' + String(errorDesc || '未知错误') + '（' + String(errorCode) + '），请检查网络或稍后重试。', buttons: ['重试', '关闭'], cancelId: 1 }).then((r2) => { try { if (r2 && r2.response === 0 && !win.isDestroyed()) { _loadFailTries = 0; win.loadURL(url, { userAgent: getNasUA() }).catch(() => {}); } else if (!win.isDestroyed()) win.close(); } catch (_) {} }).catch(() => {}); } catch (_) {}
+          // v3.0.22：应用窗加载失败耗尽——改为在内容区渲染错误页（error.html），
+          // 页内按错误码列出可能原因与排查动作，替代 v2.5.1 r17 的原生弹窗。
+          // 原生弹窗关掉后窗口区仍是空白（用户反馈"只剩标题栏和窗口边沿"），原因也无处安放。
+          _loadFailTries = 0;
+          __fnShowErrPage(win, {
+            app: __appLabel,
+            url: String(failUrl || url || ''),
+            retryUrl: String(url || failUrl || ''),
+            code: errorCode,
+            desc: errorDesc,
+            kind: 'network',
+          });
           return;
         }
         _loadFailTries++;
@@ -6953,6 +6999,9 @@ function __armBlackScan(win, tag) {
       const __t = setTimeout(async () => {
         try {
           if (!win || win.isDestroyed() || !win.isVisible()) return;
+          // v3.0.22：错误页是本地静态页（浅色/深色纯背景），会被亮度方差判成白屏/黑屏
+          // 触发 reload 自愈，形成"错误页→重载→再失败→再错误页"的死循环。这里直接跳过。
+          if (__fnIsErrPage(win)) return;
           // v3.0.3 r135：页面仍在加载时截图必是空白，绝不能判黑屏——否则 reload 会中止正在
           // 进行的导航（nav-error -3 ERR_ABORTED），外网大应用（iscsi 2.3MB JS）永远打不开。
           // 3.0.2 外网实锤：10:32:36 判 black:true → heal reload → 450ms 后 -3。
@@ -7028,6 +7077,47 @@ function __entryErrorPage23(name) {
     + '<p style="opacity:.85;margin:0">请确认 NAS 应用中心已安装该应用，或删除此快捷方式后重新创建。</p>'
     + '</div></body></html>';
 }
+// ---------------------- v3.0.22 应用窗加载失败错误页 ----------------------
+// 背景：应用页打不开时，v2.5.1 r17 走的是原生 dialog。对话框关掉后窗口内容区仍是空白，
+// 用户实际看到的是"只剩标题栏和窗口边沿，中间什么都没有"（黑屏/白屏），既看不出原因，
+// 也没有就地重试的入口。这里改为把 error.html 加载进窗口内容区：错误码、HTTP 状态、目标地址
+// 全部带进页面，页内按错误码列出可能原因与排查动作，并提供「重新加载」。
+const ERROR_PAGE_PATH = path.join(__dirname, 'error.html');
+function __fnIsErrPage(win) {
+  try {
+    if (!win || win.isDestroyed()) return false;
+    return String(win.webContents.getURL() || '').indexOf('error.html') >= 0;
+  } catch (_) { return false; }
+}
+// info: { app, url, retryUrl, code, desc, http, kind: 'network'|'http'|'entry' }
+function __fnShowErrPage(win, info) {
+  try {
+    if (!win || win.isDestroyed()) return false;
+    const i = info || {};
+    const retryUrl = String(i.retryUrl || i.url || '');
+    const query = {
+      app: String(i.app || '').slice(0, 120),
+      url: String(i.url || '').slice(0, 800),
+      retry: retryUrl.slice(0, 800),
+      code: (i.code === 0 || i.code) ? String(i.code) : '',
+      desc: String(i.desc || '').slice(0, 160),
+      http: (i.http === 0 || i.http) ? String(i.http) : '',
+      kind: String(i.kind || 'network'),
+      ts: String(Date.now()),
+    };
+    try { win.__fnErrShownAt = Date.now(); } catch (_) {}
+    win.loadFile(ERROR_PAGE_PATH, { query }).catch(() => {});
+    dlog && dlog('error', 'appwin.error-page', {
+      app: query.app, kind: query.kind, code: query.code, http: query.http,
+      url: query.url.slice(0, 120), hasRetry: !!query.retry,
+    });
+    return true;
+  } catch (e) {
+    try { dlog && dlog('error', 'appwin.error-page.fail', { error: String(e).slice(0, 200) }); } catch (_) {}
+    return false;
+  }
+}
+
 let __pendingHomeReset = false;
 const __launchDedupe = new Map();
 function __restoreMainHome(reason, force) {

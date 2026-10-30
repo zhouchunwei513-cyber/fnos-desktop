@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "3.0.21",
+  "version": "3.0.22",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -52,6 +52,7 @@
       "dialog.html",
       "dialog.css",
       "dialog.js",
+      "error.html",
       "lock.html",
       "lock.css",
       "lock.js",

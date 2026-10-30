@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.31';
+const APP_VERSION = '3.0.32';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5769,6 +5769,14 @@ function __entryCacheLoad() {
     const j = __readJsonLoose(ENTRY_CACHE_FILE);
     if (j && typeof j === 'object' && j.items && typeof j.items === 'object') __entryCacheMem = j;
     else __entryCacheMem = { ver: 1, items: {} };
+    // v3.0.32：清掉旧版不含 host 的 path: 键（'path:/' 曾把图标管理器地址传染给所有根路径应用）
+    try {
+      let __dirty32 = false;
+      Object.keys(__entryCacheMem.items || {}).forEach((k) => {
+        if (/^path:/.test(k) && k.indexOf('|') < 0) { delete __entryCacheMem.items[k]; __dirty32 = true; }
+      });
+      if (__dirty32) { try { fs.writeFileSync(ENTRY_CACHE_FILE, JSON.stringify(__entryCacheMem)); } catch (_) {} }
+    } catch (_) {}
   } catch (_) { __entryCacheMem = { ver: 1, items: {} }; }
   return __entryCacheMem;
 }
@@ -5836,7 +5844,10 @@ function __entryKeyOf(url, opts) {
     m = /\/app\/([^/?#]+)/i.exec(u);
     if (m) { try { return 'route:' + decodeURIComponent(m[1]).slice(0, 80); } catch (_) { return 'route:' + m[1].slice(0, 80); } }
     if (opts && (opts.appId || opts.name)) return 'app:' + String(opts.appId || opts.name).slice(0, 80);
-    try { const p = new URL(u); return 'path:' + String(p.pathname || '/').slice(0, 80); } catch (_) {}
+    // v3.0.32（问题4：实测点击 10303/10301/10304/10311 四个 docker 应用全跳图标管理器 10307）：
+    // 旧键只取 pathname，而这些应用的 pathname 都是 '/'，于是共用同一条 'path:/' 缓存，
+    // 谁最后确认就把别家的启动地址改成自己的。键必须带 host:port。
+    try { const p = new URL(u); return 'path:' + String(p.host || '').slice(0, 48) + '|' + String(p.pathname || '/').slice(0, 80); } catch (_) {}
   } catch (_) {}
   return 'raw:' + String(url || '').slice(0, 80);
 }
@@ -5859,6 +5870,26 @@ function __entryCacheHostFix(url) {
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
   try { global.__fnClickOpened25 = true; } catch (_) {}
+  // v3.0.32（问题2：快捷方式打不开、程序内打开正常）：快捷方式链路传进来的常是
+  // appview?anchor=<id> 中转地址，而 FPK 图标管理器里同一应用有真实地址
+  // （实测 fndesk_1793327681330 → http://121.40.186.165:3000/）。中转在公网返回 404/502 空壳，
+  // 先换成 FPK 真地址再建窗，直接绕开中转。
+  try {
+    const __m32 = /\/appview\?anchor=([^&#]+)/i.exec(String(url || ''));
+    if (__m32) {
+      let __an32 = '';
+      try { __an32 = decodeURIComponent(__m32[1]); } catch (_) { __an32 = __m32[1]; }
+      const __fe32 = __fpkLookupSync(__an32);
+      const __fu32 = __fe32 && __fe32.url ? String(__fe32.url) : '';
+      if (/^https?:\/\//i.test(__fu32) && !/\/appview(\?|$)/i.test(__fu32) && !/\/login(\?|$|\/)/i.test(__fu32)) {
+        const __nu32 = __rootUrlFallback(__liveOriginFixUrl(__fu32), __an32);
+        if (__nu32 && __nu32 !== url) {
+          try { dlog('info', 'appwin.entry-swap32', { from: String(url).slice(0, 140), to: String(__nu32).slice(0, 140), app: String(__an32).slice(0, 60) }); } catch (_) {}
+          url = __nu32;
+        }
+      }
+    }
+  } catch (_) {}
   // v2.2.4：崩溃风暴抑制——若最近 30 秒内渲染进程崩溃 >=4 次（应用窗口连崩），
   // 新窗口创建延迟 2.5s，等 GPU/渲染资源稳定再建，避免"创建即崩→连锁崩"。
   // 日志证据：02:47:39/02:49:48 34500 创建即崩、主窗口 02:47:07-10 连崩 4 次。
@@ -6390,9 +6421,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
               // 同时把 bodyLen / hasEmbed / isLogin 一起回传，日志能直接看出是"真坏"还是"误判"。
               win.webContents.executeJavaScript("(function(){try{var t=(document.body?document.body.innerText:'')||'';var u=String(location.href||'');var ln=t.replace(/\\s+/g,'').length;var login=/\\/login|\\/signin/i.test(u)?1:0;if(u.indexOf('/appview')>=0){var st=/\u4e0d\u5b58\u5728\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|\u5e94\u7528\u4e0d\u5b58\u5728/.test(t);var ha=!!document.querySelector('webview,iframe,object,embed,[id*=app],[class*=app]');return [(st&&!ha&&ln<600)?1:0,ln,ha?1:0,login]}var bad=/\u4e0d\u5b58\u5728?\u6216\u672a\u5b89\u88c5|\u672a\u5b89\u88c5|Not Found|404|\u9875\u9762\u4e0d\u5b58\u5728|\u65e0\u6cd5\u627e\u5230|\u6ca1\u6709\u627e\u5230|\u65e0\u6cd5\u8bbf\u95ee/i.test(t);return [bad?1:0,ln,0,login]}catch(_){return [-1,0,0,0]}})()")
                 .then((__r30) => {
-                  const bad = Array.isArray(__r30) ? (__r30[0] === 1) : !!__r30;
+                  let bad = Array.isArray(__r30) ? (__r30[0] === 1) : !!__r30;
                   const __len30 = Array.isArray(__r30) ? (__r30[1] || 0) : -1;
                   const __has30 = Array.isArray(__r30) ? (__r30[2] || 0) : 0;
+                  // v3.0.32（问题1/2/3）：appview 返回 4xx/5xx 且正文空、无嵌入元素 → 这是 NAS
+                  // 中转壳的无效响应（真实内容在 hidden iframe 里，body 文本永远是 0）。判成坏入口，
+                  // 让候选链切到真实 URL（/apps/download-center/、/iscsi/、/app/fndesk…）。
+                  try {
+                    if (!bad && __len30 < 50 && __has30 === 0) {
+                      const __c32b = parseInt(win.__fnLastHttp, 10);
+                      if (__c32b >= 400) bad = true;
+                    }
+                  } catch (_) {}
                   const __login30 = Array.isArray(__r30) ? (__r30[3] || 0) : 0;
                   try { win.__fnEntryCheck = false; } catch (_) {}
                   try {
@@ -6610,7 +6650,16 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                   // 再进 nativeImage；转换失败则退回原 buffer（保持旧行为）。
                   let __fpkSafe = fpkBuf;
                   try { if (__safeIconBuf(fpkBuf) !== 'png') { const __cnv = await __decodeToPngAny(fpkBuf); if (__cnv) __fpkSafe = __cnv; } } catch (_) {}
-                  const img = nativeImage.createFromBuffer(__fpkSafe);
+                  let img = nativeImage.createFromBuffer(__fpkSafe);
+                  // v3.0.32（任务栏图标偶发缺失）：部分 FPK 图标标称 PNG（magic 89504e47）但
+                  // nativeImage 解析为空（实测 trim.music bufLen=62102 仍 fpk-empty）。
+                  // 解析不出就用 canvas 重编码成干净 PNG 再试一次。
+                  if (img.isEmpty()) {
+                    try {
+                      const __cnv2 = await __decodeToPngAny(fpkBuf);
+                      if (__cnv2 && __cnv2 !== __fpkSafe) img = nativeImage.createFromBuffer(__cnv2);
+                    } catch (_) {}
+                  }
                   if (!img.isEmpty()) {
                     win.setIcon(img);
                     win.__appFpkIcon = true;
@@ -7426,11 +7475,9 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
       const __fnOk28 = () => {
         try {
           if (__fnIsErrPage(win)) return true;
-          // v3.0.31（公网慢/不跳转）：appview 是 OAuth 中转壳，公网下 anchor 是内网 FPK 映射、
-          // 中转不认会返回 404/502，但页面仍是可用的 SPA 壳（内部自行加载/跳转真实内容）。
-          // 继续按 4xx 压窗会让用户白等 4.5s（deferred-show why:timeout）。
-          // 故 appview 目标一律放行显示，让页面自行处理跳转。
-          if (__fnAppviewTarget) return true;
+          // v3.0.32（回退 v3.0.31 的一律放行）：appview 公网返回 404/502 空壳，一律放行会让用户
+          // 直接看到空白/错误页（实测「又开始跳错误页」）。改回 4xx 压窗，由 entry-check 把
+          // 「4xx + 正文空 + 无嵌入元素」判成坏入口 → 切真实 URL → 2xx 才显示。
           const __c = parseInt(win.__fnLastHttp, 10);
           return !(__c >= 400);
         } catch (_) { return true; }
@@ -7443,10 +7490,10 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
           const __tick28 = setInterval(() => {
             __wait28 += 1;
             try {
-              if (win.isDestroyed() || __wait28 > 16) { clearInterval(__tick28); return; }
+              if (win.isDestroyed() || __wait28 > 18) { clearInterval(__tick28); return; }
               if (__fnOk28()) { clearInterval(__tick28); __fnShow25('ready-after-retry'); }
             } catch (_) { clearInterval(__tick28); }
-          }, 250);
+          }, 150);
         }, 450);
       });
       try { win.webContents.once('did-finish-load', () => setTimeout(() => { if (__fnOk28()) __fnShow25('load'); }, 250)); } catch (_) {}
@@ -7457,7 +7504,7 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
           }, 280);
         });
       } catch (_) {}
-      setTimeout(() => __fnShow25('timeout'), 4500);
+      setTimeout(() => __fnShow25('timeout'), 2800);
       // v3.0.28（问题3 兜底）：应用窗落到登录页（/v/login、/seek/login、/login?redirect=）
       // 说明该 host 上没有登录态（历史 host / 公网 FRP 地址 / 旧分区）。
       // 换到当前生效 host 重试一次（含 query 里 URL 编码的 redirect 目标），只做一次防循环。

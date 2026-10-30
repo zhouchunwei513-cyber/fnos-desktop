@@ -569,7 +569,7 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) { return false; }
     }
 
-    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55 };
+    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
       if (r && typeof r === 'object') {
@@ -582,6 +582,8 @@ module.exports = function injectTitleBar(ctx) {
         if (r.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(r.highlight)));
         if (r.skinDir) __skinState.skinDir = String(r.skinDir);
         if (r.skin && typeof r.skin === 'object') __skinState.skin = r.skin;
+        // v3.0.23：悬浮球隐藏开关
+        if (typeof r.hideAccountBall === 'boolean') TB.hideAccountBall = r.hideAccountBall;
       }
     } catch (_) {}
     __applyTitlebarHeight();
@@ -738,6 +740,11 @@ module.exports = function injectTitleBar(ctx) {
             if (val.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(val.highlight)));
             if (val.skinDir != null) __skinState.skinDir = String(val.skinDir);
             if (val.skin != null) __skinState.skin = (val.skin && typeof val.skin === 'object') ? val.skin : null;
+            // v3.0.23：悬浮球隐藏开关（设置页勾选后立即隐藏 / 显示，不需要重启）
+            if (typeof val.hideAccountBall === 'boolean') {
+              TB.hideAccountBall = val.hideAccountBall;
+              try { if (window.__fnApplyBallHidden) window.__fnApplyBallHidden(val.hideAccountBall); } catch (_) {}
+            }
             __applyTitlebarHeight();
             const bar0 = document.getElementById('fnos-titlebar');
             if (bar0) {
@@ -1687,11 +1694,36 @@ module.exports = function injectTitleBar(ctx) {
           hideTimer = setTimeout(() => dropdown.classList.add('fnos-acct-hidden'), 300);
         }
 
-        // v2.24.12（用户反馈：账号切换竖条贴边遮挡内容区）——改成可拖动圆形悬浮球：
-        // 圆形玻璃球，可拖到任意位置，松手靠近左右边缘自动吸附，位置写 localStorage 下次还原；
-        // 下拉面板按球在左半/右半自动向右/左展开。
+        // v2.24.12：可拖动圆形悬浮球（位置下次启动还原）
+        // v3.0.23（用户反馈：启动后位置老变、经常掉到左下角拉不出来、贴边被裁掉一半）——
+        //   ① fixed 在 body 被注入 transform 之后是以 body 为包含块：坐标系原点在 body 顶部、
+        //      可用高度是 body 高度（视口 - 标题栏）。此前用 window.innerHeight 当上限，球能被
+        //      放到 body 之外 34px，被窗口底部裁得只剩一条边 → 看起来"贴在角落拉不出来"；
+        //   ② 拖动时把 getBoundingClientRect().top（屏幕坐标）当作 body 内坐标使用，每拖一次
+        //      就往下漂 34px，越用越靠底；
+        //   ③ 窗口 resize 时把夹紧后的绝对像素写回存储，反复抖动把位置一点点带歪。
+        // 现在统一：body 内坐标 + 归一化比例持久化（同时同步主进程，换 origin 也记得住）。
         const ACCT_POS_KEY = 'fnos-acct-ball-pos';
         const ACCT_BALL = 40;
+        const ACCT_EDGE = 6;   // 贴边也留 6px，不给窗口圆角/边框裁掉的机会
+        function acctBox() {
+          let w = window.innerWidth || 0;
+          let h = window.innerHeight || 0;
+          try {
+            const br = document.body.getBoundingClientRect();
+            if (br.height > 120) h = Math.round(br.height);
+            if (br.width > 120) w = Math.round(br.width);
+          } catch (_) {}
+          return { w: Math.max(80, w), h: Math.max(80, h) };
+        }
+        function acctRange() {
+          const box = acctBox();
+          return {
+            box: box,
+            mx: Math.max(1, box.w - ACCT_BALL - ACCT_EDGE * 2),
+            my: Math.max(1, box.h - ACCT_BALL - ACCT_EDGE * 2)
+          };
+        }
         function applyAcctSide() {
           try {
             const r = panel.getBoundingClientRect();
@@ -1699,28 +1731,78 @@ module.exports = function injectTitleBar(ctx) {
           } catch (_) {}
         }
         function placeAcctBall(x, y) {
-          const nx = Math.max(0, Math.min(window.innerWidth - ACCT_BALL, x));
-          const ny = Math.max(0, Math.min(window.innerHeight - ACCT_BALL, y));
+          const rg = acctRange();
+          const nx = Math.max(ACCT_EDGE, Math.min(ACCT_EDGE + rg.mx, x));
+          const ny = Math.max(ACCT_EDGE, Math.min(ACCT_EDGE + rg.my, y));
           panel.style.left = nx + 'px';
           panel.style.top = ny + 'px';
           panel.style.transform = 'none';
           applyAcctSide();
           return { x: nx, y: ny };
         }
-        try {
-          const saved = localStorage.getItem(ACCT_POS_KEY);
-          if (saved) {
-            const p = JSON.parse(saved);
-            if (p && typeof p.x === 'number' && typeof p.y === 'number') placeAcctBall(p.x, p.y);
+        // 当前在 body 坐标系里的位置：优先读自己写的 style，避免屏幕坐标/transform 混算
+        function acctCur() {
+          let x = parseFloat(panel.style.left);
+          let y = parseFloat(panel.style.top);
+          if (!isFinite(x) || !isFinite(y)) {
+            let lx = 0, ly = 0;
+            try {
+              const r = panel.getBoundingClientRect();
+              const br = document.body.getBoundingClientRect();
+              lx = r.left - br.left; ly = r.top - br.top;
+            } catch (_) {}
+            if (!isFinite(x)) x = lx;
+            if (!isFinite(y)) y = ly;
           }
-        } catch (_) {}
+          return { x: x, y: y };
+        }
+        function acctSave() {
+          try {
+            const cur = acctCur();
+            const rg = acctRange();
+            const p = {
+              x: cur.x, y: cur.y,
+              fx: Math.max(0, Math.min(1, (cur.x - ACCT_EDGE) / rg.mx)),
+              fy: Math.max(0, Math.min(1, (cur.y - ACCT_EDGE) / rg.my))
+            };
+            try { localStorage.setItem(ACCT_POS_KEY, JSON.stringify(p)); } catch (_) {}
+            // 主进程按比例再存一份：不同 NAS 地址 / 不同分区的 localStorage 互不相通，
+            // 只靠 localStorage 会出现"换个页面登录，球又回默认位置"的错觉
+            try { ipcRenderer.send('ball:set-pos', { fx: p.fx, fy: p.fy }); } catch (_) {}
+          } catch (_) {}
+        }
+        function acctRestore(fx, fy) {
+          const rg = acctRange();
+          return placeAcctBall(ACCT_EDGE + Math.max(0, Math.min(1, fx)) * rg.mx,
+                               ACCT_EDGE + Math.max(0, Math.min(1, fy)) * rg.my);
+        }
+        function acctInitPos() {
+          let fx = null, fy = null;
+          try {
+            const sp = ipcRenderer.sendSync('ball:get-pos');
+            if (sp && typeof sp.fx === 'number' && typeof sp.fy === 'number') { fx = sp.fx; fy = sp.fy; }
+          } catch (_) {}
+          if (fx === null) {
+            try {
+              const saved = JSON.parse(localStorage.getItem(ACCT_POS_KEY) || 'null');
+              if (saved && typeof saved.fx === 'number' && typeof saved.fy === 'number') {
+                fx = saved.fx; fy = saved.fy;
+              }
+              // 旧版存的是绝对像素（{x,y}）：那些值多半是被上一版裁到窗口外/被 34px 偏移
+              // 带歪的脏数据，直接沿用会把这个 bug 一直继承下去，所以不迁移 —— 首次升级
+              // 统一回到默认位置一次，之后用户拖动的位置才会被记住。
+            } catch (_) {}
+          }
+          if (fx === null) { fx = 1; fy = 0.5; }   // 默认贴右侧中部（左侧是应用列表，最容易被挡）
+          acctRestore(fx, fy);
+        }
 
         let acctDrag = null;
         let acctJustDragged = false;
         trigger.addEventListener('mousedown', (e) => {
           if (e.button !== 0) return;
-          const r = panel.getBoundingClientRect();
-          acctDrag = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false };
+          const cur = acctCur();
+          acctDrag = { sx: e.clientX, sy: e.clientY, ox: cur.x, oy: cur.y, moved: false };
           e.preventDefault();
         });
         document.addEventListener('mousemove', (e) => {
@@ -1739,21 +1821,37 @@ module.exports = function injectTitleBar(ctx) {
           acctJustDragged = true;
           setTimeout(() => { acctJustDragged = false; }, 0);
           try {
-            const r = panel.getBoundingClientRect();
-            let nx = r.left, ny = r.top;
-            if (r.left < 24) nx = 8;
-            else if ((window.innerWidth - r.right) < 24) nx = window.innerWidth - ACCT_BALL - 8;
-            const pos = placeAcctBall(nx, ny);
-            localStorage.setItem(ACCT_POS_KEY, JSON.stringify(pos));
+            const cur = acctCur();
+            const rg = acctRange();
+            let nx = cur.x, ny = cur.y;
+            // 靠近左右边缘吸附（吸附后仍留 ACCT_EDGE，只贴不藏），上下贴顶/贴底同理
+            if (cur.x < 24) nx = ACCT_EDGE;
+            else if (rg.box.w - (cur.x + ACCT_BALL) < 24) nx = ACCT_EDGE + rg.mx;
+            if (cur.y < 24) ny = ACCT_EDGE;
+            else if (rg.box.h - (cur.y + ACCT_BALL) < 24) ny = ACCT_EDGE + rg.my;
+            placeAcctBall(nx, ny);
+            acctSave();
           } catch (_) {}
         }, true);
+        // 窗口尺寸变化：按比例跟随；不再把夹紧后的绝对值写回存储，避免反复抖动累积漂移
+        let __acctBox = acctBox();
         window.addEventListener('resize', () => {
           try {
-            const r = panel.getBoundingClientRect();
-            const pos = placeAcctBall(r.left, r.top);
-            localStorage.setItem(ACCT_POS_KEY, JSON.stringify(pos));
+            const cur = acctCur();
+            const mx0 = Math.max(1, __acctBox.w - ACCT_BALL - ACCT_EDGE * 2);
+            const my0 = Math.max(1, __acctBox.h - ACCT_BALL - ACCT_EDGE * 2);
+            const fx = (cur.x - ACCT_EDGE) / mx0;
+            const fy = (cur.y - ACCT_EDGE) / my0;
+            __acctBox = acctBox();
+            acctRestore(fx, fy);
           } catch (_) {}
         });
+        // 早期 body 高度可能还是 0，等布局有高度再放，避免球先闪到左上角
+        if (acctBox().h >= 200) acctInitPos();
+        else setTimeout(() => { try { acctInitPos(); } catch (_) {} }, 80);
+        // 标题栏高度注入 / 界面缩放会让 body 最终高度晚一步确定，稳定后再校一次
+        setTimeout(() => { try { acctInitPos(); } catch (_) {} }, 400);
+        try { window.addEventListener('load', () => { setTimeout(() => { try { acctInitPos(); } catch (_) {} }, 120); }); } catch (_) {}
 
         trigger.addEventListener('mouseenter', () => { if (!acctDrag) showDropdown(); });
         trigger.addEventListener('click', (e) => {
@@ -1822,6 +1920,15 @@ module.exports = function injectTitleBar(ctx) {
 
         document.body.appendChild(style);
         document.body.appendChild(panel);
+        // v3.0.23：设置页「隐藏悬浮球」开关 —— 隐藏后完全让出那块区域
+        try {
+          window.__fnApplyBallHidden = function (h) {
+            var shown = (h !== true);
+            panel.style.display = shown ? '' : 'none';
+            if (shown) { try { acctInitPos(); } catch (_) {} }
+          };
+          window.__fnApplyBallHidden(TB.hideAccountBall === true);
+        } catch (_) {}
       } catch (_) {}
     }
 

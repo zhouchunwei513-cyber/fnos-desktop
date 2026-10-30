@@ -258,6 +258,18 @@
         </label>
       </div>
 
+      <!-- v3.0.23：账号悬浮球显示开关（有用户反馈球挡住左侧图标，希望彻底隐藏） -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">隐藏账号悬浮球</div>
+          <div class="hotkey-sub">开启：窗口内不再显示账号切换圆球（菜单里仍可切换账号）；关闭：显示，可拖动，拖动后的位置会记住</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+          <input type="checkbox" id="opt-hide-account-ball" style="width:18px;height:18px;cursor:pointer" />
+          <span id="opt-hide-account-ball-label" style="font-size:13px;color:var(--text-secondary,#aab0c0)">已显示</span>
+        </label>
+      </div>
+
       <!-- v1.58：不透明度滑块 -->
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>

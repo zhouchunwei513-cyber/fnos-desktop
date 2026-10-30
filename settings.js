@@ -324,6 +324,13 @@
   if (optTbAutoHide) {
     optTbAutoHide.addEventListener('change', syncTbLabel);
   }
+  // v3.0.23：隐藏账号悬浮球（有用户反馈球挡操作）
+  const optHideBall = document.getElementById('opt-hide-account-ball');
+  const optHideBallLabel = document.getElementById('opt-hide-account-ball-label');
+  const syncHideBallLabel = () => {
+    if (optHideBallLabel) optHideBallLabel.textContent = (optHideBall && optHideBall.checked) ? '已隐藏' : '已显示';
+  };
+  if (optHideBall) optHideBall.addEventListener('change', syncHideBallLabel);
 
   // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
   // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
@@ -457,6 +464,7 @@
     try {
       if (!info) return;
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
+      if (optHideBall) { optHideBall.checked = info.hideAccountBall === true; syncHideBallLabel(); }
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 0);
       tbState.color = hexNorm6(info.titleBarColor) || '#3B82F6';
       tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'solid';
@@ -479,6 +487,7 @@
           titleBarMaterial: tbState.material,
           titleBarBlur: tbState.blur,
           titleBarHighlight: tbState.highlight,
+          hideAccountBall: !!(optHideBall && optHideBall.checked),
         });
         if (res && res.ok) {
           optSave.textContent = '已 保 存（即时生效）';

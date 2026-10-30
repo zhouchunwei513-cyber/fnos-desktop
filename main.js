@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.22';
+const APP_VERSION = '3.0.23';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -1092,6 +1092,51 @@ function __maxClampLater(win) {
     } catch (_) {}
   }, 260);
 }
+// v3.0.23（用户反馈：按住标题栏拖窗口，窗口一直在放大；网友同源补丁 v3.0.24/v3.0.25）——
+// 日志实锤：工作区只有 1600x860，但最大化前记下的还原尺寸是 -764,96,2425,1526 / -41,0,2007,1577。
+// getNormalBounds() 在最大化过渡、move loop 期间会返回这种离谱值，一旦被当成「还原目标」，
+// 拖最大化窗口、双击还原都会把窗口放大到屏幕外；再最大化又把这轮的巨尺寸记成新的 pre，
+// 于是每拖一次更大一圈。这里统一归一化：超出工作区 / 缺失 / 太小一律判为无效，
+// 主窗退回设置里保存的正常尺寸，其他窗口退回 80% 工作区居中。
+function __normalizeRestoreBounds(win, b) {
+  try {
+    let wa = null;
+    try {
+      wa = (b && isFinite(b.x) && isFinite(b.y) && isFinite(b.width) && isFinite(b.height))
+        ? screen.getDisplayMatching({ x: Math.round(b.x), y: Math.round(b.y), width: Math.max(1, Math.round(b.width)), height: Math.max(1, Math.round(b.height)) }).workArea
+        : screen.getPrimaryDisplay().workArea;
+    } catch (_) { wa = null; }
+    const src = (b && isFinite(b.width) && isFinite(b.height)) ? b : null;
+    const bad = !src || src.width < 200 || src.height < 140
+      || (wa && (src.width > wa.width + 8 || src.height > wa.height + 8));
+    if (!bad) {
+      // 合法值：仍然把位置夹回工作区，避免还原到屏幕外
+      const out = { x: Math.round(src.x), y: Math.round(src.y), width: Math.round(src.width), height: Math.round(src.height) };
+      if (wa) {
+        if (out.x < wa.x) out.x = wa.x;
+        if (out.y < wa.y) out.y = wa.y;
+        if (out.x + out.width > wa.x + wa.width) out.x = Math.max(wa.x, wa.x + wa.width - out.width);
+        if (out.y + out.height > wa.y + wa.height) out.y = Math.max(wa.y, wa.y + wa.height - out.height);
+      }
+      return out;
+    }
+    if (!wa) return null;
+    // 无效值：主窗优先用设置里保存的窗口尺寸
+    try {
+      if (win && win === mainWindow) {
+        const sb = loadSettings().windowBounds;
+        if (sb && isFinite(sb.width) && isFinite(sb.height)
+          && sb.width >= 900 && sb.height >= 600
+          && sb.width <= wa.width + 8 && sb.height <= wa.height + 8) {
+          return __normalizeRestoreBounds(win, { x: sb.x, y: sb.y, width: sb.width, height: sb.height });
+        }
+      }
+    } catch (_) {}
+    const w = Math.round(wa.width * 0.8);
+    const h = Math.round(wa.height * 0.8);
+    return { x: Math.round(wa.x + (wa.width - w) / 2), y: Math.round(wa.y + (wa.height - h) / 2), width: w, height: h };
+  } catch (_) { return null; }
+}
 // v2.17.48（用户要求：双击标题栏还原，不仅要回原尺寸，还要回原位置）：
 // unmaximize() 之后系统会用自己的「最大化前位置」做还原动画，只在一个固定延迟后 setBounds 一次，
 // 很容易被这次还原覆盖掉——表现就是尺寸回来了、位置却跑回系统记忆的位置。
@@ -1103,7 +1148,10 @@ function __restoreWinBounds(win, pb) {
     let target = pb;
     if (!target) { try { target = win.getNormalBounds(); } catch (_) {} }
     if (!target || !isFinite(target.width) || !isFinite(target.height) || target.width < 10 || target.height < 10) return null;
-    const t = { x: Math.round(target.x), y: Math.round(target.y), width: Math.round(target.width), height: Math.round(target.height) };
+    // v3.0.23：还原目标一律归一化（超出工作区的离谱值视为无效）
+    const __nt = __normalizeRestoreBounds(win, target);
+    if (!__nt) return null;
+    const t = { x: __nt.x, y: __nt.y, width: __nt.width, height: __nt.height };
     const apply = () => {
       try {
         if (!win || win.isDestroyed()) return;
@@ -1142,6 +1190,9 @@ function __toggleMaxWin(win) {
     let pre = null;
     try { pre = win.getBounds(); } catch (_) {}
     if (!pre || !isFinite(pre.width) || pre.width < 10) { try { pre = win.getNormalBounds(); } catch (_) {} }
+    // v3.0.23：pre 必须归一化后再存。getNormalBounds() 在最大化过渡期会返回离谱尺寸
+    // （工作区 1600x860 却记成 2425x1526），存进去就等于把「还原成巨型窗口」埋好了。
+    pre = __normalizeRestoreBounds(win, pre);
     try { fnosLog('info', 'window', 'max in win=' + win.id + ' pre=' + (pre ? [pre.x, pre.y, pre.width, pre.height].join(',') : '-')); } catch (_) {}
     __maxInfo.set(win, { on: true, pre, pseudo: false });
     try { win.maximize(); } catch (_) {}
@@ -1373,7 +1424,10 @@ function __onWindowMaximize(win) {
     if (!win || win.isDestroyed()) return;
     const st = __maxInfo.get(win);
     if (!st || !st.on) {
-      __maxInfo.set(win, { on: true, pre: win.getNormalBounds(), pseudo: false });
+      // v3.0.23：系统最大化（双击/贴边/Aero Snap）同样把 pre 归一化，避免把离谱尺寸当还原目标
+      let __preM = null;
+      try { __preM = win.getNormalBounds(); } catch (_) { __preM = null; }
+      __maxInfo.set(win, { on: true, pre: __normalizeRestoreBounds(win, __preM), pseudo: false });
       __maxClampLater(win);
     }
   } catch (_) {}
@@ -2932,7 +2986,11 @@ ipcMain.on('window-close', (e) => {
 // 系统 move loop 接管、不派发 DOM 事件，做不到「既原生拖拽又用 DOM 判双击」。
 // 这里改成主进程真实拖动：renderer 按下发 win-drag-start（带起点 screenX/Y），移动发
 // win-drag-move（screenX/Y 与 setPosition 同为 DIP，可直接相减），松开发 win-drag-end。
-let __winDragState = null; // { win, ox, oy, sx, sy, lx, ly, maxPending }
+let __winDragState = null; // { win, ox, oy, sx, sy, lx, ly, maxPending, w0, h0 }
+// v3.0.23：拖动结束 / 最大化还原时间戳。移动窗口时 DWM 重排产生的伪 resized 往往晚到 1~2s，
+// 单看 __winDragState 拦不住（drag-end 早就把它清空了），主窗比例锁用这两个时间戳再压一道。
+let __winDragEndAt = 0;
+let __maxRestoreAt = 0;
 // v2.17.49（用户要求：已最大化的窗口去拖标题栏，应当先还原到最大化前的尺寸和位置，再跟着
 // 鼠标走）。这里只登记「待还原目标」，不立刻 unmaximize——否则单击、双击也会把最大化窗口
 // 弹下来；等真正开始移动（第一条 win-drag-move）时才还原，且本次不位移，只重设拖动基准。
@@ -2946,11 +3004,16 @@ function __winDragBegin(w, sx, sy) {
       try { pending = __maxPre(w) || null; } catch (_) { pending = null; }
       if (!pending) { try { pending = w.getNormalBounds(); } catch (_) { pending = null; } }
       if (pending && !(pending.width > 10 && pending.height > 10)) pending = null;
+      // v3.0.23：拖动还原的最大化前尺寸同样要归一化——否则「按住顶栏拖窗口」
+      // 会把窗口直接撑到 2400x1500（工作区只有 1600x860），看起来就是一直在放大。
+      if (pending) pending = __normalizeRestoreBounds(w, pending);
     }
     return {
       win: w, ox: b.x, oy: b.y,
       sx: Number(sx) || 0, sy: Number(sy) || 0,
-      lx: b.x, ly: b.y, maxPending: pending
+      lx: b.x, ly: b.y, maxPending: pending,
+      // v3.0.23：拖动开始时把尺寸记下来，整个拖动过程只允许改位置、不允许改尺寸
+      w0: b.width, h0: b.height
     };
   } catch (_) { return null; }
 }
@@ -2982,16 +3045,38 @@ ipcMain.on('win-drag-move', (e, p) => {
         x: Math.round(pb.x), y: Math.round(pb.y),
         width: Math.round(pb.width), height: Math.round(pb.height)
       };
+      __maxRestoreAt = Date.now(); // v3.0.23：还原期压制比例锁
       try { __maxInfo.set(d.win, { on: false, pre: null, pseudo: false }); } catch (_) {}
       try { d.win.unmaximize(); } catch (_) {}
       try { d.win.setBounds(target); } catch (_) {}
       d.ox = target.x; d.oy = target.y; d.sx = sx; d.sy = sy; d.lx = target.x; d.ly = target.y;
+      d.w0 = target.width; d.h0 = target.height; // 还原后的尺寸就是本次拖动的基准尺寸
       try { fnosLog('info', 'window', 'drag.restore win=' + d.win.id + ' b=' + [target.x, target.y, target.width, target.height].join(',')); } catch (_) {}
       return;
     }
     const nx = Math.round(d.ox + sx - d.sx);
     const ny = Math.round(d.oy + sy - d.sy);
-    if (nx === d.lx && ny === d.ly) return;
+    // v3.0.23（用户反馈：按住顶栏拖动，窗口越拖越大）——
+    // 日志实锤：普通拖动过程中窗口尺寸会自己变大，且主进程没有任何 setSize 记录，
+    // 说明是系统侧（DWM 重排/WM_SIZE）在移动时改了 rect。这里做尺寸锁：拖动期间只认
+    // 开始拖动时记下的 w0/h0，一旦偏离就当场写回，用户看到的就是「只移动、不变大」。
+    let __sizeFixed = false;
+    try {
+      const cb = d.win.getBounds();
+      if (d.w0 && d.h0 && (Math.abs(cb.width - d.w0) > 2 || Math.abs(cb.height - d.h0) > 2)) {
+        d.win.setBounds({ x: cb.x, y: cb.y, width: d.w0, height: d.h0 });
+        __sizeFixed = true;
+        const now0 = Date.now();
+        if (!d.__lastSizeFixLog || now0 - d.__lastSizeFixLog > 500) {
+          d.__lastSizeFixLog = now0;
+          try { fnosLog('warn', 'window', 'drag.size-lock win=' + d.win.id + ' from=' + [cb.width, cb.height].join('x') + ' to=' + d.w0 + 'x' + d.h0); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    if (nx === d.lx && ny === d.ly) {
+      if (__sizeFixed) { try { d.win.setPosition(d.lx, d.ly); } catch (_) {} }
+      return;
+    }
     d.lx = nx; d.ly = ny;
     d.win.setPosition(nx, ny);
   } catch (_) {}
@@ -3000,8 +3085,17 @@ ipcMain.on('win-drag-end', (e) => {
   try {
     const d = __winDragState;
     __winDragState = null;
+    __winDragEndAt = Date.now(); // v3.0.23：供主窗比例锁压掉拖动尾巴上的伪 resized
     if (d && d.win && !d.win.isDestroyed()) {
-      try { fnosLog('info', 'window', 'drag.end win=' + d.win.id + ' p=' + d.lx + ',' + d.ly); } catch (_) {}
+      // v3.0.23：松手再核一次尺寸，被系统在拖动尾部改大的也一并纠正
+      try {
+        const b = d.win.getBounds();
+        if (d.w0 && d.h0 && (Math.abs(b.width - d.w0) > 2 || Math.abs(b.height - d.h0) > 2)) {
+          d.win.setBounds({ x: b.x, y: b.y, width: d.w0, height: d.h0 });
+          try { fnosLog('warn', 'window', 'drag.end.size-lock win=' + d.win.id + ' from=' + b.width + 'x' + b.height + ' to=' + d.w0 + 'x' + d.h0); } catch (_) {}
+        }
+      } catch (_) {}
+      try { fnosLog('info', 'window', 'drag.end win=' + d.win.id + ' p=' + d.lx + ',' + d.ly + ' size=' + d.w0 + 'x' + d.h0); } catch (_) {}
     }
   } catch (_) {}
 });
@@ -7512,6 +7606,18 @@ function createMainWindow(partition, loadTarget) {
   // v2.15.68：主窗口锁定用户实测「桌面画面」比例 45:27.65（画面=内容区减自绘标题栏）。
   // 画面高=round(画面宽×553/900)，窗口高=画面高+标题栏高；savedBounds 是外框，边框差≈0 此处忽略。
   if (savedBounds) {
+    // v3.0.23：再夹一次工作区上限——历史记录里可能存着被「越拖越大」污染的巨尺寸
+    // （实测出现过 2425x1526，工作区只有 1600x860），启动时不夹会直接开出一个超大窗口。
+    try {
+      const __waW = (__primaryWA && __primaryWA.width) || 1600;
+      const __waH = (__primaryWA && __primaryWA.height) || 860;
+      const __capW = Math.min(__waW, Math.round(Math.max(900, __waH - __titlebarStrip) * 900 / 553));
+      if (savedBounds.width > __capW) {
+        savedBounds.width = __capW;
+        savedBounds.height = Math.round(__capW * 553 / 900) + __titlebarStrip;
+      }
+      if (savedBounds.height > __waH) savedBounds.height = __waH;
+    } catch (_) {}
     try {
       const targetH = Math.round(savedBounds.width * 553 / 900) + __titlebarStrip;
       const targetW = Math.round((savedBounds.height - __titlebarStrip) * 900 / 553);
@@ -7573,12 +7679,23 @@ function createMainWindow(partition, loadTarget) {
   // v2.17.32/2.17.33：全屏切换窗口期由模块级 __fsGuardUntil 控制（供入口函数与还原逻辑共享），
   // 全屏/退全屏瞬间及其后的还原 setBounds 都不能被比例锁改写尺寸
   let __lockAspect = false;
+  // v3.0.23（用户反馈：鼠标按在顶栏想拖窗口，窗口一直在放大）——
+  // 根因（网友同源日志实锤）：透明无边框窗移动/还原最大化时 DWM 重排边界，getSize/getContentSize
+  // 会报出一份偏离真实值的临时尺寸，而 'resized' 常在 drag-end 之后 2s 才到
+  // （06:32:50.499 drag.end → 06:32:52.737 resize.end）。v2.24.10 那道「拖动期间跳过」的守卫
+  // 判的是 __winDragState，此时早已被 drag-end 清空，于是比例锁按错的尺寸 setSize，这次 setSize
+  // 又触发下一次 resized → 再校正 → 每按/拖一次顶栏窗口就再大一圈。
+  // 现在改用 will-resize 做闸门：它只在用户手动拖窗口边框改尺寸时触发（setSize/setBounds、
+  // 单纯的移动都不会触发），因此「移动产生的伪 resized」一律不校正，放大链被从根上切断。
+  let __userResizeAt = 0;
+  let __aspectSkipAt = 0;
   try {
     // v2.15.76：拖动全程零干预，只在拖动结束校正一次比例。
     // 灰条根因（用户实测对照）：应用窗口不做任何 resize 干预，拖动全程无灰条；
     // 主窗口原来在 will-resize 里每帧改写 newBounds、又在 resize 里 setSize 回弹，
     // Windows 高 DPI 下频繁重排导致 Chromium 来不及重绘，露出未绘制区域 = 灰条。
     // 现改为只等 'resized'（拖动结束后一次性事件）校正一次，与应用窗口行为一致。
+    mainWindow.on('will-resize', () => { __userResizeAt = Date.now(); });
     mainWindow.on('resized', () => {
       try {
         if (__lockAspect || __maxOn(mainWindow) || __isFsOn(mainWindow)) return;
@@ -7587,7 +7704,25 @@ function createMainWindow(partition, loadTarget) {
         // 比例锁据此 setSize 放大，且每次移动都放一点=越拖越大。拖动标题栏期间（__winDragState 非空）
         // 直接跳过比例锁校正，切断放大链；移动结束（win-drag-end 置空）后恢复正常校正。
         if (__winDragState) return;
+        // v3.0.23 拖动尾巴：drag-end 后 1.5s 内的 resized 一律视为移动副作用（真实尺寸没变）
+        if (__winDragEndAt && Date.now() - __winDragEndAt < 1500) return;
+        // v3.0.23 最大化窗被拖还原的尾巴：还原本身是 setBounds，别让比例锁跟它抢尺寸
+        if (__maxRestoreAt && Date.now() - __maxRestoreAt < 1500) return;
         if (Date.now() < __fsGuardUntil) return;
+        // v3.0.23 只认「用户手动改尺寸」：will-resize 之后 4s 内允许校正一次
+        const __userResize = !!__userResizeAt && (Date.now() - __userResizeAt) < 4000;
+        if (!__userResize) {
+          try {
+            const __nowSkip = Date.now();
+            if (__nowSkip - __aspectSkipAt > 1000) {
+              __aspectSkipAt = __nowSkip;
+              const [__sw, __sh] = mainWindow.getSize();
+              fnosLog('info', 'window', 'resize.skip-not-user', { win: mainWindow.id, w: __sw, h: __sh });
+            }
+          } catch (_) {}
+          return;
+        }
+        __userResizeAt = 0;
         const [nw, nh] = __mainAspectFix(mainWindow);
         const [w, h] = mainWindow.getSize();
         // v2.24.9（用户反馈：拖动主窗“越拖越大”，加尺寸日志取证）——
@@ -7623,15 +7758,29 @@ function createMainWindow(partition, loadTarget) {
   } catch (_) {}
   // v2.15.0：主窗口位置/尺寸持久化——调整大小/移动/关闭时存 settings.windowBounds，下次启动恢复上次大小
   try {
+    // v3.0.23：拖动/还原最大化期间 getBounds 可能报出偏大的临时尺寸（DWM 重排），
+    // 以前直接把这份尺寸存进设置，下次启动就真的变大了（"每拖一次大一圈"的另一半原因）。
+    // 现在不稳定的窗口只更新 x/y，宽高沿用最近一次可信尺寸。
+    let __lastGoodSize = null;
     const __saveBounds = () => {
       try {
         if (Date.now() < __fsGuardUntil) return;
-        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && !__isFsOn(mainWindow) && !__maxOn(mainWindow)) {
-          const __bounds = mainWindow.getBounds();
-          __bounds.waW = __primaryWA.width;
-          __bounds.waH = __primaryWA.height;
-          saveSettings({ windowBounds: __bounds });
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || __isFsOn(mainWindow) || __maxOn(mainWindow)) return;
+        const __b = mainWindow.getBounds();
+        const __unstable = !!__winDragState
+          || (!!__winDragEndAt && Date.now() - __winDragEndAt < 1500)
+          || (!!__maxRestoreAt && Date.now() - __maxRestoreAt < 1500);
+        let __out;
+        if (__unstable) {
+          if (!__lastGoodSize) return; // 还没有可信尺寸基准，这轮不写，别把错尺寸落盘
+          __out = { x: __b.x, y: __b.y, width: __lastGoodSize.width, height: __lastGoodSize.height };
+        } else {
+          __lastGoodSize = { width: __b.width, height: __b.height };
+          __out = { x: __b.x, y: __b.y, width: __b.width, height: __b.height };
         }
+        __out.waW = __primaryWA.width;
+        __out.waH = __primaryWA.height;
+        saveSettings({ windowBounds: __out });
       } catch (_) {}
     };
     mainWindow.on('resized', __saveBounds);
@@ -10313,6 +10462,10 @@ ipcMain.handle('settings:get', async () => {
     titleBarHighlight: clampInt(s.titleBarHighlight, 0, 100, 55),
     themeColor: String(s.themeColor || '#4F6EF7'),
     activeSkin: String(s.activeSkin || ''),
+    // v3.0.23（用户反馈：悬浮球挡操作 / 启动后位置乱跑）——隐藏开关 + 归一化位置
+    hideAccountBall: s.hideAccountBall === true,
+    ballPos: (s.ballPos && Number.isFinite(Number(s.ballPos.fx)) && Number.isFinite(Number(s.ballPos.fy)))
+      ? { fx: Number(s.ballPos.fx), fy: Number(s.ballPos.fy) } : null,
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
     autoLockMinutes: clampInt(s.autoLockMinutes, 0, 240, 0),
     // v2.1.11：快捷方式打开应用后主程序后台化方式
@@ -10488,6 +10641,8 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       : clampInt(cachedSettings.titleBarHighlight, 0, 100, 55);
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
     const activeSkin = opts && typeof opts.activeSkin === 'string' ? String(opts.activeSkin).trim() : String(cachedSettings.activeSkin || '');
+    // v3.0.23：悬浮球隐藏开关（改完立即下发，不需要重启）
+    const hideBall = (opts && typeof opts.hideAccountBall === 'boolean') ? opts.hideAccountBall : (cachedSettings.hideAccountBall === true);
     saveSettings({
       autoHideMenuBar: autoHide,
       titleBarAutoHide: tbAutoHide,
@@ -10498,6 +10653,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       titleBarHighlight: tbHighlight,
       themeColor: accent,
       activeSkin: activeSkin,
+      hideAccountBall: hideBall,
     });
     cachedSettings.autoHideMenuBar = autoHide;
     cachedSettings.titleBarAutoHide = tbAutoHide;
@@ -10508,6 +10664,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.titleBarHighlight = tbHighlight;
     cachedSettings.themeColor = accent;
     cachedSettings.activeSkin = activeSkin;
+    cachedSettings.hideAccountBall = hideBall;
     {
       const __oldStrip = __titlebarStrip;
       refreshTitlebarStrip();
@@ -10525,7 +10682,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
     const __skinCfg = resolveSkinConfig();
-    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin };
+    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
@@ -10636,6 +10793,31 @@ ipcMain.handle('settings:install-skin', async () => {
 });
 
 // v1.52.0：preload 注入自定义标题栏时同步读取标题栏自动隐藏设置
+// v3.0.23（用户反馈：每次启动悬浮球位置都变，经常掉到左下角拉不出来）——
+// 位置改为主进程按【窗口比例】持久化，避免不同 origin / 不同窗口尺寸下坐标系不一致
+ipcMain.on('ball:get-pos', (e) => {
+  try {
+    const s = loadSettings();
+    const p = s.ballPos;
+    e.returnValue = (p && Number.isFinite(Number(p.fx)) && Number.isFinite(Number(p.fy)))
+      ? { fx: Number(p.fx), fy: Number(p.fy) } : null;
+  } catch (_) {
+    e.returnValue = null;
+  }
+});
+
+ipcMain.on('ball:set-pos', (_e, p) => {
+  try {
+    if (!p || typeof p !== 'object') return;
+    const fx = Number(p.fx), fy = Number(p.fy);
+    if (!Number.isFinite(fx) || !Number.isFinite(fy)) return;
+    const clamp01 = (v) => Math.max(0, Math.min(1, v));
+    const next = { fx: clamp01(fx), fy: clamp01(fy) };
+    saveSettings({ ballPos: next });
+    cachedSettings.ballPos = next;
+  } catch (_) {}
+});
+
 ipcMain.on('settings:get-titlebar', (e) => {
   try {
     const s = loadSettings();
@@ -10648,6 +10830,7 @@ ipcMain.on('settings:get-titlebar', (e) => {
       material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
       blur: clampInt(s.titleBarBlur, 0, 40, 20),
       highlight: clampInt(s.titleBarHighlight, 0, 100, 55),
+      hideAccountBall: s.hideAccountBall === true,
     };
     const __sk = resolveSkinConfig();
     e.returnValue.skinDir = __sk.skinDir;

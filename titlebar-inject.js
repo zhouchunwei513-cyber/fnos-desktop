@@ -2646,7 +2646,52 @@ module.exports = function injectTitleBar(ctx) {
     if (__isSubFrame) {
       try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
     }
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
+    // ===== v3.0.33（用户反馈：标题栏四个角从 R 角变成了直角）=====
+    // 四角圆角完全由 body 的 clip-path: inset(0 round 20px) 绘制（见 v2.15.47 的注释：
+    // html 不加 clip-path，避免把标题栏顶部两角裁成圆角）。唯一会让它失效的是全屏态
+    // html[data-fnos-fs="1"]>body{clip-path:none !important;border-radius:0 !important}。
+    // 也就是 data-fnos-fs 残留 = 四角直角。主进程若漏发 window:fullscreen-changed(false)
+    // （真机历史已复现过：内嵌窗最大化、MPV 全屏后主窗按钮失效同源），这个属性就会一直挂着。
+    // 冷启动时窗口必然不是全屏，所以这里直接清一次；真全屏时主进程随后会再发一次 true。
+    const __coldClearFs33 = () => {
+      try {
+        if (document.documentElement.getAttribute('data-fnos-fs') !== '1') return;
+        document.documentElement.removeAttribute('data-fnos-fs');
+        try { if (typeof __fsBody === 'function') __fsBody(false); } catch (_) {}
+        try { if (typeof __fsBarStyle === 'function') __fsBarStyle(!!AUTO_HIDE); } catch (_) {}
+        try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.fs-cold-clear33' }); } catch (_) {}
+      } catch (_) {}
+    };
+    const __reportRadius33 = () => {
+      try {
+        const b = document.body;
+        if (!b) return;
+        const cs = getComputedStyle(b);
+        ipcRenderer.send('fnos:media-log', {
+          stage: 'titlebar.radius33',
+          fs: String(document.documentElement.getAttribute('data-fnos-fs') || ''),
+          clip: String(cs.clipPath || '').slice(0, 48),
+          rad: String(cs.borderRadius || '').slice(0, 32),
+          ovf: String(cs.overflow || '').slice(0, 20),
+          barH: String(cs.getPropertyValue('--fnos-bar-h') || '').slice(0, 12),
+          f: String(cs.getPropertyValue('--fnos-f') || '').slice(0, 12),
+          bw: b.clientWidth || 0,
+          bh: b.clientHeight || 0,
+          iw: window.innerWidth || 0,
+          ih: window.innerHeight || 0,
+          bar: !!document.getElementById('fnos-titlebar'),
+          skin: !!document.getElementById('fnos-skin-bg'),
+        });
+      } catch (_) {}
+    };
+    const start = () => {
+      try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {}
+      // v3.0.33：冷启动清残留全屏态（→ 四角恢复 20px 圆角），并在 2s/6s 记录一次圆角实测值
+      setTimeout(__coldClearFs33, 500);
+      setTimeout(__coldClearFs33, 2500);
+      setTimeout(__reportRadius33, 2000);
+      setTimeout(__reportRadius33, 6000);
+    };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

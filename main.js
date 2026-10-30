@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.32';
+const APP_VERSION = '3.0.33';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -3730,8 +3730,51 @@ function fnosReferrerFor(u) {
 function getNasUA() {
   return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 }
+// ===== v3.0.33（内网机 开代理 主程序登录不了）=====
+// 实测日志（2026-10-30 21:49:46 / 21:49:56 / 21:51:14 三次）：
+//   appwin.error-page {"app":"FNOS 主页面","kind":"blank","code":"","http":"","url":"http://nas.xn--yet060e.com:5666/"}
+// code 与 http 都为空 = 不是 did-fail-load，是"页面加载出来了但正文为空"（mainhealth blank），
+// 用户看到的就是"页面打不开 · 未获取到错误码 · 未知错误"。根因：Electron 默认跟随系统代理，
+// 自建 DDNS 域名 nas.xn--yet060e.com 不在代理绕过列表里，请求被代理接管拿到空响应。
+// Chromium 的 <local> 只匹配"不含点"的主机名，域名必须逐条显式列出，所以按已连接过的 NAS
+// 地址（settings.origin / accounts / history / lastConnectHref）动态生成 bypass 规则。
+function __nasProxyHosts33() {
+  const out = [];
+  const add = (v) => {
+    try {
+      const t = String(v || '').trim();
+      if (!t) return;
+      const h = String(new URL(/^https?:/i.test(t) ? t : 'http://' + t).hostname || '').toLowerCase();
+      if (h && out.indexOf(h) < 0) out.push(h);
+    } catch (_) {}
+  };
+  add(lastConnectHref);
+  try {
+    const st = loadSettings() || {};
+    add(st.origin); add(st.server);
+    if (Array.isArray(st.accounts)) st.accounts.forEach((a) => { if (a) { add(a.origin); add(a.href); add(a.serverInput); } });
+    if (Array.isArray(st.history)) st.history.forEach((a) => { if (a) { add(a.origin); add(a.href); } });
+  } catch (_) {}
+  try { (getAccounts() || []).forEach((a) => { if (a) { add(a.origin); add(a.href); } }); } catch (_) {}
+  return out;
+}
+function applyNasProxyBypass33(ses) {
+  if (!ses || typeof ses.setProxy !== 'function') return;
+  try {
+    const hosts = __nasProxyHosts33();
+    const rules = ['<local>', 'localhost', '127.0.0.1', '*.local'].concat(hosts).join(';');
+    if (ses.__fnosProxyRules33 === rules) return;
+    ses.__fnosProxyRules33 = rules;
+    Promise.resolve(ses.setProxy({ mode: 'system', proxyBypassRules: rules }))
+      .then(() => { try { dlog && dlog('info', 'net.proxy.bypass33', { hosts: hosts.length, rules: rules.slice(0, 220) }); } catch (_) {} })
+      .catch((e) => { try { dlog && dlog('warn', 'net.proxy.bypass33.fail', { err: String((e && e.message) || e).slice(0, 140) }); } catch (_) {} });
+  } catch (_) {}
+}
+
 function applyUA(partition) {
   try { session.fromPartition(partition).setUserAgent(getNasUA()); } catch (_) {}
+  // v3.0.33：NAS 地址加入系统代理绕过（开代理时主程序/应用窗才能直连 NAS）
+  try { applyNasProxyBypass33(session.fromPartition(partition)); } catch (_) {}
   try { installCorsBypass(session.fromPartition(partition)); } catch (_) {}
   try { installDownloadTracker(session.fromPartition(partition)); } catch (_) {}
   try { relaxCookiePolicy(session.fromPartition(partition)); } catch (_) {}
@@ -6036,6 +6079,122 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         __urlCandidates.push(__origR21 + '/app/' + String(__nmG21).replace(/\./g, '-'));
       }
     }
+    // ===== v3.0.33（真机 curl 逐条实测后重排候选优先级）=====
+    // 实测对象：192.168.31.101:5666（内网）与 121.40.186.165:10300（外网），结果完全一致：
+    //   200  /app/setting  /app/app-center  /app/file-manager  /app/log-center
+    //        /app/backup-and-sync  /app/resource-manager  /app/docker
+    //        /app/download-center  /app/iscsi  …（/app/<短名> 是带认证的应用代理入口，
+    //        未带登录态时返回 13 字节 "invalid token"，带登录态即返回真应用页）
+    //   200  /apps/docker/  /apps/download-center/  /iscsi/（静态子应用）
+    //   404  /setting  /app-center  /file-manager  /resource-manager  /docker
+    //        （返回 4853 字节的 SPA 外壳，状态码 404）
+    //   404  /appview?anchor=trim.setting  /appview?anchor=trim.docker
+    //        → appview 组件在应用列表里找不到该 appName 就渲染 404 页（用户截图那张"404"）
+    // 结论：/app/<短名> 必须置顶，/appview?anchor 必须沉底。旧候选链把 /app/ 写成
+    // trim.setting→trim-setting（把点换成横线），而真实短名是 setting，所以从来没命中过。
+    try {
+      const __nmS33 = (() => {
+        try {
+          if (__mAnchor21) return decodeURIComponent(__mAnchor21[1]);
+          if (__mRoute21) return decodeURIComponent(__mRoute21[1]);
+        } catch (_) {}
+        return String((opts && (opts.name || opts.appId)) || '');
+      })();
+      if (__origR21 && /^https?:/i.test(__origR21) && __nmS33) {
+        const __base33b = String(__origR21).replace(/\/+$/, '');
+        const __nmT33 = String(__nmS33);
+        // trim.setting → setting；com.xxx.yyy 不是主站应用（走自己端口），保留原名
+        const __short33 = __nmT33.replace(/^trim\./i, '');
+        const __kb33 = __nmT33.replace(/\./g, '-');
+        const __front33 = [];
+        const __addF33 = (u) => { if (u && __front33.indexOf(u) < 0) __front33.push(u); };
+        // com.xxx.yyy 是 FPK 包名（如 com.fntb.iconmgr 走自己端口 18080），不进主站候选
+        const __isMainApp33 = !/^com\./i.test(__nmT33);
+        if (__isMainApp33) {
+          const __vars33 = [];
+          const __addV33 = (v) => { if (v && __vars33.indexOf(v) < 0) __vars33.push(v); };
+          __addV33(__short33);
+          __addV33(__short33.toLowerCase());
+          __addV33(__kb33);
+          __addV33(__kb33.toLowerCase());
+          for (const __v33 of __vars33) {
+            // 1) 静态子应用（实测 /apps/docker/、/apps/download-center/ 200，独立页最干净）
+            __addF33(__base33b + '/apps/' + __v33.toLowerCase() + '/');
+            // 2) 主站路由（实测 /iscsi/ 200）
+            __addF33(__base33b + '/' + __v33 + '/');
+            // 3) 认证代理入口（实测 /app/setting 等 200，但返回的是应用外壳）
+            __addF33(__base33b + '/app/' + __v33);
+            __addF33(__base33b + '/app/' + __v33 + '/');
+          }
+        }
+        if (__front33.length) {
+          const __rest33 = __urlCandidates.filter((x) => __front33.indexOf(x) < 0);
+          __urlCandidates.length = 0;
+          for (const __x33 of __front33) __urlCandidates.push(__x33);
+          for (const __x33 of __rest33) __urlCandidates.push(__x33);
+        }
+        // appview 中转沉底：实测 404，且 SPA 找不到 anchor 就渲染 404 页
+        try {
+          const __av33 = __urlCandidates.filter((x) => /\/appview(\?|$)/i.test(x));
+          if (__av33.length) {
+            const __nv33 = __urlCandidates.filter((x) => !/\/appview(\?|$)/i.test(x));
+            __urlCandidates.length = 0;
+            for (const __x33 of __nv33) __urlCandidates.push(__x33);
+            for (const __x33 of __av33) __urlCandidates.push(__x33);
+          }
+        } catch (_) {}
+        try { dlog && dlog('info', 'appwin.cand-order33', { app: __nmT33.slice(0, 60), short: String(__short33).slice(0, 40), front: __front33.join(' | ').slice(0, 320), total: __urlCandidates.length }); } catch (_) {}
+      }
+    } catch (_) {}
+
+    // ===== v3.0.33（外网机 应用下载转圈 / iSCSI 报错 / 快捷方式偶发打不开）=====
+    // 实测（外网机 2026-10-30 21:42~21:44）：主窗停在 http://121.40.186.165:10300（公网入口），
+    // __origR21=:10300，于是 trim.setting/app-center/docker/backup/resource-manager 全被拼成
+    //   :10300/setting、:10300/app-center、:10300/docker … → preflight 全 false → 候选耗尽。
+    // 这些系统应用的真实路由在同机 :5666 主站（/setting、/app-center、/docker、/iscsi、
+    // /apps/download-center/）。候选链只在"主窗那一个 origin"上找，换个端口登录就必然打不开。
+    // 这里把每条候选的 path 挂到同一台 NAS 的其他已知 origin 上，仍交给 preflight 过滤，
+    // 不会裸跳 404。
+    try {
+      if (__urlCandidates.length) {
+        const __al33 = [];
+        const __pushO33 = (o) => {
+          try {
+            const x = new URL(String(o || '')).origin;
+            if (x && x !== 'null' && __al33.indexOf(x) < 0) __al33.push(x);
+          } catch (_) {}
+        };
+        __pushO33(__origR21);
+        __pushO33(String(lastConnectHref || ''));
+        try { const st33 = loadSettings(); __pushO33(st33 && st33.origin); } catch (_) {}
+        try {
+          const __u33o = new URL(__origR21);
+          const __h33 = __u33o.hostname;
+          // 只补同机 5666 主站（fnOS 应用真实路由所在端口）。不再补 https 变体：
+          // 公网端口开的是自签证书，preflight 必 false，白占一轮并发。
+          if (__h33 && __u33o.port !== '5666') {
+            __pushO33(__u33o.protocol + '//' + __h33 + ':5666');
+          }
+        } catch (_) {}
+        const __extra33 = [];
+        const __base33 = __urlCandidates.slice(0, 14);
+        for (const __c33 of __base33) {
+          let __pu33 = null;
+          try { __pu33 = new URL(__c33); } catch (_) { continue; }
+          if (!__pu33 || !__pu33.hostname) continue;
+          if (/\/appview(\?|$)/i.test(__c33)) continue;
+          for (const __o33 of __al33) {
+            if (__o33 === __pu33.origin) continue;
+            const __n33 = __o33 + (__pu33.pathname || '/') + (__pu33.search || '');
+            if (__urlCandidates.indexOf(__n33) < 0 && __extra33.indexOf(__n33) < 0) __extra33.push(__n33);
+          }
+        }
+        for (const __e33 of __extra33) __urlCandidates.push(__e33);
+        if (__extra33.length) {
+          try { dlog && dlog('info', 'appwin.cand-ox33', { origins: __al33.join(',').slice(0, 170), added: __extra33.length, total: __urlCandidates.length, sample: __extra33.slice(0, 4).join(' | ').slice(0, 260) }); } catch (_) {}
+        }
+      }
+    } catch (_) {}
   } catch (_) {}
 
   // ===== v3.0.29：入口学习缓存命中则直接用它作首个 URL =====
@@ -6096,9 +6255,41 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     }
   } catch (_) {}
 
+  // ===== v3.0.33（用户需求三：内嵌窗应用居中 / 不盖主窗 / 不默认铺满）=====
+  // 实测：应用窗尺寸写死 1280x820 且不给 x/y，Windows 按自己的默认位置摆，
+  // 主窗不在屏幕正中时应用窗就落在主窗的角上，把主窗内容盖住；主窗比 1280x820 小时
+  // 应用窗反而比主窗大，看起来就是"一打开就最大化铺满主程序窗口"。
+  // 改为：有主窗 → 在主窗内部居中、尺寸不超过主窗（各留 30px）；无主窗 → 屏幕工作区居中。
+  const __geo33 = (() => {
+    try {
+      const wa = screen.getPrimaryDisplay().workArea;
+      const mw = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.getBounds() : null;
+      const cw = mw ? mw.width : wa.width;
+      const ch = mw ? mw.height : wa.height;
+      let w = Number(opts.width) || 1280;
+      let h = Number(opts.height) || 820;
+      w = Math.max(900, Math.min(w, cw - 60));
+      h = Math.max(600, Math.min(h, ch - 60));
+      let x;
+      let y;
+      if (mw) {
+        x = mw.x + Math.round((mw.width - w) / 2);
+        y = mw.y + Math.round((mw.height - h) / 2);
+      } else {
+        x = wa.x + Math.round((wa.width - w) / 2);
+        y = wa.y + Math.round((wa.height - h) / 2);
+      }
+      x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
+      y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
+      return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
+    } catch (_) { return null; }
+  })();
+
   const win = new BrowserWindow({
-    width: opts.width || 1280,
-    height: opts.height || 820,
+    x: __geo33 ? __geo33.x : undefined,
+    y: __geo33 ? __geo33.y : undefined,
+    width: __geo33 ? __geo33.width : (opts.width || 1280),
+    height: __geo33 ? __geo33.height : (opts.height || 820),
     minWidth: 900,
     minHeight: 600,
     title: opts.title || APP_NAME,
@@ -6167,6 +6358,15 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v2.10.0 r30（问题1 根修）：应用窗旗标——帧脚本25/26 的杀除段据此放行（__KILLON29__）。
   // 主窗/设置窗等无此旗标 = 整棵 frame 树只做主题归一、绝不杀除（web 桌面内嵌窗真窗控安全）。
   try { win.__fnosAppWin29 = true; } catch (_) {}
+  // v3.0.33：应用窗几何落日志——用户反馈"应用窗跑到主窗角上/铺满主窗"时可直接对照
+  try {
+    dlog && dlog('info', 'appwin.geo33', {
+      winId: win.id,
+      geo: __geo33,
+      main: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.getBounds() : null,
+      opts: { w: opts.width || 0, h: opts.height || 0 },
+    });
+  } catch (_) {}
 
   // v2.0.0：为每个子应用窗口设置独立 AppUserModelId，避免 Windows 任务栏图标合并/空白
   try {
@@ -6424,16 +6624,21 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                   let bad = Array.isArray(__r30) ? (__r30[0] === 1) : !!__r30;
                   const __len30 = Array.isArray(__r30) ? (__r30[1] || 0) : -1;
                   const __has30 = Array.isArray(__r30) ? (__r30[2] || 0) : 0;
-                  // v3.0.32（问题1/2/3）：appview 返回 4xx/5xx 且正文空、无嵌入元素 → 这是 NAS
-                  // 中转壳的无效响应（真实内容在 hidden iframe 里，body 文本永远是 0）。判成坏入口，
-                  // 让候选链切到真实 URL（/apps/download-center/、/iscsi/、/app/fndesk…）。
+                  const __login30 = Array.isArray(__r30) ? (__r30[3] || 0) : 0;
+                  // ===== v3.0.33（快捷方式开应用跳错误页 / 应用下载转圈）=====
+                  // v3.0.32 的判据是「4xx + 正文<50 + 无嵌入元素」，漏了一类实锤场景：
+                  //   appview 404 壳页 has=1（内容塞在 hidden iframe 里）、len=15~3 但 has=1
+                  //   → 判不出坏入口 → 不切候选 → 2.8s 超时把 404 页直接 show 给用户。
+                  // 实测内网 21:57:48 trim.setting len:15 has:1、21:57:54 trim.app-center 同形，
+                  // 外网 21:43:47 trim.backup-and-sync len:3 has:1 全部命中这个漏洞。
+                  // 改为：只要这一跳的 HTTP 是 404/410/5xx（明确的"不存在/服务错"），就判坏——
+                  // 401/403 不判（可能是需要登录的正常页），登录页也不判。
                   try {
-                    if (!bad && __len30 < 50 && __has30 === 0) {
-                      const __c32b = parseInt(win.__fnLastHttp, 10);
-                      if (__c32b >= 400) bad = true;
+                    if (!bad && !__login30) {
+                      const __c33b = parseInt(win.__fnLastHttp, 10);
+                      if (__c33b === 404 || __c33b === 410 || __c33b >= 500) bad = true;
                     }
                   } catch (_) {}
-                  const __login30 = Array.isArray(__r30) ? (__r30[3] || 0) : 0;
                   try { win.__fnEntryCheck = false; } catch (_) {}
                   try {
                     dlog && dlog('info', 'appwin.entry-check', { app: __appLabel, winId: win.id, bad: !!bad, len: __len30, has: __has30, login: __login30, left: __urlCandidates.length, url: String(win.webContents.getURL() || '').slice(0, 120) });
@@ -6462,7 +6667,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                     // v3.0.30（问题2 首启慢）：候选预检由「逐条串行」改为「每批 4 条并发、按原优先级取首个可用」。
                     // 实测候选链常达 7~9 条，串行时每条 100~700ms，首启光探测就要 1.5~3s。
                     const __tryNext23 = async () => {
-                      const __BATCH30 = 4;
+                      // v3.0.33：跨 origin 展开后候选可达 10 条，批 4 要 3 轮；批 6 压到 2 轮
+                      const __BATCH30 = 6;
                       while (!win.isDestroyed() && __urlCandidates.length) {
                         const __batch30 = [];
                         while (__batch30.length < __BATCH30 && __urlCandidates.length) {
@@ -7504,7 +7710,8 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
           }, 280);
         });
       } catch (_) {}
-      setTimeout(() => __fnShow25('timeout'), 2800);
+      // v3.0.33：候选跨 origin 展开后最长链 10 条，2800 会在最后一批前就放弃压窗；提到 3600
+                  setTimeout(() => __fnShow25('timeout'), 4200);
       // v3.0.28（问题3 兜底）：应用窗落到登录页（/v/login、/seek/login、/login?redirect=）
       // 说明该 host 上没有登录态（历史 host / 公网 FRP 地址 / 旧分区）。
       // 换到当前生效 host 重试一次（含 query 里 URL 编码的 redirect 目标），只做一次防循环。
@@ -7654,7 +7861,19 @@ async function __preflightEntry23(u) {
     ]);
     if (!resp) return true;
     if (resp.status === 404 || resp.status >= 500) return false;
+    // v3.0.33：/app/<name> 与 /apps/<name>/ 语义明确（认证代理入口 / 静态子应用），
+    // 正文可能几 MB，不读全文；靠状态码 + content-type 判定即可
+    // （未登录时是 13 字节 text/plain "invalid token"）。
+    if (/^\/apps?\//i.test(String(new URL(u).pathname || ''))) {
+      if (resp.status === 404 || resp.status >= 500) return false;
+      const ct = String(resp.headers.get('content-type') || '');
+      if (ct && !/html/i.test(ct)) return false;
+      return true;
+    }
     const txt = (await resp.text().catch(() => '')) || '';
+    // v3.0.33：/app/<name> 是认证代理入口，未带登录态时返回 13 字节 "invalid token"。
+    // 这种响应虽然 200，但加载进窗口只会看到一行字，必须判无效、继续下一个候选。
+    if (txt.length < 200 && /invalid\s*token|unauthorized|forbidden/i.test(txt)) return false;
     if (txt.length < 30000 && /不存在或未安装|页面不存在|无法找到|没有找到|Not Found|404|无法访问/i.test(txt)) return false;
     return true;
   } catch (_) { return true; }
@@ -7743,6 +7962,21 @@ function __armMainHealth(reason) {
           try {
             if (!r || typeof r !== 'object' || r.e) return;
             const blank = (Number(r.len) < 30) && !r.hasApp;
+            // v3.0.33：主窗空白检测同时写 diag（此前只有 fnosLog，用户日志里查不到这次判定，
+            // "日志没记录的"就是指这类）——带上 URL/长度/是否有 app 容器/代理绕过状态。
+            try {
+              if (blank) {
+                dlog && dlog('warn', 'mainhealth.blank33', {
+                  tag: String(tag || ''),
+                  url: String(u || '').slice(0, 140),
+                  len: Number(r.len) || 0,
+                  hasApp: !!r.hasApp,
+                  dw: Number(r.dw) || 0,
+                  bw: Number(r.bw) || 0,
+                  tries: __mainHealTries,
+                });
+              }
+            } catch (_) {}
             const widthBad = (Number(r.dw) > 0 && Number(r.bw) > 0 && Math.abs(Number(r.dw) - Number(r.bw)) > 8);
             fnosLog('info', 'mainhealth', 'check', {
               tag: String(tag || ''), reason: String(reason || '').slice(0, 20),
@@ -7756,7 +7990,7 @@ function __armMainHealth(reason) {
               } else {
                 fnosLog('error', 'mainhealth', 'blank-show-err', { tag: String(tag || '') });
                 try {
-                  __fnShowErrPage(win, { app: 'FNOS 主页面', kind: 'blank', url: u, retryUrl: (String(lastConnectHref || '') || u) });
+                  __fnShowErrPage(win, { app: 'FNOS 主页面', kind: 'blank', url: u, retryUrl: (String(lastConnectHref || '') || u), desc: '页面内容为空。若开着系统代理/加速器，可能拦截了 NAS 地址（客户端已尝试自动绕过），可临时关闭代理再重试。' });
                 } catch (_) {}
               }
             } else {
@@ -8746,6 +8980,9 @@ try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_)
   if (loadTarget && loadTarget.href) {
     currentOrigin = loadTarget.origin || '';
     lastConnectHref = loadTarget.href;
+    // v3.0.33：新连接目标入 bypass，避免"先连内网再连域名"时规则没跟上
+    try { applyNasProxyBypass33(session.defaultSession); } catch (_) {}
+    try { if (currentPartition) applyNasProxyBypass33(session.fromPartition(currentPartition)); } catch (_) {}
     safeSetTitle(APP_NAME);
     const __rfNav = fnosReferrerFor(loadTarget.href);
     const __optsNav = { userAgent: getNasUA() };

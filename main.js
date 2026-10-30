@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.33';
+const APP_VERSION = '3.0.34';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6268,8 +6268,12 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       const ch = mw ? mw.height : wa.height;
       let w = Number(opts.width) || 1280;
       let h = Number(opts.height) || 820;
-      w = Math.max(900, Math.min(w, cw - 60));
-      h = Math.max(600, Math.min(h, ch - 60));
+      // v3.0.34：1280x820 是写死的，主窗 1250x838 时应用窗比主窗还大 → 一开就"铺满/盖住"。
+      // 改成主窗的 86%（四周留出可见的主窗边），再和写死尺寸取小，最后夹到 880x580 下限。
+      const __rw34 = Math.round(cw * 0.86);
+      const __rh34 = Math.round(ch * 0.86);
+      w = Math.max(880, Math.min(w, __rw34));
+      h = Math.max(580, Math.min(h, __rh34));
       let x;
       let y;
       if (mw) {

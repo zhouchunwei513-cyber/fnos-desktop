@@ -15,8 +15,14 @@
 !include "nsDialogs.nsh"
 
 ; 勾选框句柄 / 勾选状态（${BST_CHECKED} / ${BST_UNCHECKED}）
-Var fnosShortcutCheckbox
-Var fnosShortcutState
+; 注意：electron-builder 用 makensis -WX 编译（warning 视为错误）。
+; 卸载器阶段（命令行定义 BUILD_UNINSTALLER）不会展开本文件里的页面函数，
+; 若此时仍声明这两个 Var，会触发 warning 6001 "not referenced or never set"
+; 导致整个打包失败，所以卸载器阶段不声明。
+!ifndef BUILD_UNINSTALLER
+  Var fnosShortcutCheckbox
+  Var fnosShortcutState
+!endif
 
 ; .onInit 阶段初始化默认值（静默安装 /S 不走页面，也保持默认勾选）
 !macro customInit

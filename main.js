@@ -86,9 +86,11 @@ if (process.platform === 'win32') {
 //   并保留系统原有 bypass 项（如 *zhihu.com、*jd.com）不动。
 try {
   (() => {
-    const __extraBypass45 = ['<local>', 'localhost', '127.0.0.1', '[::1]',
+    const __extraBypass45 = ['<local>', 'localhost', '127.0.0.1', '[::1]', '::1',
       '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16',
-      '100.64.0.0/10', '*.local', '*.lan', '*.internal'];
+      '100.64.0.0/10', '*.local', '*.lan', '*.internal',
+      // v3.0.48：IPv6 本地链路（fe80::/10）与唯一本地地址（fc00::/7）也直连
+      'fe80::/10', 'fc00::/7'];
     let __sysBypass45 = [];
     try {
       if (process.platform === 'win32') {
@@ -99,9 +101,34 @@ try {
         if (__m45 && __m45[1]) __sysBypass45 = __m45[1].split(';').map((x) => x.trim()).filter(Boolean);
       }
     } catch (_) {}
+    // v3.0.48（用户反馈：本机开代理后 DDNS / IPv6 地址登录不了飞牛，关代理就正常）：
+    // 系统 ProxyOverride 只有 10.* / 172.* / 192.168.* / *.local 这些项，用户自己的 NAS 域名
+    // （如 nas.xxx.com，往往只有 AAAA 记录、没有 A 记录）不在其中 → Chromium 把请求交给本地
+    // 代理，代理经公网回不了家里的 IPv6 出口 → 页面和接口全挂（日志 -102 / -118）。
+    // 这里把「用户连过的所有服务器 host」一并并入 bypass：只要连过一次（settings.history 里
+    // 有记录），之后启动一律直连，不再受系统代理影响。
+    const __host48 = [];
+    try {
+      const __p48 = path.join(app.getPath('userData'), 'settings.json');
+      const __s48 = JSON.parse(fs.readFileSync(__p48, 'utf8')) || {};
+      const __add48 = (v) => {
+        try {
+          if (!v) return;
+          const raw = String(v).trim();
+          const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : ('http://' + raw));
+          if (u.hostname && u.hostname !== 'localhost') __host48.push(u.hostname);
+        } catch (_) {}
+      };
+      __add48(__s48.origin);
+      __add48(__s48.lastConnectHref);
+      (Array.isArray(__s48.history) ? __s48.history : []).forEach((h) => {
+        __add48(h && h.href); __add48(h && h.origin); __add48(h && h.server);
+      });
+      (Array.isArray(__s48.directHosts) ? __s48.directHosts : []).forEach(__add48);
+    } catch (_) {}
     const __seen45 = new Set();
     const __all45 = [];
-    for (const r of __sysBypass45.concat(__extraBypass45)) {
+    for (const r of __sysBypass45.concat(__extraBypass45, __host48)) {
       const k = String(r).toLowerCase();
       if (!k || __seen45.has(k)) continue;
       __seen45.add(k); __all45.push(r);
@@ -141,7 +168,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.47';
+const APP_VERSION = '3.0.48';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -9237,6 +9264,22 @@ function doConnectTo(serverInput) {
   } catch (_) {}
   // v3.0.46：本次主动连接的目标 origin 立即纳入证书信任（首次连接自签 https 也能过）
   try { if (parsed && parsed.origin) __trustedCertOrigins45.add(String(parsed.origin)); } catch (_) {}
+  // v3.0.48：把本次连接的目标 host 记入 directHosts，下次启动并入代理绕过列表。
+  // 用户新填的 DDNS / IPv6 地址首次仍可能被系统代理拦（bypass 是启动参数，改不了），
+  // 记录后重开客户端即直连；历史里已有的地址本次启动就已直连。
+  try {
+    if (parsed && parsed.hostname) {
+      const __s0 = loadSettings();
+      const __arr = (Array.isArray(__s0.directHosts) ? __s0.directHosts : []).slice();
+      const __hn = String(parsed.hostname).toLowerCase();
+      if (__hn && __arr.indexOf(__hn) < 0) {
+        __arr.push(__hn);
+        while (__arr.length > 30) __arr.shift();
+        saveSettings({ directHosts: __arr });
+        try { fnosLog('info', 'network', 'proxy.direct-host+ ' + __hn); } catch (_) {}
+      }
+    }
+  } catch (_) {}
   upsertHistory(serverInput, parsed);
   // v2.0.0：同步记录到多账号列表
   upsertAccount(serverInput, parsed);

@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.43';
+const APP_VERSION = '3.0.44';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6166,7 +6166,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   //   基准统一取主窗内容区（__mainContentRect41：主窗可用=画布主体，不可用=工作区）；
   //   ratio=0.86 按 base 的 86% 收缩并居中（程序内打开）；ratio=1.0 保持原尺寸、仅 clamp 到 base 后居中
   //   （快捷方式启动保持原尺寸，符合 v3.0.39 教训：快捷方式应用不该被缩小）。
-  const __fitGeo41 = (base, optW, optH, ratio) => {
+  const __fitGeo41 = (base, optW, optH, ratio, bar) => {
     const rr = (ratio === undefined || !(ratio > 0)) ? 0.86 : ratio;
     let w = Number(optW) || 1280;
     let h = Number(optH) || 820;
@@ -6176,8 +6176,13 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     }
     w = Math.min(w, base.w);
     h = Math.min(h, base.h);
+    // v3.0.44（用户反馈 v3.0.43 "还是不行"）：窗口自身也带自定义 HTML 标题栏（bar），
+    //   外框 h = 标题栏 bar + 画布主体(h-bar)。旧逻辑把【外框】居中于主窗画布，导致窗口
+    //   "画布主体"比主窗画布中心低 bar/2（34px 标题栏 = 17px 视觉偏差）。对称于 v3.0.42 已修的
+    //   主窗侧偏差，这里让窗口【画布主体】居中于主窗画布：外框 y = 中心对齐后再上移 bar/2。
+    const bb = Number(bar) || 0;
     const x = base.x + Math.round((base.w - w) / 2);
-    const y = base.y + Math.round((base.h - h) / 2);
+    const y = base.y + Math.round((base.h - (h - bb)) / 2) - bb;
     return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
   };
   // v3.0.43：比例——程序内打开 86%，其余（快捷方式/冷启动）100% 保持原尺寸。
@@ -6186,7 +6191,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   const __geo36 = (() => {
     try {
       const base = __mainContentRect41();
-      const __g = __fitGeo41(base, opts && opts.width, opts && opts.height, __geoRatio41);
+      const __g = __fitGeo41(base, opts && opts.width, opts && opts.height, __geoRatio41, __barStrip41());
       // v3.0.43 诊断：source、基准来源（content/normal/bounds/workarea）、基准矩形、比例、最终落位。
       try {
         dlog('info', 'appwin.geo43', {
@@ -6287,8 +6292,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         const b = win.getBounds();
         const w = Math.min(b.width, base.w);
         const h = Math.min(b.height, base.h);
+        const __bar = __barStrip41();
         let x = base.x + Math.round((base.w - w) / 2);
-        let y = base.y + Math.round((base.h - h) / 2);
+        let y = base.y + Math.round((base.h - (h - __bar)) / 2) - __bar;
         x = Math.max(base.x, Math.min(x, base.x + base.w - w));
         y = Math.max(base.y, Math.min(y, base.y + base.h - h));
         const moved = Math.abs(b.x - x) > 2 || Math.abs(b.y - y) > 2;

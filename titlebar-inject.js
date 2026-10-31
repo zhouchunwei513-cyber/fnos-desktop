@@ -548,10 +548,10 @@ module.exports = function injectTitleBar(ctx) {
         if (!bar || bar.__shapeLayer) return;
         const bgLayer = document.createElement('div');
         bgLayer.id = 'fnos-tb-bg';
-        __setCss(bgLayer, 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-2;display:none;background-size:cover;background-position:center;background-repeat:no-repeat;overflow:hidden;border-radius:inherit;');
+        __setCss(bgLayer, 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-2;display:none;background-size:cover;background-position:center;background-repeat:no-repeat;overflow:hidden;border-radius:10px;clip-path:inset(0 round 10px);');
         const shapeLayer = document.createElement('div');
         shapeLayer.id = 'fnos-tb-shape';
-        __setCss(shapeLayer, 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-1;display:none;background-size:100% 100%;background-position:center;background-repeat:no-repeat;border-radius:inherit;');
+        __setCss(shapeLayer, 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;z-index:-1;display:none;background-size:100% 100%;background-position:center;background-repeat:no-repeat;border-radius:10px;clip-path:inset(0 round 10px);');
         bar.appendChild(bgLayer);
         bar.appendChild(shapeLayer);
         bar.__bgLayer = bgLayer;
@@ -560,6 +560,34 @@ module.exports = function injectTitleBar(ctx) {
     }
 
     // 应用皮肤背景/形状到子元素；返回是否有皮肤背景接管（true = 背景层渲染，bar 自身透明）
+    // v3.0.50（用户反馈：装 3.0.49 后标题栏四个角仍是直角，要求四角都是 10px R 角）：
+    // 之前给 bgLayer / shapeLayer 用的是 border-radius:inherit，靠父元素圆角透传；而这两个层是
+    // position:absolute + inset:0 + z-index:-2/-1 的整块矩形，inherit 在 CSSOM 逐条 setProperty
+    // 的路径上并不可靠，一旦透传成 0 就按直角铺满，把 bar 的 10px 圆角整个盖掉。
+    // 这版改成写死 10px + clip-path：clip-path 属于绘制期裁剪，背景图 / 渐变 / 视频 / img
+    // 一律按圆角裁掉，既不依赖 inherit，也不依赖 getComputedStyle 的返回值。
+    function __fixBarRadius(bar) {
+      try {
+        if (!bar) return;
+        const __R = '10px';
+        const __C = 'inset(0 round 10px)';
+        try { bar.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
+        const bl = bar.__bgLayer;
+        if (bl && bl.style) {
+          try { bl.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
+          try { bl.style.setProperty('clip-path', __C, 'important'); } catch (_) {}
+          try { bl.style.setProperty('-webkit-clip-path', __C, 'important'); } catch (_) {}
+          try { bl.style.setProperty('overflow', 'hidden', 'important'); } catch (_) {}
+        }
+        const sl = bar.__shapeLayer;
+        if (sl && sl.style) {
+          try { sl.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
+          try { sl.style.setProperty('clip-path', __C, 'important'); } catch (_) {}
+          try { sl.style.setProperty('-webkit-clip-path', __C, 'important'); } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
     function __applySkinLayers(bar) {
       try {
         if (!bar) return false;
@@ -567,21 +595,28 @@ module.exports = function injectTitleBar(ctx) {
         // border-radius:inherit 在 CSP 页面走 CSSOM setProperty 时偶发不继承（computed 成 0），
         // 皮肤背景/视频以直角铺满、盖住 bar 的 10px 小 R 角。这里每次应用都显式同步 bar 的圆角。
         try {
-          // v3.0.49（用户反馈：标题栏四个角又从 R 角变回直角，要求四角都是 10px R 角）：
-          // 原来直接取 computed 圆角，但 bar 还没挂进 DOM、或皮肤重载的瞬间它可能是 '0px'，
-          // 于是 bgLayer / shapeLayer 拿到 0，皮肤背景就铺成直角把 bar 的圆角整个盖掉。
-          // 现在：computed 不是有效的非零值就回落 10px；并把 bar 自己的圆角用 important 强刷一遍。
           const __brRaw = (function () { try { return String(getComputedStyle(bar).borderTopLeftRadius || '').trim(); } catch (_) { return ''; } })();
-          const __brNum = parseFloat(__brRaw);
-          const __br38 = (__brRaw && isFinite(__brNum) && __brNum > 0) ? __brRaw : '10px';
-          try { bar.style.setProperty('border-radius', __br38, 'important'); } catch (_) {}
-          if (bar.__bgLayer) { try { bar.__bgLayer.style.borderRadius = __br38; bar.__bgLayer.style.overflow = 'hidden'; } catch (_) {} }
-          if (bar.__shapeLayer) { try { bar.__shapeLayer.style.borderRadius = __br38; } catch (_) {} }
+          __fixBarRadius(bar);
+          // 皮肤 / 背景层是异步挂载的，__applySkinLayers 先于它们跑完是常态；这里多档补刷，
+          // 谁最后写样式都无所谓，圆角一定落在 bgLayer / shapeLayer 上。
+          try {
+            [0, 160, 500, 1200, 2600].forEach(function (ms) {
+              setTimeout(function () { try { __fixBarRadius(bar); } catch (_) {} }, ms);
+            });
+          } catch (_) {}
           try {
             if (!bar.__fnosBrLog49) {
               bar.__fnosBrLog49 = true;
-              __tbLog('radius', { raw: __brRaw, use: __br38, main: !!(bar && bar.__tbIsMain),
-                bg: (bar.__bgLayer ? String(bar.__bgLayer.style.borderRadius || '') : 'none') });
+              const g = function (el) {
+                try {
+                  if (!el) return 'none';
+                  const cs = getComputedStyle(el);
+                  return String(cs.borderTopLeftRadius || '') + '/' + String(cs.clipPath || cs.webkitClipPath || '');
+                } catch (_) { return 'err'; }
+              };
+              __tbLog('radius', { barRaw: __brRaw, bar: g(bar), bg: g(bar.__bgLayer), shape: g(bar.__shapeLayer),
+                bgShown: !!(bar.__bgLayer && bar.__bgLayer.style.display !== 'none'),
+                shShown: !!(bar.__shapeLayer && bar.__shapeLayer.style.display !== 'none') });
             }
           } catch (_) {}
         } catch (_) {}

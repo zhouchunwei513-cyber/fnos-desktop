@@ -141,7 +141,13 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.45';
+const APP_VERSION = '3.0.46';
+
+// v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
+// certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
+// （NAS 普遍用自签证书）拿不到命中 → 拒绝 → ERR_CERT_AUTHORITY_INVALID(-202)。这里维护
+// "用户本次主动要连的 origin"，连接前即写入，证书校验时无条件放行。
+const __trustedCertOrigins45 = new Set();
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -196,6 +202,10 @@ function __darkExpr28() {
 function __frameSweep25(win, tag) {
   try {
     if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+    // v3.0.46：第三方应用窗（docker 映射端口等）跳过整套注入（主题改写 + 假窗控杀除）——
+    // 那些改写会给页面加 data-theme / data-fnos-theme / color-scheme 并强改白底背景色，
+    // 与第三方页面自身的主题变量叠加就是用户看到的"亮暗混搭"。
+    if (win.__fnosXApp45) { try { fnosLog('info', 'frame-inject25', { winId: win.id, tag: String(tag || ''), skipped: 'xapp' }); } catch (_) {} return; }
     const mf = win.webContents.mainFrame;
     if (!mf) return;
     let frames = [];
@@ -411,6 +421,10 @@ const __FNOS_FRAME_SCRIPT24 = [
 function __frameSweep24(win, tag) {
   try {
     if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+    // v3.0.46：第三方应用窗（docker 映射端口等）跳过整套注入（主题改写 + 假窗控杀除）——
+    // 那些改写会给页面加 data-theme / data-fnos-theme / color-scheme 并强改白底背景色，
+    // 与第三方页面自身的主题变量叠加就是用户看到的"亮暗混搭"。
+    if (win.__fnosXApp45) { try { fnosLog('info', 'frame-inject25', { winId: win.id, tag: String(tag || ''), skipped: 'xapp' }); } catch (_) {} return; }
     const mf = win.webContents.mainFrame;
     if (!mf) return;
     let frames = [];
@@ -6247,6 +6261,38 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     } catch (_) { return null; }
   })();
 
+  // v3.0.46（网友反馈：Docker/qBittorrent 应用在客户端里底部状态栏压住"信息"面板、亮暗混搭）：
+  // 第三方应用（docker 映射端口等，origin 与 NAS 不同）的布局依赖 position:fixed 顶/底栏与
+  // 真实 100vh。本客户端"把 body 下移 34px 给标题栏让位"用的是 transform + 压缩 body 高度，
+  // 会创建包含块并改变 body 高度 → fixed 底栏整体偏移、全高容器比可视区高 34px → 底栏压住内容。
+  // 这类窗口改走"html padding-top 让位"（fixed 继续相对 viewport），并跳过主题/假窗控注入。
+  const __xapp46 = (() => {
+    try {
+      const u = new URL(String(url || ''));
+      // knownOrigin: 其他 scheme 变体也算自家（http:5666 vs https:5667）；knownHost: scheme 无关的 host 比较
+      const knownOrigin = new Set();
+      const knownHost = new Set();
+      const addO = (v) => {
+        try {
+          if (!v) return;
+          const o = new URL(String(v));
+          knownOrigin.add(o.origin);
+          if (o.host) knownHost.add(o.host);
+        } catch (_) {}
+      };
+      addO(currentOrigin);
+      try {
+        const s = loadSettings();
+        addO(s.origin); addO(s.lastConnectHref);
+        (Array.isArray(s.history) ? s.history : []).forEach((h) => { addO(h && h.href); addO(h && h.origin); });
+      } catch (_) {}
+      if (knownOrigin.has(u.origin)) return false;
+      // 同 host:port（仅 scheme 不同）仍视为 NAS 自家页面，避免 http/https 变体被误判成第三方
+      if (u.host && knownHost.has(u.host)) return false;
+      return true;
+    } catch (_) { return false; }
+  })();
+
   const win = new BrowserWindow({
     x: __geo36 ? __geo36.x : undefined,
     y: __geo36 ? __geo36.y : undefined,
@@ -6305,7 +6351,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // v2.10.0 r30（问题1 根修）：--fnos-app-window 旗标——三套假窗控清扫（preload instantHide26 /
       // titlebar-inject chromeFix / 主进程帧脚本25/26）只在应用窗内生效；主窗整棵 frame 树（web 桌面
       // 内嵌窗的真 —□✕ 与拖动手柄）全豁免，杜绝把真实窗控当假窗控聚组杀除（反馈问题1）。
-      additionalArguments: ['--fnos-shell', ...(opts.embedStyle ? ['--fnos-embed-style'] : []), '--fnos-app-window'],
+      additionalArguments: ['--fnos-shell', ...(opts.embedStyle ? ['--fnos-embed-style'] : []), '--fnos-app-window', ...(__xapp46 ? ['--fnos-xapp'] : [])],
       enableBlinkFeatures: 'CSSBackdropFilter',
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
       // v1.76.0：应用窗口禁用硬件加速（软件渲染）。修复部分 Docker 应用
@@ -6320,6 +6366,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v2.10.0 r30（问题1 根修）：应用窗旗标——帧脚本25/26 的杀除段据此放行（__KILLON29__）。
   // 主窗/设置窗等无此旗标 = 整棵 frame 树只做主题归一、绝不杀除（web 桌面内嵌窗真窗控安全）。
   try { win.__fnosAppWin29 = true; } catch (_) {}
+  // v3.0.46：第三方应用窗标记——帧脚本（主题归一/假窗控杀除）整体跳过，不改写第三方页面配色
+  try { win.__fnosXApp45 = !!__xapp46; } catch (_) {}
 
   // v3.0.43：落位自校正对所有应用窗口生效（不只 in-app），基准统一取主窗内容区（__mainContentRect41）。
   // 覆盖三个源头：主窗在创建瞬间改变位置/大小、Windows 把新窗甩到层叠位、DWM/DPI 造成的实际 bounds
@@ -8098,6 +8146,19 @@ function __themeStoreMode() {
     const v = global.__FNOS_THEME_STORE_MODE29;
     if (v === '10' || v === '20' || v === '30') return v;
   } catch (_) {}
+  // v3.0.46（网友反馈：客户端里 Docker/qBittorrent 页面"亮暗模式混搭"、显示不正常）：
+  // 原来只认内存里的上报值。进程刚起来时它是空的 → 退化成 '30 跟随系统' → themeSource 先按
+  // 系统（暗）锁一次，等主窗 titlebar-inject 上报 '10 亮模式' 再翻回亮。已经渲染的第三方页面
+  // 只翻了一半（CSS @media 变了，被注入脚本写死的内联背景色没变）= 用户看到的混搭。
+  // 主题模式落盘在 settings，启动第一时间就按用户真实设置锁定，不再先暗后亮地翻转。
+  try {
+    const s = loadSettings();
+    const p = String((s && s.osThemeMode) || '');
+    if (p === '10' || p === '20' || p === '30') {
+      global.__FNOS_THEME_STORE_MODE29 = p;
+      return p;
+    }
+  } catch (_) {}
   return '30';
 }
 function __resolveTheme29() {
@@ -8156,6 +8217,8 @@ try {
       const prev = global.__FNOS_THEME_STORE_MODE29 || '';
       if (norm !== prev) {
         global.__FNOS_THEME_STORE_MODE29 = norm;
+        // v3.0.46：主题模式落盘——下次启动首帧即按用户设置锁定，避免"先暗后亮"翻转
+        try { if (norm) saveSettings({ osThemeMode: norm }); } catch (_) {}
         try { require('./logger.js').log('info', 'window', 'theme.resolve29', { params: { storeMode: norm || '(未设置->30跟随系统)', prev: prev || '(空)', ts: Date.now() } }, __RUN_MODE); } catch (_) {}
         try { __syncThemeFromMain(); } catch (_) {}
       }
@@ -9149,6 +9212,8 @@ function doConnectTo(serverInput) {
   try {
     require('./logger.js').log('info', 'account', 'account.connect', { params: { input: String(serverInput || '').slice(0, 120), origin: String(parsed.origin || '').slice(0, 120), partition: String(targetPartition).slice(0, 60), curPartition: String(currentPartition || '').slice(0, 60), isSwitch: currentPartition !== targetPartition, accounts: getAccounts().length } }, __RUN_MODE);
   } catch (_) {}
+  // v3.0.46：本次主动连接的目标 origin 立即纳入证书信任（首次连接自签 https 也能过）
+  try { if (parsed && parsed.origin) __trustedCertOrigins45.add(String(parsed.origin)); } catch (_) {}
   upsertHistory(serverInput, parsed);
   // v2.0.0：同步记录到多账号列表
   upsertAccount(serverInput, parsed);
@@ -9557,8 +9622,22 @@ function buildMenu() {
 // NAS 来源"接受证书，其余来源维持默认拒绝；接受事件记日志便于排查。
 app.on('certificate-error', (event, _webContents, url, error, _certificate, callback) => {
   let accept = false;
+  let __why = '';
   try {
-    const origin = new URL(url).origin;
+    const __u = new URL(url);
+    const origin = __u.origin;
+    const host = String(__u.hostname || '').toLowerCase();
+    // v3.0.46（网友反馈：局域网账号登录不上，直接跳"页面打不开 / 未获取到错误码"）：
+    // 原来只放行 settings 里【已经存在】的 origin。首次连接某个局域网 https 地址时
+    // known 里还没有它 → 拒绝 → ERR_CERT_AUTHORITY_INVALID(-202) → 客户端错误页
+    // （日志实录 12:55 连续 10+ 次 fail-load -202，切账号/重载后才成功）。
+    // 内网私有地址与单标签主机名都属于"用户自己的 NAS"，直接放行，与 initSharedSession
+    // 已采用的 ignoreCertErrors 策略一致；公网域名仍只认历史记录与本次主动连接的目标。
+    let __priv = false;
+    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(host)) __priv = true;
+    else if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) __priv = true;
+    else if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) __priv = true;
+    else if (!host || host.indexOf('.') < 0 || /\.(local|lan|internal|home|nas)$/.test(host)) __priv = true;
     const s = loadSettings();
     const known = new Set();
     const addO = (v) => { try { if (v) known.add(new URL(String(v)).origin); } catch (_) {} };
@@ -9566,11 +9645,15 @@ app.on('certificate-error', (event, _webContents, url, error, _certificate, call
     addO(s.origin);
     addO(s.lastConnectHref);
     (Array.isArray(s.history) ? s.history : []).forEach((h) => { addO(h && h.href); addO(h && h.origin); });
-    accept = known.has(origin);
+    if (__priv) { accept = true; __why = 'private'; }
+    else if (__trustedCertOrigins45.has(origin)) { accept = true; __why = 'pending'; }
+    else if (known.has(origin)) { accept = true; __why = 'known'; }
   } catch (_) {}
   if (accept) {
     event.preventDefault();
-    fnosLog('warn', 'net', 'cert.accepted_selfsigned', { url: String(url).slice(0, 120), error: String(error).slice(0, 80) });
+    fnosLog('warn', 'net', 'cert.accepted_selfsigned', { url: String(url).slice(0, 120), error: String(error).slice(0, 80), why: __why });
+  } else {
+    try { fnosLog('warn', 'net', 'cert.rejected', { url: String(url).slice(0, 120), error: String(error).slice(0, 80) }); } catch (_) {}
   }
   callback(accept);
 });

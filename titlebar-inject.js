@@ -1304,6 +1304,22 @@ module.exports = function injectTitleBar(ctx) {
         // v2.18.0 曾为了与标题栏 bar 的 10px 同比例收到 10px，实测观感偏方，现按用户回归 20px。
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
           'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}';
+      } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
+        // v3.0.46（网友反馈：Docker/qBittorrent 等第三方应用在客户端里底部状态栏压住"信息"面板
+        // 的字段、整页显示不正常；浏览器打开正常）：
+        // 第三方应用的布局依赖 position:fixed 顶/底栏与真实 100vh。下面 __isAppWin 分支用
+        // body transform 让位，会创建包含块（fixed 后代改为相对 body 定位 → 底栏整体偏移 34px），
+        // 同时把 body 高度压成 calc(100vh-34px)（硬编码 100vh 的容器比可视区高 34px）→ 底栏
+        // 恰好压住内容最后一行。这里不做 transform、不改 body 高度：改用 html padding-top 让位，
+        // fixed 继续相对 viewport 定位，body 高度 = 可视区 - 标题栏，与浏览器里的几何一致。
+        __padStyle.textContent = [
+          'html{overflow:hidden !important;height:100% !important;box-sizing:border-box !important;padding-top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;' + __gifBg + '}',
+          'html>body{height:100% !important;min-height:0 !important;max-height:100% !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;}',
+          'html>body .h-screen,html>body .h-dvh{height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
+        ].join('');
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [

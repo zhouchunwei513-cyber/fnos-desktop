@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.39';
+const APP_VERSION = '3.0.40';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6098,45 +6098,37 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   } catch (_) {}
 
   // v3.0.36（用户要求）：程序内打开的内嵌窗应用 —— 不再任由 Windows 层叠默认位甩到角上，
-  // 也不再一开就铺满主窗。位置＝在主窗内居中（四周各留 30px 以上）；尺寸＝主窗的 86%（下限 880x580），
-  // 四周始终能看到主窗边。主窗已销毁时退回工作区居中。
+  // 也不再一开就铺满主窗。
   // v3.0.39（用户反馈：需求3「程序内打开的内嵌窗应用」被错误应用到所有应用，快捷方式启动的应用也被缩小）。
   // 根因：v3.0.36 的 __geo36 无条件生效，没区分 source。现只在「程序内点击打开」（source==='in-app'）
   // 时走 86%+居中+880x580；快捷方式启动（source==='shortcut'/冷启动）保持原尺寸 1280x820 + minWidth 900x600。
+  // v3.0.40（用户反馈：程序内打开的内嵌窗仍不居中）—— 根因：居中基准用的是主窗实际 bounds，
+  // 主窗自己不在屏幕正中（diag 实测 main=897,336 1473x939、1200x740@1150,360），内嵌窗被带着一起偏，
+  // 用户按全屏视觉判断就是「不居中」。现按用户要求假设主窗全屏：居中与尺寸上限一律以屏幕工作区
+  // （workArea，即全屏可用区）为唯一基准 —— 工作区居中 + 86% 封顶 + 880x580 下限，不再引用主窗 bounds。
   const __fnIsInApp36 = String((opts && opts.source) || '') === 'in-app';
   const __geo36 = __fnIsInApp36 ? (() => {
     try {
       const wa = screen.getPrimaryDisplay().workArea;
-      const mw = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.getBounds() : null;
-      const cw = mw ? mw.width : wa.width;
-      const ch = mw ? mw.height : wa.height;
+      const __mw40 = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.getBounds() : null;
       let w = Number(opts && opts.width) || 1280;
       let h = Number(opts && opts.height) || 820;
-      const __w86 = Math.round(cw * 0.86);
-      const __h86 = Math.round(ch * 0.86);
+      const __w86 = Math.round(wa.width * 0.86);
+      const __h86 = Math.round(wa.height * 0.86);
       w = Math.max(880, Math.min(w, __w86));
       h = Math.max(580, Math.min(h, __h86));
-      let x;
-      let y;
-      if (mw) {
-        x = mw.x + Math.round((mw.width - w) / 2);
-        y = mw.y + Math.round((mw.height - h) / 2);
-      } else {
-        x = wa.x + Math.round((wa.width - w) / 2);
-        y = wa.y + Math.round((wa.height - h) / 2);
-      }
+      let x = wa.x + Math.round((wa.width - w) / 2);
+      let y = wa.y + Math.round((wa.height - h) / 2);
       x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
       y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
       const __g = { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
-      // v3.0.38（用户反馈：居中/86% 疑似未生效，要求增强日志定位）—— 记录主窗是否存在、
-      // 主窗/工作区宽高、传入 opts 宽高、86% 目标、最终落位，便于日后排查。
+      // v3.0.40 诊断：记录工作区基准、主窗当时的 bounds（仅参考）、86% 上限与最终落位。
       try {
-        dlog('info', 'appwin.geo38', {
+        dlog('info', 'appwin.geo40', {
           source: String((opts && opts.source) || ''),
           isInApp: __fnIsInApp36,
-          hasMain: !!mw,
-          branch: mw ? 'main' : 'workarea',
-          main: mw ? { x: mw.x, y: mw.y, w: mw.width, h: mw.height } : null,
+          branch: 'workarea',
+          main: __mw40 ? { x: __mw40.x, y: __mw40.y, w: __mw40.width, h: __mw40.height } : null,
           wa: { x: wa.x, y: wa.y, w: wa.width, h: wa.height },
           optsW: Number(opts && opts.width),
           optsH: Number(opts && opts.height),

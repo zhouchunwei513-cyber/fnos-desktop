@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.40';
+const APP_VERSION = '3.0.41';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6102,37 +6102,58 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v3.0.39（用户反馈：需求3「程序内打开的内嵌窗应用」被错误应用到所有应用，快捷方式启动的应用也被缩小）。
   // 根因：v3.0.36 的 __geo36 无条件生效，没区分 source。现只在「程序内点击打开」（source==='in-app'）
   // 时走 86%+居中+880x580；快捷方式启动（source==='shortcut'/冷启动）保持原尺寸 1280x820 + minWidth 900x600。
-  // v3.0.40（用户反馈：程序内打开的内嵌窗仍不居中）—— 根因：居中基准用的是主窗实际 bounds，
-  // 主窗自己不在屏幕正中（diag 实测 main=897,336 1473x939、1200x740@1150,360），内嵌窗被带着一起偏，
-  // 用户按全屏视觉判断就是「不居中」。现按用户要求假设主窗全屏：居中与尺寸上限一律以屏幕工作区
-  // （workArea，即全屏可用区）为唯一基准 —— 工作区居中 + 86% 封顶 + 880x580 下限，不再引用主窗 bounds。
+  // v3.0.41（用户否决 v3.0.40 的「假设主窗全屏」方案）—— 按要求改为：
+  //   ① 每次打开应用时【实时】读主窗在屏幕上的坐标与大小（内容区），把内嵌窗居中到主窗内容区；
+  //   ② 尺寸取内容区 86%（下限 880x580，且绝不超过内容区）——主窗最大化/全屏时内容区即工作区；
+  //   ③ ready-to-show / show 之后各再按【当前】主窗内容区校正一次落位，防止主窗在创建瞬间改变
+  //      位置大小（最大化切换、被系统挪动）或 Windows 把新窗甩到层叠位，导致算好的居中失效。
   const __fnIsInApp36 = String((opts && opts.source) || '') === 'in-app';
+  // v3.0.41：主窗内容区（屏幕坐标）——实时取；主窗不可用（隐藏/最小化/已销毁）时退回屏幕工作区。
+  const __mainContentRect41 = () => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          if (typeof mainWindow.getContentBounds === 'function') {
+            const cb = mainWindow.getContentBounds();
+            if (cb && cb.width >= 200 && cb.height >= 200) {
+              return { x: cb.x, y: cb.y, w: cb.width, h: cb.height, src: 'content' };
+            }
+          }
+        } catch (_) {}
+        try {
+          const mb = mainWindow.getBounds();
+          if (mb && mb.width >= 200 && mb.height >= 200) {
+            return { x: mb.x, y: mb.y, w: mb.width, h: mb.height, src: 'bounds' };
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    const wa = screen.getPrimaryDisplay().workArea;
+    return { x: wa.x, y: wa.y, w: wa.width, h: wa.height, src: 'workarea' };
+  };
+  // v3.0.41：把 w×h 摆到底座 base 的正中，并把结果夹在 base 内（不越出主窗内容区）。
+  const __fitGeo41 = (base, optW, optH) => {
+    let w = Number(optW) || 1280;
+    let h = Number(optH) || 820;
+    w = Math.max(880, Math.min(w, Math.round(base.w * 0.86)));
+    h = Math.max(580, Math.min(h, Math.round(base.h * 0.86)));
+    w = Math.min(w, base.w);
+    h = Math.min(h, base.h);
+    const x = base.x + Math.round((base.w - w) / 2);
+    const y = base.y + Math.round((base.h - h) / 2);
+    return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
+  };
   const __geo36 = __fnIsInApp36 ? (() => {
     try {
-      const wa = screen.getPrimaryDisplay().workArea;
-      const __mw40 = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.getBounds() : null;
-      let w = Number(opts && opts.width) || 1280;
-      let h = Number(opts && opts.height) || 820;
-      const __w86 = Math.round(wa.width * 0.86);
-      const __h86 = Math.round(wa.height * 0.86);
-      w = Math.max(880, Math.min(w, __w86));
-      h = Math.max(580, Math.min(h, __h86));
-      let x = wa.x + Math.round((wa.width - w) / 2);
-      let y = wa.y + Math.round((wa.height - h) / 2);
-      x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
-      y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
-      const __g = { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
-      // v3.0.40 诊断：记录工作区基准、主窗当时的 bounds（仅参考）、86% 上限与最终落位。
+      const base = __mainContentRect41();
+      const __g = __fitGeo41(base, opts && opts.width, opts && opts.height);
+      // v3.0.41 诊断：底座来源（content/bounds/workarea）、主窗实时坐标尺寸、最终落位。
       try {
-        dlog('info', 'appwin.geo40', {
+        dlog('info', 'appwin.geo41', {
           source: String((opts && opts.source) || ''),
-          isInApp: __fnIsInApp36,
-          branch: 'workarea',
-          main: __mw40 ? { x: __mw40.x, y: __mw40.y, w: __mw40.width, h: __mw40.height } : null,
-          wa: { x: wa.x, y: wa.y, w: wa.width, h: wa.height },
+          base: base,
           optsW: Number(opts && opts.width),
           optsH: Number(opts && opts.height),
-          w86: __w86, h86: __h86,
           final: __g,
         });
       } catch (_) {}
@@ -6213,6 +6234,38 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v2.10.0 r30（问题1 根修）：应用窗旗标——帧脚本25/26 的杀除段据此放行（__KILLON29__）。
   // 主窗/设置窗等无此旗标 = 整棵 frame 树只做主题归一、绝不杀除（web 桌面内嵌窗真窗控安全）。
   try { win.__fnosAppWin29 = true; } catch (_) {}
+
+  // v3.0.41：内嵌窗（程序内点击打开）落位自校正。
+  // 用户反馈「内嵌窗不居中」的三个可能源都被这一层覆盖：主窗在窗口创建瞬间改变位置/大小、
+  // Windows 把新窗甩到层叠位、以及 DWM/DPI 造成的实际 bounds 与请求值不一致。
+  // 每次都用【当下】主窗内容区重算，实测 bounds 记进主日志（fullscreen 模块，appwin.recenter41）。
+  if (__fnIsInApp36) {
+    const __recenter41 = (tag) => {
+      try {
+        if (!win || win.isDestroyed()) return;
+        const base = __mainContentRect41();
+        const b = win.getBounds();
+        const w = Math.min(b.width, base.w);
+        const h = Math.min(b.height, base.h);
+        let x = base.x + Math.round((base.w - w) / 2);
+        let y = base.y + Math.round((base.h - h) / 2);
+        x = Math.max(base.x, Math.min(x, base.x + base.w - w));
+        y = Math.max(base.y, Math.min(y, base.y + base.h - h));
+        const moved = Math.abs(b.x - x) > 2 || Math.abs(b.y - y) > 2;
+        const resized = Math.abs(b.width - w) > 2 || Math.abs(b.height - h) > 2;
+        if (moved || resized) {
+          win.setBounds({ x: x, y: y, width: w, height: h });
+        }
+        fnosLog(moved || resized ? 'warn' : 'info', 'fullscreen',
+          'appwin.recenter41 ' + tag + (moved || resized ? ' fixed' : ' ok')
+          + ' from=' + [b.x, b.y, b.width, b.height].join(',')
+          + ' to=' + [x, y, w, h].join(',')
+          + ' base=' + base.src + ':' + [base.x, base.y, base.w, base.h].join(','));
+      } catch (_) {}
+    };
+    try { win.once('ready-to-show', () => setTimeout(() => __recenter41('rts'), 120)); } catch (_) {}
+    try { win.once('show', () => setTimeout(() => __recenter41('show'), 300)); } catch (_) {}
+  }
 
   // v2.0.0：为每个子应用窗口设置独立 AppUserModelId，避免 Windows 任务栏图标合并/空白
   try {

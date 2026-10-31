@@ -1092,7 +1092,9 @@ module.exports = function injectTitleBar(ctx) {
               let __rcT = 0;
               const __rcBump = function () {
                 const el = document.getElementById('fnos-resize-cover');
-                if (el) { try { el.style.display = 'block'; } catch (_) {} }
+                // v3.0.47（用户反馈：拖动窗口掉帧）：display 是布局属性，每帧重复写 block 会让整页
+                // 反复布局失效。已 block 就不再写，只刷新 260ms 的隐藏计时。
+                if (el && el.style.display !== 'block') { try { el.style.display = 'block'; } catch (_) {} }
                 if (__rcT) clearTimeout(__rcT);
                 __rcT = setTimeout(function () {
                   __rcT = 0;
@@ -1102,16 +1104,30 @@ module.exports = function injectTitleBar(ctx) {
               };
               window.addEventListener('resize', __rcBump, { passive: true });
               // A window move fires no DOM event, but window.screenX/screenY follow it.
+              // v3.0.47（用户反馈：拖动窗口掉帧）——原来这是一个永不停止的 rAF 常驻轮询：每帧读
+              // window.screenX/screenY，窗口一移动就每帧 __rcBump()，等于拖动全程每帧切一次布局。
+              // 现在只在「窗口正在移动」时逐帧跟随（防灰条需要逐帧遮罩），静止期降到 50ms 一次
+              // （最坏 3 帧延迟，肉眼无感），静止时不再常驻 rAF。
               let __rcX = window.screenX, __rcY = window.screenY;
-              const __rcWatch = function () {
-                if (window.screenX !== __rcX || window.screenY !== __rcY) {
-                  __rcX = window.screenX;
-                  __rcY = window.screenY;
-                  __rcBump();
-                }
-                requestAnimationFrame(__rcWatch);
+              let __rcMoving = false;
+              const __rcSchedule = function () {
+                if (__rcMoving) requestAnimationFrame(__rcWatch);
+                else setTimeout(__rcWatch, 50);
               };
-              requestAnimationFrame(__rcWatch);
+              const __rcWatch = function () {
+                try {
+                  if (window.screenX !== __rcX || window.screenY !== __rcY) {
+                    __rcX = window.screenX;
+                    __rcY = window.screenY;
+                    __rcMoving = true;
+                    __rcBump();
+                  } else if (__rcMoving) {
+                    __rcMoving = false;
+                  }
+                } catch (_) {}
+                __rcSchedule();
+              };
+              __rcSchedule();
             }
           }
         } catch (_) {}
@@ -2058,6 +2074,9 @@ module.exports = function injectTitleBar(ctx) {
         }, true);
         // 窗口尺寸变化：按比例跟随；不再把夹紧后的绝对值写回存储，避免反复抖动累积漂移
         let __acctBox = acctBox();
+        // v3.0.47：resize 日志限流时间戳（拖动/缩放时 resize 每帧触发，每帧一条日志会让主进程
+        // 同步写盘，直接把事件循环堵住）
+        let __ballLastResizeLog = 0;
         window.addEventListener('resize', () => {
           try {
             const oldBox = __acctBox;
@@ -2077,7 +2096,12 @@ module.exports = function injectTitleBar(ctx) {
             const fy = Math.max(0, Math.min(1, (cur.y - ACCT_EDGE) / my0));
             __acctBox = newBox;
             acctRestore(fx, fy);
-            __ballLog('resize', { fx: fx, fy: fy, ow: oldBox.w, oh: oldBox.h, nw: newBox.w, nh: newBox.h });
+            // v3.0.47（掉帧）：日志限流到 ≥500ms 一条，拖动/缩放不再每帧写盘；末尾一条仍会记录
+            const __nowRL = Date.now();
+            if (__nowRL - __ballLastResizeLog > 500) {
+              __ballLastResizeLog = __nowRL;
+              __ballLog('resize', { fx: fx, fy: fy, ow: oldBox.w, oh: oldBox.h, nw: newBox.w, nh: newBox.h });
+            }
           } catch (_) {}
         });
         // 早期 body 高度可能还是 0，等布局有高度再放，避免球先闪到左上角

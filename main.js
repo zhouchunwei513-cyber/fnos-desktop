@@ -141,7 +141,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.46';
+const APP_VERSION = '3.0.47';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3044,8 +3044,24 @@ function dlog(level, event, extra) {
 // preload（飞牛 webview / 渲染进程）上报的解析/自动接管/统一日志，汇入诊断日志与 fnos 日志文件
 // v2.4.0（需求第一部分-3）：渲染进程日志经既有 fnos:media-log IPC 汇入主进程日志文件
 // （不新增 IPC 事件，遵守需求前置约定 2），保留 level / msg / params / ret / err.stack 字段。
+// v3.0.47（用户反馈：拖动/缩放客户端窗口掉帧）：
+// 渲染进程 resize 期间会上报 ball.resize（实测 32 秒 473 条 ≈ 15 条/秒），每条都要走
+// diagLog → fs.appendFileSync 同步写盘。Windows 上 appendFileSync 是 open+write+close，
+// 叠加 Defender 实时扫描，主进程事件循环被反复打断 → 窗口移动/缩放的 WM 消息处理掉帧。
+// 这里对「每帧级」的阶段做 500ms 限流：日志现场仍保留，只是不再每帧落盘。
+const __mediaLogRate = new Map();
+const __MEDIA_LOG_HOT = /^ball\.resize(\.reinit)?$/;
 ipcMain.on('fnos:media-log', (e, data) => {
   try {
+    try {
+      const stage0 = String((data && data.stage) || '');
+      if (__MEDIA_LOG_HOT.test(stage0)) {
+        const nowH = Date.now();
+        const rec = __mediaLogRate.get(stage0) || { t: 0, skip: 0 };
+        if (nowH - rec.t < 500) { rec.skip++; __mediaLogRate.set(stage0, rec); return; }
+        rec.t = nowH; rec.skip = 0; __mediaLogRate.set(stage0, rec);
+      }
+    } catch (_) {}
     const wcId = e && e.sender ? e.sender.id : -1;
     const lvl = (data && ['info', 'warn', 'error'].indexOf(String(data.level)) !== -1) ? String(data.level) : 'info';
     const stage = String((data && data.stage) || 'unknown');
@@ -3173,14 +3189,21 @@ ipcMain.on('win-drag-move', (e, p) => {
     // 开始拖动时记下的 w0/h0，一旦偏离就当场写回，用户看到的就是「只移动、不变大」。
     let __sizeFixed = false;
     try {
-      const cb = d.win.getBounds();
-      if (d.w0 && d.h0 && (Math.abs(cb.width - d.w0) > 2 || Math.abs(cb.height - d.h0) > 2)) {
-        d.win.setBounds({ x: cb.x, y: cb.y, width: d.w0, height: d.h0 });
-        __sizeFixed = true;
-        const now0 = Date.now();
-        if (!d.__lastSizeFixLog || now0 - d.__lastSizeFixLog > 500) {
-          d.__lastSizeFixLog = now0;
-          try { fnosLog('warn', 'window', 'drag.size-lock win=' + d.win.id + ' from=' + [cb.width, cb.height].join('x') + ' to=' + d.w0 + 'x' + d.h0); } catch (_) {}
+      // v3.0.47（用户反馈：拖动窗口掉帧）：getBounds 是同步窗口几何查询，原来每条 mousemove 都调
+      // 一次。拖动是 60fps 的，等于每秒 60 次同步查询挡在 setPosition 前面。改成每 120ms 校验一次
+      // 尺寸锁（DWM 改尺寸不会是单帧事件，120ms 足够抓住），其余帧只做 setPosition。
+      const __nowChk = Date.now();
+      if (!d.__lastFixChk || __nowChk - d.__lastFixChk >= 120) {
+        d.__lastFixChk = __nowChk;
+        const cb = d.win.getBounds();
+        if (d.w0 && d.h0 && (Math.abs(cb.width - d.w0) > 2 || Math.abs(cb.height - d.h0) > 2)) {
+          d.win.setBounds({ x: cb.x, y: cb.y, width: d.w0, height: d.h0 });
+          __sizeFixed = true;
+          const now0 = Date.now();
+          if (!d.__lastSizeFixLog || now0 - d.__lastSizeFixLog > 500) {
+            d.__lastSizeFixLog = now0;
+            try { fnosLog('warn', 'window', 'drag.size-lock win=' + d.win.id + ' from=' + [cb.width, cb.height].join('x') + ' to=' + d.w0 + 'x' + d.h0); } catch (_) {}
+          }
         }
       }
     } catch (_) {}

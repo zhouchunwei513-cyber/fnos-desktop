@@ -78,6 +78,38 @@ if (process.platform === 'win32') {
   } catch (_) {}
 }
 
+// v3.0.45（网友反馈：tailscale 组网地址客户端登录不了、浏览器可以）：
+//   系统开着代理时 Chromium 默认走系统代理，而 Windows 的 ProxyOverride 通常只写
+//   10.* / 172.16-31.* / 192.168.*，不含 100.64.0.0/10（CGNAT，Tailscale 专用网段），
+//   于是客户端访问 100.x 组网地址被塞进代理、连接一直挂着超时（日志 -118 ERR_CONNECTION_TIMED_OUT）。
+//   这里把私有网段与本地域名并入 Electron 自身的 bypass 列表（只影响本进程，不改系统设置），
+//   并保留系统原有 bypass 项（如 *zhihu.com、*jd.com）不动。
+try {
+  (() => {
+    const __extraBypass45 = ['<local>', 'localhost', '127.0.0.1', '[::1]',
+      '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16',
+      '100.64.0.0/10', '*.local', '*.lan', '*.internal'];
+    let __sysBypass45 = [];
+    try {
+      if (process.platform === 'win32') {
+        const __out45 = require('child_process').execSync(
+          'reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyOverride',
+          { encoding: 'utf8', windowsHide: true, timeout: 3000 });
+        const __m45 = /ProxyOverride\s+REG_SZ\s+([^\r\n]+)/i.exec(__out45);
+        if (__m45 && __m45[1]) __sysBypass45 = __m45[1].split(';').map((x) => x.trim()).filter(Boolean);
+      }
+    } catch (_) {}
+    const __seen45 = new Set();
+    const __all45 = [];
+    for (const r of __sysBypass45.concat(__extraBypass45)) {
+      const k = String(r).toLowerCase();
+      if (!k || __seen45.has(k)) continue;
+      __seen45.add(k); __all45.push(r);
+    }
+    if (__all45.length) app.commandLine.appendSwitch('proxy-bypass-list', __all45.join(';'));
+  })();
+} catch (_) {}
+
 // v2.15.33：已移除全局 disableHardwareAcceleration + --disable-gpu 等禁用 GPU 开关（用户明确要求打开 GPU）。
 // 历史：v2.2.3/v2.2.4 曾为规避 GPU 进程崩溃（0x80000003）禁用硬件加速/GPU 进程，
 // 代价是纯软件渲染下影视/相册等复杂页面渲染不完整（加载一半/比例失调/内容不全）。现恢复硬件 GPU 合成。
@@ -109,7 +141,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.44';
+const APP_VERSION = '3.0.45';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6168,11 +6200,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   //   （快捷方式启动保持原尺寸，符合 v3.0.39 教训：快捷方式应用不该被缩小）。
   const __fitGeo41 = (base, optW, optH, ratio, bar) => {
     const rr = (ratio === undefined || !(ratio > 0)) ? 0.86 : ratio;
+    const bb = Number(bar) || 0;
     let w = Number(optW) || 1280;
     let h = Number(optH) || 820;
     if (rr < 1) {
       w = Math.max(880, Math.min(w, Math.round(base.w * rr)));
-      h = Math.max(580, Math.min(h, Math.round(base.h * rr)));
+      // v3.0.45（网友反馈：Docker/Web 应用页面底部“保存修改”按钮看不到）：
+      //   应用窗内网页 body 被 titlebar-inject 强制成 translateY(bar) + height:calc(100vh - bar)，
+      //   可视高度天生比浏览器少 bar。旧逻辑还把总高压在 optH=820 上限内、且不补 bar，
+      //   页面底部固定按钮因此被挤出可视区。这里高度改用独立比例 0.92 并显式 +bar，
+      //   使网页可视高度 = base.h * 0.92，与浏览器里的 100vh 等高。
+      const hr45 = __fnIsInApp36 ? 0.92 : rr;
+      h = Math.max(580, Math.round(base.h * hr45) + bb);
     }
     w = Math.min(w, base.w);
     h = Math.min(h, base.h);
@@ -6180,9 +6219,10 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     //   外框 h = 标题栏 bar + 画布主体(h-bar)。旧逻辑把【外框】居中于主窗画布，导致窗口
     //   "画布主体"比主窗画布中心低 bar/2（34px 标题栏 = 17px 视觉偏差）。对称于 v3.0.42 已修的
     //   主窗侧偏差，这里让窗口【画布主体】居中于主窗画布：外框 y = 中心对齐后再上移 bar/2。
-    const bb = Number(bar) || 0;
     const x = base.x + Math.round((base.w - w) / 2);
-    const y = base.y + Math.round((base.h - (h - bb)) / 2) - bb;
+    let y = base.y + Math.round((base.h - (h - bb)) / 2) - bb;
+    // v3.0.45：主窗画布很矮时，外框上移 bar/2 后可能越过画布顶部，夹回画布内。
+    y = Math.max(base.y, Math.min(y, base.y + base.h - h));
     return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
   };
   // v3.0.43：比例——程序内打开 86%，其余（快捷方式/冷启动）100% 保持原尺寸。

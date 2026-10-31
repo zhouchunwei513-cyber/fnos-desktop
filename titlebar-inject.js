@@ -1830,7 +1830,7 @@ module.exports = function injectTitleBar(ctx) {
           }
           #fnos-acct-trigger:active { cursor: grabbing; }
           #fnos-acct-dropdown {
-            position: absolute; left: 48px; top: 50%; transform: translateY(-50%);
+            position: absolute; left: 40px; top: 50%; transform: translateY(-50%);
             min-width: 200px; max-width: 280px;
             background: rgba(30, 27, 46, 0.85);
             backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
@@ -1841,7 +1841,7 @@ module.exports = function injectTitleBar(ctx) {
             transition: opacity 0.2s, transform 0.2s;
           }
           .fnos-acct-hidden { opacity: 0 !important; pointer-events: none !important; }
-          #fnos-account-switcher.acct-on-right #fnos-acct-dropdown { left: auto; right: 48px; }
+          #fnos-account-switcher.acct-on-right #fnos-acct-dropdown { left: auto; right: 40px; }
           .fnos-acct-header {
             padding: 8px 16px 6px; font-size: 11px; color: rgba(255,255,255,0.4);
             text-transform: uppercase; letter-spacing: 0.5px;
@@ -1879,7 +1879,9 @@ module.exports = function injectTitleBar(ctx) {
           loadAccountList();
         }
         function hideDropdown() {
-          hideTimer = setTimeout(() => dropdown.classList.add('fnos-acct-hidden'), 300);
+          // v3.0.45：先清掉旧定时，避免连续 mouseleave 叠加出更早的隐藏时刻。
+          clearTimeout(hideTimer);
+          hideTimer = setTimeout(() => dropdown.classList.add('fnos-acct-hidden'), 400);
         }
 
         // v2.24.12：可拖动圆形悬浮球（位置下次启动还原）
@@ -2076,6 +2078,11 @@ module.exports = function injectTitleBar(ctx) {
           if (dropdown.classList.contains('fnos-acct-hidden')) showDropdown();
           else hideDropdown();
         });
+        // v3.0.45（网友反馈：鼠标移向账号项，弹出面板就消失）：
+        //   账号球 40px、面板 left:48px，中间有 8px 空隙。鼠标穿过空隙会触发容器 mouseleave，
+        //   旧代码只启动 300ms 隐藏定时、进入面板后不清除，定时到点面板照旧消失。
+        //   修法：面板贴到 40px 消除空隙 + 容器 mouseenter 时清定时 + 隐藏延迟提到 400ms 兜底。
+        panel.addEventListener('mouseenter', () => { clearTimeout(hideTimer); });
         panel.addEventListener('mouseleave', hideDropdown);
 
         async function loadAccountList() {

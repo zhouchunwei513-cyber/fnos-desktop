@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.38';
+const APP_VERSION = '3.0.39';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -5401,7 +5401,7 @@ function registerWindow(win, opts = {}) {
         // v2.5.1 r17：统一 appview 容器跳出窗；主程序藏托盘保持单窗口；内嵌监测转换来的
         //（fnos-embed-style）静默关闭主窗内嵌视图（可见才动页面，隐藏置标记唤回时回桌面）。
         const __okH = __anchorH ? __openAppByWindowType(__anchorH, __anchorH, url, __embedStyle ? 'embed' : 'popout', url, { keepMain: true }) : false;
-        if (!__okH) { try { createAppWindow(url, { partition: entry.partition }); } catch (_) {} }
+        if (!__okH) { try { createAppWindow(url, { partition: entry.partition, source: 'in-app' }); } catch (_) {} }
         // v2.5.3 r19：从主页面打开应用 → 主页面不隐藏到托盘（快捷方式链保持藏托盘单窗体验）
         if (__embedStyle) {
           // v2.10.0 r30（问题2 根修）：统一走 __resetMainHome29——lastConnectHref 为空有 origin 兜底、
@@ -5938,6 +5938,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     dlog && dlog('info', 'appwin.create.entry', {
       url: String(url).slice(0, 160),
       appview: __isAppview,
+      source: String(opts.source || ''),
       partition: String(partition || '').slice(0, 40),
       opts: { title: opts.title || '', name: opts.name || '', appId: opts.appId || '' },
     });
@@ -6099,7 +6100,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v3.0.36（用户要求）：程序内打开的内嵌窗应用 —— 不再任由 Windows 层叠默认位甩到角上，
   // 也不再一开就铺满主窗。位置＝在主窗内居中（四周各留 30px 以上）；尺寸＝主窗的 86%（下限 880x580），
   // 四周始终能看到主窗边。主窗已销毁时退回工作区居中。
-  const __geo36 = (() => {
+  // v3.0.39（用户反馈：需求3「程序内打开的内嵌窗应用」被错误应用到所有应用，快捷方式启动的应用也被缩小）。
+  // 根因：v3.0.36 的 __geo36 无条件生效，没区分 source。现只在「程序内点击打开」（source==='in-app'）
+  // 时走 86%+居中+880x580；快捷方式启动（source==='shortcut'/冷启动）保持原尺寸 1280x820 + minWidth 900x600。
+  const __fnIsInApp36 = String((opts && opts.source) || '') === 'in-app';
+  const __geo36 = __fnIsInApp36 ? (() => {
     try {
       const wa = screen.getPrimaryDisplay().workArea;
       const mw = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow.getBounds() : null;
@@ -6127,6 +6132,8 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // 主窗/工作区宽高、传入 opts 宽高、86% 目标、最终落位，便于日后排查。
       try {
         dlog('info', 'appwin.geo38', {
+          source: String((opts && opts.source) || ''),
+          isInApp: __fnIsInApp36,
           hasMain: !!mw,
           branch: mw ? 'main' : 'workarea',
           main: mw ? { x: mw.x, y: mw.y, w: mw.width, h: mw.height } : null,
@@ -6139,15 +6146,15 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       } catch (_) {}
       return __g;
     } catch (_) { return null; }
-  })();
+  })() : null;
 
   const win = new BrowserWindow({
     x: __geo36 ? __geo36.x : undefined,
     y: __geo36 ? __geo36.y : undefined,
     width: __geo36 ? __geo36.width : (opts.width || 1280),
     height: __geo36 ? __geo36.height : (opts.height || 820),
-    minWidth: 880,
-    minHeight: 580,
+    minWidth: __fnIsInApp36 ? 880 : 900,
+    minHeight: __fnIsInApp36 ? 580 : 600,
     title: opts.title || APP_NAME,
     // v2.15.38：恢复应用窗透明（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板，透明窗口本身不是白板根因；应用窗内容由
@@ -13698,7 +13705,7 @@ function __appviewToPopout(navUrl) {
     // v2.10.0 r30：防抖只作用于 createAppWindow（防同 anchor 2s 内双开跳出窗）；
     // 主窗重置不再被防抖/anchor 缺失吞掉——无论是否转出，主窗都必须离开 appview。
     if (anchor && !__dup) {
-      try { createAppWindow(s, { appId: anchor }); } catch (_) {}
+      try { createAppWindow(s, { appId: anchor, source: 'in-app' }); } catch (_) {}
     }
     try { __resetMainHome29(s); } catch (_) {}
     // v2.5.3 r19：从主页面打开应用 → 主页面不藏托盘（appview 内嵌转出同属主页面打开链）

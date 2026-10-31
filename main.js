@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.37';
+const APP_VERSION = '3.0.38';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6107,8 +6107,10 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       const ch = mw ? mw.height : wa.height;
       let w = Number(opts && opts.width) || 1280;
       let h = Number(opts && opts.height) || 820;
-      w = Math.max(880, Math.min(w, Math.round(cw * 0.86)));
-      h = Math.max(580, Math.min(h, Math.round(ch * 0.86)));
+      const __w86 = Math.round(cw * 0.86);
+      const __h86 = Math.round(ch * 0.86);
+      w = Math.max(880, Math.min(w, __w86));
+      h = Math.max(580, Math.min(h, __h86));
       let x;
       let y;
       if (mw) {
@@ -6120,7 +6122,22 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       }
       x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
       y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
-      return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
+      const __g = { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
+      // v3.0.38（用户反馈：居中/86% 疑似未生效，要求增强日志定位）—— 记录主窗是否存在、
+      // 主窗/工作区宽高、传入 opts 宽高、86% 目标、最终落位，便于日后排查。
+      try {
+        dlog('info', 'appwin.geo38', {
+          hasMain: !!mw,
+          branch: mw ? 'main' : 'workarea',
+          main: mw ? { x: mw.x, y: mw.y, w: mw.width, h: mw.height } : null,
+          wa: { x: wa.x, y: wa.y, w: wa.width, h: wa.height },
+          optsW: Number(opts && opts.width),
+          optsH: Number(opts && opts.height),
+          w86: __w86, h86: __h86,
+          final: __g,
+        });
+      } catch (_) {}
+      return __g;
     } catch (_) { return null; }
   })();
 
@@ -11469,6 +11486,32 @@ ipcMain.handle('settings:install-skin', async () => {
     }
   } catch (err) {
     return { ok: false, error: err?.message || '安装失败' };
+  }
+});
+
+// v3.0.38（用户要求）：删除已安装皮肤 —— 删掉 skins/<name>/ 目录；若删除的是当前激活皮肤，
+// 自动回落默认（activeSkin=''）并广播，避免标题栏继续引用已删除的皮肤目录。
+ipcMain.handle('settings:delete-skin', async (_e, payload) => {
+  try {
+    const name = __safeSkinName(String((payload && payload.name) || ''));
+    if (!name) return { ok: false, error: '皮肤名称无效' };
+    const dir = __findSkinDir(name);
+    if (!dir || !fs.existsSync(path.join(dir, 'manifest.json'))) return { ok: false, error: '皮肤不存在' };
+    // 安全边界：dir 必须位于 SKINS_DIR 之下，杜绝越权删除
+    const __normDir = path.resolve(dir);
+    const __normRoot = path.resolve(SKINS_DIR);
+    if (__normDir === __normRoot || !__normDir.startsWith(__normRoot + path.sep)) return { ok: false, error: '非法的皮肤路径' };
+    const wasActive = String((loadSettings().activeSkin) || '').trim() === name;
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { return { ok: false, error: e?.message || '删除失败' }; }
+    if (wasActive) {
+      try { saveSettings({ activeSkin: '' }); cachedSettings.activeSkin = ''; } catch (_) {}
+      try { refreshTitlebarStrip(); } catch (_) {}
+      try { __pushTitlebarAll('skin-deleted'); } catch (_) {}
+    }
+    fnosLog('info', 'skin', 'delete.ok', { name: String(name).slice(0, 80), wasActive });
+    return { ok: true, name, wasActive };
+  } catch (err) {
+    return { ok: false, error: err?.message || '删除失败' };
   }
 });
 

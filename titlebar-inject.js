@@ -561,6 +561,14 @@ module.exports = function injectTitleBar(ctx) {
     function __applySkinLayers(bar) {
       try {
         if (!bar) return false;
+        // v3.0.38（用户反馈：加载皮肤后标题栏四角变直角）—— bgLayer/shapeLayer 的
+        // border-radius:inherit 在 CSP 页面走 CSSOM setProperty 时偶发不继承（computed 成 0），
+        // 皮肤背景/视频以直角铺满、盖住 bar 的 10px 小 R 角。这里每次应用都显式同步 bar 的圆角。
+        try {
+          const __br38 = (function () { try { return getComputedStyle(bar).borderTopLeftRadius; } catch (_) { return '10px'; } })();
+          if (bar.__bgLayer) { try { bar.__bgLayer.style.borderRadius = __br38; bar.__bgLayer.style.overflow = 'hidden'; } catch (_) {} }
+          if (bar.__shapeLayer) { try { bar.__shapeLayer.style.borderRadius = __br38; } catch (_) {} }
+        } catch (_) {}
         const bgLayer = bar.__bgLayer || null;
         const shapeLayer = bar.__shapeLayer || null;
         const tb = __skinState.skin && __skinState.skin.titlebar;
@@ -725,6 +733,8 @@ module.exports = function injectTitleBar(ctx) {
             bgConn: !!(bgLayer && bgLayer.isConnected),
             shapeConn: !!(shapeLayer && shapeLayer.isConnected),
             csp: !!__cspBlocked28,
+            barRad: (function () { try { return getComputedStyle(bar).borderTopLeftRadius; } catch (_) { return ''; } })(),
+            bgRad: (function () { try { return bgLayer ? getComputedStyle(bgLayer).borderTopLeftRadius : ''; } catch (_) { return ''; } })(),
           });
         } catch (_) {}
         return hasBg;

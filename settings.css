@@ -658,6 +658,7 @@ body::-webkit-scrollbar-thumb:hover {
 
 /* v3.0.19：标题栏皮肤 */
 .skin-card {
+  position: relative;
   width: 152px;
   border: 2px solid rgba(255,255,255,0.12);
   border-radius: 12px;
@@ -683,3 +684,24 @@ body::-webkit-scrollbar-thumb:hover {
 .skin-name { font-size: 12px; font-weight: 700; color: #f2f6ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .skin-ver { font-size: 10px; color: rgba(233,239,255,.45); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .skin-default .skin-thumb { background: rgba(255,255,255,0.05); }
+/* v3.0.38：删除皮肤按钮（hover 显示） */
+.skin-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.skin-card:hover .skin-del { display: flex; }
+.skin-del:hover { background: #e5484d; }

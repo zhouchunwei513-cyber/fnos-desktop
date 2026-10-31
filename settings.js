@@ -528,8 +528,16 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
         ? '<img src="' + sk.preview + '" alt="" />'
         : '<span class="skin-thumb-ph">' + label + '</span>';
       card.innerHTML = '<div class="skin-thumb">' + thumb + '</div>' +
-        '<div class="skin-meta"><div class="skin-name">' + label + '</div><div class="skin-ver">' + ver + '</div></div>';
+        '<div class="skin-meta"><div class="skin-name">' + label + '</div><div class="skin-ver">' + ver + '</div></div>' +
+        '<button type="button" class="skin-del" title="删除该皮肤" aria-label="删除">×</button>';
       card.addEventListener('click', () => __applySkin(sk.name));
+      const delBtn = card.querySelector('.skin-del');
+      if (delBtn) {
+        delBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          __deleteSkin(sk.name);
+        });
+      }
       skinList.appendChild(card);
     });
   }
@@ -547,6 +555,25 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       }
     } catch (err) {
       __skinMsg(err?.message || '应用失败');
+    }
+  }
+
+  // v3.0.38：删除已安装皮肤（确认后调用主进程删除目录，删除激活皮肤会回落默认）
+  async function __deleteSkin(name) {
+    if (!name) return;
+    if (!window.confirm('确定删除皮肤「' + name + '」吗？此操作不可恢复。')) return;
+    __skinMsg('删除中…');
+    try {
+      const res = await fnosSettings.deleteSkin(name);
+      if (res && res.ok) {
+        __skinMsg('已删除：' + name);
+        setTimeout(() => __skinMsg(''), 1800);
+        await loadSkins();
+      } else {
+        __skinMsg((res && res.error) || '删除失败');
+      }
+    } catch (err) {
+      __skinMsg(err?.message || '删除失败');
     }
   }
 

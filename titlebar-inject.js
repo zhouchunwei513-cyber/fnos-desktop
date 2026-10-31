@@ -423,7 +423,9 @@ module.exports = function injectTitleBar(ctx) {
       const __css = String(css);
       if (!__cspBlocked28) {
         try {
-          __setCss(el, __css);
+          el.style.cssText = __css; // v3.0.49：此处原为自调用 __setCss(el, __css) → 无限递归爆栈后才
+        // 退化到逐属性设置，每次调用都白烧几千层栈帧（拖动/缩放时反复触发）。改成直接写 cssText；
+        // 若 CSP 拦掉导致 el.style.length 为 0，下面的逻辑仍会自动切到逐属性，行为不变。
           if (el.style && el.style.length > 0) return true;
           if (/[a-z-]+\s*:/.test(__css)) {
             __cspBlocked28 = true;
@@ -565,9 +567,23 @@ module.exports = function injectTitleBar(ctx) {
         // border-radius:inherit 在 CSP 页面走 CSSOM setProperty 时偶发不继承（computed 成 0），
         // 皮肤背景/视频以直角铺满、盖住 bar 的 10px 小 R 角。这里每次应用都显式同步 bar 的圆角。
         try {
-          const __br38 = (function () { try { return getComputedStyle(bar).borderTopLeftRadius; } catch (_) { return '10px'; } })();
+          // v3.0.49（用户反馈：标题栏四个角又从 R 角变回直角，要求四角都是 10px R 角）：
+          // 原来直接取 computed 圆角，但 bar 还没挂进 DOM、或皮肤重载的瞬间它可能是 '0px'，
+          // 于是 bgLayer / shapeLayer 拿到 0，皮肤背景就铺成直角把 bar 的圆角整个盖掉。
+          // 现在：computed 不是有效的非零值就回落 10px；并把 bar 自己的圆角用 important 强刷一遍。
+          const __brRaw = (function () { try { return String(getComputedStyle(bar).borderTopLeftRadius || '').trim(); } catch (_) { return ''; } })();
+          const __brNum = parseFloat(__brRaw);
+          const __br38 = (__brRaw && isFinite(__brNum) && __brNum > 0) ? __brRaw : '10px';
+          try { bar.style.setProperty('border-radius', __br38, 'important'); } catch (_) {}
           if (bar.__bgLayer) { try { bar.__bgLayer.style.borderRadius = __br38; bar.__bgLayer.style.overflow = 'hidden'; } catch (_) {} }
           if (bar.__shapeLayer) { try { bar.__shapeLayer.style.borderRadius = __br38; } catch (_) {} }
+          try {
+            if (!bar.__fnosBrLog49) {
+              bar.__fnosBrLog49 = true;
+              __tbLog('radius', { raw: __brRaw, use: __br38, main: !!(bar && bar.__tbIsMain),
+                bg: (bar.__bgLayer ? String(bar.__bgLayer.style.borderRadius || '') : 'none') });
+            }
+          } catch (_) {}
         } catch (_) {}
         const bgLayer = bar.__bgLayer || null;
         const shapeLayer = bar.__shapeLayer || null;

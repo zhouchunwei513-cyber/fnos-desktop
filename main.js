@@ -134,6 +134,9 @@ try {
       __seen45.add(k); __all45.push(r);
     }
     if (__all45.length) app.commandLine.appendSwitch('proxy-bypass-list', __all45.join(';'));
+    // v3.0.49：留存最终绕过列表。启动早期 logger 未就绪，这里直接打会丢，
+    // 等首个 NAS 会话连接时再写日志（见 doConnectTo 里的 proxy.bypass）。
+    try { global.__fnosBypass49 = __all45.join(';'); } catch (_) {}
   })();
 } catch (_) {}
 
@@ -168,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.48';
+const APP_VERSION = '3.0.49';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3826,11 +3829,42 @@ function fnosReferrerFor(u) {
 function getNasUA() {
   return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 }
+// v3.0.49（用户反馈：本机开代理后 DDNS / IPv6 地址登录不了飞牛，局域网地址也受影响）：
+// v3.0.48 把 NAS 域名并进了 --proxy-bypass-list 启动开关，用户机器上实测仍被系统代理接管。
+// 原因：Windows 上 Chromium 的代理配置来自系统（ProxyConfigServiceWin），命令行的
+// --proxy-bypass-list 未必覆盖它；而且这个开关是启动期的，运行中改不了。
+// 这里在会话层兜底：凡承载 NAS 页面的 partition 一律 setProxy({mode:'direct'})，完全绕开
+// 系统代理。defaultSession（更新检查 / 帮助页等）不动，仍跟随系统代理。
+function installNasDirectProxy(partition) {
+  try {
+    const p = String(partition || '');
+    // 只处理 NAS 相关会话：persist:nas-*（每台服务器一个）、共享会话、连接/登录页
+    if (!/^(?:persist:)?(?:nas-|fnos-shared$|connect$)/.test(p)) return;
+    let ses = null;
+    try { ses = session.fromPartition(p); } catch (_) { return; }
+    if (!ses || ses.__fnosDirect49) return;
+    ses.__fnosDirect49 = true;
+    const __done = (ok, err) => {
+      try {
+        fnosLog(ok ? 'info' : 'warn', 'network',
+          'proxy.session-direct ' + (ok ? 'ok' : ('fail ' + String(err))) + ' part=' + p);
+      } catch (_) {}
+    };
+    try {
+      const r = ses.setProxy({ mode: 'direct' });
+      if (r && typeof r.then === 'function') {
+        r.then(() => __done(true)).catch((e) => __done(false, (e && e.message) || e));
+      } else { __done(true); }
+    } catch (e) { __done(false, (e && e.message) || e); }
+  } catch (_) {}
+}
+
 function applyUA(partition) {
   try { session.fromPartition(partition).setUserAgent(getNasUA()); } catch (_) {}
   try { installCorsBypass(session.fromPartition(partition)); } catch (_) {}
   try { installDownloadTracker(session.fromPartition(partition)); } catch (_) {}
   try { relaxCookiePolicy(session.fromPartition(partition)); } catch (_) {}
+  try { installNasDirectProxy(partition); } catch (_) {}
 }
 
 // v1.16.2：放宽 Cookie 策略，避免飞牛 NAS 设置的 SameSite=None/Strict Cookie 在
@@ -9278,6 +9312,13 @@ function doConnectTo(serverInput) {
         saveSettings({ directHosts: __arr });
         try { fnosLog('info', 'network', 'proxy.direct-host+ ' + __hn); } catch (_) {}
       }
+    }
+  } catch (_) {}
+  // v3.0.49：首个 NAS 连接时把启动期算出的代理绕过列表写进日志，用来判断 bypass 到底有没有生效。
+  try {
+    if (!global.__fnosBypassLogged49) {
+      global.__fnosBypassLogged49 = true;
+      fnosLog('info', 'network', 'proxy.bypass ' + String(global.__fnosBypass49 || ''));
     }
   } catch (_) {}
   upsertHistory(serverInput, parsed);

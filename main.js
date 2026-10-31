@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.42';
+const APP_VERSION = '3.0.43';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6131,19 +6131,28 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   const __mainContentRect41 = () => {
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
+        const bh = __barStrip41();
         try {
           if (typeof mainWindow.getContentBounds === 'function') {
             const cb = mainWindow.getContentBounds();
             if (cb && cb.width >= 200 && cb.height >= 200) {
-              const bh = __barStrip41();
               return { x: cb.x, y: cb.y + bh, w: cb.width, h: Math.max(200, cb.height - bh), src: 'content', bar: bh };
+            }
+          }
+        } catch (_) {}
+        // v3.0.43：主窗最小化/隐藏时 getContentBounds 可能返回 0/异常——用 getNormalBounds（官方 API：
+        //   最小化/最大化/全屏时返回正常态 bounds）兜底，避免误退到屏幕工作区导致内嵌窗跑到主窗外。
+        try {
+          if (typeof mainWindow.getNormalBounds === 'function') {
+            const nb = mainWindow.getNormalBounds();
+            if (nb && nb.width >= 200 && nb.height >= 200) {
+              return { x: nb.x, y: nb.y + bh, w: nb.width, h: Math.max(200, nb.height - bh), src: 'normal', bar: bh };
             }
           }
         } catch (_) {}
         try {
           const mb = mainWindow.getBounds();
           if (mb && mb.width >= 200 && mb.height >= 200) {
-            const bh = __barStrip41();
             return { x: mb.x, y: mb.y + bh, w: mb.width, h: Math.max(200, mb.height - bh), src: 'bounds', bar: bh };
           }
         } catch (_) {}
@@ -6152,27 +6161,38 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     const wa = screen.getPrimaryDisplay().workArea;
     return { x: wa.x, y: wa.y, w: wa.width, h: wa.height, src: 'workarea', bar: 0 };
   };
-  // v3.0.41：把 w×h 摆到底座 base 的正中，并把结果夹在 base 内（不越出主窗内容区）。
-  const __fitGeo41 = (base, optW, optH) => {
+  // v3.0.43：居中链路全面加固——所有应用窗口都给出居中定位，绝不再留 x/y=undefined 被 Windows 甩到
+  //   屏幕角落/主程序窗口之外（这是"好多应用窗口区域隐藏到主程序窗口外"的根因）。
+  //   基准统一取主窗内容区（__mainContentRect41：主窗可用=画布主体，不可用=工作区）；
+  //   ratio=0.86 按 base 的 86% 收缩并居中（程序内打开）；ratio=1.0 保持原尺寸、仅 clamp 到 base 后居中
+  //   （快捷方式启动保持原尺寸，符合 v3.0.39 教训：快捷方式应用不该被缩小）。
+  const __fitGeo41 = (base, optW, optH, ratio) => {
+    const rr = (ratio === undefined || !(ratio > 0)) ? 0.86 : ratio;
     let w = Number(optW) || 1280;
     let h = Number(optH) || 820;
-    w = Math.max(880, Math.min(w, Math.round(base.w * 0.86)));
-    h = Math.max(580, Math.min(h, Math.round(base.h * 0.86)));
+    if (rr < 1) {
+      w = Math.max(880, Math.min(w, Math.round(base.w * rr)));
+      h = Math.max(580, Math.min(h, Math.round(base.h * rr)));
+    }
     w = Math.min(w, base.w);
     h = Math.min(h, base.h);
     const x = base.x + Math.round((base.w - w) / 2);
     const y = base.y + Math.round((base.h - h) / 2);
     return { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h) };
   };
-  const __geo36 = __fnIsInApp36 ? (() => {
+  // v3.0.43：比例——程序内打开 86%，其余（快捷方式/冷启动）100% 保持原尺寸。
+  const __geoRatio41 = __fnIsInApp36 ? 0.86 : 1.0;
+  // v3.0.43：居中定位对【所有】应用窗口都计算（不再 source 分流返回 null）——x/y 永不为 undefined。
+  const __geo36 = (() => {
     try {
       const base = __mainContentRect41();
-      const __g = __fitGeo41(base, opts && opts.width, opts && opts.height);
-      // v3.0.41 诊断：底座来源（content/bounds/workarea）、主窗实时坐标尺寸、最终落位。
+      const __g = __fitGeo41(base, opts && opts.width, opts && opts.height, __geoRatio41);
+      // v3.0.43 诊断：source、基准来源（content/normal/bounds/workarea）、基准矩形、比例、最终落位。
       try {
-        dlog('info', 'appwin.geo41', {
+        dlog('info', 'appwin.geo43', {
           source: String((opts && opts.source) || ''),
           base: base,
+          ratio: __geoRatio41,
           optsW: Number(opts && opts.width),
           optsH: Number(opts && opts.height),
           final: __g,
@@ -6180,7 +6200,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       } catch (_) {}
       return __g;
     } catch (_) { return null; }
-  })() : null;
+  })();
 
   const win = new BrowserWindow({
     x: __geo36 ? __geo36.x : undefined,
@@ -6256,11 +6276,10 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // 主窗/设置窗等无此旗标 = 整棵 frame 树只做主题归一、绝不杀除（web 桌面内嵌窗真窗控安全）。
   try { win.__fnosAppWin29 = true; } catch (_) {}
 
-  // v3.0.41：内嵌窗（程序内点击打开）落位自校正。
-  // 用户反馈「内嵌窗不居中」的三个可能源都被这一层覆盖：主窗在窗口创建瞬间改变位置/大小、
-  // Windows 把新窗甩到层叠位、以及 DWM/DPI 造成的实际 bounds 与请求值不一致。
-  // 每次都用【当下】主窗内容区重算，实测 bounds 记进主日志（fullscreen 模块，appwin.recenter41）。
-  if (__fnIsInApp36) {
+  // v3.0.43：落位自校正对所有应用窗口生效（不只 in-app），基准统一取主窗内容区（__mainContentRect41）。
+  // 覆盖三个源头：主窗在创建瞬间改变位置/大小、Windows 把新窗甩到层叠位、DWM/DPI 造成的实际 bounds
+  // 与请求值不一致。每次都用【当下】base 重算，实测 bounds 记进主日志（fullscreen 模块，appwin.recenter43）。
+  {
     const __recenter41 = (tag) => {
       try {
         if (!win || win.isDestroyed()) return;
@@ -6278,7 +6297,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           win.setBounds({ x: x, y: y, width: w, height: h });
         }
         fnosLog(moved || resized ? 'warn' : 'info', 'fullscreen',
-          'appwin.recenter41 ' + tag + (moved || resized ? ' fixed' : ' ok')
+          'appwin.recenter43 ' + tag + (moved || resized ? ' fixed' : ' ok')
           + ' from=' + [b.x, b.y, b.width, b.height].join(',')
           + ' to=' + [x, y, w, h].join(',')
           + ' base=' + base.src + ':' + [base.x, base.y, base.w, base.h].join(','));

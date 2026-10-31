@@ -109,7 +109,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.41';
+const APP_VERSION = '3.0.42';
 
 
 // ==================== v2.5.9 r25（问题1/3/8）帧注入 v2 + 加载挂起自愈 ====================
@@ -6107,8 +6107,27 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   //   ② 尺寸取内容区 86%（下限 880x580，且绝不超过内容区）——主窗最大化/全屏时内容区即工作区；
   //   ③ ready-to-show / show 之后各再按【当前】主窗内容区校正一次落位，防止主窗在创建瞬间改变
   //      位置大小（最大化切换、被系统挪动）或 Windows 把新窗甩到层叠位，导致算好的居中失效。
+  // v3.0.42（用户要求"全网找资料含官方文档、只改居中这个问题"）—— 官方文档核查结论：
+  //   Electron 官方无「子窗居中于父窗」API：win.center() 与构造项 center/x/y 默认都只把窗口
+  //   居中于【屏幕】；parent 选项只保证 z-order 不控制位置。故居中只能手动算父窗矩形中点
+  //   （__fitGeo41 已如此）。本次修正的偏差源：getContentBounds() 的 client area 含页面里
+  //   自定义 HTML 标题栏，导致内嵌窗比"画布主体"中心高 __titlebarStrip/2。现在 __mainContentRect41
+  //   统一减去标题栏（__barStrip41），居中基准改为画布主体区；x 方向无此问题不改；其余一律不动。
   const __fnIsInApp36 = String((opts && opts.source) || '') === 'in-app';
-  // v3.0.41：主窗内容区（屏幕坐标）——实时取；主窗不可用（隐藏/最小化/已销毁）时退回屏幕工作区。
+  // v3.0.42：自定义 HTML 标题栏高度（皮肤 titlebar.height 可覆盖，默认 34）。
+  //  依据 Electron 官方文档：getContentBounds() 返回 client area，它包含页面里自定义的 HTML 标题栏；
+  //  而用户看到的"主窗内容区"= 标题栏以下的画布主体。项目 r47-r52 主窗比例锁定早已按
+  //  "内容区 = 外框 - __titlebarStrip" 计算（见 refreshTitlebarStrip）。实测 diag 日志：
+  //  main 外框 1473x939 = 画布 905 + 标题栏 34，旧逻辑居中于外框，比画布主体中心高 17px，视觉不居中。
+  const __barStrip41 = () => {
+    try {
+      const v = Math.round(Number(__titlebarStrip));
+      if (v >= 0 && v <= 200) return v;
+    } catch (_) {}
+    return 34;
+  };
+  // v3.0.42：主窗内容区（屏幕坐标）——实时取，且减去自定义标题栏，得到"画布主体区"；
+  //  主窗不可用（隐藏/最小化/已销毁）时退回屏幕工作区（工作区无标题栏，不减）。
   const __mainContentRect41 = () => {
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -6116,20 +6135,22 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           if (typeof mainWindow.getContentBounds === 'function') {
             const cb = mainWindow.getContentBounds();
             if (cb && cb.width >= 200 && cb.height >= 200) {
-              return { x: cb.x, y: cb.y, w: cb.width, h: cb.height, src: 'content' };
+              const bh = __barStrip41();
+              return { x: cb.x, y: cb.y + bh, w: cb.width, h: Math.max(200, cb.height - bh), src: 'content', bar: bh };
             }
           }
         } catch (_) {}
         try {
           const mb = mainWindow.getBounds();
           if (mb && mb.width >= 200 && mb.height >= 200) {
-            return { x: mb.x, y: mb.y, w: mb.width, h: mb.height, src: 'bounds' };
+            const bh = __barStrip41();
+            return { x: mb.x, y: mb.y + bh, w: mb.width, h: Math.max(200, mb.height - bh), src: 'bounds', bar: bh };
           }
         } catch (_) {}
       }
     } catch (_) {}
     const wa = screen.getPrimaryDisplay().workArea;
-    return { x: wa.x, y: wa.y, w: wa.width, h: wa.height, src: 'workarea' };
+    return { x: wa.x, y: wa.y, w: wa.width, h: wa.height, src: 'workarea', bar: 0 };
   };
   // v3.0.41：把 w×h 摆到底座 base 的正中，并把结果夹在 base 内（不越出主窗内容区）。
   const __fitGeo41 = (base, optW, optH) => {

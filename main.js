@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.52';
+const APP_VERSION = '3.0.53';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -8077,6 +8077,88 @@ function __armMainHealth(reason) {
     [2500, 7000].forEach(function (ms) { setTimeout(function () { __check('t' + ms); }, ms); });
   } catch (_) {}
 }
+// ============ v3.0.53（网友反馈：tailscale 组网地址客户端还是登录不上，浏览器可以） ============
+// 现场日志（10-31 12:29~12:35）说明代理已经不是瓶颈：proxy.bypass 里 100.64.0.0/10 与
+// 具体地址 100.84.16.13 都在列，11 个 NAS 会话全部 proxy.session-direct ok，可主窗加载
+// http://100.84.16.13:5666/ 仍然 -118 ERR_CONNECTION_TIMED_OUT，随后连着两次 -21
+// ERR_NETWORK_CHANGED，直到用户第四次点"登录"（12:34:50）才一次加载成功。
+// 也就是：tailscale 的 100.x 链路在客户端启动后有一段时间"网卡在、路径还没通"；Chromium
+// 一次 SYN 要等 20 秒才判超时，原有 1/2/4/8 秒四档退避加四次超时，几十秒就把重试额度用光
+// 并弹"连接失败"，用户看到的就是"点登录没反应 / 无法访问此网站"，等他手动再点时链路已经好了。
+// 这里给 100.64.0.0/10（Tailscale / ZeroTier 等 CGNAT 组网段）单独放宽：失败后不弹错误页，
+// 改用 Node 侧 TCP 探测（单次 2.5 秒，比 Chromium 的 21 秒快一个量级）每 2 秒探一次，
+// 90 秒窗口内一旦链路就绪立即重新加载；窗口用尽才回退原有报错流程。仅对 CGNAT 地址生效。
+function __isCgnatHost53(h) {
+  try {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(h || ''));
+    if (!m) return false;
+    const a = Number(m[1]); const b = Number(m[2]);
+    return a === 100 && b >= 64 && b <= 127;
+  } catch (_) { return false; }
+}
+function __isCgnatUrl53(u) {
+  try { return __isCgnatHost53(new URL(String(u || '')).hostname); } catch (_) { return false; }
+}
+function __probeTcp53(host, port, timeoutMs, cb) {
+  let done = false; let sock = null;
+  const fin = (ok) => {
+    if (done) return; done = true;
+    try { sock && sock.destroy(); } catch (_) {}
+    try { cb(ok); } catch (_) {}
+  };
+  try {
+    const net = require('net');
+    sock = net.connect({ host: String(host), port: Number(port) || 80 });
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => fin(true));
+    sock.once('timeout', () => fin(false));
+    sock.once('error', () => fin(false));
+  } catch (_) { fin(false); }
+}
+let __vpnWin53 = 0;      // 本轮等待窗口起点
+let __vpnBusy53 = false; // 是否已有探测循环在跑
+let __vpnRounds53 = 0;   // 连续等待轮次（防"一直等下去"）
+function __waitVpnPath53(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl || ''));
+    const host = u.hostname;
+    const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80)) || 80;
+    const now = Date.now();
+    if (!__vpnWin53) __vpnWin53 = now;
+    if (now - __vpnWin53 > 90000 || __vpnRounds53 >= 2) {
+      fnosLog('error', 'network', 'vpn-wait.giveup', { host, ms: now - __vpnWin53, rounds: __vpnRounds53 });
+      __vpnWin53 = 0; __vpnRounds53 = 0;
+      return false;   // 交回原有 giveup 流程（弹框 + 回连接页）
+    }
+    if (__vpnBusy53) return true;
+    __vpnBusy53 = true; __vpnRounds53++;
+    const deadline = __vpnWin53 + 90000;
+    fnosLog('info', 'network', 'vpn-wait.start', { host, port, elapsed: now - __vpnWin53, round: __vpnRounds53 });
+    const tick = () => {
+      if (!mainWindow || mainWindow.isDestroyed()) { __vpnBusy53 = false; return; }
+      if (Date.now() > deadline) {
+        __vpnBusy53 = false; __vpnWin53 = 0; __vpnRounds53 = 0;
+        fnosLog('error', 'network', 'vpn-wait.timeout', { host });
+        try { dialog.showMessageBox(mainWindow, { type: 'error', title: '连接失败', message: '虚拟网络（Tailscale / VPN）未就绪，暂时连不上该地址。请确认虚拟网卡已连接后重试。', buttons: ['确定'] }); } catch (_) {}
+        setTimeout(() => { try { showConnectPage(); } catch (_) {} }, 300);
+        return;
+      }
+      __probeTcp53(host, port, 2500, (ok) => {
+        if (!ok) { setTimeout(tick, 2000); return; }
+        __vpnBusy53 = false; __vpnWin53 = 0; __vpnRounds53 = 0;
+        fnosLog('info', 'network', 'vpn-wait.ready', { host, port });
+        try {
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          const t = String(lastConnectHref || '');
+          mainWindow.loadURL(/^https?:/i.test(t) ? t : String(rawUrl), { userAgent: getNasUA() }).catch(() => {});
+        } catch (_) {}
+      });
+    };
+    setTimeout(tick, 600);
+    return true;
+  } catch (_) { return false; }
+}
+
 function __armMainFailLoad() {
   try {
     const win = mainWindow;
@@ -8091,6 +8173,8 @@ function __armMainFailLoad() {
         });
         const hard = [-102, -105, -106, -107, -118, -137, -202];
         if (hard.indexOf(Number(code)) >= 0) {
+          // v3.0.53：CGNAT（Tailscale / VPN）目标由 __waitVpnPath53 自动等待，这里不弹错误页
+          if (__isCgnatUrl53(url) && [-118, -21, -102, -106].indexOf(Number(code)) >= 0) return;
           const retry = String(lastConnectHref || '') || String(url || '');
           try { __fnShowErrPage(win, { app: 'FNOS 主页面', kind: 'net', code: Number(code) || '', url: String(url || ''), retryUrl: retry }); } catch (_) {}
         }
@@ -8872,6 +8956,11 @@ function createMainWindow(partition, loadTarget) {
             } catch (_) {}
           }, 2000);
           return;
+        }
+        // v3.0.53：CGNAT（Tailscale / VPN）组网地址的超时 / 网络变更不消耗常规重试额度，
+        // 改由 __waitVpnPath53 用 Node TCP 探测等链路就绪后自动重载（窗口 90 秒）。
+        if (__isCgnatUrl53(failUrl) && [-118, -21, -102, -106, -137].indexOf(Number(errorCode)) >= 0) {
+          if (__waitVpnPath53(failUrl)) return;
         }
         // v2.0.0：记录到网络健康监控
         const isJitter = NetworkHealth.recordFailure('mainwindow', `${errorCode} ${errorDesc}`);

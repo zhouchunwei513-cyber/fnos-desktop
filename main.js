@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.56';
+const APP_VERSION = '3.0.57';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -5976,6 +5976,12 @@ function __entryKeyOf(url, opts) {
 // 缓存存的是完整 URL；换过 host（内网/公网/换账号）时把 host 换成当前生效的，端口保持不变
 function __entryCacheHostFix(url) {
   try {
+    // v3.0.57：缓存里若记的是本机同网段的内网地址，原样用——不要"归位"成当前登录域名
+    // （内网去连域名:应用端口通常被拒，正是"记了地址却开不了"的直接原因）。
+    try {
+      const __pu57 = new URL(String(url));
+      if (__sameLanAs57(__pu57.hostname)) return String(url);
+    } catch (_) {}
     const base = String(__liveOriginBase() || '').replace(/\/+$/, '');
     if (!/^https?:\/\//i.test(base)) return String(url);
     const cu = new URL(String(url));
@@ -14381,6 +14387,50 @@ function __launchIsPrivateHost(h) {
   if (a === 100 && b >= 64 && b <= 127) return true;
   return false;
 }
+
+// ===== v3.0.57：本机是否与目标私网地址同网段（/24）=====
+// 用户现象（2026-11-01 12:08，内网）：账号明明切到内网 192.168.31.101，程序内打开应用却报
+// ERR_CONNECTION_REFUSED(-102)，错误页里写的地址是 DDNS 域名 nas.xn--yet060e.com（该域名只有
+// AAAA 记录，内网去连 10307/10311/10303/10301 这些应用端口，路由器没做映射 → 直接拒绝）。
+// 根因：登录历史里最近一条是 DDNS 域名，__liveOriginBase() 因此返回域名 origin，于是
+//   · __entryCacheHostFix()      把学习缓存里的内网地址"换 host 成当前生效的"→ 换成域名
+//   · __launchUrlNormalize() 规则1 把"目标私网 + 当前公网"的地址换成域名（端口保留）
+//   · __launchUrlNormalize() 规则3 把 fndesk 目标参数 uB1 里的内网 host 换成域名
+// 三条全按"当前登录的是公网，内网地址用不了"来推，可本机其实就在 192.168.31.0/24 里。
+// 判据：目标 host 是私网 IP，且本机任一非回环 IPv4 与它前三段相同 → 本机就在该局域网，
+// 必须原样保留内网地址（更快、且不依赖端口映射）。
+let __lanPrefix57 = null;
+let __lanPrefixAt57 = 0;
+function __localPrefixes57() {
+  const now = Date.now();
+  if (__lanPrefix57 && now - __lanPrefixAt57 < 60000) return __lanPrefix57;
+  const out = [];
+  try {
+    const ifs = require('os').networkInterfaces() || {};
+    Object.keys(ifs).forEach((k) => {
+      const arr = ifs[k] || [];
+      for (let i = 0; i < arr.length; i++) {
+        const a = arr[i];
+        if (!a || a.internal) continue;
+        if (a.family !== 'IPv4' && a.family !== 4) continue;
+        const m = String(a.address || '').match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+        if (m) out.push(m[1] + '.' + m[2] + '.' + m[3]);
+      }
+    });
+  } catch (_) {}
+  __lanPrefix57 = out;
+  __lanPrefixAt57 = now;
+  return out;
+}
+function __sameLanAs57(h) {
+  try {
+    const s0 = String(h || '').trim();
+    if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s0)) return false;
+    if (!__launchIsPrivateHost(s0)) return false;
+    const pre = s0.split('.').slice(0, 3).join('.');
+    return __localPrefixes57().indexOf(pre) >= 0;
+  } catch (_) { return false; }
+}
 function __launchUrlNormalize(u, tag) {
   let s = String(u || '');
   if (!/^https?:\/\//i.test(s)) return s;
@@ -14392,7 +14442,8 @@ function __launchUrlNormalize(u, tag) {
   let pu = null;
   try { pu = new URL(s); } catch (_) { return s; }
   // 规则1：目标内网 + 当前登录公网 → 换 host（保留端口/路径）。fndesk docker 图标最常踩。
-  if (lu && pu.hostname !== lu.hostname && __launchIsPrivateHost(pu.hostname) && !__launchIsPrivateHost(lu.hostname)) {
+  // v3.0.57：本机与目标私网同网段时不换 host（否则内网里应用地址全被换成登录域名）
+  if (lu && pu.hostname !== lu.hostname && __launchIsPrivateHost(pu.hostname) && !__launchIsPrivateHost(lu.hostname) && !__sameLanAs57(pu.hostname)) {
     try {
       s = lu.protocol + '//' + lu.hostname + (pu.port ? ':' + pu.port : '') + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
       rules.push('private-host:' + pu.hostname + '->' + lu.hostname);
@@ -14426,11 +14477,12 @@ function __launchUrlNormalize(u, tag) {
         let m = s0.match(/^(https?|rtsp|rtmp):\/\/([^\/:?#]+)(:\d+)?([\s\S]*)$/i);
         if (m) {
           if (!__launchIsPrivateHost(m[2])) return s0;
+          if (__sameLanAs57(m[2])) return s0; // v3.0.57 同网段内网 host 保留
           rules.push('param-host:' + m[2] + '->' + lu.hostname);
           return m[1] + '://' + lu.hostname + (m[3] || '') + (m[4] || '');
         }
         m = s0.match(/^([A-Za-z0-9.\-]+)(:\d+)?(\/[\s\S]*)?$/);
-        if (m && __launchIsPrivateHost(m[1])) {
+        if (m && __launchIsPrivateHost(m[1]) && !__sameLanAs57(m[1])) {
           rules.push('param-host:' + m[1] + '->' + lu.hostname);
           return lu.hostname + (m[2] || '') + (m[3] || '');
         }

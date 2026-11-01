@@ -2853,75 +2853,130 @@ module.exports = function injectTitleBar(ctx) {
     if (__isSubFrame) {
       try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
     }
-    // v3.0.54 → v3.0.55（用户反馈：桌面右侧"系统组件"面板——运行状态 / 网络 / 存储读写 / UPS——
-    // 在客户端里不显示，只剩右上角一条 CPU/内存 胶囊；强制刷新后完整面板会出来一下又收回去，
-    // 浏览器打开正常。v3.0.54 的"加载后点一次展开箭头"没解决，说明不是读不到 open。）
-    // 重新定性（新日志 + 录屏逐帧对照）：
+    // v3.0.54 → v3.0.55 → v3.0.56（用户反馈：桌面右侧"系统组件"面板在客户端里不显示，只剩右上角
+    // 一条 CPU/内存 胶囊；强制刷新后完整面板会出来一下又收回去，浏览器打开正常。v3.0.54 的
+    // "加载后点一次展开箭头"没解决；v3.0.55 改成"持续清掉 fndesk 写进面板的 inline bottom"，
+    // 面板是出来了，但底部开始疯狂抖动 —— 抖动正是 v3.0.55 自己造成的，这一版要去掉它。）
+    // 定性与证据（新日志 + 两段录屏逐帧对照）：
     //   1) 面板本体是飞牛原生 desktopWidget（组件 s0e），展开/收起由 Z1e 的 open state 决定，
     //      四张卡片被 `e &&`（isAdmin）包着，收起态连 DOM 都不渲染 —— 纯 CSS 补不回来。
     //   2) v3.0.54 的探针在加载后 1.6s 抓到 syswidget.already-open {w:334,h:1037}，说明那一刻
-    //      isAdmin 与 open 都成立、面板是完整展开的。面板是"之后"才被压掉的，不是读不到 open。
-    //   3) 真凶在 NAS 的 fndesk.js：fndesk_initAutoBottom() 用两个过宽的选择器
+    //      isAdmin 与 open 都成立、面板完整展开，面板是"之后"才被压掉的。
+    //   3) 压它的是 NAS 的 fndesk.js：fndesk_initAutoBottom() 用两个过宽的选择器
     //      querySelector('.box-border.flex.max-h-full') 与
-    //      querySelector('.absolute.overflow-hidden.rounded-2xl') 恰好命中本面板的内层容器和外层
-    //      容器，随后 updateLayout() 直接往面板外层写 inline bottom
-    //      （= innerHeight - min(h, innerHeight-60) - 30），并把 ResizeObserver 挂在面板内层上，
-    //      内层高度一变就再写一遍。面板本来是 top:17 + bottom:17 撑满右侧；被改成大 bottom 后
-    //      top 仍是 17，元素高度塌成几十像素，再被 overflow-hidden 一裁，就只剩顶部那条胶囊。
-    //      收起态（内层约 36px）会算出 bottom ≈ innerHeight-66、高度约 49px，一旦瞬间收起过一次
-    //      就被这个反馈环锁死 —— 与录屏里"出现 → 消失 → 刷新又出现"的节奏完全一致。
-    // 处理（两件互不干扰的事，都只在主窗桌面执行）：
-    //   A. 持续清掉面板外层被写进去的 inline bottom（只删 bottom，不碰其他样式）。MutationObserver
-    //      盯 style 属性 + 1.2s 低频兜底，覆盖 fndesk 每次重写；阈值 >100px 才算异常，
-    //      完全展开时 fndesk 算出的是 30px 左右，属于可接受范围，不去动它，避免和它来回抖。
-    //   B. 仅在页面加载后的 40 秒窗口内、且面板确实处于收起态时，点一次自带展开箭头（等价手点，
-    //      顺带把 open 写回服务端）。窗口过后不再自动展开，用户主动收起不受干预。
-    const __guardSysWidget = () => {
+    //      querySelector('.absolute.overflow-hidden.rounded-2xl')（全文件各只出现这一次，都函数内）
+    //      恰好命中本面板的内层容器与外层容器，随后往面板外层写 inline bottom
+    //      （= innerHeight - min(h, innerHeight-60) - 30），并把 ResizeObserver 挂在内层上，
+    //      内层高度一变就再写一遍。面板本来 top:17 + bottom:17 撑满右侧，被改成大 bottom 后
+    //      top 仍是 17，高度塌成几十像素，再被 overflow-hidden 一裁，就只剩顶部那条胶囊。
+    //   4) v3.0.55 抖动的原因：我们删 bottom → 高度变 → fndesk 的 ResizeObserver 触发 → 又写 →
+    //      我们又删 …… 高频反馈环，表现为面板底边上下狂跳。
+    // 本版做法（从根上让 fndesk 碰不到面板，而不是跟它抢）：
+    //   A. 往 <head> 最前面插一个隐藏"诱饵"：外层 class 就是 absolute overflow-hidden rounded-2xl、
+    //      内层 class 就是 box-border flex max-h-full。document.querySelector 返回文档顺序第一个，
+    //      head 永远在 body 之前，所以 fndesk 的 e / t 都会锁到诱饵上 —— 它写 bottom 写到诱饵、
+    //      ResizeObserver 盯的也是诱饵（尺寸恒为 0，永不触发），真实面板完全不再被碰。
+    //      诱饵零尺寸、visibility:hidden，不影响布局。
+    //   B. 删掉 v3.0.55 的持续清理（它才是抖动源）。只在早期做两次一次性清理（t0 / +3s），
+    //      处理诱饵生效前可能已被写进去的脏值；之后再不清，绝不会和 fndesk 来回抢。
+    //   C. 保留 40 秒窗口内的自动展开（确实收起时才点一次自带箭头，等价手点），过后不再干预。
+    //   D. 新增只读探针 syswidget.probe（1s / 4s / 10s 各一次），记录面板外层的 inline bottom 与
+    //      高度 —— 只读不改，用来确认诱饵是否真的把 fndesk 挡在外面。
+    const __findSysWidgetPanel = () => {
+      let nodes;
+      try { nodes = document.querySelectorAll('div[class*="right-[14px]"][class*="top-[17px]"]'); } catch (_) { return null; }
+      for (let k = 0; k < nodes.length; k++) {
+        const el = nodes[k];
+        const cls = String(el.className || '');
+        if (cls.indexOf('overflow-hidden') >= 0 && cls.indexOf('rounded-2xl') >= 0) return el;
+      }
+      return null;
+    };
+    const __sysWidgetLog = (ev, d) => {
+      try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar', ev: ev, detail: JSON.stringify(d || {}) }); } catch (_) {}
+    };
+    // A + B + D
+    const __decoyFndeskAutoBottom = () => {
       try {
         if (EMBED || __isSubFrame) return;
-        const __log = (ev, d) => {
-          try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar', ev: ev, detail: JSON.stringify(d || {}) }); } catch (_) {}
-        };
-        // 面板外层：absolute right-[14px] top-[17px] z-[1] overflow-hidden rounded-2xl
-        // （展开时再加 bottom-[17px]）；Tailwind 任意值类名带方括号，用属性子串匹配最稳。
-        const __findPanel = () => {
-          let nodes;
-          try { nodes = document.querySelectorAll('div[class*="right-[14px]"][class*="top-[17px]"]'); } catch (_) { return null; }
-          for (let k = 0; k < nodes.length; k++) {
-            const el = nodes[k];
-            const cls = String(el.className || '');
-            if (cls.indexOf('overflow-hidden') >= 0 && cls.indexOf('rounded-2xl') >= 0) return el;
-          }
-          return null;
-        };
-        const t0 = Date.now();
-        const AUTO_WINDOW = 40000;
-        let fixed = 0, lastFixLog = 0, clicks = 0, lastClick = 0, lastPanel = null, mo = null, gaveUp = false;
-
-        // A. 只清 inline bottom。展开态由 class 的 bottom-[17px] 负责；>100px 的 inline bottom
-        //    必然是把面板压成胶囊的那次写入。
-        const __fixBottom = (p) => {
+        const DECOY_ID = 'fnos-client-fndesk-decoy';
+        const __ensure = () => {
           try {
+            if (document.getElementById(DECOY_ID)) return true;
+            // 插到 documentElement 最前（排在 head 之前）——querySelector 按文档序遍历，
+            // 这样诱饵必定排在 body 里真实面板之前；不去动 head 内部，避免页面重建 head 时被清掉。
+            const host = document.documentElement;
+            if (!host) return false;
+            const d = document.createElement('div');
+            d.id = DECOY_ID;
+            d.setAttribute('aria-hidden', 'true');
+            // 抢 fndesk 的 querySelector('.absolute.overflow-hidden.rounded-2xl')
+            d.className = 'absolute overflow-hidden rounded-2xl';
+            d.style.cssText = 'position:absolute!important;left:-99999px!important;top:0!important;' +
+              'width:0!important;height:0!important;overflow:hidden!important;' +
+              'visibility:hidden!important;pointer-events:none!important;';
+            // 抢 fndesk 的 querySelector('.box-border.flex.max-h-full')
+            const inner = document.createElement('div');
+            inner.className = 'box-border flex max-h-full';
+            inner.style.cssText = 'width:0!important;height:0!important;overflow:hidden!important;';
+            d.appendChild(inner);
+            host.insertBefore(d, host.firstChild);
+            return true;
+          } catch (_) { return false; }
+        };
+        if (!__ensure()) setTimeout(__ensure, 300);
+        // 只删面板外层自己的 inline bottom，绝不动其他样式。
+        const __clearOnce = (tag) => {
+          try {
+            const p = __findSysWidgetPanel();
             if (!p || !p.style) return;
             const b = p.style.bottom;
             if (!b) return;
-            const v = parseFloat(b);
-            if (!isFinite(v) || v <= 100) return;
-            try { p.style.removeProperty('bottom'); } catch (_) {}
-            fixed++;
-            const now = Date.now();
-            if (fixed <= 5 || now - lastFixLog > 8000) {
-              lastFixLog = now;
-              __log('syswidget.fix-bottom', { removed: b, n: fixed });
-            }
+            p.style.removeProperty('bottom');
+            __sysWidgetLog('syswidget.clear-bottom.once', { tag: tag, removed: b });
           } catch (_) {}
         };
-
-        // B. 40s 窗口内自动展开：最多成功点 3 次，5s 冷却防连点。
+        __clearOnce('t0');
+        setTimeout(() => __clearOnce('t3'), 3000);
+        // 只读探针：不改任何东西，只回报面板外层当前的 inline bottom / 高度。
+        const __probe = (tag) => {
+          try {
+            const p = __findSysWidgetPanel();
+            const decoy = !!document.getElementById(DECOY_ID);
+            if (!p) { __sysWidgetLog('syswidget.probe', { tag: tag, panel: 0, decoy: decoy ? 1 : 0 }); return; }
+            const r = p.getBoundingClientRect();
+            __sysWidgetLog('syswidget.probe', {
+              tag: tag, panel: 1, decoy: decoy ? 1 : 0,
+              inlineBottom: (p.style && p.style.bottom) || '',
+              w: Math.round(r.width), h: Math.round(r.height)
+            });
+          } catch (_) {}
+        };
+        setTimeout(() => __probe('1s'), 1000);
+        setTimeout(() => __probe('4s'), 4000);
+        setTimeout(() => __probe('10s'), 10000);
+        // 诱饵是被插进 head 的，正常不会丢；万一被页面重建清掉，低频补一次即可（补 DOM 不会引起抖动）。
+        let guard = 0;
+        const t = setInterval(() => {
+          guard++;
+          try { __ensure(); } catch (_) {}
+          if (guard >= 10) { try { clearInterval(t); } catch (_) {} }
+        }, 2000);
+        __sysWidgetLog('syswidget.decoy', { ok: 1, inHead: !!(document.head && document.getElementById(DECOY_ID)) });
+      } catch (_) {}
+    };
+    // C. 40 秒窗口内，面板确实是收起态才点一次自带展开箭头；窗口过后不再干预。
+    const __guardSysWidget = () => {
+      try {
+        if (EMBED || __isSubFrame) return;
+        const t0 = Date.now();
+        const AUTO_WINDOW = 40000;
+        let clicks = 0, lastClick = 0, gaveUp = false;
         const __maybeOpen = (p, w, h) => {
           try {
             if (gaveUp || clicks >= 3) return;
             if (Date.now() - t0 > AUTO_WINDOW) return;
+            // 加载中途会出现"宽 20px、高很长"的塌陷中间态，等它稳定再做判断。
             if (!(w > 100 && h < 120)) return;
             if (Date.now() - lastClick < 5000) return;
             const inner = p.firstElementChild;
@@ -2935,45 +2990,37 @@ module.exports = function injectTitleBar(ctx) {
             if (!btn) {
               gaveUp = true;
               // kids 数量能反推 isAdmin 分支：非管理员时组件只渲染那条胶囊，不会出现箭头。
-              __log('syswidget.giveup', { why: 'nobtn', w: w, h: h, kids: inner ? inner.children.length : -1 });
+              __sysWidgetLog('syswidget.giveup', { why: 'nobtn', w: w, h: h, kids: inner ? inner.children.length : -1 });
               return;
             }
             lastClick = Date.now();
             clicks++;
             btn.click();
-            __log('syswidget.autoopen', { w: w, h: h, kids: inner ? inner.children.length : -1, n: clicks });
+            __sysWidgetLog('syswidget.autoopen', { w: w, h: h, kids: inner ? inner.children.length : -1, n: clicks });
           } catch (_) {}
         };
-
         const __tick = () => {
           try {
-            const p = __findPanel();
+            const p = __findSysWidgetPanel();
             if (!p) return;
-            if (p !== lastPanel) {
-              lastPanel = p;
-              // 面板可能被重挂成新元素，observer 要跟着换到新节点上。
-              try { if (mo) mo.disconnect(); } catch (_) {}
-              try {
-                mo = new MutationObserver(() => __fixBottom(p));
-                mo.observe(p, { attributes: true, attributeFilter: ['style'] });
-                __log('syswidget.guard', { ok: 1 });
-              } catch (_) {}
-            }
-            __fixBottom(p);
             const r = p.getBoundingClientRect();
             const w = Math.round(r.width), h = Math.round(r.height);
             if (h > 120) {
-              if (!window.__swOpenLogged) { window.__swOpenLogged = 1; __log('syswidget.open-ok', { w: w, h: h }); }
+              if (!window.__swOpenLogged) { window.__swOpenLogged = 1; __sysWidgetLog('syswidget.open-ok', { w: w, h: h }); }
             } else {
               __maybeOpen(p, w, h);
             }
           } catch (_) {}
         };
         setTimeout(__tick, 1200);
-        setInterval(__tick, 1200);
+        // 只在自动展开窗口期内巡检，窗口过后彻底停手，不和页面上的任何东西抢。
+        const t = setInterval(() => {
+          if (Date.now() - t0 > AUTO_WINDOW + 5000) { try { clearInterval(t); } catch (_) {} return; }
+          __tick();
+        }, 1500);
       } catch (_) {}
     };
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __guardSysWidget(); } catch (_) {} };
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

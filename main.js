@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.62';
+const APP_VERSION = '3.0.63';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -11663,7 +11663,7 @@ ipcMain.handle('settings:get', async () => {
     activeSkin: String(s.activeSkin || ''),
     // v3.0.23（用户反馈：悬浮球挡操作 / 启动后位置乱跑）——隐藏开关 + 归一化位置
     hideAccountBall: s.hideAccountBall === true,
-    uiTransparent: s.uiTransparent === true,
+    uiTransparent: s.uiTransparent !== false,
     ballPos: (s.ballPos && Number.isFinite(Number(s.ballPos.fx)) && Number.isFinite(Number(s.ballPos.fy)))
       ? { fx: Number(s.ballPos.fx), fy: Number(s.ballPos.fy) } : null,
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
@@ -11860,7 +11860,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // v3.0.62：可选「透明界面」（设置 / 帮助 / 检查更新（关于）页面半透明）
     const uiTransparent = (opts && typeof opts.uiTransparent === 'boolean')
       ? opts.uiTransparent
-      : (__fileCfg && __fileCfg.uiTransparent === true);
+      : (__fileCfg && __fileCfg.uiTransparent !== false);
     fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', {
       fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'),
       value: hideBall,
@@ -12067,7 +12067,7 @@ function __titlebarPayload() {
     skinDir: String(sk.skinDir || ''),
     skin: sk.skin || null,
     hideAccountBall: s.hideAccountBall === true,
-    uiTransparent: s.uiTransparent === true,
+    uiTransparent: s.uiTransparent !== false,
   };
 }
 function __pushTitlebarTo(wc, why) {
@@ -12140,7 +12140,7 @@ ipcMain.on('settings:get-titlebar', (e) => {
       skinDir: String(__sk.skinDir || ''),
       skin: __sk.skin || null,
       hideAccountBall: s.hideAccountBall === true,
-      uiTransparent: s.uiTransparent === true,
+      uiTransparent: s.uiTransparent !== false,
     };
   } catch (__e2) {
     __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, skinDir: '', skin: null, hideAccountBall: false };

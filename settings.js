@@ -474,7 +474,7 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       if (!info) return;
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
       if (optHideBall) { optHideBall.checked = info.hideAccountBall === true; syncHideBallLabel(); }
-      if (optUiTrans) { optUiTrans.checked = info.uiTransparent === true; syncUiTransLabel(); }
+      if (optUiTrans) { optUiTrans.checked = info.uiTransparent !== false; syncUiTransLabel(); }
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 96);
       tbState.color = hexNorm6(info.titleBarColor) || '#101426';
       tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'solid';

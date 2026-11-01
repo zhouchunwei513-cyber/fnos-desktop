@@ -840,7 +840,7 @@ module.exports = function injectTitleBar(ctx) {
         // v3.0.23：悬浮球隐藏开关
         if (typeof r.hideAccountBall === 'boolean') TB.hideAccountBall = r.hideAccountBall;
         // v3.0.62：可选「透明界面」——给 html 挂 class，由各页面 CSS 接管
-        try { document.documentElement.classList.toggle('fnos-ui-transparent', r.uiTransparent === true); } catch (_) {}
+        try { document.documentElement.classList.toggle('fnos-ui-transparent', r.uiTransparent !== false); } catch (_) {}
       }
     } catch (_) {}
     __applyTitlebarHeight();
@@ -1434,7 +1434,7 @@ module.exports = function injectTitleBar(ctx) {
         // 四角 clip-path 由 10px 改回 20px，与主窗口、应用窗口完全同一数值。
         // v2.18.0 曾为了与标题栏 bar 的 10px 同比例收到 10px，实测观感偏方，现按用户回归 20px。
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
-          'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}';
+          'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}html.fnos-ui-transparent>body{background:rgba(5,6,10,.38) !important;}';
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v3.0.46（网友反馈：Docker/qBittorrent 等第三方应用在客户端里底部状态栏压住"信息"面板
         // 的字段、整页显示不正常；浏览器打开正常）：

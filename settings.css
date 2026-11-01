@@ -707,5 +707,6 @@ body::-webkit-scrollbar-thumb:hover {
 .skin-del:hover { background: #e5484d; }
 
 
-/* v3.0.62：「透明界面」——设置页本身即为透明玻璃（html/body 无底色 + 窗口 transparent），
-   本页无需额外规则；该开关负责把「帮助页 / 检查更新（关于）页」也切换为同样的透明玻璃。 */
+/* v3.0.63：「透明界面」的实际着色由 titlebar-inject 注入（html.fnos-ui-transparent>body），
+   因为设置窗 body 的 #05060a 底色也在那里以 !important 注入，必须同处覆盖。
+   本文件不需要额外规则。 */

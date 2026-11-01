@@ -56,6 +56,11 @@
   .hint { margin-top: 16px; min-height: 18px; font-size: 12px; color: #64748b; }
   .link { margin-top: 10px; font-size: 11px; color: #46536b; letter-spacing: .3px; }
 </style>
+<style>
+/* v3.0.62：可选「透明界面」——去掉页面自带黑底与渐变层，只留淡蒙层保证可读 */
+html.fnos-ui-transparent body { background: rgba(5,6,10,.38) !important; }
+html.fnos-ui-transparent .bg { display: none !important; }
+</style>
 </head>
 <body>
   <div class="bg"></div>

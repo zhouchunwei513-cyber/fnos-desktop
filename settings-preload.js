@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       // v3.0.27：悬浮球隐藏开关 —— v3.0.23 引入该开关时本白名单漏加此字段，
       // 导致设置页勾选"隐藏"后主进程永远拿不到真值、回落 false（关不掉、也不落盘）。
       hideAccountBall: typeof opts?.hideAccountBall === 'boolean' ? opts.hideAccountBall : undefined,
+      // v3.0.62：可选「透明界面」（设置 / 帮助 / 关于 页面半透明）
+      uiTransparent: typeof opts?.uiTransparent === 'boolean' ? opts.uiTransparent : undefined,
     }),
   // v2.17.24：标题栏颜色实时预览（只广播，不落盘；保存仍走 setUIOptions）
   previewTitleBar: (opts) =>

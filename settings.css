@@ -705,3 +705,7 @@ body::-webkit-scrollbar-thumb:hover {
 }
 .skin-card:hover .skin-del { display: flex; }
 .skin-del:hover { background: #e5484d; }
+
+
+/* v3.0.62：「透明界面」——设置页本身即为透明玻璃（html/body 无底色 + 窗口 transparent），
+   本页无需额外规则；该开关负责把「帮助页 / 检查更新（关于）页」也切换为同样的透明玻璃。 */

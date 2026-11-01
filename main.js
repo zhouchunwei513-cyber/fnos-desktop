@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.61';
+const APP_VERSION = '3.0.62';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -11663,6 +11663,7 @@ ipcMain.handle('settings:get', async () => {
     activeSkin: String(s.activeSkin || ''),
     // v3.0.23（用户反馈：悬浮球挡操作 / 启动后位置乱跑）——隐藏开关 + 归一化位置
     hideAccountBall: s.hideAccountBall === true,
+    uiTransparent: s.uiTransparent === true,
     ballPos: (s.ballPos && Number.isFinite(Number(s.ballPos.fx)) && Number.isFinite(Number(s.ballPos.fy)))
       ? { fx: Number(s.ballPos.fx), fy: Number(s.ballPos.fy) } : null,
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
@@ -11856,6 +11857,10 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     const hideBall = (opts && typeof opts.hideAccountBall === 'boolean')
       ? opts.hideAccountBall
       : (__fileCfg && __fileCfg.hideAccountBall === true);
+    // v3.0.62：可选「透明界面」（设置 / 帮助 / 检查更新（关于）页面半透明）
+    const uiTransparent = (opts && typeof opts.uiTransparent === 'boolean')
+      ? opts.uiTransparent
+      : (__fileCfg && __fileCfg.uiTransparent === true);
     fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', {
       fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'),
       value: hideBall,
@@ -11873,6 +11878,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       themeColor: accent,
       activeSkin: activeSkin,
       hideAccountBall: hideBall,
+      uiTransparent,
     });
     cachedSettings.autoHideMenuBar = autoHide;
     cachedSettings.titleBarAutoHide = tbAutoHide;
@@ -11884,6 +11890,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.themeColor = accent;
     cachedSettings.activeSkin = activeSkin;
     cachedSettings.hideAccountBall = hideBall;
+    cachedSettings.uiTransparent = uiTransparent;
     {
       const __oldStrip = __titlebarStrip;
       refreshTitlebarStrip();
@@ -11901,7 +11908,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
     const __skinCfg = resolveSkinConfig();
-    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall };
+    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall, uiTransparent };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
@@ -12060,6 +12067,7 @@ function __titlebarPayload() {
     skinDir: String(sk.skinDir || ''),
     skin: sk.skin || null,
     hideAccountBall: s.hideAccountBall === true,
+    uiTransparent: s.uiTransparent === true,
   };
 }
 function __pushTitlebarTo(wc, why) {
@@ -12132,6 +12140,7 @@ ipcMain.on('settings:get-titlebar', (e) => {
       skinDir: String(__sk.skinDir || ''),
       skin: __sk.skin || null,
       hideAccountBall: s.hideAccountBall === true,
+      uiTransparent: s.uiTransparent === true,
     };
   } catch (__e2) {
     __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, skinDir: '', skin: null, hideAccountBall: false };
@@ -12879,7 +12888,7 @@ $sc.Save()
 // 与 Windows 链路同语义：热路径 loopback POST /launch 秒开常驻主程序（同一端点文件/端口/
 // token 通道）；失败回落冷启动直启主程序二进制 --launch-app/--nas（Electron 单实例锁走
 // second-instance，与 Windows VBS 触发器回落 exe 完全同链）。Windows 分支代码保持原样。
-function __macQuote(s) { return "'" + String(s || '').replace(/'/g, "'\\''") + "'"; }
+function __macQuote(s) { return "'" + String(s || '').replace(/'/g, "'\''") + "'"; }
 
 // 图标：PNG → sips/iconutil 生成 .icns（macOS 自带工具）。r20 教训：动图/坏图不得直进
 // nativeImage（native 崩溃 JS catch 不住）——mac 分支只吃原始 PNG 文件，非 PNG 回落默认图标。

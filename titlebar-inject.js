@@ -839,6 +839,8 @@ module.exports = function injectTitleBar(ctx) {
         if (r.skin && typeof r.skin === 'object') __skinState.skin = r.skin;
         // v3.0.23：悬浮球隐藏开关
         if (typeof r.hideAccountBall === 'boolean') TB.hideAccountBall = r.hideAccountBall;
+        // v3.0.62：可选「透明界面」——给 html 挂 class，由各页面 CSS 接管
+        try { document.documentElement.classList.toggle('fnos-ui-transparent', r.uiTransparent === true); } catch (_) {}
       }
     } catch (_) {}
     __applyTitlebarHeight();
@@ -1009,6 +1011,10 @@ module.exports = function injectTitleBar(ctx) {
             if (typeof val.hideAccountBall === 'boolean') {
               TB.hideAccountBall = val.hideAccountBall;
               try { if (window.__fnApplyBallHidden) window.__fnApplyBallHidden(val.hideAccountBall); } catch (_) {}
+            }
+            // v3.0.62：透明界面实时切换（无需重启）
+            if (typeof val.uiTransparent === 'boolean') {
+              try { document.documentElement.classList.toggle('fnos-ui-transparent', val.uiTransparent === true); } catch (_) {}
             }
             __applyTitlebarHeight();
             const bar0 = document.getElementById('fnos-titlebar');

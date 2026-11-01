@@ -260,6 +260,11 @@ body::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,.28);
 }
 </style>
+<style>
+/* v3.0.62：可选「透明界面」——去掉页面自带黑底与壁纸层，只留淡蒙层保证可读 */
+html.fnos-ui-transparent body { background: rgba(6,8,14,.38) !important; }
+html.fnos-ui-transparent .bg-wrap { display: none !important; }
+</style>
 </head>
 <body>
 

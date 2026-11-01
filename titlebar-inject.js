@@ -2853,20 +2853,32 @@ module.exports = function injectTitleBar(ctx) {
     if (__isSubFrame) {
       try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
     }
-    // v3.0.54（用户反馈：桌面右侧"系统组件"面板——运行状态 / 网络 / 存储读写 / UPS——在客户端里
-    // 不显示，只剩右上角一条 CPU/内存 胶囊；强制刷新后完整面板会出来一下又收回去，浏览器打开正常）：
-    // 该面板是飞牛原生 desktopWidget（组件 s0e），挂载后由服务端用户设置
-    // browser.desktopWidgetWinOpen 决定 open（usrdat.get，走 WebSocket RPC）；读不到、读到非 open、
-    // 或判定为非管理员，都会退回"收起态"，此时只剩胶囊，卡片内容连 DOM 都不渲染——所以纯 CSS
-    // 救不回来，必须让组件自己的 open 变成 true。
-    // 客户端里这条 RPC 拿不到 open（浏览器里能拿到），于是每次加载都恒为收起。这里做客户端侧兜底：
-    // 页面就绪后若面板仍是收起态，就点一次面板自带的展开箭头——与用户手点完全等价（组件内部
-    // n(e=>!e) 立即展开，并顺带 usrd.set 把 open 写回服务端，下一次就正常了）。
-    // 只在页面加载后的一个短窗口内试一次（sessionStorage 幂等），用户随后主动收起不受干预。
-    const __autoOpenSysWidget = () => {
+    // v3.0.54 → v3.0.55（用户反馈：桌面右侧"系统组件"面板——运行状态 / 网络 / 存储读写 / UPS——
+    // 在客户端里不显示，只剩右上角一条 CPU/内存 胶囊；强制刷新后完整面板会出来一下又收回去，
+    // 浏览器打开正常。v3.0.54 的"加载后点一次展开箭头"没解决，说明不是读不到 open。）
+    // 重新定性（新日志 + 录屏逐帧对照）：
+    //   1) 面板本体是飞牛原生 desktopWidget（组件 s0e），展开/收起由 Z1e 的 open state 决定，
+    //      四张卡片被 `e &&`（isAdmin）包着，收起态连 DOM 都不渲染 —— 纯 CSS 补不回来。
+    //   2) v3.0.54 的探针在加载后 1.6s 抓到 syswidget.already-open {w:334,h:1037}，说明那一刻
+    //      isAdmin 与 open 都成立、面板是完整展开的。面板是"之后"才被压掉的，不是读不到 open。
+    //   3) 真凶在 NAS 的 fndesk.js：fndesk_initAutoBottom() 用两个过宽的选择器
+    //      querySelector('.box-border.flex.max-h-full') 与
+    //      querySelector('.absolute.overflow-hidden.rounded-2xl') 恰好命中本面板的内层容器和外层
+    //      容器，随后 updateLayout() 直接往面板外层写 inline bottom
+    //      （= innerHeight - min(h, innerHeight-60) - 30），并把 ResizeObserver 挂在面板内层上，
+    //      内层高度一变就再写一遍。面板本来是 top:17 + bottom:17 撑满右侧；被改成大 bottom 后
+    //      top 仍是 17，元素高度塌成几十像素，再被 overflow-hidden 一裁，就只剩顶部那条胶囊。
+    //      收起态（内层约 36px）会算出 bottom ≈ innerHeight-66、高度约 49px，一旦瞬间收起过一次
+    //      就被这个反馈环锁死 —— 与录屏里"出现 → 消失 → 刷新又出现"的节奏完全一致。
+    // 处理（两件互不干扰的事，都只在主窗桌面执行）：
+    //   A. 持续清掉面板外层被写进去的 inline bottom（只删 bottom，不碰其他样式）。MutationObserver
+    //      盯 style 属性 + 1.2s 低频兜底，覆盖 fndesk 每次重写；阈值 >100px 才算异常，
+    //      完全展开时 fndesk 算出的是 30px 左右，属于可接受范围，不去动它，避免和它来回抖。
+    //   B. 仅在页面加载后的 40 秒窗口内、且面板确实处于收起态时，点一次自带展开箭头（等价手点，
+    //      顺带把 open 写回服务端）。窗口过后不再自动展开，用户主动收起不受干预。
+    const __guardSysWidget = () => {
       try {
         if (EMBED || __isSubFrame) return;
-        try { if (sessionStorage.getItem('fnos-client.syswidget.done') === '1') return; } catch (_) {}
         const __log = (ev, d) => {
           try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar', ev: ev, detail: JSON.stringify(d || {}) }); } catch (_) {}
         };
@@ -2882,24 +2894,36 @@ module.exports = function injectTitleBar(ctx) {
           }
           return null;
         };
-        const __tick = (tries) => {
+        const t0 = Date.now();
+        const AUTO_WINDOW = 40000;
+        let fixed = 0, lastFixLog = 0, clicks = 0, lastClick = 0, lastPanel = null, mo = null, gaveUp = false;
+
+        // A. 只清 inline bottom。展开态由 class 的 bottom-[17px] 负责；>100px 的 inline bottom
+        //    必然是把面板压成胶囊的那次写入。
+        const __fixBottom = (p) => {
           try {
-            const p = __findPanel();
-            if (!p) {
-              if (tries < 24) { setTimeout(() => __tick(tries + 1), 500); return; }
-              __log('syswidget.giveup', { why: 'nopanel', tries: tries });
-              return;
+            if (!p || !p.style) return;
+            const b = p.style.bottom;
+            if (!b) return;
+            const v = parseFloat(b);
+            if (!isFinite(v) || v <= 100) return;
+            try { p.style.removeProperty('bottom'); } catch (_) {}
+            fixed++;
+            const now = Date.now();
+            if (fixed <= 5 || now - lastFixLog > 8000) {
+              lastFixLog = now;
+              __log('syswidget.fix-bottom', { removed: b, n: fixed });
             }
-            const r = p.getBoundingClientRect();
-            const w = Math.round(r.width), h = Math.round(r.height);
-            // 加载中途会出现"宽 20px、高很长"的塌陷中间态，等它稳定再做判断。
-            if (w < 60) {
-              if (tries < 24) { setTimeout(() => __tick(tries + 1), 500); return; }
-              __log('syswidget.giveup', { why: 'collapsed', tries: tries, w: w, h: h });
-              return;
-            }
-            if (h > 120) { __log('syswidget.already-open', { w: w, h: h }); return; }
-            // 展开箭头：内层第一个子 div（h-9 那条状态条）里唯一带 cursor-pointer 的直接子元素。
+          } catch (_) {}
+        };
+
+        // B. 40s 窗口内自动展开：最多成功点 3 次，5s 冷却防连点。
+        const __maybeOpen = (p, w, h) => {
+          try {
+            if (gaveUp || clicks >= 3) return;
+            if (Date.now() - t0 > AUTO_WINDOW) return;
+            if (!(w > 100 && h < 120)) return;
+            if (Date.now() - lastClick < 5000) return;
             const inner = p.firstElementChild;
             let btn = null;
             if (inner) {
@@ -2909,20 +2933,47 @@ module.exports = function injectTitleBar(ctx) {
               }
             }
             if (!btn) {
-              if (tries < 24) { setTimeout(() => __tick(tries + 1), 500); return; }
+              gaveUp = true;
               // kids 数量能反推 isAdmin 分支：非管理员时组件只渲染那条胶囊，不会出现箭头。
-              __log('syswidget.giveup', { why: 'nobtn', tries: tries, w: w, h: h, kids: inner ? inner.children.length : -1 });
+              __log('syswidget.giveup', { why: 'nobtn', w: w, h: h, kids: inner ? inner.children.length : -1 });
               return;
             }
-            try { sessionStorage.setItem('fnos-client.syswidget.done', '1'); } catch (_) {}
+            lastClick = Date.now();
+            clicks++;
             btn.click();
-            __log('syswidget.autoopen', { w: w, h: h, kids: inner ? inner.children.length : -1 });
+            __log('syswidget.autoopen', { w: w, h: h, kids: inner ? inner.children.length : -1, n: clicks });
           } catch (_) {}
         };
-        setTimeout(() => __tick(0), 1600);
+
+        const __tick = () => {
+          try {
+            const p = __findPanel();
+            if (!p) return;
+            if (p !== lastPanel) {
+              lastPanel = p;
+              // 面板可能被重挂成新元素，observer 要跟着换到新节点上。
+              try { if (mo) mo.disconnect(); } catch (_) {}
+              try {
+                mo = new MutationObserver(() => __fixBottom(p));
+                mo.observe(p, { attributes: true, attributeFilter: ['style'] });
+                __log('syswidget.guard', { ok: 1 });
+              } catch (_) {}
+            }
+            __fixBottom(p);
+            const r = p.getBoundingClientRect();
+            const w = Math.round(r.width), h = Math.round(r.height);
+            if (h > 120) {
+              if (!window.__swOpenLogged) { window.__swOpenLogged = 1; __log('syswidget.open-ok', { w: w, h: h }); }
+            } else {
+              __maybeOpen(p, w, h);
+            }
+          } catch (_) {}
+        };
+        setTimeout(__tick, 1200);
+        setInterval(__tick, 1200);
       } catch (_) {}
     };
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __autoOpenSysWidget(); } catch (_) {} };
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __guardSysWidget(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

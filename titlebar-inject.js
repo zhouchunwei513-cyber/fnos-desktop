@@ -2411,6 +2411,17 @@ module.exports = function injectTitleBar(ctx) {
         const __app = (typeof process !== 'undefined' && Array.isArray(process.argv)) &&
           (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-live-window') >= 0);
         if (!__app) return;
+        // v3.0.52（用户反馈：客户端内打开的 qBittorrent/Docker 应用，标题栏正下方是一条透明横带，
+        // 能看穿到桌面图标）：v3.0.46 把第三方应用窗（--fnos-xapp）的让位改成
+        // html{padding-top:34px}（fixed 继续相对 viewport，几何与浏览器一致），但本函数的 inline
+        // !important 仍然给 body 写 translateY(34px) + 压高度 —— 两处叠加成"双让位"：
+        //   · 标题栏 34px 之下又多出 34px 没有任何元素绘制的空白（窗口 transparent:true，
+        //     html 背景又被 v3.0.46 的 __gifBg 置成透明）→ 直接透出下层主窗的桌面/图标；
+        //   · 内容整体再下移 34px，底部少了 34px。
+        // xapp 窗口的 body 几何一律交给 v3.0.46 的样式表，这里只清历史残留。
+        const __xapp52 = (function () {
+          try { return (process.argv || []).indexOf('--fnos-xapp') >= 0; } catch (_) { return false; }
+        })();
         // v2.17.20: 页面是否自带滚动容器（决定 body 要不要自己出滚动条）。轻量扫描一次后缓存，
         // 上限 1500 个元素，只在应用窗口里跑。
         let __innerScroll = null;
@@ -2442,6 +2453,18 @@ module.exports = function injectTitleBar(ctx) {
         const apply = () => {
           try {
             const b = document.body; if (!b) return;
+            if (__xapp52) {
+              // v3.0.52：第三方应用窗（--fnos-xapp）的让位由 v3.0.46 的 html padding-top 负责，
+              // body 不能再写 transform/高度，否则标题栏下方多出 34px 透明带。这里仅在检测到
+              // 旧内联残留时清理一次（无条件 removeProperty 会每次都触发 mutation → 自激）。
+              try {
+                const __stale = ['transform', 'height', 'max-height', 'min-height'];
+                for (let __i = 0; __i < __stale.length; __i++) {
+                  if (b.style.getPropertyValue(__stale[__i])) b.style.removeProperty(__stale[__i]);
+                }
+              } catch (_) {}
+              return;
+            }
             // 值未变就不写，避免 setProperty 触发 MutationObserver 形成自激循环
             const set = (k, v) => {
               if (b.style.getPropertyValue(k) !== v || b.style.getPropertyPriority(k) !== 'important') {
@@ -2526,6 +2549,21 @@ module.exports = function injectTitleBar(ctx) {
     const __fsBody = (on) => {
       try {
         const b = document.body; if (!b) return;
+        // v3.0.52：第三方应用窗（--fnos-xapp）的让位挂在 html 的 padding-top 上（v3.0.46），
+        // 进全屏必须一起摘掉、退出再还回去，否则全屏后顶部仍留 34px 透明带（透出下层桌面）。
+        const __xappFs = (function () {
+          try { return (process.argv || []).indexOf('--fnos-xapp') >= 0; } catch (_) { return false; }
+        })();
+        if (__xappFs) {
+          const de = document.documentElement;
+          if (on) {
+            de.style.setProperty('padding-top', '0px', 'important');
+            de.style.setProperty('clip-path', 'none', 'important');
+          } else {
+            de.style.removeProperty('padding-top');
+            de.style.removeProperty('clip-path');
+          }
+        }
         if (on) {
           b.style.setProperty('transform', 'none', 'important');
           b.style.setProperty('height', '100vh', 'important');
@@ -2743,6 +2781,10 @@ module.exports = function injectTitleBar(ctx) {
             // 底色 + min-width:100vw：不碰 html（html 透明是圆角的铁律），正常窗口态的透明与 20px 圆角
             // 完全不受影响；background-image 不动，页面自带背景图仍优先。
             'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;min-width:100vw !important;background-color:#05060a !important;overflow-x:hidden !important;}',
+            // v3.0.52：第三方应用窗（--fnos-xapp）的让位挂在 html 的 padding-top 上（v3.0.46），
+            // 全屏时必须一起放开，否则顶部仍留 34px 透明带（透出下层桌面）。只动 padding/clip-path，
+            // 不给 html 补底色 —— html 透明是标题栏与 20px 圆角的铁律。
+            'html[data-fnos-fs="1"]{padding-top:0 !important;clip-path:none !important;}',
             // v2.17.41（用户反馈：主程序 F11 全屏后底部一条黑色长方形；应用全屏内容也不满铺）——
             // 全屏时 body 已经是 100vh，但正常态给页面根容器打的 max-height:calc(100vh - 34px) 兜底
             // 依然生效，把内容压到 1046，底部 34px 露出 body 的 #05060a 底色，就成了那条黑条。

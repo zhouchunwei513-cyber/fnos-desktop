@@ -1280,6 +1280,29 @@ module.exports = function injectTitleBar(ctx) {
         (function () {
           const W = window;
           W.__fnosDsDown = null;
+          // v3.0.51（用户反馈：拖动窗口时边沿抖动）——
+          // 拖动期间系统侧会把客户区尺寸重算成 1~3px 不同的值（日志实测：一次拖动 7 秒 205 条
+          // resize，约每帧一条），页面根节点跟着每帧重排，肉眼就是「窗口边缘/圆角抖动 + 图标网格跳」。
+          // 按下标题栏时记下当前客户区尺寸并把 <html> 钉死在这个尺寸（!important），松手解锁：
+          // 拖动过程中系统再怎么报 1~3px 的尺寸变化，页面也不会重排。对布局的影响只有 ±1~3px。
+          const __pinSize = function () {
+            try {
+              if (W.__fnosPin) return;
+              const de = document.documentElement;
+              W.__fnosPin = { w: de.clientWidth || W.innerWidth, h: de.clientHeight || W.innerHeight, pw: de.style.width, ph: de.style.height };
+              de.style.setProperty('width', W.__fnosPin.w + 'px', 'important');
+              de.style.setProperty('height', W.__fnosPin.h + 'px', 'important');
+            } catch (_) {}
+          };
+          const __unpinSize = function () {
+            try {
+              if (!W.__fnosPin) return;
+              const de = document.documentElement;
+              if (W.__fnosPin.pw) de.style.setProperty('width', W.__fnosPin.pw); else de.style.removeProperty('width');
+              if (W.__fnosPin.ph) de.style.setProperty('height', W.__fnosPin.ph); else de.style.removeProperty('height');
+              W.__fnosPin = null;
+            } catch (_) {}
+          };
           // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时仍持续收到
           // 移动事件（否则 Windows 停止投递 WM_MOUSEMOVE，拖动会中途卡住）。
           dragStrip.addEventListener('pointerdown', function (e) {
@@ -1292,9 +1315,11 @@ module.exports = function injectTitleBar(ctx) {
             // v2.17.47：本层是 no-drag 交互层，原生 -webkit-app-region:drag 用不了，
             // 改由主进程真实拖动（main.js win-drag-start/win-drag-move/win-drag-end）。
             try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
+            __pinSize(); // v3.0.51：拖动期间钉死页面尺寸，消掉每帧重排导致的边沿抖动
           });
           dragStrip.addEventListener('dblclick', function (e) {
             W.__fnosDsDown = null; W.__fnosDsDrag = true;
+            __unpinSize(); // v3.0.51：双击最大化前解除尺寸钉死
             try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
             try { ipcRenderer.send('window-maximize'); } catch (_) {}
           });
@@ -1325,6 +1350,7 @@ module.exports = function injectTitleBar(ctx) {
             const __end = function () {
               if (W.__fnosDsDown) { try { ipcRenderer.send('win-drag-end'); } catch (_) {} }
               W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+              __unpinSize(); // v3.0.51：松手解锁页面尺寸
             };
             W.addEventListener('mouseup', __end, true);
             W.addEventListener('pointerup', __end, true);
@@ -1744,6 +1770,29 @@ module.exports = function injectTitleBar(ctx) {
         (function () {
           const W = window;
           W.__fnosDsDown = null;
+          // v3.0.51（用户反馈：拖动窗口时边沿抖动）——
+          // 拖动期间系统侧会把客户区尺寸重算成 1~3px 不同的值（日志实测：一次拖动 7 秒 205 条
+          // resize，约每帧一条），页面根节点跟着每帧重排，肉眼就是「窗口边缘/圆角抖动 + 图标网格跳」。
+          // 按下标题栏时记下当前客户区尺寸并把 <html> 钉死在这个尺寸（!important），松手解锁：
+          // 拖动过程中系统再怎么报 1~3px 的尺寸变化，页面也不会重排。对布局的影响只有 ±1~3px。
+          const __pinSize = function () {
+            try {
+              if (W.__fnosPin) return;
+              const de = document.documentElement;
+              W.__fnosPin = { w: de.clientWidth || W.innerWidth, h: de.clientHeight || W.innerHeight, pw: de.style.width, ph: de.style.height };
+              de.style.setProperty('width', W.__fnosPin.w + 'px', 'important');
+              de.style.setProperty('height', W.__fnosPin.h + 'px', 'important');
+            } catch (_) {}
+          };
+          const __unpinSize = function () {
+            try {
+              if (!W.__fnosPin) return;
+              const de = document.documentElement;
+              if (W.__fnosPin.pw) de.style.setProperty('width', W.__fnosPin.pw); else de.style.removeProperty('width');
+              if (W.__fnosPin.ph) de.style.setProperty('height', W.__fnosPin.ph); else de.style.removeProperty('height');
+              W.__fnosPin = null;
+            } catch (_) {}
+          };
           // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时仍持续收到
           // 移动事件（否则 Windows 停止投递 WM_MOUSEMOVE，拖动会中途卡住）。
           dragStrip.addEventListener('pointerdown', function (e) {
@@ -1756,9 +1805,11 @@ module.exports = function injectTitleBar(ctx) {
             // v2.17.47：本层是 no-drag 交互层，原生 -webkit-app-region:drag 用不了，
             // 改由主进程真实拖动（main.js win-drag-start/win-drag-move/win-drag-end）。
             try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
+            __pinSize(); // v3.0.51：拖动期间钉死页面尺寸，消掉每帧重排导致的边沿抖动
           });
           dragStrip.addEventListener('dblclick', function (e) {
             W.__fnosDsDown = null; W.__fnosDsDrag = true;
+            __unpinSize(); // v3.0.51：双击最大化前解除尺寸钉死
             try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
             try { ipcRenderer.send('window-maximize'); } catch (_) {}
           });
@@ -1789,6 +1840,7 @@ module.exports = function injectTitleBar(ctx) {
             const __end = function () {
               if (W.__fnosDsDown) { try { ipcRenderer.send('win-drag-end'); } catch (_) {} }
               W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+              __unpinSize(); // v3.0.51：松手解锁页面尺寸
             };
             W.addEventListener('mouseup', __end, true);
             W.addEventListener('pointerup', __end, true);

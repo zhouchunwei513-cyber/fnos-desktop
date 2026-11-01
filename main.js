@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.50';
+const APP_VERSION = '3.0.51';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3144,6 +3144,9 @@ ipcMain.on('window-close', (e) => {
 // 这里改成主进程真实拖动：renderer 按下发 win-drag-start（带起点 screenX/Y），移动发
 // win-drag-move（screenX/Y 与 setPosition 同为 DIP，可直接相减），松开发 win-drag-end。
 let __winDragState = null; // { win, ox, oy, sx, sy, lx, ly, maxPending, w0, h0 }
+// v3.0.51：窗口背景色连刷（赶 DWM 兜底灰）。提到模块作用域，供 win-drag-end 在松手后补刷一轮；
+// 拖动进行中由 __ghostBurst 内部判定只做单次刷新，不启动 8ms 连刷。
+let __ghostBurst = null;
 // v3.0.23：拖动结束 / 最大化还原时间戳。移动窗口时 DWM 重排产生的伪 resized 往往晚到 1~2s，
 // 单看 __winDragState 拦不住（drag-end 早就把它清空了），主窗比例锁用这两个时间戳再压一道。
 let __winDragEndAt = 0;
@@ -3213,36 +3216,21 @@ ipcMain.on('win-drag-move', (e, p) => {
     }
     const nx = Math.round(d.ox + sx - d.sx);
     const ny = Math.round(d.oy + sy - d.sy);
-    // v3.0.23（用户反馈：按住顶栏拖动，窗口越拖越大）——
-    // 日志实锤：普通拖动过程中窗口尺寸会自己变大，且主进程没有任何 setSize 记录，
-    // 说明是系统侧（DWM 重排/WM_SIZE）在移动时改了 rect。这里做尺寸锁：拖动期间只认
-    // 开始拖动时记下的 w0/h0，一旦偏离就当场写回，用户看到的就是「只移动、不变大」。
-    let __sizeFixed = false;
-    try {
-      // v3.0.47（用户反馈：拖动窗口掉帧）：getBounds 是同步窗口几何查询，原来每条 mousemove 都调
-      // 一次。拖动是 60fps 的，等于每秒 60 次同步查询挡在 setPosition 前面。改成每 120ms 校验一次
-      // 尺寸锁（DWM 改尺寸不会是单帧事件，120ms 足够抓住），其余帧只做 setPosition。
-      const __nowChk = Date.now();
-      if (!d.__lastFixChk || __nowChk - d.__lastFixChk >= 120) {
-        d.__lastFixChk = __nowChk;
-        const cb = d.win.getBounds();
-        if (d.w0 && d.h0 && (Math.abs(cb.width - d.w0) > 2 || Math.abs(cb.height - d.h0) > 2)) {
-          d.win.setBounds({ x: cb.x, y: cb.y, width: d.w0, height: d.h0 });
-          __sizeFixed = true;
-          const now0 = Date.now();
-          if (!d.__lastSizeFixLog || now0 - d.__lastSizeFixLog > 500) {
-            d.__lastSizeFixLog = now0;
-            try { fnosLog('warn', 'window', 'drag.size-lock win=' + d.win.id + ' from=' + [cb.width, cb.height].join('x') + ' to=' + d.w0 + 'x' + d.h0); } catch (_) {}
-          }
-        }
-      }
-    } catch (_) {}
-    if (nx === d.lx && ny === d.ly) {
-      if (__sizeFixed) { try { d.win.setPosition(d.lx, d.ly); } catch (_) {} }
-      return;
-    }
+    // v3.0.51（用户反馈：拖动窗口时边沿抖动）——
+    // 日志实锤（渲染层 ball.resize 共 695 条，全部落在拖动时段）：拖动期间客户区尺寸在
+    // ±1~3px 内以 15~30Hz 来回跳（10-30 一次拖动 7 秒 205 条≈每帧一次），页面跟着每帧重排，
+    // 肉眼就是窗口边缘/圆角抖动 + 图标网格跳。旧尺寸锁「偏差>2px 才纠正、每 120ms 才查一次」，
+    // ±1~2px 的高频抖动全落在阈值内，一次都抓不住（v3.0.23 只解决了「越拖越大」这种大偏差）。
+    // 新实现：拖动期间每帧把「位置 + 拖动起始尺寸」用一次 setBounds 原子写入——系统侧任何
+    // 尺寸改动都会在下一帧被覆盖；同时省掉原来 120ms 一次的同步 getBounds 查询，比旧版更轻。
+    if (nx === d.lx && ny === d.ly) return;
     d.lx = nx; d.ly = ny;
-    d.win.setPosition(nx, ny);
+    try {
+      if (d.w0 && d.h0) d.win.setBounds({ x: nx, y: ny, width: d.w0, height: d.h0 });
+      else d.win.setPosition(nx, ny);
+    } catch (_) {
+      try { d.win.setPosition(nx, ny); } catch (_) {}
+    }
   } catch (_) {}
 });
 ipcMain.on('win-drag-end', (e) => {
@@ -3251,16 +3239,19 @@ ipcMain.on('win-drag-end', (e) => {
     __winDragState = null;
     __winDragEndAt = Date.now(); // v3.0.23：供主窗比例锁压掉拖动尾巴上的伪 resized
     if (d && d.win && !d.win.isDestroyed()) {
-      // v3.0.23：松手再核一次尺寸，被系统在拖动尾部改大的也一并纠正
+      // v3.0.23：松手再核一次尺寸，被系统在拖动尾部改大的也一并纠正。
+      // v3.0.51：阈值从 2px 收到 0（拖动期间客户区 1~3px 的抖动也要抹平），松手后再钉一次。
       try {
         const b = d.win.getBounds();
-        if (d.w0 && d.h0 && (Math.abs(b.width - d.w0) > 2 || Math.abs(b.height - d.h0) > 2)) {
+        if (d.w0 && d.h0 && (b.width !== d.w0 || b.height !== d.h0)) {
           d.win.setBounds({ x: b.x, y: b.y, width: d.w0, height: d.h0 });
           try { fnosLog('warn', 'window', 'drag.end.size-lock win=' + d.win.id + ' from=' + b.width + 'x' + b.height + ' to=' + d.w0 + 'x' + d.h0); } catch (_) {}
         }
       } catch (_) {}
       try { fnosLog('info', 'window', 'drag.end win=' + d.win.id + ' p=' + d.lx + ',' + d.ly + ' size=' + d.w0 + 'x' + d.h0); } catch (_) {}
     }
+    // v3.0.51：拖动中 __ghostBurst 只做单次刷新，松手后在这里补刷一轮，收掉残留的 DWM 兜底灰。
+    try { if (__ghostBurst) __ghostBurst(); } catch (_) {}
   } catch (_) {}
 });
 // 旧通道保留（drag region 区域的兜底调用点仍在），实现同 win-drag-*
@@ -8772,10 +8763,19 @@ function createMainWindow(partition, loadTarget) {
   // 这里放在主进程：不受渲染进程在拖动期间被系统模态循环拖慢的影响。
   try {
     let __ghostTimer = null;
+    let __ghostLast = 0; // v3.0.51：拖动中的节流时间戳
     const __refreshAlpha = () => {
       try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor('#00030610'); } catch (_) {}
     };
-    const __ghostBurst = () => {
+    __ghostBurst = () => {
+      // v3.0.51（用户反馈：拖动窗口时边沿抖动/残影）：拖动期间 move 是每帧事件，旧逻辑每次都
+      // 重启 90×8ms 连刷，等于每秒 100+ 次 setBackgroundColor 触发 DWM 重新合成，合成层反复
+      // 重建会把「边缘残影 / 四角发灰」放大。拖动中只按 150ms 节流做单次刷新，连刷留给松手后。
+      if (__winDragState) {
+        const t0 = Date.now();
+        if (!__ghostLast || t0 - __ghostLast > 150) { __ghostLast = t0; __refreshAlpha(); }
+        return;
+      }
       __refreshAlpha();
       if (__ghostTimer) { clearInterval(__ghostTimer); __ghostTimer = null; }
       let n = 0;
@@ -8786,6 +8786,18 @@ function createMainWindow(partition, loadTarget) {
     };
     mainWindow.on('resize', __ghostBurst);
     mainWindow.on('move', __ghostBurst);
+    // v3.0.51：拖动期间尺寸兜底——系统侧仍改尺寸就在 resize 回调里立刻写回，
+    // 保证鼠标停住不动时窗口尺寸也不会被改（mousemove 断了仍有这条守）。
+    mainWindow.on('resize', () => {
+      try {
+        const d = __winDragState;
+        if (!d || d.win !== mainWindow || !d.w0 || !d.h0 || mainWindow.isDestroyed()) return;
+        const cb = mainWindow.getBounds();
+        if (cb.width !== d.w0 || cb.height !== d.h0) {
+          mainWindow.setBounds({ x: cb.x, y: cb.y, width: d.w0, height: d.h0 });
+        }
+      } catch (_) {}
+    });
   } catch (_) {}
   // v2.17.0（DPI 方案 A）：移除 v2.16.2 的整页 zoom（setZoomFactor 0.7）——它导致图标/窗口
   // 视觉大小不对，且整页缩放带来鼠标坐标/悬浮/滚动条错位。改用「PM-DPI + CSS 变量 --ui-scale」

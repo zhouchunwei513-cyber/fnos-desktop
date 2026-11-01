@@ -2853,7 +2853,76 @@ module.exports = function injectTitleBar(ctx) {
     if (__isSubFrame) {
       try { document.documentElement.removeAttribute("data-fnos-fs"); } catch (_) {}
     }
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); } catch (_) {} };
+    // v3.0.54（用户反馈：桌面右侧"系统组件"面板——运行状态 / 网络 / 存储读写 / UPS——在客户端里
+    // 不显示，只剩右上角一条 CPU/内存 胶囊；强制刷新后完整面板会出来一下又收回去，浏览器打开正常）：
+    // 该面板是飞牛原生 desktopWidget（组件 s0e），挂载后由服务端用户设置
+    // browser.desktopWidgetWinOpen 决定 open（usrdat.get，走 WebSocket RPC）；读不到、读到非 open、
+    // 或判定为非管理员，都会退回"收起态"，此时只剩胶囊，卡片内容连 DOM 都不渲染——所以纯 CSS
+    // 救不回来，必须让组件自己的 open 变成 true。
+    // 客户端里这条 RPC 拿不到 open（浏览器里能拿到），于是每次加载都恒为收起。这里做客户端侧兜底：
+    // 页面就绪后若面板仍是收起态，就点一次面板自带的展开箭头——与用户手点完全等价（组件内部
+    // n(e=>!e) 立即展开，并顺带 usrd.set 把 open 写回服务端，下一次就正常了）。
+    // 只在页面加载后的一个短窗口内试一次（sessionStorage 幂等），用户随后主动收起不受干预。
+    const __autoOpenSysWidget = () => {
+      try {
+        if (EMBED || __isSubFrame) return;
+        try { if (sessionStorage.getItem('fnos-client.syswidget.done') === '1') return; } catch (_) {}
+        const __log = (ev, d) => {
+          try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar', ev: ev, detail: JSON.stringify(d || {}) }); } catch (_) {}
+        };
+        // 面板外层：absolute right-[14px] top-[17px] z-[1] overflow-hidden rounded-2xl
+        // （展开时再加 bottom-[17px]）；Tailwind 任意值类名带方括号，用属性子串匹配最稳。
+        const __findPanel = () => {
+          let nodes;
+          try { nodes = document.querySelectorAll('div[class*="right-[14px]"][class*="top-[17px]"]'); } catch (_) { return null; }
+          for (let k = 0; k < nodes.length; k++) {
+            const el = nodes[k];
+            const cls = String(el.className || '');
+            if (cls.indexOf('overflow-hidden') >= 0 && cls.indexOf('rounded-2xl') >= 0) return el;
+          }
+          return null;
+        };
+        const __tick = (tries) => {
+          try {
+            const p = __findPanel();
+            if (!p) {
+              if (tries < 24) { setTimeout(() => __tick(tries + 1), 500); return; }
+              __log('syswidget.giveup', { why: 'nopanel', tries: tries });
+              return;
+            }
+            const r = p.getBoundingClientRect();
+            const w = Math.round(r.width), h = Math.round(r.height);
+            // 加载中途会出现"宽 20px、高很长"的塌陷中间态，等它稳定再做判断。
+            if (w < 60) {
+              if (tries < 24) { setTimeout(() => __tick(tries + 1), 500); return; }
+              __log('syswidget.giveup', { why: 'collapsed', tries: tries, w: w, h: h });
+              return;
+            }
+            if (h > 120) { __log('syswidget.already-open', { w: w, h: h }); return; }
+            // 展开箭头：内层第一个子 div（h-9 那条状态条）里唯一带 cursor-pointer 的直接子元素。
+            const inner = p.firstElementChild;
+            let btn = null;
+            if (inner) {
+              for (let k = 0; k < inner.children.length; k++) {
+                const c = inner.children[k];
+                if (String(c.className || '').indexOf('cursor-pointer') >= 0) { btn = c; break; }
+              }
+            }
+            if (!btn) {
+              if (tries < 24) { setTimeout(() => __tick(tries + 1), 500); return; }
+              // kids 数量能反推 isAdmin 分支：非管理员时组件只渲染那条胶囊，不会出现箭头。
+              __log('syswidget.giveup', { why: 'nobtn', tries: tries, w: w, h: h, kids: inner ? inner.children.length : -1 });
+              return;
+            }
+            try { sessionStorage.setItem('fnos-client.syswidget.done', '1'); } catch (_) {}
+            btn.click();
+            __log('syswidget.autoopen', { w: w, h: h, kids: inner ? inner.children.length : -1 });
+          } catch (_) {}
+        };
+        setTimeout(() => __tick(0), 1600);
+      } catch (_) {}
+    };
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __autoOpenSysWidget(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

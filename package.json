@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "3.0.63",
+  "version": "3.0.64",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -29,6 +29,9 @@
     "asar": true,
     "files": [
       "main.js",
+      "menu-popup.html",
+      "menu-popup.js",
+      "menu-popup-preload.js",
       "mpv-player.js",
       "mpv-surface.js",
       "mpv-helper.js",

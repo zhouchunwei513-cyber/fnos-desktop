@@ -1509,7 +1509,14 @@ module.exports = function injectTitleBar(ctx) {
           // 34px，容器底部就超出 body 底边 34px 被 clip-path 裁掉（副标题/播放条/底栏被切一半）。
           // 补同两条 max-height 上限规则，让内嵌窗最大化后完整落在主程序窗口内容区内。
           'html>body [class*="100vh"],html>body [class*="100dvh"],html>body [class*="h-screen"],html>body [class*="h-dvh"],html>body [class*="dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
-          'html>body [style*="100vh"],html>body [style*="100dvh"],html>body [style*="dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
+          'html>body [style*="100vh"],html>body [style*="100dvh"],html>body [style*="dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+          // v3.0.60（用户反馈：Docker 应用内嵌浏览器打开 qBittorrent 等第三方 WebUI 时底部状态栏被裁）——
+          // 内嵌浏览器用 iframe 承载第三方 WebUI（如 qBittorrent :8085），cqfndesk 用 JS 把 iframe/容器高度
+          // 撑到 window.innerHeight（含标题栏的整窗高），而 body 已下移标题栏高度，iframe 底部溢出 body 底边
+          // 被裁（状态栏露一半/几成）。inline height 是具体 px 值，[style*="100vh"] 兜不到，故补 iframe 及
+          // 其父容器的 max-height 上限，让承载 WebUI 的 iframe 完整落在主窗内容区内。
+          'html>body iframe{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+          'html>body div:has(iframe){max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);

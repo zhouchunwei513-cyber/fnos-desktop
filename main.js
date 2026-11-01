@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.57';
+const APP_VERSION = '3.0.58';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -5738,6 +5738,19 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
   // 主窗内嵌 / 冷启动）的地址都在这里再归一化一次。实测（3.0.2 外网日志）：fndesk 磁贴走
   // wintype behavior 直开，绕过了 __openAppByWindowType，uB1 参数里的内网 192.168.x:端口
   // 原样落到窗口，必然 -118 超时。
+  // v3.0.58：上次换路成功记住的地址优先（跨网络环境也先试它，失败会自动换候选自愈）
+  try {
+    const __k58 = String((win && win.__fnAppId) || '');
+    const __m58 = __k58 ? __okUrlGet58(__k58) : '';
+    if (__m58) {
+      let __dh58 = true;
+      try { __dh58 = (new URL(__m58).host !== new URL(String(url)).host); } catch (_) { __dh58 = true; }
+      if (__dh58) {
+        try { require('./logger.js').log('info', 'appwin', 'fail-memo.hit', { params: { winId: (win && win.id) || 0, from: String(url).slice(0, 120), to: __m58.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+        url = __m58;
+      }
+    }
+  } catch (_) {}
   try {
     const __bA = String(url || '');
     if (__bA) {
@@ -5759,10 +5772,39 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
         try {
           const __ms = win.__fnLoadT0 ? (Date.now() - win.__fnLoadT0) : -1;
           require('./logger.js').log('info', 'appwin', 'appwin.load.done', { params: { winId: win.id, ms: __ms, url: String(win.webContents.getURL() || '').slice(0, 140), appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE);
+          // v3.0.58：换路成功 → 记住这条地址，下次直接用它
+          try {
+            if ((win.__fnFailSwitched58 || 0) > 0) {
+              const __u58 = String(win.webContents.getURL() || '');
+              const __kk58 = String(win.__fnAppId || '');
+              if (__kk58 && __u58) __okUrlSet58(__kk58, __u58);
+            }
+          } catch (_) {}
         } catch (_) {}
       });
       win.webContents.on('did-fail-load', (e, code, desc, vurl, isMain) => {
         try { require('./logger.js').log('warn', 'appwin', 'appwin.load.fail', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 60), url: String(vurl || '').slice(0, 140), main: !!isMain, appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE); } catch (_) {}
+
+        // v3.0.58：连接类失败 → 换候选继续试（原来 -102 直接进错误页，用户只能反复点）
+        try {
+          if (!isMain) return;
+          if (String(vurl || '').indexOf('data:') === 0 || String(vurl || '').indexOf('file:') === 0) return;
+          const __codeN58 = Number(code);
+          if ([-102, -105, -106, -7, -118, -324, -137, -21].indexOf(__codeN58) < 0) return;
+          if (!win.__fnCand58) {
+            win.__fnCand58 = __failCands58(String(vurl || ''));
+            win.__fnCandIdx58 = 0;
+            try { fnosLog('info', 'appwin', 'fail-cand.build', { winId: win.id, cur: String(vurl || '').slice(0, 120), n: win.__fnCand58.length, list: win.__fnCand58.map((x) => String(x).slice(0, 90)) }); } catch (_) {}
+          }
+          if (win.__fnCandIdx58 >= win.__fnCand58.length) { try { fnosLog('warn', 'appwin', 'fail-cand.exhausted', { winId: win.id, n: win.__fnCand58.length }); } catch (_) {} return; }
+          if ((win.__fnFailSwitched58 || 0) >= 6) return;
+          const __nx58 = String(win.__fnCand58[win.__fnCandIdx58++] || '');
+          if (!__nx58) return;
+          win.__fnFailSwitch58 = Date.now();
+          win.__fnFailSwitched58 = (win.__fnFailSwitched58 || 0) + 1;
+          try { fnosLog('warn', 'appwin', 'fail-cand.try', { winId: win.id, code: __codeN58, to: __nx58.slice(0, 140), n: win.__fnFailSwitched58 }); } catch (_) {}
+          try { win.loadURL(__nx58, { userAgent: getNasUA() }).catch(() => {}); } catch (_) {}
+        } catch (_) {}
       });
     }
   } catch (_) {}
@@ -14430,6 +14472,126 @@ function __sameLanAs57(h) {
     const pre = s0.split('.').slice(0, 3).join('.');
     return __localPrefixes57().indexOf(pre) >= 0;
   } catch (_) { return false; }
+}
+
+// ===== v3.0.58：应用地址"失败即换路 + 成功即记住" =====
+// 用户现象（2026-11-01 12:08，内网）：程序内 / 快捷方式打开不少应用报
+// ERR_CONNECTION_REFUSED(-102)，错误页地址是 DDNS 域名（nas.xn--yet060e.com:10307 /
+// 10311 / 10303 / 10301）。这些是外网反代端口，内网直连通常不被接受；同一时刻
+// 192.168.31.101:5666 / :18080 都能正常打开。日志实证：41 次 appwin.load.fail 全部落在
+// 域名上，内网 IP 一次都没被尝试过（内网只出现在成功记录里）。
+// 原因：-102 发生在连接阶段，页面根本到不了 did-finish-load，而候选轮换只挂在
+// "页面加载完但内容为空"的 entry-check 上，所以一被拒就直接进错误页；用户只能反复点，
+// 偶尔某次某个入口拼对了才算过——这就是"很混乱、试几次有时能开"。
+// 这里补两件事，且不改任何既有归一化逻辑：
+//   1) 连接类失败（-102/-105/-106/-7/-118/-324/-137/-21）后自动换下一个候选地址继续试
+//      （最多 6 跳）；候选：同网段内网 host+原端口 → 当前登录 origin+原路径 →
+//      内网 host+登录端口+原路径 → 原地址去端口形态。
+//   2) 换路成功后把这条地址记住（ok-url.json[appId]），下次打开先试它——这才是"秒开"。
+const OKURL_FILE58 = path.join(app.getPath ? app.getPath('userData') : __dirname, 'ok-url.json');
+let __okUrlMem58 = null;
+function __okUrlLoad58() {
+  if (__okUrlMem58) return __okUrlMem58;
+  try {
+    const j = __readJsonLoose(OKURL_FILE58);
+    __okUrlMem58 = (j && typeof j === 'object' && j.items && typeof j.items === 'object') ? j : { ver: 1, items: {} };
+  } catch (_) { __okUrlMem58 = { ver: 1, items: {} }; }
+  return __okUrlMem58;
+}
+function __okUrlGet58(key) {
+  try {
+    if (!key) return '';
+    const it = __okUrlLoad58().items[String(key)];
+    if (!it || !it.url) return '';
+    if (Date.now() - (Number(it.at) || 0) > 30 * 24 * 3600 * 1000) return '';
+    const v = String(it.url);
+    return /^https?:\/\//i.test(v) ? v : '';
+  } catch (_) { return ''; }
+}
+function __okUrlSet58(key, url) {
+  try {
+    if (!key || !url) return;
+    const u = String(url);
+    if (!/^https?:\/\//i.test(u)) return;
+    if (/\/login(\?|$|\/)/i.test(u)) return;
+    if (/\/appview(\?|$)/i.test(u)) return;
+    if (u.indexOf('data:') === 0 || u.indexOf('file:') === 0) return;
+    const c = __okUrlLoad58();
+    const prev = c.items[String(key)] || {};
+    if (String(prev.url || '') === u) { c.items[String(key)].at = Date.now(); return; }
+    c.items[String(key)] = { url: u.slice(0, 300), at: Date.now(), hits: (Number(prev.hits) || 0) + 1 };
+    const keys = Object.keys(c.items);
+    if (keys.length > 300) keys.slice(0, keys.length - 300).forEach((k) => { delete c.items[k]; });
+    try { fs.writeFileSync(OKURL_FILE58, JSON.stringify(c)); } catch (_) {}
+    try { fnosLog('info', 'appwin', 'fail-memo.save', { key: String(key).slice(0, 60), url: u.slice(0, 120) }); } catch (_) {}
+  } catch (_) {}
+}
+// 历史上连过的私网 host（同网段排前面）
+function __knownLanHosts58() {
+  const out = [];
+  const add = (v) => {
+    try {
+      const x = String(v || '').trim();
+      if (!x) return;
+      const h = String(new URL(/^https?:/i.test(x) ? x : 'http://' + x).hostname || '').toLowerCase();
+      if (!h || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return;
+      if (!__launchIsPrivateHost(h)) return;
+      if (out.indexOf(h) < 0) out.push(h);
+    } catch (_) {}
+  };
+  try {
+    const st = loadSettings() || {};
+    const hs = Array.isArray(st.history) ? st.history : [];
+    for (let i = 0; i < hs.length; i++) {
+      const it = hs[i] || {};
+      add(it.label); add(it.href); add(it.origin); add(it.server); add(it.host);
+    }
+    const accs = st.accounts;
+    if (Array.isArray(accs)) {
+      for (let i = 0; i < accs.length; i++) { const a = accs[i] || {}; add(a.label); add(a.origin); add(a.href); add(a.server); }
+    } else if (accs && typeof accs === 'object') {
+      Object.keys(accs).forEach((k) => { add(k); const a = accs[k] || {}; add(a.origin); add(a.href); add(a.server); });
+    }
+    add(st.lastConnectHref); add(st.server); add(st.origin);
+  } catch (_) {}
+  const local = __localPrefixes57();
+  const mine = [];
+  const other = [];
+  out.forEach((h) => {
+    if (local.indexOf(h.split('.').slice(0, 3).join('.')) >= 0) mine.push(h);
+    else other.push(h);
+  });
+  return mine.concat(other);
+}
+function __failCands58(cur) {
+  const list = [];
+  const push = (v) => {
+    try {
+      const x = String(v || '');
+      if (!/^https?:\/\//i.test(x)) return;
+      if (x === String(cur || '')) return;
+      if (list.indexOf(x) >= 0) return;
+      list.push(x);
+    } catch (_) {}
+  };
+  let pu = null;
+  try { pu = new URL(String(cur || '')); } catch (_) { return list; }
+  let live = null;
+  try { live = new URL(__liveOriginBase()); } catch (_) { live = null; }
+  const tail = (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+  const portSuffix = pu.port ? ':' + pu.port : '';
+  const lanHosts = __knownLanHosts58();
+  // 1) 同网段内网 host + 原端口（域名:10307 → 192.168.x:10307）
+  if (!__launchIsPrivateHost(pu.hostname)) {
+    lanHosts.slice(0, 2).forEach((h) => push(pu.protocol + '//' + h + portSuffix + tail));
+  }
+  // 2) 当前登录 origin + 原路径（appview / 真入口都在站点根）
+  if (live && live.host !== pu.host) push(live.protocol + '//' + live.host + tail);
+  // 3) 内网 host + 登录端口 + 原路径
+  if (live && live.port) lanHosts.slice(0, 2).forEach((h) => push(live.protocol + '//' + h + ':' + live.port + tail));
+  // 4) 原地址去端口的形态（个别反代把 80 当默认口）
+  if (pu.port) push(pu.protocol + '//' + pu.hostname + tail);
+  return list.slice(0, 10);
 }
 function __launchUrlNormalize(u, tag) {
   let s = String(u || '');

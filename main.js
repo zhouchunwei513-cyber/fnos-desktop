@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.60';
+const APP_VERSION = '3.0.61';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -8886,7 +8886,41 @@ function createMainWindow(partition, loadTarget) {
       } catch (_) {}
     };
     __wireFsKeys(mainWindow.webContents);
-    mainWindow.on('did-attach-webview', (_e, wc) => __wireFsKeys(wc));
+    // v3.0.61：qBittorrent WebUI 底部状态栏文字叠印/选区糊字修复（webview 内嵌路径）。
+    // iframe 内嵌路径由 titlebar-inject.js 里同名样式注入；这里覆盖「qBittorrent 跑在 <webview>
+    // guest 里」的情况（guest 没有 preload，拿不到 titlebar-inject）。只在检测到 qBittorrent
+    // 专有 id 时才插样式，其它 webview 零影响。
+    const __QB_FIX_CSS = [
+      '#desktopFooterWrapper{z-index:2000 !important;background-color:var(--color-background,#ffffff) !important;-webkit-user-select:none !important;user-select:none !important;}',
+      '#desktopFooter{background-color:var(--color-background,#ffffff) !important;white-space:nowrap !important;overflow:hidden !important;-webkit-user-select:none !important;user-select:none !important;}',
+      '#desktopFooter table,#desktopFooter td{white-space:nowrap !important;}',
+      '#transferInfo{white-space:nowrap !important;overflow:hidden !important;flex-wrap:nowrap !important;}',
+      '#transferInfo,#transferInfo *{white-space:nowrap !important;}',
+      '#desktopFooterWrapper::selection,#desktopFooterWrapper *::selection{background:transparent !important;color:inherit !important;}'
+    ].join('');
+    const __qbFixWired = new Set();
+    const __qbFixWebview = (wc) => {
+      try {
+        if (!wc || wc.isDestroyed() || __qbFixWired.has(wc.id)) return;
+        __qbFixWired.add(wc.id);
+        const apply = () => {
+          try {
+            wc.executeJavaScript("!!(document.getElementById('desktopFooterWrapper')||document.getElementById('desktopFooter'))", true)
+              .then((isQb) => {
+                if (!isQb) return;
+                try { wc.insertCSS(__QB_FIX_CSS).catch(() => {}); } catch (_) {}
+                try {
+                  wc.executeJavaScript("(function(){var s=document.getElementById('fnos-qb-fix');if(!s){s=document.createElement('style');s.id='fnos-qb-fix';s.textContent=" + JSON.stringify(__QB_FIX_CSS) + ";(document.head||document.documentElement).appendChild(s);}})()", true).catch(() => {});
+                } catch (_) {}
+              }).catch(() => {});
+          } catch (_) {}
+        };
+        wc.on('did-finish-load', apply);
+        wc.on('did-navigate-in-page', apply);
+        try { if (!wc.isLoading()) apply(); } catch (_) {}
+      } catch (_) {}
+    };
+    mainWindow.on('did-attach-webview', (_e, wc) => { __wireFsKeys(wc); __qbFixWebview(wc); });
     try {
       for (const wc of webContents.getAllWebContents()) {
         try {

@@ -398,6 +398,38 @@ module.exports = function injectTitleBar(ctx) {
 
     // v2.5.7 r23：子帧只做 chrome 清理+主题归一，不注入标题栏/拖动热区
     try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.enter', sub: __SUB, href: String(location.href||'').slice(0,80) }); } catch(_) {}
+    // v3.0.61（用户反馈：客户端内嵌 qBittorrent WebUI 时底部状态栏「两行文字叠印 / 糊在一起」，
+    // 同页浏览器打开正常）——逐帧核对用户录屏实锤：qBittorrent v5.3.0 底栏是
+    // #desktopFooterWrapper(position:absolute;bottom:0) > #desktopFooter > table(margin-left:auto)。
+    // 5.x 底栏本身单行右对齐、不会折行，真正的问题是内嵌到飞牛桌面浏览器后：①底栏被文本选区
+    // 高亮（Chromium ::selection 蓝底白字，连带图标蒙蓝）糊住；②详情面板末行溢出到底栏上时底栏
+    // 没有不透明背景/层级兜底。这里注入一段【只命中 qBittorrent 专有 id】的样式：抬高底栏层级 +
+    // 兜底不透明背景盖住任何溢出、禁折行、禁选区高亮。选择器只匹配
+    // #desktopFooterWrapper/#desktopFooter/#transferInfo，其它页面/应用零影响。
+    try {
+      const __qbFixCss = [
+        '#desktopFooterWrapper{z-index:2000 !important;background-color:var(--color-background,#ffffff) !important;-webkit-user-select:none !important;user-select:none !important;}',
+        '#desktopFooter{background-color:var(--color-background,#ffffff) !important;white-space:nowrap !important;overflow:hidden !important;-webkit-user-select:none !important;user-select:none !important;}',
+        '#desktopFooter table,#desktopFooter td{white-space:nowrap !important;}',
+        '#transferInfo{white-space:nowrap !important;overflow:hidden !important;flex-wrap:nowrap !important;}',
+        '#transferInfo,#transferInfo *{white-space:nowrap !important;}',
+        '#desktopFooterWrapper::selection,#desktopFooterWrapper *::selection{background:transparent !important;color:inherit !important;}'
+      ].join('');
+      const __qbApply = () => {
+        try {
+          const host = document.head || document.documentElement;
+          if (!host) return;
+          let st = document.getElementById('fnos-qb-fix');
+          if (!st) { st = document.createElement('style'); st.id = 'fnos-qb-fix'; }
+          if (st.textContent !== __qbFixCss) st.textContent = __qbFixCss;
+          if (!st.parentNode) host.appendChild(st);
+        } catch (_) {}
+      };
+      __qbApply();
+      if (document.readyState === 'loading') {
+        try { document.addEventListener('DOMContentLoaded', __qbApply, { once: true }); } catch (_) {}
+      }
+    } catch (_) {}
     if (__SUB) return;
 
     // v1.58：标题栏样式状态。默认【不】自动隐藏（常驻）、透明材质。

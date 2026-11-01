@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.58';
+const APP_VERSION = '3.0.59';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -5748,6 +5748,17 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
       if (__dh58) {
         try { require('./logger.js').log('info', 'appwin', 'fail-memo.hit', { params: { winId: (win && win.id) || 0, from: String(url).slice(0, 120), to: __m58.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
         url = __m58;
+      }
+    }
+  } catch (_) {}
+  // v3.0.59：内网优先——本机与 NAS 同网段时，域名/FRP 地址换成 manifest 登记的内网地址
+  try {
+    const __p59 = String(url || '');
+    if (__p59 && /^https?:\/\//i.test(__p59)) {
+      const __inner59 = __lanPrefer59(__p59, String((win && win.__fnAppId) || (loadOpts && loadOpts.appId) || ''));
+      if (__inner59 && __inner59 !== __p59) {
+        url = __inner59;
+        try { require('./logger.js').log('info', 'appwin', 'appwin.inner-prefer', { params: { winId: (win && win.id) || 0, appId: String((win && win.__fnAppId) || ''), from: __p59.slice(0, 140), to: __inner59.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
       }
     }
   } catch (_) {}
@@ -14472,6 +14483,123 @@ function __sameLanAs57(h) {
     const pre = s0.split('.').slice(0, 3).join('.');
     return __localPrefixes57().indexOf(pre) >= 0;
   } catch (_) { return false; }
+}
+
+// ===== v3.0.59：内网环境下应用地址「内网优先」=====
+// 根因（2026-11-01 用户内网反馈）：程序内点磁贴 / 快捷方式大量 -102，错误页地址是
+// DDNS 域名 + FRP 端口（nas.xn--yet060e.com:10303 等）。这是「域名(仅 AAAA→IPv6)」与
+// 「FRP IPv4 服务器端口」的错配：域名解析到 IPv6，而 10303 只在 121.40.186.165(IPv4)
+// 上监听，内网去连 IPv6:10303 必然被拒。但 manifest 里其实登记了每个独立服务应用的
+// 内网地址（windowTypeUrl，如 OpenList=192.168.31.101:34600），内网本可直接连。
+// 修法：本机与 NAS 内网同网段时，开窗前把域名/FRP 地址优先换成 manifest 登记的内网地址；
+// 系统应用（无独立端口、走 5666 主端口）在域名 5666 上本就可达，不在此处理、避免误配。
+let __nasLanCache59 = null;
+let __nasLanAt59 = 0;
+function __nasLanHost59() {
+  // 本机是否在 NAS 所在内网：accounts/history/fpk 缓存里任一私网 host 与本机同网段即命中
+  try {
+    if (__nasLanCache59 && (Date.now() - __nasLanAt59) < 30000) return __nasLanCache59;
+    const cand = [];
+    const add = (v) => {
+      try {
+        const x = String(v || '').trim();
+        if (!x) return;
+        const h = String(new URL(/^https?:/i.test(x) ? x : 'http://' + x).hostname || '').toLowerCase();
+        if (h && __launchIsPrivateHost(h) && cand.indexOf(h) < 0) cand.push(h);
+      } catch (_) {}
+    };
+    try { (getAccounts() || []).forEach((a) => { add(a && a.origin); add(a && a.href); }); } catch (_) {}
+    try {
+      const st = loadSettings();
+      (Array.isArray(st && st.history) ? st.history : []).forEach((h) => { add(h && h.origin); add(h && h.href); });
+    } catch (_) {}
+    try { __loadFpkAppsCache().forEach((f) => add(f && f.url)); } catch (_) {}
+    let hit = '';
+    for (let i = 0; i < cand.length; i++) { if (__sameLanAs57(cand[i])) { hit = cand[i]; break; } }
+    __nasLanCache59 = hit;
+    __nasLanAt59 = Date.now();
+    return hit;
+  } catch (_) { return ''; }
+}
+function __appInnerUrl59(name) {
+  // 该应用在 manifest 里登记的内网地址（windowTypeUrl），无则空；无端口由 __withPort59 补主端口
+  try {
+    const q = String(name || '').trim().toLowerCase();
+    if (!q) return '';
+    const mf = readManifest();
+    const list = (mf && Array.isArray(mf.apps)) ? mf.apps : [];
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (!a) continue;
+      const idn = String(a.appId || a.name || '').trim().toLowerCase();
+      const an = String(a.appName || '').trim().toLowerCase();
+      if (idn !== q && an !== q) continue;
+      const u = String(a.windowTypeUrl || '');
+      if (!/^https?:\/\//i.test(u)) continue;
+      let hu = null;
+      try { hu = new URL(u); } catch (_) { continue; }
+      if (!__launchIsPrivateHost(String(hu.hostname || ''))) continue;
+      return u;
+    }
+    return '';
+  } catch (_) { return ''; }
+}
+function __innerByFrpPort59(port) {
+  // popout 路径 appId 常为空，从坏地址端口反推：manifest 里 url 端口相同的 app → 取它的内网地址。
+  // 仅当该 url 端口全局唯一时才反推，避免 5666 主端口被多应用共享导致的误配。
+  try {
+    const p = String(port || '').trim();
+    if (!p) return '';
+    const mf = readManifest();
+    const list = (mf && Array.isArray(mf.apps)) ? mf.apps : [];
+    let cnt = 0;
+    let w = '';
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (!a) continue;
+      const u = String(a.url || '');
+      if (!/^https?:\/\//i.test(u)) continue;
+      let hu = null;
+      try { hu = new URL(u); } catch (_) { continue; }
+      if (String(hu.port || '') !== p) continue;
+      cnt++;
+      if (w) continue;
+      const wu = String(a.windowTypeUrl || '');
+      if (!/^https?:\/\//i.test(wu)) continue;
+      let hw = null;
+      try { hw = new URL(wu); } catch (_) { continue; }
+      if (!__launchIsPrivateHost(String(hw.hostname || ''))) continue;
+      w = wu;
+    }
+    if (cnt !== 1) return '';
+    return w;
+  } catch (_) { return ''; }
+}
+function __withPort59(w) {
+  // 无端口的内网地址补 NAS 主端口（live origin 端口），有端口原样返回
+  try {
+    let s = String(w || '');
+    if (!/^https?:\/\//i.test(s)) return s;
+    const pu = new URL(s);
+    if (pu.port) return s;
+    let p = '';
+    try { const lv = __liveOriginBase(); if (lv) p = new URL(lv).port; } catch (_) {}
+    if (!p) { try { const st = loadSettings(); const o = String((st && st.origin) || '').trim(); if (o) p = new URL(/^https?:/i.test(o) ? o : 'http://' + o).port; } catch (_) {} }
+    if (!p) return s;
+    pu.port = p;
+    return pu.toString();
+  } catch (_) { return String(w || ''); }
+}
+function __lanPrefer59(url, appId) {
+  try {
+    const s = String(url || '');
+    if (!/^https?:\/\//i.test(s)) return s;
+    if (!__nasLanHost59()) return s; // 不在内网
+    const pu = new URL(s);
+    if (__sameLanAs57(String(pu.hostname || ''))) return s; // 已是内网地址
+    const inner = __appInnerUrl59(appId) || __innerByFrpPort59(String(pu.port || '')) || '';
+    return (inner && /^https?:\/\//i.test(inner)) ? __withPort59(inner) : s;
+  } catch (_) { return String(url || ''); }
 }
 
 // ===== v3.0.58：应用地址"失败即换路 + 成功即记住" =====

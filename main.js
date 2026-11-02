@@ -3353,6 +3353,20 @@ function __doMaxRestore(d, curX, curY) {
         fixed = d.win.getBounds();
       }
     } catch (_) {}
+    // 二次校验（v3.0.82）：unmaximize 的动画/DPI 重排有时会在几十毫秒后才把窗口重新铺满，
+    // 同步读回那一瞬间还是对的。60ms 后再核一次尺寸——只改尺寸不动位置（此时可能已在拖，改位置会打架）。
+    try {
+      setTimeout(() => {
+        try {
+          if (!d.win || d.win.isDestroyed()) return;
+          const b2 = d.win.getBounds();
+          if (b2.width !== target.width || b2.height !== target.height) {
+            d.win.setBounds({ x: b2.x, y: b2.y, width: target.width, height: target.height });
+            fnosLog('warn', 'window', 'drag.restore.fix2 win=' + d.win.id + ' got=' + b2.width + 'x' + b2.height);
+          }
+        } catch (_) {}
+      }, 60);
+    } catch (_) {}
     const cx = Number.isFinite(curX) ? curX : (Number(d.sx) || 0);
     const cy = Number.isFinite(curY) ? curY : (Number(d.sy) || 0);
     d.ox = target.x; d.oy = target.y;
@@ -3804,6 +3818,9 @@ function __createMenuPopupWindow() {
     return null;
   }
   win.__isMenuPopup = true;
+  // v3.0.82：菜单弹窗不画磨砂，别给它起采样——它每次 show 都会 kick 一次 desktopCapturer
+  // 抓屏（单次约 300ms 卡在主进程），而菜单刚弹出来那一刻正是最敏感的时候。
+  try { titlebarFrost.setEnabled(win, false); } catch (_) {}
   __menuPopupWin = win;
   __menuLoadedOnce = false;
   try { win.setMenuBarVisibility(false); } catch (_) {}
@@ -12927,6 +12944,7 @@ function __frostWanted() {
 
 function __wireFrost(win) {
   if (!win || win.isDestroyed() || win.__frostWired) return;
+  if (win.__isMenuPopup) return; // 菜单弹窗不需要磨砂采样（show 即 kick，正好卡在菜单弹出瞬间）
   win.__frostWired = true;
   const kick = () => { try { titlebarFrost.kick(win); } catch (_) {} };
   try {
@@ -12946,6 +12964,7 @@ function __syncFrostAll(forceOn) {
     const wins = BrowserWindow.getAllWindows();
     for (const w of wins) {
       if (!w || w.isDestroyed()) continue;
+      if (w && w.__isMenuPopup) continue; // 菜单弹窗不参与磨砂
       try { __wireFrost(w); } catch (_) {}
       try { titlebarFrost.setEnabled(w, on); } catch (_) {}
     }

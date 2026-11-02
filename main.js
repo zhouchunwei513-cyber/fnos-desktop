@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.66';
+const APP_VERSION = '3.0.67';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -18262,6 +18262,26 @@ app.whenReady().then(() => {
         webPreferences.sandbox = false;
         webPreferences.spellcheck = false;
         if (SHARED_PARTITION && !params.partition) params.partition = SHARED_PARTITION;
+      });
+      // v3.0.66（用户工单：拖动标题栏后点 × 点不中、窗口跟着鼠标一起平移）——
+      // <webview> 里的页面只要把窗口标题栏声明成 -webkit-app-region:drag（Electron 专有属性），
+      // 这个属性在浏览器里被忽略、在客户端里却会让「在标题栏上按下 = 拖动整个窗口」，
+      // 于是鼠标按到 × 的瞬间整个窗口被系统拖走，× 一直躲开、click 永远不触发。
+      // 这里给 guest 页面兜一条 CSS：所有可点击控件一律 no-drag，按钮永远只是按钮。
+      // 页面本来没有 drag 区时，这条 CSS 无任何副作用（不影响布局与视觉）。
+      contents.on('did-attach-webview', (_evt2, guest) => {
+        try {
+          if (!guest || guest.isDestroyed()) return;
+          const injectNoDrag = () => {
+            try {
+              guest.insertCSS('button,[role="button"],input,select,textarea,a[href],[class*="close"],[class*="btn"],svg{-webkit-app-region:no-drag !important}').catch(() => {});
+            } catch (_) {}
+          };
+          injectNoDrag();
+          guest.on('dom-ready', injectNoDrag);
+          guest.on('did-navigate', injectNoDrag);
+          guest.on('did-navigate-in-page', injectNoDrag);
+        } catch (_) {}
       });
     }
   });

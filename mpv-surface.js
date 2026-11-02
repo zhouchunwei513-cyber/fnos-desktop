@@ -50,6 +50,10 @@ class MpvSurface {
     this._baseDip = null;
     // 画中画状态：小窗时脱离视频区几何跟随，固定右下角小尺寸、保持置顶、可自由拖动。
     this._pip = false;
+    // v3.0.71（用户反馈「MPV 前置等级太高」）：是否已把 mpv 挂成宿主窗口的从属窗口。
+    // 挂上之后层级由 Windows 的 owner 关系保证（恒在宿主之上、不压别的程序/任务栏），
+    // 不再用 ontop(topmost)；只有全屏/画中画时才临时切回真置顶。
+    this._ownerOk = false;
     // v2.17.54：宿主窗口是否处于全屏（窗口级全屏或网页 HTML 全屏）。全屏时 mpv 铺满整屏，
     // 且不再做"标题栏 34px 下压"（全屏没有标题栏）；退出全屏自动回到按视频区跟随。
     this._hostFs = false;
@@ -114,6 +118,8 @@ class MpvSurface {
         this._applyGeometry();
         try { if (!this._chasing) this._chase(24); } catch (_) {}
         this._raiseMpv();
+        // v3.0.71：全屏要盖住任务栏 → 临时真置顶；退出全屏回到“只压宿主”的从属层级
+        try { this._applyTopPolicy(); } catch (_) {}
       };
       this._fsExit = () => {
         this._hostFs = false;
@@ -130,6 +136,7 @@ class MpvSurface {
         this._applyGeometry();
         try { if (!this._chasing) this._chase(24); } catch (_) {}
         this._raiseMpv();
+        try { this._applyTopPolicy(); } catch (_) {}
       };
       this._enterFsHandler = () => this._fsEnter();
       this._leaveFsHandler = () => this._fsExit();
@@ -174,6 +181,13 @@ class MpvSurface {
           // 不会重定位，导致 mpv 上沿盖住悬浮标题栏（无法拖动/改样式）。这里无条件 _applyGeometry，
           // player.setGeometry 内部按几何串去抖，位置正确时不产生额外 IPC。
           this._applyGeometry();
+          // v3.0.71：mpv 进出全屏/换片可能重建窗口样式而丢掉 owner，周期性补挂一次（极廉价）
+          try {
+            if (this._ownerOk && !this._pip && (Date.now() - (this._ownerTouchAt || 0)) > 3000) {
+              this._ownerTouchAt = Date.now();
+              if (this.player && this.player.isRunning()) this.player.reassertOwner();
+            }
+          } catch (_) {}
         } catch (_) {}
       }, 200);
       if (this._pollTimer.unref) this._pollTimer.unref();
@@ -309,6 +323,20 @@ class MpvSurface {
       // 首帧前窗口会离屏隐藏（-32000）再 reveal，reveal 用的是最后一次下发的几何；
       // 这里清掉去抖缓存并重算，避免换集瞬间跳到旧位置/旧尺寸（"丢失跟随"）。
       this.player.on('loaded', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); this._raiseMpv(); } catch (_) {} });
+      // v3.0.71（用户要求：MPV 只要压在飞牛影视 / 电视直播之上并跟随它们）——
+      // 把 mpv 原生窗口挂成宿主 BrowserWindow 的从属(owner)窗口：
+      //   · Windows 保证 owned 窗口恒定在 owner 之上 → 宿主拖动/激活/最大化时 mpv 不会被自己盖住；
+      //   · owner 不是 topmost → 切到别的程序时 mpv 不再压在人家和任务栏上面（此前 ontop 的问题）。
+      // 挂接成功后才把 mpv 的 ontop 关掉；失败（helper 起不来等）保持原行为，不影响播放。
+      try {
+        this.player.on('owner-attached', () => {
+          this._ownerOk = true;
+          try { this._applyTopPolicy(); } catch (_) {}
+        });
+        if (!this._standalone && this.parent && !this.parent.isDestroyed()) {
+          this.player.attachOwner(this.parent.getNativeWindowHandle());
+        }
+      } catch (_) {}
       this._started = true;
     } catch (e) {
       this._emit('log', 'surface start failed: ' + (e && e.message));
@@ -755,6 +783,8 @@ class MpvSurface {
         }
         try { this._emit("log", "pip exit"); } catch (_) {}
       }
+      // v3.0.71：画中画窗口保持置顶，退出画中画回到“只压宿主”的从属层级
+      try { this._applyTopPolicy(); } catch (_) {}
       return { ok: true, pip: this._pip };
     } catch (e) {
       return { ok: false, error: String(e && e.message || e), pip: !!this._pip };
@@ -797,9 +827,26 @@ class MpvSurface {
     try { v ? this.player.showWindow() : this.player.hideWindow(); } catch (_) {}
   }
 
+  // v3.0.71：统一决定 mpv 原生窗口的层级。
+  //   · 已挂 owner（常规窗口化播放）：ontop=no —— Windows 的从属关系已保证它恒在宿主之上，
+  //     不需要 topmost，也就不会压住别的程序和任务栏；
+  //   · 宿主全屏 / 画中画：ontop=yes —— 这两种场景本来就要盖住任务栏与其它窗口；
+  //   · 未挂上 owner / 独立播放器：保持原有行为不动。
+  _applyTopPolicy() {
+    if (this._dead || this._standalone) return;
+    if (!this._ownerOk) return;
+    const p = this.player;
+    if (!p || !p.isRunning() || !p.connected) return;
+    const wantTop = !!this._pip || this._isHostFs();
+    try { p.command(['set_property', 'ontop', wantTop ? 'yes' : 'no']).catch(() => {}); } catch (_) {}
+  }
+
   // 置顶开关（设置页/对话框打开时降层，关闭后恢复）
   setOntop(on) {
     if (this._dead) return;
+    // v3.0.71：挂上 owner 后，层级不再由 ontop 决定（否则关掉对话框又会被重新置顶成
+    // 压住一切），统一交给 _applyTopPolicy；
+    if (this._ownerOk && !this._standalone) { try { this._applyTopPolicy(); } catch (_) {} return; }
     try { this.player.setOntop(on); } catch (_) {}
   }
 

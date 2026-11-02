@@ -231,7 +231,7 @@ function perfArgs() {
 }
 
 // ---------- 嵌入式 MPV 播放器（带 named-pipe IPC）----------
-const _corner = { proc: null, ready: false, queue: null, spawnAt: 0, fbAt: 0, buildAt: 0 };
+const _corner = { proc: null, ready: false, queue: null, spawnAt: 0, fbAt: 0, buildAt: 0, ownerWaits: new Map() };
 
 // ---------- v2.24.0/2.24.1 圆角常驻 helper（模块级单例，与 player 实例解耦）----------
 // v2.24.1：圆角 helper 的 C# 编译产物缓存路径（首次 Add-Type 要编译 C#，落盘后下次直接 LoadFrom 复用）
@@ -241,7 +241,7 @@ function cornerDllPath() {
     if (!base) return '';
     const dir = path.join(base, 'fnos-desktop');
     try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
-    return path.join(dir, 'fmpvc3.dll');
+    return path.join(dir, 'fmpvc4.dll');
   } catch (_) { return ''; }
 }
 
@@ -271,7 +271,21 @@ function cornerCsSource() {
     '    if (f != IntPtr.Zero) { _pid = pid; _hw = f; }',
     '    return f;',
     '  }',
-    '  public static int Version() { return 2; }',
+    // v3.0.71（用户反馈「MPV 前置等级太高」）——把 mpv 原生窗口的 owner 设为宿主窗口，
+    // Windows 保证 owned 窗口恒定压在自己 owner 之上，但不受 topmost 约束：
+    // 它不会压住别的程序和任务栏，切到别的 App 时也不会盖着人家。
+    '  [DllImport("user32.dll", EntryPoint="SetWindowLongPtrW", SetLastError=true)] public static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);',
+    '  [DllImport("user32.dll", EntryPoint="SetWindowLongW", SetLastError=true)] public static extern int SetWindowLongW(IntPtr hWnd, int nIndex, int dwNewLong);',
+    '  [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);',
+    '  [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLongW(IntPtr hWnd, int nIndex);',
+    '  public static long SetOwner(uint pid, long owner) {',
+    '    IntPtr h = ByPid(pid);',
+    '    if (h == IntPtr.Zero) return -1;',
+    '    IntPtr o = new IntPtr(owner);',
+    '    if (IntPtr.Size == 8) { SetWindowLongPtrW(h, -8, o); } else { SetWindowLongW(h, -8, o.ToInt32()); }',
+    '    return IntPtr.Size == 8 ? GetWindowLongPtrW(h, -8).ToInt64() : (long)GetWindowLongW(h, -8);',
+    '  }',
+    '  public static int Version() { return 3; }',
     '  public static int Apply(uint pid, int mode, int d, int halfD) {',
     '    IntPtr h = ByPid(pid);',
     '    if (h == IntPtr.Zero) return -1;',
@@ -301,13 +315,13 @@ function cornerHelperScript() {
     'if ($dll) { $dd=Split-Path $dll -Parent; if ($dd -and -not (Test-Path $dd)) { New-Item -ItemType Directory -Force -Path $dd | Out-Null } }',
     '$ok=$false;',
     // v2.24.1：快通道——上次已经编译好就直接载入（Version() 顺带校验类型可用）
-    'if ($dll -and (Test-Path $dll)) { try { [void][System.Reflection.Assembly]::LoadFrom($dll); if ([FMPVC]::Version() -eq 2) { $ok=$true } } catch { $ok=$false } }',
+    'if ($dll -and (Test-Path $dll)) { try { [void][System.Reflection.Assembly]::LoadFrom($dll); if ([FMPVC]::Version() -eq 3) { $ok=$true } } catch { $ok=$false } }',
     'if (-not $ok) {',
     "$src=@'",
     src,
     "'@",
     // 慢通道：in-memory 编译保证这次能用；同时后台隐藏进程把它编译成 DLL，下次走快通道
-    '  try { Add-Type -TypeDefinition $src; if ([FMPVC]::Version() -eq 2) { $ok=$true } } catch { $ok=$false }',
+    '  try { Add-Type -TypeDefinition $src; if ([FMPVC]::Version() -eq 3) { $ok=$true } } catch { $ok=$false }',
     '}',
     'if (-not $ok) { [Console]::Out.WriteLine("FAIL"); exit 1 }',
     "[Console]::Out.WriteLine('READY');",
@@ -319,6 +333,13 @@ function cornerHelperScript() {
     '  if($ln.Length -eq 0){ continue }',
     "  $p=$ln.Split(' ');",
     "  if($p[0] -eq 'q'){ break }",
+    "  if($p[0] -eq 'o'){",
+    "    $tpid=[uint32]$p[1]; $ow=[long]$p[2];",
+    "    $r=[FMPVC]::SetOwner($tpid,$ow);",
+    '    [Console]::Out.WriteLine("OWNER $tpid $r");',
+    "    [Console]::Out.Flush();",
+    "    continue",
+    "  }",
     "  if($p[0] -ne 'a'){ continue }",
     '  $tpid=[uint32]$p[1]; $md=$p[2]; $dd=[int]$p[3]; $hd=[int]$p[4];',
     '  $m=1; if($md -eq "none"){ $m=0 } elseif($md -eq "top-right"){ $m=2 }',
@@ -386,6 +407,18 @@ function ensureCornerHelper() {
     try { proc.stdout.on('error', () => {}); } catch (_) {}
     proc.stdout.on('data', (buf) => {
       const t = buf.toString('utf8');
+      // v3.0.71：owner 指令回执（OWNER <mpvPid> <设置后的 owner hwnd>）
+      if (t.indexOf('OWNER ') >= 0) {
+        for (const ln of t.split(/\r?\n/)) {
+          const m = ln.trim().match(/^OWNER\s+(\d+)\s+(-?\d+)$/);
+          if (!m || !_corner.ownerWaits) continue;
+          const wpid = Number(m[1]);
+          const w = _corner.ownerWaits.get(wpid);
+          if (!w) continue;
+          _corner.ownerWaits.delete(wpid);
+          try { w.cb && w.cb(m[2]); } catch (_) {}
+        }
+      }
       if (t.indexOf('READY') >= 0) {
         _corner.ready = true;
         // 常驻 helper 就绪后再后台编 DLL，避免抢 CPU 影响首帧圆角
@@ -412,7 +445,7 @@ function cornerSend(pid, mode, d, halfD) {
   const line = 'a ' + pid + ' ' + mode + ' ' + d + ' ' + halfD + '\n';
   const proc = ensureCornerHelper();
   if (!proc) { cornerFallbackOnce(pid, mode, d, halfD); return; }
-  if (!_corner.ready) { _corner.queue = line; return; }
+  if (!_corner.ready) { _corner.queue = (_corner.queue || '') + line; return; }
   // 背压保护：helper 万一卡住，不要在内存里无限堆积指令（圆角只是观感，丢了下次几何变化会补）
   try { if (proc.stdin.writableLength && proc.stdin.writableLength > 16384) return; } catch (_) {}
   try { proc.stdin.write(line); } catch (_) {}
@@ -433,11 +466,58 @@ function cornerFallbackOnce(pid, mode, d, halfD) {
   } catch (_) { /* 圆角失败不阻断播放 */ }
   }
 
+// v3.0.71：给 mpv 原生窗口挂 owner（宿主窗口），走同一常驻 helper 的 stdin 管道。
+// 回执 cb(ret)：ret 等于下发的 owner hwnd 表示成功；-1 = 暂时找不到 mpv 窗口；
+// 其它值 = 设置后读回的 owner 不是目标值（失败）。
+function requestOwner(pid, hwndStr, cb) {
+  if (process.platform !== 'win32') { try { cb && cb('-1'); } catch (_) {} return; }
+  const line = 'o ' + pid + ' ' + hwndStr + '\n';
+  try {
+    if (_corner.ownerWaits) _corner.ownerWaits.set(pid, { hwnd: hwndStr, cb: cb });
+  } catch (_) {}
+  const proc = ensureCornerHelper();
+  if (!proc) { ownerFallbackOnce(pid, hwndStr, cb); return; }
+  if (!_corner.ready) { _corner.queue = (_corner.queue || '') + line; return; }
+  try {
+    if (proc.stdin.writableLength && proc.stdin.writableLength > 16384) return;
+    proc.stdin.write(line);
+  } catch (_) {}
+}
+
+// v3.0.71：周期性补挂 owner（mpv 进出全屏/换片时可能重建窗口样式导致 owner 丢失）。
+// 只走常驻 helper 的 stdin，没有回执也不排队；helper 不在时直接跳过，绝不为此拉起 PowerShell。
+function reassertOwnerQuick(pid, hwndStr) {
+  if (process.platform !== 'win32') return;
+  const proc = _corner.proc;
+  if (!proc || !_corner.ready) return;
+  try {
+    if (proc.stdin.writableLength && proc.stdin.writableLength > 16384) return;
+    proc.stdin.write('o ' + pid + ' ' + hwndStr + '\n');
+  } catch (_) {}
+}
+
+// 兜底：helper 起不来时退回一次性脚本（编译一次、下发一次、退出）
+function ownerFallbackOnce(pid, hwndStr, cb) {
+  const now = Date.now();
+  if (_corner.ofbAt && now - _corner.ofbAt < 3000) { try { cb && cb('-1'); } catch (_) {} return; }
+  _corner.ofbAt = now;
+  try {
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cornerHelperScript()], { windowsHide: true });
+    child.on('error', () => { try { cb && cb('-1'); } catch (_) {} });
+    if (!child.stdin) { try { child.unref(); } catch (_) {} try { cb && cb('-1'); } catch (_) {} return; }
+    try { child.stdin.on('error', () => {}); } catch (_) {}
+    try { child.stdin.write('o ' + pid + ' ' + hwndStr + '\nq\n'); } catch (_) {}
+    try { child.unref(); } catch (_) {}
+    try { setTimeout(() => { try { cb && cb('-1'); } catch (_) {} }, 4000); } catch (_) {}
+  } catch (_) { try { cb && cb('-1'); } catch (_) {} }
+}
+
 function killCornerHelper() {
   const p = _corner.proc;
   _corner.proc = null;
   _corner.ready = false;
   _corner.queue = null;
+  try { if (_corner.ownerWaits) _corner.ownerWaits.clear(); } catch (_) {}
   if (!p) return;
   try { if (p.stdin) p.stdin.write('q\n'); } catch (_) {}
   try { p.kill(); } catch (_) {}
@@ -463,6 +543,10 @@ class MpvPlayer extends EventEmitter {
     this._reqId = 1;
     this._pending = new Map();
     this._dead = false;
+    // v3.0.71：宿主窗口 owner 句柄与挂接结果（挂上后 mpv 只压在宿主之上，不再系统级置顶）
+    this._ownerHwnd = '';
+    this._ownerOk = false;
+    this._ownerTries = 0;
     this._startTime = 0;
     this._duration = 0;
     this._paused = false;
@@ -1612,6 +1696,56 @@ class MpvPlayer extends EventEmitter {
     const apply = () => { this.command(['set_property', 'ontop', on ? 'yes' : 'no']).catch(() => {}); };
     if (!this.connected) { this.once('ipc-ready', apply); return; }
     apply();
+  }
+
+  // v3.0.71（用户反馈「MPV 前置等级太高，只要压在飞牛影视/电视直播之上并跟随」）——
+  // 把 mpv 原生窗口的 owner 设成宿主 BrowserWindow 的 HWND：
+  //   · Windows 保证 owned 窗口恒在 owner 之上 → 宿主拖动/激活/最大化时 mpv 不会被自己盖住；
+  //   · 但 owner 不是 topmost → 切到别的程序时 mpv 不压别人、也不压任务栏。
+  // 失败（helper 起不来 / 窗口还没建）会重试约 12s，仍失败则保持原有 ontop 行为不动。
+  attachOwner(handle) {
+    if (process.platform !== 'win32' || this._standalone) return;
+    let hwnd = '';
+    try {
+      if (Buffer.isBuffer(handle)) {
+        // x64 是 8 字节 HWND，32 位 Electron 是 4 字节
+        hwnd = handle.length >= 8 ? handle.readBigUInt64LE(0).toString() : String(handle.readUInt32LE(0));
+      }
+      else if (handle !== undefined && handle !== null) hwnd = String(handle);
+    } catch (_) { hwnd = ''; }
+    if (!hwnd || hwnd === '0') return;
+    if (this._ownerHwnd === hwnd && this._ownerOk) return;
+    this._ownerHwnd = hwnd;
+    this._ownerTries = 0;
+    const tick = () => {
+      try {
+        if (this._dead || this._ownerOk) return;
+        if (this.proc && this.proc.pid) {
+          requestOwner(this.proc.pid, this._ownerHwnd, (ret) => { try { this._onOwnerResult(ret); } catch (_) {} });
+        }
+      } catch (_) {}
+      if (this._ownerTries++ >= 20) return;
+      const t = setTimeout(tick, 600);
+      if (t.unref) t.unref();
+    };
+    try { tick(); } catch (_) {}
+  }
+
+  reassertOwner() {
+    if (process.platform !== 'win32' || this._standalone || this._dead) return;
+    if (!this._ownerOk || !this._ownerHwnd || !this.proc || !this.proc.pid) return;
+    reassertOwnerQuick(this.proc.pid, this._ownerHwnd);
+  }
+
+  _onOwnerResult(ret) {
+    if (this._dead || this._ownerOk) return;
+    const got = (ret === undefined || ret === null) ? '' : String(ret).trim();
+    if (!got || got !== this._ownerHwnd) return;
+    this._ownerOk = true;
+    // 从属关系已生效：把 mpv 自己的 ontop(topmost) 关掉，层级交给 owner 关系
+    const apply = () => { try { this.command(['set_property', 'ontop', 'no']).catch(() => {}); } catch (_) {} };
+    if (!this.connected) { try { this.once('ipc-ready', apply); } catch (_) {} } else { apply(); }
+    try { this.emit('owner-attached'); } catch (_) {}
   }
 
   // v2.17.59：mpv fullscreen 模式开关。

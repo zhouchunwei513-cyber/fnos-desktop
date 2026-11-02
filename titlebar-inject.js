@@ -1233,7 +1233,13 @@ module.exports = function injectTitleBar(ctx) {
         menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
         menuBtn.addEventListener('click', () => {
           try {
-            ipcRenderer.send('app-popup-menu');
+            // v3.0.69：把按钮的 CSS 矩形一并上报，主进程用它算菜单锚点（不再靠"ready 时取光标 - 18"）
+            let __ma = null;
+            try {
+              const __r = menuBtn.getBoundingClientRect();
+              __ma = { left: Math.round(__r.left), bottom: Math.round(__r.bottom) };
+            } catch (_) { __ma = null; }
+            ipcRenderer.send('app-popup-menu', __ma);
             bar.__menuOpen = true;
             setTimeout(() => { bar.__menuOpen = false; scheduleHide(bar, 600); }, 1600);
           } catch (_) {}

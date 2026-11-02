@@ -36,6 +36,19 @@
   }
   button:hover { background: rgba(255,255,255,.14); color: #fff; }
   button[disabled] { opacity: .55; cursor: default; }
+
+  /* v3.0.69（用户要求：与设置页统一，并同样提供透明 / 深色两套）——
+     class 由主进程 __applyGlassUiTheme() 在 did-finish-load 后挂到 documentElement 上。 */
+  html.fnos-ui-transparent .card {
+    background: rgba(5, 6, 10, 0.38);
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+  html.fnos-ui-transparent .bar { background: rgba(255, 255, 255, 0.14); }
+  /* 透明皮浮在壁纸上：文字加阴影保可读 */
+  html.fnos-ui-transparent .ttl,
+  html.fnos-ui-transparent .pct,
+  html.fnos-ui-transparent .info { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55); }
+  html.fnos-ui-transparent .info { color: #e9efff; }
 </style>
 </head>
 <body>

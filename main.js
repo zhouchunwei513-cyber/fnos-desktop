@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.68';
+const APP_VERSION = '3.0.69';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3423,6 +3423,8 @@ let __menuPopupWin = null;
 let __menuRegistry = Object.create(null);
 let __menuCtxWin = null;
 let __menuShownAt = 0;
+// v3.0.69：菜单锚点（DIP）。渲染层点击 ☰ 时上报按钮 rect，这里换算好后在 fnmenu:ready 使用。
+let __menuAnchor = null;
 
 const __MENU_ROLE_ACC = { minimize: 'Ctrl+M', close: 'Ctrl+W', toggleDevTools: 'Ctrl+Shift+I', reload: 'Ctrl+R' };
 
@@ -3496,8 +3498,25 @@ function __afterAppMenuClosed() {
   try { dlog('info', 'mpv.layer.menu_close', {}); } catch (_) {}
 }
 
+// v3.0.69（用户反馈：点 ☰ 调出的菜单偏离左上角、往内容区斜向下偏移）——
+// 把「按钮的 CSS 矩形」换算成宿主窗口坐标系下的 DIP 点：
+//   getContentBounds() 已是 DIP；页面可能被 setZoomFactor(0.5~2.5) 缩放，CSS px 要乘 zoom 才是 DIP。
+// 于是菜单左上角精确落在 ☰ 按钮左下角，与 DPI、窗口位置、光标漂移都无关。
+function __menuAnchorFrom(hostWin, anchor) {
+  try {
+    if (!hostWin || hostWin.isDestroyed()) return null;
+    const l = Number(anchor && anchor.left);
+    const b = Number(anchor && anchor.bottom);
+    if (!isFinite(l) || !isFinite(b)) return null;
+    const cb = hostWin.getContentBounds();
+    let z = 1;
+    try { z = hostWin.webContents.getZoomFactor() || 1; } catch (_) { z = 1; }
+    return { x: Math.round(cb.x + l * z), y: Math.round(cb.y + b * z + 2) };
+  } catch (_) { return null; }
+}
+
 // 打开自绘菜单；返回 false 表示自绘不可用（调用方回退原生菜单）
-function showCustomAppMenu(hostWin) {
+function showCustomAppMenu(hostWin, anchor) {
   const registry = Object.create(null);
   let items = [];
   try {
@@ -3515,6 +3534,7 @@ function showCustomAppMenu(hostWin) {
   __closeMenuPopupWindow();
   __menuRegistry = registry;
   __menuCtxWin = (hostWin && !hostWin.isDestroyed()) ? hostWin : null;
+  __menuAnchor = __menuAnchorFrom(hostWin, anchor);
   __menuShownAt = 0;
   __mpvMenuOpening = true;
   try { _applyMpvLayer(true, 'app-menu-open'); } catch (_) {}
@@ -3586,11 +3606,12 @@ ipcMain.on('fnmenu:ready', (e, size) => {
     if (!win || win !== __menuPopupWin || win.isDestroyed()) return;
     const w = Math.max(140, Math.min(820, Math.round((size && size.w) || 320)));
     const h = Math.max(80, Math.min(920, Math.round((size && size.h) || 320)));
-    const pt = screen.getCursorScreenPoint();
+    // v3.0.69：有锚点就贴 ☰ 左下角；没有（自绘菜单被非标题栏路径打开）才回落光标 - 18
+    const pt = __menuAnchor || screen.getCursorScreenPoint();
     let wa = { x: 0, y: 0, width: 1920, height: 1080 };
     try { wa = screen.getDisplayNearestPoint(pt).workArea; } catch (_) {}
-    let x = Math.round(pt.x - 18);
-    let y = Math.round(pt.y - 18);
+    let x = Math.round(__menuAnchor ? pt.x : pt.x - 18);
+    let y = Math.round(__menuAnchor ? pt.y : pt.y - 18);
     if (x + w > wa.x + wa.width) x = wa.x + wa.width - w;
     if (y + h > wa.y + wa.height) y = wa.y + wa.height - h;
     if (x < wa.x) x = wa.x;
@@ -3647,7 +3668,7 @@ ipcMain.on('fnmenu:invoke', (e, id) => {
 
 // v1.48.0：无边框标题栏的「☰ 菜单」按钮——弹出与原系统菜单栏完全一致的应用菜单
 // （文件/下载/编辑/视图/工具/设置/帮助），内容与逻辑复用 buildMenuTemplate，零改动。
-ipcMain.on('app-popup-menu', (e) => {
+ipcMain.on('app-popup-menu', (e, anchor) => {
   try {
     const w = hostWindowFromSender(e && e.sender) || BrowserWindow.getFocusedWindow() || null;
     const menu = Menu.buildFromTemplate(buildMenuTemplate());
@@ -3672,7 +3693,7 @@ ipcMain.on('app-popup-menu', (e) => {
     };
     // v3.0.64：优先自绘菜单（玻璃/深色，跟随「透明界面」开关）；不可用时回退原生菜单
     let __customMenuOk = false;
-    try { __customMenuOk = showCustomAppMenu(w || null); } catch (_) { __customMenuOk = false; }
+    try { __customMenuOk = showCustomAppMenu(w || null, anchor || null); } catch (_) { __customMenuOk = false; }
     if (!__customMenuOk) {
       menu.popup({ window: w || undefined, callback: __appMenuDone });
     }
@@ -4943,6 +4964,23 @@ function openFinishedDownload(dlIdOrIdx) {
  * message 为正文提示（自动换行完整显示）；detail 为技术细节（等宽、可滚动）。
  * 兼容历史调用：若只传 detail 且较短，则作为正文展示。
  */
+// v3.0.69（用户要求：检查更新链路上所有提示框/页面与设置页统一，并同样提供「透明 / 深色」两套）——
+// 设置页的「透明界面」是靠 titlebar-inject 给 documentElement 挂 fnos-ui-transparent，
+// 而 dialog / update-progress / about 这些独立小窗不注入 titlebar-inject，class 从来没挂上过，
+// 页面里写得再全的两套皮也永不生效。这里由主进程在建窗后直接挂 class。
+function __glassUiTransparent() {
+  try { const s = loadSettings(); return !(s && s.uiTransparent === false); } catch (_) { return true; }
+}
+function __applyGlassUiTheme(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const tr = __glassUiTransparent();
+    const code = 'try{document.documentElement.classList.toggle("fnos-ui-transparent",'
+      + (tr ? 'true' : 'false') + ');}catch(e){}';
+    try { win.webContents.executeJavaScript(code, true).catch(() => {}); } catch (_) {}
+  } catch (_) {}
+}
+
 function showGlassDialog(parent, options = {}) {
   return new Promise((resolve) => {
     const buttons = Array.isArray(options.buttons) && options.buttons.length > 0
@@ -5024,6 +5062,7 @@ function showGlassDialog(parent, options = {}) {
     };
     centerIn(width, initHeight);
     win.__isGlassDialog = true; // 供 refreshMpvLayer 识别为应浮于 mpv 之上的子弹窗
+    win.webContents.on('did-finish-load', () => __applyGlassUiTheme(win));
     win.on('show', () => { try { refreshMpvLayer(); } catch (_) {} });
     win.on('closed', () => { try { refreshMpvLayer(); } catch (_) {} });
 
@@ -10104,6 +10143,7 @@ function createAboutWindow() {
   aboutWin.once('ready-to-show', () => { try { aboutWin.show(); } catch (_) {} });
   aboutWin.on('closed', () => { if (aboutWindow === aboutWin) aboutWindow = null; });
   const ABOUT_PAGE = path.join(__dirname, 'about.html');
+  aboutWin.webContents.on('did-finish-load', () => __applyGlassUiTheme(aboutWin));
   aboutWin.loadFile(ABOUT_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
   return aboutWin;
 }
@@ -12592,10 +12632,12 @@ function __showUpdChecking() {
   });
   win.__isGlassDialog = true;
   win.__noTop = true; // v3.0.24：不参与「阻挡窗强行 screen-saver 置顶」（见 _applyMpvLayer）
+  // v3.0.69：检查中悬浮窗跟随「透明界面」——深色皮 = 深色玻璃底；透明皮 = 淡蒙层（与设置页同一套）
+  const __tr = __glassUiTransparent();
   const html = '<!doctype html><html><head><meta charset="utf-8"><style>'
     + 'html,body{margin:0;height:100%;background:transparent;overflow:hidden}'
-    + '.c{box-sizing:border-box;height:100%;border-radius:14px;display:flex;align-items:center;gap:12px;padding:0 18px;-webkit-app-region:drag;'
-    + 'background:linear-gradient(160deg,rgba(24,32,54,.97),rgba(10,14,26,.98));border:1px solid rgba(255,255,255,.13);'
+    + '.c{box-sizing:border-box;height:100%;border-radius:16px;display:flex;align-items:center;gap:12px;padding:0 18px;-webkit-app-region:drag;'
+    + 'background:' + (__tr ? 'rgba(5,6,10,.38)' : 'linear-gradient(160deg,rgba(20,26,44,.97),rgba(8,11,20,.98))') + ';border:1px solid rgba(255,255,255,.14);'
     + 'box-shadow:0 20px 50px -18px rgba(0,0,0,.85),inset 0 1px 0 rgba(255,255,255,.08);'
     + 'color:#e9efff;font-family:"Microsoft YaHei",system-ui,sans-serif}'
     + '.s{width:18px;height:18px;border:2px solid rgba(255,255,255,.18);border-top-color:#7cecff;border-right-color:#7c83ff;'
@@ -12642,6 +12684,7 @@ function __showUpdProgress(ver) {
   });
   win.__isGlassDialog = true;
   win.__noTop = true; // v3.0.24：不参与「阻挡窗强行 screen-saver 置顶」
+  win.webContents.on('did-finish-load', () => __applyGlassUiTheme(win));
   win.loadFile(UPD_PROGRESS_PAGE, { query: { v: String(ver || '') } }).catch(() => {});
   win.once('ready-to-show', () => {
     try { win.show(); win.setAlwaysOnTop(false); win.focus(); } catch (_) {} // v3.0.24：普通层级，不压其它程序

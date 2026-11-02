@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>偏好设置</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body class="theme-dark">
+  <div class="pref">
+    <aside class="sidebar">
+      <div class="sb-head">偏好设置</div>
+      <nav class="sb-nav">
+        <button class="sb-item is-active" data-pane="appearance">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.8v12.4A6.2 6.2 0 0 0 8 1.8z" fill="currentColor"/></svg>
+          <span>外观</span>
+        </button>
+        <button class="sb-item" data-pane="behavior">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 2.2 3 4.6v3.6c0 2.6 2 4.6 5 5.6 3-1 5-3 5-5.6V4.6L8 2.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          <span>通用</span>
+        </button>
+        <button class="sb-item" data-pane="servers">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="2" y="3" width="12" height="4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="2" y="9" width="12" height="4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="4.6" cy="5" r="0.8" fill="currentColor"/><circle cx="4.6" cy="11" r="0.8" fill="currentColor"/></svg>
+          <span>服务器</span>
+        </button>
+        <button class="sb-item" data-pane="update">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13 2v3.2h-3.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>更新</span>
+        </button>
+        <button class="sb-item" data-pane="logs">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="2.6" y="2" width="10.8" height="12" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 5.6h5.6M5.2 8h5.6M5.2 10.4h3.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <span>日志</span>
+        </button>
+        <button class="sb-item" data-pane="about">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2v4M8 4.9v.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span>关于</span>
+        </button>
+      </nav>
+      <div class="sb-foot">FNOS · macOS</div>
+    </aside>
+
+    <section class="content">
+      <!-- 外观 -->
+      <div class="pane is-active" data-pane="appearance">
+        <h2 class="pane-title">外观</h2>
+
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="sel-material">窗口材质</label>
+            <div class="row-control">
+              <select id="sel-material" class="select">
+                <option value="under-window">磨砂（窗口底层材质）</option>
+                <option value="content">增强磨砂（内容材质）</option>
+                <option value="sidebar">侧栏材质</option>
+                <option value="fullscreen-ui">全屏界面材质</option>
+                <option value="none">纯色（不使用系统材质）</option>
+              </select>
+              <p class="row-hint">使用 macOS 系统材质（NSVisualEffectView），由系统负责模糊与着色。</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="row-label" for="rg-ui-alpha">界面透明度</label>
+            <div class="row-control">
+              <div class="slider-line">
+                <input id="rg-ui-alpha" class="slider" type="range" min="0" max="100" step="1" value="62" />
+                <span id="ui-alpha-val" class="slider-val">62%</span>
+              </div>
+              <p class="row-hint">0% 为实色不透明，越大越透出系统材质。作用于工具栏、查找条与本次设置窗口。</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="row-label" for="rg-tb-height">工具栏高度</label>
+            <div class="row-control">
+              <div class="slider-line">
+                <input id="rg-tb-height" class="slider" type="range" min="40" max="96" step="1" value="52" />
+                <span id="tb-height-val" class="slider-val">52 pt</span>
+              </div>
+              <p class="row-hint">红绿灯按钮会随工具栏垂直居中；低于 48pt 时可能贴近边缘。</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <span class="row-label">外观模式</span>
+            <div class="row-control">
+              <div class="segmented" id="seg-theme">
+                <button data-value="system">跟随系统</button>
+                <button data-value="light">浅色</button>
+                <button data-value="dark">深色</button>
+              </div>
+              <p class="row-hint">"跟随系统"会随 macOS 外观自动切换浅色/深色。</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="row-label" for="rg-zoom">页面缩放</label>
+            <div class="row-control">
+              <div class="slider-line">
+                <input id="rg-zoom" class="slider" type="range" min="-3" max="5" step="1" value="0" />
+                <span id="zoom-val" class="slider-val">100%</span>
+              </div>
+              <p class="row-hint">等同于菜单"显示 → 放大/缩小"（⌘= / ⌘- / ⌘0）。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <span class="row-label">预览</span>
+            <div class="row-control">
+              <div id="preview" class="preview">
+                <div class="preview-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+                <div class="preview-body">界面透明度预览</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 通用 -->
+      <div class="pane" data-pane="behavior">
+        <h2 class="pane-title">通用</h2>
+
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="sw-login">登录时启动</label>
+            <div class="row-control row-inline">
+              <input id="sw-login" class="switch" type="checkbox" />
+              <p class="row-hint">开机登录 macOS 后自动启动 FNOS（可在"系统设置 → 通用 → 登录项"里管理）。</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="row-label" for="sw-hide-close">关闭窗口时隐藏</label>
+            <div class="row-control row-inline">
+              <input id="sw-hide-close" class="switch" type="checkbox" />
+              <p class="row-hint">关闭主窗口时不退出应用，图标保留在 Dock 与菜单栏；用 ⌘Q 才真正退出。</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="row-label" for="sw-restore">恢复上次页面</label>
+            <div class="row-control row-inline">
+              <input id="sw-restore" class="switch" type="checkbox" />
+              <p class="row-hint">启动时回到上次停留的 NAS 页面与窗口位置。</p>
+            </div>
+          </div>
+
+          <div class="row">
+            <label class="row-label" for="in-hotkey">全局快捷键</label>
+            <div class="row-control">
+              <input id="in-hotkey" class="input" type="text" spellcheck="false"
+                     placeholder="例如 Command+Shift+F（留空则禁用）" />
+              <p class="row-hint">显示/隐藏主窗口。注册成功后会立即生效；被其他应用占用时会提示失败。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <span class="row-label">恢复默认</span>
+            <div class="row-control row-inline">
+              <button id="btn-reset" class="btn btn-danger">重置全部设置…</button>
+              <p class="row-hint">恢复默认外观与行为设置；已保存的服务器列表会一并清空。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 服务器 -->
+      <div class="pane" data-pane="servers">
+        <h2 class="pane-title">服务器</h2>
+
+        <div class="group">
+          <div class="row">
+            <label class="row-label" for="in-server">地址</label>
+            <div class="row-control">
+              <div class="inline-line">
+                <input id="in-server" class="input" type="text" spellcheck="false"
+                       placeholder="192.168.31.101:5666 或 https://nas.example.com" />
+                <button id="btn-test" class="btn">测试</button>
+                <button id="btn-add" class="btn btn-primary">添加</button>
+              </div>
+              <p class="row-hint" id="hint-server">支持 IP、IP:端口、域名；不填协议默认 http。保存后主窗口可直接连接。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <span class="row-label">已保存</span>
+            <div class="row-control">
+              <ul id="server-list" class="server-list"></ul>
+              <p class="row-hint">点击列表项可在主窗口打开该服务器。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 更新 -->
+      <div class="pane" data-pane="update">
+        <h2 class="pane-title">更新</h2>
+
+        <div class="group">
+          <div class="row">
+            <span class="row-label">当前版本</span>
+            <div class="row-control row-inline">
+              <span id="ver-current" class="value">—</span>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">最近检查</span>
+            <div class="row-control row-inline">
+              <span id="ver-checked" class="value">尚未检查</span>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">检查更新</span>
+            <div class="row-control row-inline">
+              <button id="btn-check-update" class="btn">立即检查</button>
+              <p class="row-hint">从 GitHub Releases 拉取 mac-v* 版本；检查结果会弹原生对话框。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <span class="row-label">安装方式</span>
+            <div class="row-control">
+              <p class="row-hint">
+                macOS 版为免签名分发，无法在应用内静默安装：下载 dmg 后拖入"应用程序"覆盖旧版即可。
+                若系统提示"已损坏，无法打开"，请在"终端"执行：
+              </p>
+              <div class="code-line">
+                <code id="cmd-xattr">xattr -dr com.apple.quarantine /Applications/FNOS.app</code>
+                <button id="btn-copy-xattr" class="btn btn-small">拷贝</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 日志 -->
+      <div class="pane" data-pane="logs">
+        <h2 class="pane-title">日志</h2>
+
+        <div class="group">
+          <div class="row">
+            <span class="row-label">目录</span>
+            <div class="row-control">
+              <div class="inline-line">
+                <span id="log-dir" class="value">—</span>
+                <button id="btn-open-logs" class="btn btn-small">打开</button>
+              </div>
+              <p class="row-hint">日志按天切割，保留 7 天，位于 ~/Library/Logs/FNOS。</p>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">文件</span>
+            <div class="row-control">
+              <select id="log-files" class="select"></select>
+              <div class="inline-line" style="margin-top:8px">
+                <button id="btn-load-log" class="btn btn-small">查看</button>
+                <button id="btn-export-log" class="btn btn-small">导出…</button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">内容</span>
+            <div class="row-control">
+              <textarea id="log-view" class="textarea" readonly spellcheck="false" placeholder="选择日志后点击查看"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 关于 -->
+      <div class="pane" data-pane="about">
+        <h2 class="pane-title">关于</h2>
+
+        <div class="about-head">
+          <img id="about-logo" class="about-logo" src="../../assets/fnos-logo.png" alt="" />
+          <div>
+            <div class="about-name">FNOS</div>
+            <div class="about-sub">飞牛 NAS 桌面客户端 · macOS 版</div>
+            <div id="about-version" class="about-ver">—</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <span class="row-label">运行环境</span>
+            <div class="row-control row-inline">
+              <span id="about-env" class="value">—</span>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">关于面板</span>
+            <div class="row-control row-inline">
+              <button id="btn-about-panel" class="btn btn-small">显示系统"关于"面板</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="row-label">诊断</span>
+            <div class="row-control row-inline">
+              <button id="btn-diag" class="btn btn-small">复制诊断信息</button>
+              <button id="btn-open-config" class="btn btn-small">打开配置文件夹</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

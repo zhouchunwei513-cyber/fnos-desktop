@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Electron 渲染进程需要 JIT 与可写可执行内存（Chromium V8） -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<!-- 允许加载随包分发的原生模块 / 第三方二进制（如后续打包 mpv） -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- 读写用户选择的 NAS 凭据文件、导出日志 -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- 出站网络：连接 NAS 与检查更新 -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

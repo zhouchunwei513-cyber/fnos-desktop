@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' file: data: blob: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src http: https: file:;" />
+  <title>FNOS</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body class="theme-dark">
+  <header id="tb" class="toolbar">
+    <div class="tl-gap" aria-hidden="true"></div>
+
+    <div class="nav-group">
+      <button id="btn-back" class="icon-btn" title="后退 (⌘[)" aria-label="后退" disabled>
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M10.5 2.5 5 8l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-forward" class="icon-btn" title="前进 (⌘])" aria-label="前进" disabled>
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M5.5 2.5 11 8l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-reload" class="icon-btn" title="重新载入 (⌘R)" aria-label="重新载入">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13 2v3.2h-3.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-home" class="icon-btn" title="主页 (⇧⌘H)" aria-label="主页">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M2.5 7.4 8 2.8l5.5 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 7v6h8V7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+
+    <div id="addr" class="addr" title="当前地址">
+      <span id="addr-lock" class="addr-lock" hidden>
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="3.2" y="7" width="9.6" height="6.4" rx="1.4" fill="currentColor"/><path d="M5.4 7V5.2a2.6 2.6 0 0 1 5.2 0V7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+      </span>
+      <span id="addr-host" class="addr-host">未连接</span>
+      <span id="addr-path" class="addr-path"></span>
+    </div>
+
+    <div class="right-group">
+      <button id="btn-server" class="text-btn" title="切换服务器 (⇧⌘S)">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="3" width="12" height="4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="2" y="9" width="12" height="4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="4.6" cy="5" r="0.8" fill="currentColor"/><circle cx="4.6" cy="11" r="0.8" fill="currentColor"/></svg>
+        <span>服务器</span>
+      </button>
+      <button id="btn-settings" class="icon-btn" title="偏好设置 (⌘,)" aria-label="偏好设置">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.6v1.6M8 12.8v1.6M1.6 8h1.6M12.8 8h1.6M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M12.5 3.5l-1.1 1.1M4.6 11.4 3.5 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="progress" class="progress" hidden></div>
+
+  <div id="findbar" class="findbar" hidden>
+    <input id="find-input" class="find-input" type="text" spellcheck="false" placeholder="在页面中查找" />
+    <span id="find-count" class="find-count">0/0</span>
+    <button id="find-prev" class="icon-btn" title="上一个" aria-label="上一个">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 12.5V4M4.5 7.5 8 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="find-next" class="icon-btn" title="下一个" aria-label="下一个">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 3.5V12M4.5 8.5 8 12l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="find-close" class="icon-btn" title="关闭" aria-label="关闭">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
+  <main id="stage" class="stage">
+    <webview id="view" class="view" partition="persist:fnos" src="about:blank"
+             webpreferences="contextIsolation=yes,nodeIntegration=no,sandbox=yes,webSecurity=yes"
+             allowpopups="false"></webview>
+
+    <section id="connect" class="sheet">
+      <div class="sheet-card">
+        <div class="brand">
+          <img id="brand-logo" class="brand-logo" src="../../assets/fnos-logo.png" alt="" />
+          <div class="brand-text">
+            <h1>FNOS</h1>
+            <p>飞牛 NAS 桌面客户端 · macOS</p>
+          </div>
+        </div>
+
+        <label class="field">
+          <span class="field-label">服务器地址</span>
+          <input id="in-server" class="input" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="192.168.31.101:5666 或 https://nas.example.com" />
+          <span class="field-hint" id="hint-server">支持 IP、IP:端口、域名；不填协议默认 http</span>
+        </label>
+
+        <div class="row">
+          <button id="btn-test" class="btn btn-ghost">测试连接</button>
+          <button id="btn-connect" class="btn btn-primary">连接</button>
+        </div>
+
+        <div id="saved-wrap" class="saved-wrap" hidden>
+          <div class="saved-title">最近使用</div>
+          <ul id="saved-list" class="saved-list"></ul>
+        </div>
+
+        <p class="tip">首次连接使用自签名证书的 NAS 时可直接继续 —— 客户端只对已保存过的服务器放行证书。</p>
+      </div>
+    </section>
+
+    <section id="error" class="sheet sheet-error" hidden>
+      <div class="sheet-card">
+        <h2 id="err-title">无法载入页面</h2>
+        <p id="err-detail" class="err-detail"></p>
+        <div class="row">
+          <button id="btn-err-retry" class="btn btn-ghost">重新载入</button>
+          <button id="btn-err-connect" class="btn btn-primary">更换服务器</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="shell.js"></script>
+</body>
+</html>

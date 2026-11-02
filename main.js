@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.72';
+const APP_VERSION = '3.0.73';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -1486,6 +1486,10 @@ function __applyFsFor(win, on) {
     __fsUiAppliedMap.set(win, on);
     // v2.17.41：进入全屏记时间戳，供 __fsAuditStart 的自愈巡检跳过过渡期；首次调用即启动巡检。
     try { if (on) __fsEnterAtMap.set(win, Date.now()); else win.__fsSmallSince = 0; } catch (_) {}
+    // v3.0.73（工单：全屏按钮“第一次退不出”）——四④：每次进入窗口全屏都把离开守卫计数清零。
+    // 旧实现 __fsLeaveGuard46 只增不减（用户日志 n 从 1 累到 16，跨多次进出全屏都不复位），
+    // 上限 8 因此形同虚设，极端情况会一直重进全屏。
+    try { if (on) { win.__fsLeaveGuard46 = 0; win.__fsAllowLeaveUntil = 0; } } catch (_) {}
     __fsAuditStart();
     try { fnosLog('info', 'fullscreen', 'ui ' + (on ? 'enter' : 'leave') + ' win=' + win.id); } catch (_) {}
     if (on) {
@@ -1543,6 +1547,8 @@ function __onHtmlFsEnter(win) {
     if (!win || win.isDestroyed()) return;
     if (__htmlFsOn(win)) return;
     __htmlFsMap.set(win, true);
+    // v3.0.73：记录页面全屏进入时刻，供“离开守卫”判别这次窗口退出是用户主动还是异常自发。
+    try { win.__fsHtmlEnterAt = Date.now(); win.__fsLeaveGuard46 = 0; } catch (_) {}
     __rememberFsBounds(win);
     __syncFsUIFor(win, true);
     try {
@@ -1570,8 +1576,18 @@ function __onHtmlFsLeave(win) {
     __htmlFsMap.set(win, false);
     if (!__was) return;
     try { fnosLog('info', 'fullscreen', 'html-fs leave win=' + win.id); } catch (_) {}
-    // 窗口层若另有全屏（F11 / 菜单那条线），UI 交回那边的状态机，不在这里撤
-    if (!__isFsOn(win)) {
+    // v3.0.73（工单：飞牛影视全屏按钮“第一次退不出，调窗口后又能退”）——
+    // 页面 HTML 全屏退出＝用户/页面真的要退出。旧实现只在「窗口层已不在全屏」时才收尾，
+    // 窗口层仍在全屏时把状态搁在这里，结果只能靠 3 秒一轮的 audit-leave 兜底才退出去
+    // （用户日志 10:58:09 audit-leave … ui leave，延迟约 3 秒）；而录屏里用户调过窗口尺寸后
+    // “又能退”，只是因为窗口边界不再等于全屏边界、audit 提前判成失步——按钮本身始终没生效。
+    // 现在离开守卫已把“窗口退出 + 页面全屏仍在”判为用户主动退出，这里再把窗口层这半边补齐，
+    // 两层状态即时成对收尾（四③：单一真源 + 即时对账，不再等 audit）。
+    try { win.__fsAllowLeaveUntil = Date.now() + 2000; } catch (_) {}
+    if (__isFsOn(win)) {
+      try { fnosLog('info', 'fullscreen', 'html-fs leave finalize-ui win=' + win.id); } catch (_) {}
+      __applyFsFor(win, false);
+    } else {
       __syncFsUIFor(win, false);
       __restoreFsBoundsFor(win);
     }
@@ -5996,7 +6012,7 @@ function registerWindow(win, opts = {}) {
     // transparent + frame:false 窗口上不触发（实测 win=3/6/8 只有 ui enter、没有 ui leave），
     // 所以这两种"我们自己发起"的状态必须由主进程主动收尾。
     // 我们的窗口全屏 / 最大化：自己退，并吞掉这一下
-    if (__isFsOn(win)) { __exitFullScreenWin(win); event.preventDefault(); return; }
+    if (__isFsOn(win)) { try { win.__fsAllowLeaveUntil = Date.now() + 2000; } catch (_) {} __exitFullScreenWin(win); event.preventDefault(); return; }
     if (__maxOn(win)) { __toggleMaxWin(win); event.preventDefault(); return; }
     // 只剩「页面 HTML 全屏」这一层：放行，让 Chromium 自己响应 ESC（真全屏的 ESC 语义才有意义）；
     // 同时逐帧兜底退一次（工单⑦：全屏元素可能在 iframe 里，父文档 document.fullscreenElement 为空，
@@ -6018,16 +6034,65 @@ function registerWindow(win, opts = {}) {
   // 一起被撤掉。现在：状态机仍认为该窗应全屏（只有 ESC/F11 会改状态）时直接重新进全屏，最多补 8 次防死循环。
   win.on('leave-full-screen', () => {
     try {
+      const __now = Date.now();
+      // v3.0.73（工单：飞牛影视全屏按钮“第一次退不出，调窗口后又能退”）——根因 ①：
+      // 用户点播放器的退出按钮 → Chromium 结束元素全屏，同时把窗口全屏一起退掉，于是
+      // leave-full-screen 先到、leave-html-full-screen 后到（用户日志实测：leave-guard reenter n=1
+      // 紧跟在 html-fs leave 之前）。旧实现只看 __isFsOn 仍为真就当成“异常自发退出”重新
+      // setFullScreen(true)，Chromium 随即把元素全屏一并恢复 → 用户侧就是“点退出被守卫拉回，只能按 ESC”。
+      // 判别办法：本事件到达时页面 HTML 全屏仍在 = 这次窗口退出很可能是页面 exitFullscreen 的
+      // 连带结果 → 先不重进，让页面全屏那半边落地（见下方延迟裁决）。
+      // v3.0.73 四①：ESC / 自绘菜单 / 我们自己的退出路径会先置 allowLeave（TTL 2s）。
+      // 这条必须排在最前——ESC 也会连带让页面全屏退出，若先走下面的延迟裁决就会把 ESC 判成
+      // “窗口层被打断”再重进一次，反而破坏本来正确的退出路径。
+      if (__now < (win.__fsAllowLeaveUntil || 0)) {
+        try { fnosLog('info', 'fullscreen', 'leave-allow win=' + win.id); } catch (_) {}
+        __applyFsFor(win, false);
+        return;
+      }
+      if (__htmlFsOn(win) && (__now - (win.__fsHtmlEnterAt || 0) > 300)) {
+        // 延迟 120ms 裁决，不立刻重进：页面 exitFullscreen 引发的连带退出里，leave-html-full-screen
+        // 会在几帧内到达（用户日志实测两者紧邻），这段时间正好让页面全屏那半边先落地并由
+        // __onHtmlFsLeave 把窗口层一起收尾；若 120ms 后页面全屏仍在，说明是窗口层被外部打断
+        // （抢前台 / 新建窗），按原逻辑重进，四⑤「原有保护目标不回退」。
+        const __tok = (win.__fsLeaveTok = (win.__fsLeaveTok || 0) + 1);
+        setTimeout(() => {
+          try {
+            if (!win || win.isDestroyed()) return;
+            if (win.__fsLeaveTok !== __tok) return;
+            if (!__htmlFsOn(win) || !__isFsOn(win)) return; // 页面全屏已退：__onHtmlFsLeave 已整体收尾
+            const __n = (win.__fsLeaveGuard46 || 0) + 1;
+            win.__fsLeaveGuard46 = __n;
+            try { fnosLog('warn', 'fullscreen', 'leave-guard reenter win=' + win.id + ' n=' + __n + ' why=win-only'); } catch (_) {}
+            if (__n <= 2) {
+              [20, 260].forEach((ms) => {
+                setTimeout(() => {
+                  try { if (!win.isDestroyed() && __isFsOn(win) && __htmlFsOn(win)) win.setFullScreen(true); } catch (_) {}
+                }, ms);
+              });
+            } else {
+              try { fnosLog('warn', 'fullscreen', 'leave-guard giveup win=' + win.id); } catch (_) {}
+              __applyFsFor(win, false);
+            }
+          } catch (_) {}
+        }, 120);
+        return;
+      }
       if (__isFsOn(win)) {
+        // 四①（兜底）：allowLeave 分支已在最前面处理，走到这里就是真正的“异常自发退出”。
         const __n = (win.__fsLeaveGuard46 || 0) + 1;
         win.__fsLeaveGuard46 = __n;
         try { fnosLog('warn', 'fullscreen', 'leave-guard reenter win=' + win.id + ' n=' + __n); } catch (_) {}
-        if (__n <= 8) {
+        // 四④：上限 2 次（原 8 次且计数从不清零），达到上限就正常退出，杜绝死循环。
+        if (__n <= 2) {
           [20, 260].forEach((ms) => {
             setTimeout(() => {
               try { if (!win.isDestroyed() && __isFsOn(win)) win.setFullScreen(true); } catch (_) {}
             }, ms);
           });
+        } else {
+          try { fnosLog('warn', 'fullscreen', 'leave-guard giveup win=' + win.id); } catch (_) {}
+          __applyFsFor(win, false);
         }
         return;
       }

@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.74';
+const APP_VERSION = '3.0.75';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -12391,8 +12391,8 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.uiTransparent = uiTransparent;
     cachedSettings.barCorner = barCorner;
     cachedSettings.winCorner = winCorner;
-    // v3.0.70：MPV 播放器圆角跟随「窗口四角」——直角时不再对 mpv 原生窗口 SetWindowRgn
-    try { if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') MpvPlayerMod.setCornerStyle(winCorner); } catch (_) {}
+    // v3.0.70/75：点播 MPV 圆角跟随「窗口四角」三档；电视直播窗另看「标题栏四角」
+    try { if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') MpvPlayerMod.setCornerStyle(winCorner, barCorner); } catch (_) {}
     {
       const __oldStrip = __titlebarStrip;
       refreshTitlebarStrip();
@@ -18420,9 +18420,13 @@ app.whenReady().then(() => {
   try {
     if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') {
       const __cs = loadSettings();
-      // v3.0.74：三档跟随（round / half / square）
+      // v3.0.74/75：窗口四角三档 + 标题栏四角（电视直播窗用后者判定）
       const __wcv = __cs && __cs.winCorner;
-      MpvPlayerMod.setCornerStyle((__wcv === 'square' || __wcv === 'half') ? __wcv : 'round');
+      const __bcv = __cs && __cs.barCorner;
+      MpvPlayerMod.setCornerStyle(
+        (__wcv === 'square' || __wcv === 'half') ? __wcv : 'round',
+        (__bcv === 'square' || __bcv === 'half') ? __bcv : 'round'
+      );
     }
   } catch (_) {}
   // v2.3.5（需求 2.6.4）：托盘图标丢失自动重建。

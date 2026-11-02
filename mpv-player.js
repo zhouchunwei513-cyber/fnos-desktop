@@ -537,9 +537,14 @@ function prewarmCorners() { try { ensureCornerHelper(); } catch (_) {} }
 // v3.0.74：新增 'half'（半圆角）——
 //   点播：上边左右两角直角 + 下边左右两角 20px 圆角（mode=3）；
 //   电视直播：四角全直（直播窗只在圆角模式保留右上角 R 角，半圆角 / 直角都是全直）。
-let __cornerStyle = 'round';
-function setCornerStyle(v) {
+// v3.0.75（用户澄清）：
+//   点播 MPV 窗跟「窗口四角」三档 —— round=四角圆 / half=上直下圆 / square=四角直；
+//   电视直播 MPV 窗只看「标题栏四角」—— 圆角时保留右上角 R 角，直角与半圆角时四角全直。
+let __cornerStyle = 'round';     // 窗口四角（winCorner）
+let __barCornerStyle = 'round';  // 标题栏四角（barCorner），仅供电视直播窗判定
+function setCornerStyle(v, barV) {
   __cornerStyle = (v === 'square' || v === 'half') ? v : 'round';
+  if (barV !== undefined) __barCornerStyle = (barV === 'square' || barV === 'half') ? barV : 'round';
 }
 
 class MpvPlayer extends EventEmitter {
@@ -1523,14 +1528,20 @@ class MpvPlayer extends EventEmitter {
     // fullscreen 铺满整屏时四角是屏幕四角（直角），退出后按点播/直播形态恢复圆角
     if (this._fsOn) { mode = 'none'; }
     else if (!this._standalone) {
-      // v3.0.74：半圆角（half）——
-      //   点播：上边两角直角 + 下边两角圆角（helper mode=3）
-      //   电视直播：四角全直（直播窗只在圆角档保留右上角 R 角）
-      if (__cornerStyle === 'half') mode = this._isLive ? 'none' : 'half';
-      else mode = this._isLive ? 'top-right' : 'all';
+      if (this._isLive) {
+        // v3.0.75：电视直播窗只看「标题栏四角」——
+        //   圆角：仅右上角 R 角（其余三角直角，给窗口控制按钮让位）；
+        //   直角 / 半圆角：四角全直。
+        // 两条设置都必须是圆角，直播窗才留右上角 R 角；任一处是直角/半圆角则四角全直
+        // （这样「窗口直角时 MPV 也直角」的总则不会被单看标题栏破坏）
+        mode = (__barCornerStyle === 'round' && __cornerStyle === 'round') ? 'top-right' : 'none';
+      } else {
+        // v3.0.74/75：点播窗跟「窗口四角」三档
+        //   half = 上边两角直角 + 下边两角 20px 圆角（helper mode=3）
+        mode = (__cornerStyle === 'half') ? 'half'
+          : ((__cornerStyle === 'square') ? 'none' : 'all');
+      }
     }
-    // v3.0.70：设置页「窗口四角」选了直角 → mpv 原生窗口也保持直角（下发 none 清掉裁剪区域）
-    if (__cornerStyle === 'square') mode = 'none';
     // 独立播放器（直播/独立窗口）恒为直角，从未裁过区域，无需再下 none 指令
     if (mode === 'none' && this._standalone) return;
     const scale = this._scaleFactor || 1;

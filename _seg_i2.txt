@@ -1,0 +1,41 @@
+F 合并，60fps 上限）
+                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0), buttons: 1 };
+                if (!W.__fnosDsRaf) {
+                  W.__fnosDsRaf = (W.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
+                    W.__fnosDsRaf = 0;
+                    const p = W.__fnosDsPend;
+                    W.__fnosDsPend = null;
+                    if (!p) return;
+                    try { ipcRenderer.send('win-drag-move', p); } catch (_) {}
+                  });
+                }
+              } catch (_) {}
+            };
+            W.addEventListener('mousemove', __fwd, true);
+            W.addEventListener('pointermove', __fwd, true);
+            W.addEventListener('mouseup', __endDrag, true);
+            W.addEventListener('pointerup', __endDrag, true);
+            // v3.0.66：失焦 / 页面隐藏也要复位（拖动中切窗、锁屏、任务视图都会丢 pointerup）
+            W.addEventListener('blur', __endDrag, true);
+            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
+            W.addEventListener('pointercancel', __endDrag, true);
+            // v3.0.77（电视直播窗拖不动）——鼠标落进 MPV 原生窗后松开，本层收不到 mouseup，
+            // 主进程会按「光标连续静止」自行收尾并发这条消息；这里把拖动残留状态（尺寸钉死、
+            // __fnosDs*）复位，否则下一次 resize 会带着旧的 clientWidth/Height 走。
+            try {
+              ipcRenderer.on('window-drag-cancelled', function () {
+                try { __endDrag(); } catch (_) {}
+              });
+            } catch (_) {}
+          }
+        })();
+        bar.appendChild(dragStrip);
+        bar.appendChild(btns);
+        __attachSkinLayers(bar);
+        root().appendChild(bar);
+        // v3.0.70：挂载后立刻按「标题栏四角」设置收口半径（直角=0px / 圆角=10px）
+        try { __fixBarRadius(bar); } catch (_) {}
+    // v2.15.51：四角 R 角 + 修复飞牛主页底部裁切 + 滚动条顶部落到标题栏下方。
+    // 1) 四角 R 角：body 加 clip-path:inset(0 round 20px)（标题栏保持长方形直角，仅 body 四角圆角），
+    //    html 不加 clip-path——避免 v2.15.47 把标题栏顶部两角也裁成圆角的问题。
+    // 2) 底部裁切根因

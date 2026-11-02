@@ -1,0 +1,106 @@
+n.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
+        // v1.62：原生拖拽兜底。-webkit-app-region:drag 在置顶嵌入 mpv 存在时可能失灵，
+        // 这里在顶部热区/标题栏空白处左键 mousedown 主动调 startDrag；点按钮/☰ 时 target
+        // 命中按钮（no-drag 区）不触发，避免影响点击。
+        // v2.17.45：双击标题栏最大化/还原。drag region 上 dblclick 事件被系统拖拽机制吞掉
+        // 不触发（旧 bar.addEventListener('dblclick') 实测无效），改为在 mousedown 里用两次
+        // 按下的时间/位置间隔自判双击：双击→window-maximize（__toggleMaxWin 已支持还原到
+        // 最大化前的 bounds）；单击→window-drag（拖拽）。
+        let __lastTbDown = 0, __lastTbDownX = 0, __lastTbDownY = 0;
+        const startNativeDrag = (ev) => {
+          try {
+            if (ev.button !== 0) return;
+            const t = ev.target;
+            if (t && t.closest && t.closest('#fnos-tb-dragstrip, button, .fnos-tb-no-drag, #fnos-tb-min, #fnos-tb-max, #fnos-tb-close, #fnos-tb-menu')) return;
+            const __now = Date.now();
+            const __sx = ev.screenX || 0, __sy = ev.screenY || 0;
+            if (__now - __lastTbDown < 450 && Math.abs(__sx - __lastTbDownX) < 8 && Math.abs(__sy - __lastTbDownY) < 8) {
+              __lastTbDown = 0;
+              try { ipcRenderer.send('window-maximize'); } catch (_) {}
+              return;
+            }
+            __lastTbDown = __now;
+            __lastTbDownX = __sx;
+            __lastTbDownY = __sy;
+            ipcRenderer.send('window-drag');
+          } catch (_) {}
+        };
+        hot.addEventListener('mousedown', startNativeDrag);
+        bar.addEventListener('mousedown', startNativeDrag);
+
+        if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
+        bar.appendChild(left);
+        const dragStrip = document.createElement('div');
+        dragStrip.id = 'fnos-tb-dragstrip';
+        // v2.17.46：标题栏中部空白区不再用 -webkit-app-region:drag（drag 区的 mousedown 会被系统
+        // move loop 接管、dblclick 不派发，v2.17.45 的 mousedown 时间戳双击判定因此失效——首次
+        // mousedown 就 send('window-drag')，主进程 w.startDrag() 同步阻塞，第二次 mousedown 收不到）。
+        // 改为普通可交互层：移动超 3px 才发起原生拖拽（纯点击/双击不被打断），dblclick 走 window-maximize。
+        // v2.17.47：上一版漏了主进程实现——window-drag 里调用的 w.startDrag() 不是 BrowserWindow
+        // 的 API，永远抛异常被 catch 吞掉，于是本层彻底不能拖（用户反馈：主程序和应用窗都拖不动）。
+        // 现在拖动改为主进程 setPosition 跟随鼠标（win-drag-start/move/end）。
+        __setCss(dragStrip, 'flex:1;height:100%;min-width:20px;-webkit-app-region:no-drag;pointer-events:auto;cursor:default;');
+        (function () {
+          const W = window;
+          W.__fnosDsDown = null;
+          // v3.0.51（用户反馈：拖动窗口时边沿抖动）——
+          // 拖动期间系统侧会把客户区尺寸重算成 1~3px 不同的值（日志实测：一次拖动 7 秒 205 条
+          // resize，约每帧一条），页面根节点跟着每帧重排，肉眼就是「窗口边缘/圆角抖动 + 图标网格跳」。
+          // 按下标题栏时记下当前客户区尺寸并把 <html> 钉死在这个尺寸（!important），松手解锁：
+          // 拖动过程中系统再怎么报 1~3px 的尺寸变化，页面也不会重排。对布局的影响只有 ±1~3px。
+          const __pinSize = function () {
+            try {
+              if (W.__fnosPin) return;
+              const de = document.documentElement;
+              W.__fnosPin = { w: de.clientWidth || W.innerWidth, h: de.clientHeight || W.innerHeight, pw: de.style.width, ph: de.style.height };
+              de.style.setProperty('width', W.__fnosPin.w + 'px', 'important');
+              de.style.setProperty('height', W.__fnosPin.h + 'px', 'important');
+            } catch (_) {}
+          };
+          const __unpinSize = function () {
+            try {
+              if (!W.__fnosPin) return;
+              const de = document.documentElement;
+              if (W.__fnosPin.pw) de.style.setProperty('width', W.__fnosPin.pw); else de.style.removeProperty('width');
+              if (W.__fnosPin.ph) de.style.setProperty('height', W.__fnosPin.ph); else de.style.removeProperty('height');
+              W.__fnosPin = null;
+            } catch (_) {}
+          };
+          // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时也能持续收到
+          // 移动事件（否则 Windows 停止投递 WM_MOUSEMOVE，拖动会中途卡住）。
+          // ---- v3.0.66 拖动重建（用户工单：拖动标题栏后点 × 点不中、窗口跟着鼠标一起跑）----
+          // 旧实现的三个坑：① pointerdown 无条件 setPointerCapture，把后续指针事件全锁给拖动层；
+          //   ② mousedown 立刻发 win-drag-start，主进程马上进入拖动态（最大化窗口会在首条 move 时
+          //   unmaximize 并跳位）；③ 没有阈值，1px 抖动就算拖动，单击被吞成拖动。
+          // 现在：按钮/控件按下直接放行（不捕获、不发拖动消息）；移动超过 4px 才进入拖动并迟发
+          //   win-drag-start；指针捕获也在那一刻才开；松手 / 失焦 / 左键已抬起 立刻释放并复位；
+          //   每条 move 都带上 buttons，主进程再验一次「左键确实按着」，杜绝状态残留导致窗口漂移。
+          const __isCtl = function (t) {
+            try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
+          };
+          const __endDrag = function () {
+            try { if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end'); } catch (_) {}
+            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
+            W.__fnosDsPid = null;
+            __unpinSize(); // v3.0.51：松手解锁页面尺寸
+          };
+          dragStrip.addEventListener('pointerdown', function (e) {
+            // v3.0.66：此处不再捕获指针——预捕获会把按钮的 click 抢走（工单⑤ setPointerCapture）
+            try { if (e.pointerId != null) W.__fnosDsPid = e.pointerId; } catch (_) {}
+          });
+          dragStrip.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) return;
+            if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
+            W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
+            W.__fnosDsDrag = false;
+            // v3.0.66：win-drag-start 不再在这里发，改由 __fwd 判定超过 4px 阈值后迟发
+          });
+          dragStrip.addEventListener('dblclick', function (e) {
+            W.__fnosDsDown = null; W.__fnosDsDrag = true;
+            __unpinSize(); // v3.0.51：双击最大化前解除尺寸钉死
+            try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+            try { ipcRenderer.send('window-maximize'); } catch (_) {}
+          });
+          if (!W.__fnosDsHooked) {
+            W.__fnosDsHooke

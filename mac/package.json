@@ -1,8 +1,8 @@
 {
-  "name": "fnos-mac",
+  "name": "fnos-desktop",
   "productName": "FNOS",
-  "version": "1.0.0",
-  "description": "FNOS 桌面客户端 · macOS 原生规范版",
+  "version": "3.0.81",
+  "description": "FNOS 桌面客户端 · macOS",
   "main": "src/main/index.js",
   "author": "FNOS",
   "license": "MIT",
@@ -22,7 +22,7 @@
     "electron-builder": "26.18.0"
   },
   "build": {
-    "appId": "com.fnos.client.mac",
+    "appId": "com.fnos.desktop",
     "productName": "FNOS",
     "copyright": "Copyright © 2026 FNOS",
     "asar": true,
@@ -34,8 +34,11 @@
     "files": [
       "src/**/*",
       "assets/**/*",
+      "extensions/**/*",
       "package.json",
-      "!**/*.map"
+      "!**/*.map",
+      "!**/*.md",
+      "!**/_*.txt"
     ],
     "mac": {
       "category": "public.app-category.utilities",
@@ -61,7 +64,7 @@
           ]
         }
       ],
-      "artifactName": "FNOS-mac-${version}-${arch}.${ext}",
+      "artifactName": "FNOS-${version}-mac-${arch}.${ext}",
       "extendInfo": {
         "LSMinimumSystemVersion": "11.0",
         "LSApplicationCategoryType": "public.app-category.utilities",
@@ -78,7 +81,7 @@
       "identity": null
     },
     "dmg": {
-      "artifactName": "FNOS-mac-${version}-${arch}.${ext}",
+      "artifactName": "FNOS-${version}-mac-${arch}.${ext}",
       "window": {
         "width": 620,
         "height": 420

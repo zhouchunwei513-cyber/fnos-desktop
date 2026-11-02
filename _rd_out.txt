@@ -1,0 +1,69 @@
+526: // 标题栏有效高度：皮肤 titlebar.height（20~80，默认 34）→ --fnos-bar-h（body 下移量）+ bar inline 高度
+533: if (el && el.style) el.style.setProperty('--fnos-bar-h', __skinHeight + 'px');
+681: if (bgLayer) { bgLayer.style.display = 'none'; bgLayer.style.backgroundImage = 'none'; bgLayer.style.backgroundColor = 'transparent'; bgLayer.innerHTML = ''; }
+682: if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; shapeLayer.innerHTML = ''; }
+716: try { bgLayer.style.backgroundColor = 'rgba(12,16,30,.94)'; } catch (_) {}
+728: bgLayer.style.backgroundImage = 'url("' + url + '")';
+729: bgLayer.style.backgroundSize = bg.size || 'cover';
+730: bgLayer.style.backgroundPosition = bg.position || 'center';
+731: bgLayer.style.backgroundRepeat = bg.repeat || 'no-repeat';
+743: if (bgLayer) { bgLayer.style.backgroundColor = bg.color || '#3B82F6'; bgLayer.style.display = 'block'; hasBg = true; }
+745: if (bgLayer) { bgLayer.style.backgroundImage = bg.gradient || bg.css || ''; bgLayer.style.display = 'block'; hasBg = true; }
+761: shapeLayer.style.backgroundImage = 'url("' + url + '")';
+762: shapeLayer.style.backgroundSize = shape.stretch === false ? (shape.size || 'auto') : '100% 100%';
+763: shapeLayer.style.backgroundPosition = shape.position || 'center';
+764: shapeLayer.style.backgroundRepeat = shape.repeat || 'no-repeat';
+770: shapeLayer.style.backgroundImage = 'none';
+892: bar.style.background = 'transparent';
+893: bar.style.backgroundImage = 'none';
+894: bar.style.backdropFilter = 'none';
+930: bar.style.backgroundImage = noise + ', ' + __topline + ', linear-gradient(180deg, ' + __w(1) + ' 0%, ' + __w(0.86) + ' 14%, ' + __w(0.50) + ' 46%, ' + __w(0.26) + ' 80%, ' + __w(0.34) + ' 100%)';
+931: bar.style.backgroundRepeat = 'repeat, no-repeat, no-repeat';
+932: bar.style.backgroundSize = '120px 120px, 100% 100%, auto';
+933: bar.style.backgroundColor = a > 0.001 ? hexToRgba(TB.color, alpha) : 'rgba(16,20,36,0.34)';
+934: bar.style.backdropFilter = 'blur(' + __blur + 'px) saturate(160%)';
+938: bar.style.background = hexToRgba(TB.color, a);
+939: bar.style.backdropFilter = 'none';
+949: bar.style.background = __isSettingsS ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
+950: bar.style.backdropFilter = 'none';
+1232: menuBtn.addEventListener('mouseenter', () => { menuBtn.style.background = 'rgba(255,255,255,0.12)'; });
+1233: menuBtn.addEventListener('mouseleave', () => { menuBtn.style.background = 'transparent'; });
+1262: b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
+1263: b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+1437: 'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !im
+1447: 'html{overflow:hidden !important;height:100% !important;box-sizing:border-box !important;padding-top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;clip-path:inset(0 round calc(20px / var
+1449: 'html>body .h-screen,html>body .h-dvh{height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1450: 'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1451: 'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1452: 'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
+1466: 'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;min-h
+1475: 'html>body>.semi-portal{top:calc(-1 * var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1485: 'html>body .h-screen,html>body .h-dvh{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1486: 'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1491: 'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1492: 'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+1507: 'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;min-height:0 !important;max-heig
+1521: 'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important
+1542: 'html>body .h-screen,html>body .h-dvh{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+1543: 'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+1549: 'html>body [class*="100vh"],html>body [class*="100dvh"],html>body [class*="h-screen"],html>body [class*="h-dvh"],html>body [class*="dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f
+1550: 'html>body [style*="100vh"],html>body [style*="100dvh"],html>body [style*="dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+1556: 'html>body iframe{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}' +
+1557: 'html>body div:has(iframe){max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
+1788: b.addEventListener('mouseenter', () => { b.style.background = hoverBg; });
+1789: b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+
+<body class="settings-body">
+  <main class="settings-card">
+    <header class="settings-head">
+      <div class="settings-logo" aria-hidden="true">
+        <img src="assets/fnos-logo.png" alt="fnOS" width="36" height="36" />
+      </div>
+      <div>
+        <h1>FNOS 设置</h1>
+        <p id="version-line"></p>
+      </div>
+    </header>
+
+    <section class="settings-section">
+      <div class="sectio

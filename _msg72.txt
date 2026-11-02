@@ -1,0 +1,22 @@
+fix(settings): 四角选项即时生效 + 保存真正落盘（v3.0.72）
+
+用户实测反馈两点：1) 设置页「标题栏四角 / 窗口四角」点了直角不立刻变；
+2) 点「保存界面设置」也没保存住（settings.json 里 barCorner/winCorner 一直是 round）。
+
+根因两条：
+1) 不即时生效：v3.0.70 的选择按钮只改本地选中态，从不发预览；而 settings:preview-titlebar
+   的消息体里也没有 barCorner/winCorner，titlebar-inject 收到后无值可改。
+2) 保存不了：settings-preload.js 的 setUIOptions 白名单没有这两个字段，渲染层传了也被丢掉，
+   主进程只能回落到 settings.json 的旧值 round —— 表面看就是“保存无效”。
+
+改动：
+- settings.js：四角点击后立刻走 tbPreview()（40ms 防抖）；预览消息体带上 barCorner/winCorner；
+  保存失败时按钮不再静默还原，给出「保存失败，请重试」。
+- settings-preload.js：setUIOptions / previewTitleBar 白名单补 barCorner / winCorner，
+  非法值(非 round|square)一律丢弃，避免脏值写进配置。
+- main.js：settings:preview-titlebar 按需透传四角字段（不带时保持现状不动，不影响其它滑块预览）。
+
+验证：Edge headless 跑真实 settings.html + settings.js（Proxy 假 fnosSettings），
+点窗口直角 → 立即发出 previewTitleBar{winCorner:square}；点标题栏直角 → barCorner:square；
+点保存 → setUIOptions 载荷含 barCorner/winCorner=square，按钮显示「已保存（即时生效）」。
+另用 stub electron 单测 settings-preload.js：合法值透传、非法值丢弃、未传字段不出现。

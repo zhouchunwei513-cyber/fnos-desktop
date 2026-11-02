@@ -1,0 +1,13 @@
+feat(v3.0.70): 标题栏四角 / 窗口四角可分别选直角或圆角
+
+- 设置页新增两项「标题栏四角」「窗口四角」（圆角 / 直角，互不影响）：
+  * 标题栏四角：圆角 = 原 10px（默认，数值与逻辑不变）；直角 = 0px
+  * 窗口四角：圆角 = 原 20px（默认，数值与逻辑不变）；直角 = 不裁圆角
+- main.js：settings:get / settings:get-titlebar 下发 barCorner+winCorner，
+  settings:set-ui-options 落盘并随 tbPayload 广播（实时生效，无需重启）
+- titlebar-inject.js：__fixBarRadius 按 barCorner 取半径；新增 __applyWinCornerStyle()
+  用一条高优先级规则覆盖各窗口分支的 20px clip-path（设置窗 / 第三方应用窗 / 应用窗 /
+  认证页 / 主窗口 五处一次覆盖），收到 settings:titlebar-changed 即时切换
+- mpv-player.js：新增模块级 setCornerStyle()，窗口四角为直角时不再对 mpv 原生窗口
+  SetWindowRgn 裁圆角（下发 none 清掉已裁区域）；启动即同步，保存设置即刻同步
+- 默认值仍为圆角，老用户升级后观感与行为完全不变

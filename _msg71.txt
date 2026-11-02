@@ -1,0 +1,18 @@
+fix(mpv): 降低 MPV 前置等级——只压在飞牛影视/电视直播之上并跟随，不再系统级置顶
+
+- 根因：嵌入式 mpv 原生窗口用 mpv 的 ontop(=HWND_TOPMOST) 常驻置顶，属于系统级最顶层，
+  会压住其它程序和任务栏，所以观感上“前置等级太高”。
+- 改为 Win32 从属窗口（owner）层级：把 mpv 窗口的 GWLP_HWNDPARENT 设成宿主
+  BrowserWindow（飞牛影视 / 电视直播窗）的 HWND——Windows 保证 owned 窗口恒定压在
+  owner 之上（宿主拖动/激活/最大化都不会盖住 mpv），但不再是 topmost，
+  切到别的程序时不再压人家、也不压任务栏。
+- mpv-player.js：常驻 helper 的 C# 增加 SetOwner（SetWindowLongPtr/hWndParent），
+  协议新增 `o <mpvPid> <ownerHwnd>` 指令并回执 OWNER；新增 attachOwner()（失败自动重试
+  约 12s）、reassertOwner()（周期补挂，防换片/进出全屏重建窗口丢 owner）。
+  DLL 缓存换名 fmpvc4.dll + Version 升 3，避免旧缓存缺方法。
+- mpv-surface.js：起播即挂 owner；层级统一由 _applyTopPolicy() 决定——
+  常规窗口化 ontop=no（从属关系已保证在宿主之上），宿主全屏 / 画中画时才 ontop=yes
+  （这两个场景本来就要盖住任务栏）。设置页/对话框开关不再把 mpv 重新置顶成 topmost。
+- 兜底：owner 挂接失败（helper 不可用等）时保持原有 ontop 行为，播放链路不受影响。
+- 跟随逻辑不变：宿主 move/resize/全屏/最大化 仍按视频区几何实时贴合，owner 关系再保证
+  层级始终在宿主之上，不会再被宿主窗口自己盖住。

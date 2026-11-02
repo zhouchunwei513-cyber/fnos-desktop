@@ -1,0 +1,11 @@
+vendor                 hls.min.js                               413952
+assets                 bg.jpg                                   738660
+assets                 fnos-logo-official.png                   5158
+assets                 fnos-logo.png                            15946
+assets                 logo.svg                                 164
+extensions             knas-media                               DIR
+mpv                    d3dcompiler_43.dll                       4481992
+mpv                    mpv.exe                                  120330240
+mpv-config             mpv.conf                                 1724
+mpv-config             script-opts                              DIR
+mpv-config             scripts                                  DIR

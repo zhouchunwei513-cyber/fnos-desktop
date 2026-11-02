@@ -1,0 +1,60 @@
+et.x; d.oy = target.y; d.sx = sx; d.sy = sy; d.lx = target.x; d.ly = target.y;
+      d.w0 = target.width; d.h0 = target.height; // 还原后的尺寸就是本次拖动的基准尺寸
+      try { fnosLog('info', 'window', 'drag.restore win=' + d.win.id + ' b=' + [target.x, target.y, target.width, target.height].join(',')); } catch (_) {}
+      return;
+    }
+    const nx = Math.round(d.ox + sx - d.sx);
+    const ny = Math.round(d.oy + sy - d.sy);
+    // v3.0.51（用户反馈：拖动窗口时边沿抖动）——
+    // 日志实锤（渲染层 ball.resize 共 695 条，全部落在拖动时段）：拖动期间客户区尺寸在
+    // ±1~3px 内以 15~30Hz 来回跳（10-30 一次拖动 7 秒 205 条≈每帧一次），页面跟着每帧重排，
+    // 肉眼就是窗口边缘/圆角抖动 + 图标网格跳。旧尺寸锁「偏差>2px 才纠正、每 120ms 才查一次」，
+    // ±1~2px 的高频抖动全落在阈值内，一次都抓不住（v3.0.23 只解决了「越拖越大」这种大偏差）。
+    // 新实现：拖动期间每帧把「位置 + 拖动起始尺寸」用一次 setBounds 原子写入——系统侧任何
+    // 尺寸改动都会在下一帧被覆盖；同时省掉原来 120ms 一次的同步 getBounds 查询，比旧版更轻。
+    if (nx === d.lx && ny === d.ly) return;
+    d.lx = nx; d.ly = ny;
+    try {
+      if (d.w0 && d.h0) d.win.setBounds({ x: nx, y: ny, width: d.w0, height: d.h0 });
+      else d.win.setPosition(nx, ny);
+    } catch (_) {
+      try { d.win.setPosition(nx, ny); } catch (_) {}
+    }
+  } catch (_) {}
+});
+ipcMain.on('win-drag-end', (e) => {
+  try {
+    const d = __winDragState;
+    __winDragState = null;
+    try { __dragPollStop(); } catch (_) {}
+    __winDragEndAt = Date.now(); // v3.0.23：供主窗比例锁压掉拖动尾巴上的伪 resized
+    if (d && d.win && !d.win.isDestroyed()) {
+      // v3.0.23：松手再核一次尺寸，被系统在拖动尾部改大的也一并纠正。
+      // v3.0.51：阈值从 2px 收到 0（拖动期间客户区 1~3px 的抖动也要抹平），松手后再钉一次。
+      try {
+        const b = d.win.getBounds();
+        if (d.w0 && d.h0 && (b.width !== d.w0 || b.height !== d.h0)) {
+          d.win.setBounds({ x: b.x, y: b.y, width: d.w0, height: d.h0 });
+          try { fnosLog('warn', 'window', 'drag.end.size-lock win=' + d.win.id + ' from=' + b.width + 'x' + b.height + ' to=' + d.w0 + 'x' + d.h0); } catch (_) {}
+        }
+      } catch (_) {}
+      try { fnosLog('info', 'window', 'drag.end win=' + d.win.id + ' p=' + d.lx + ',' + d.ly + ' size=' + d.w0 + 'x' + d.h0); } catch (_) {}
+    }
+    // v3.0.51：拖动中 __ghostBurst 只做单次刷新，松手后在这里补刷一轮，收掉残留的 DWM 兜底灰。
+    try { if (__ghostBurst) __ghostBurst(); } catch (_) {}
+  } catch (_) {}
+});
+// 旧通道保留（drag region 区域的兜底调用点仍在），实现同 win-drag-*
+ipcMain.on('window-drag', (e) => {
+  try {
+    const w = hostWindowFromSender(e && e.sender);
+    if (!w || w.isDestroyed()) return;
+    const cp = screen.getCursorScreenPoint();
+    const st = __winDragBegin(w, cp && cp.x, cp && cp.y);
+    if (st) __winDragState = st;
+  } catch (_) {}
+});
+// v2.17.20: 视图缩放持久化。此前 Ctrl+滚轮 / 菜单「视图-放大/缩小」只改内存里的
+// zoomFactor，关掉主程序或应用窗口后全部丢失（用户实测：调好的视图大小保存不了）。
+// 这里按「窗口身份」落到 userData/zoom-state.json：主窗口固定 key=shell，应用/直播
+// 窗口用 origin+pathname，不同应用互不覆盖。渲染侧通过 sendS

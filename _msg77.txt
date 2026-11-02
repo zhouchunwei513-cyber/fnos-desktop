@@ -1,0 +1,58 @@
+fix(live): 电视直播窗拖不动 + MPV 前置等级过高（v3.0.77）
+
+工单：①电视直播窗口拖动不了；②MPV 播放器前置等级还是太高，只要保证在飞牛影视 /
+电视直播之上并跟随宿主窗层级即可。
+
+① 电视直播窗拖不动 —— 根因（真机实测确认）：
+   MPV 是独立的原生子窗口，从宿主内容区顶边 y=34 起整片覆盖内容区
+   （diag 里 mpv.embed.play dipRect {x:300,y:34,width:980,height:731}）。
+   拖动时窗口位置由 win-drag-move 驱动、天然滞后光标一帧，光标一旦越过 y=34
+   就落进 MPV 原生窗 —— Chromium renderer 从此收不到 mousemove/mouseup，
+   拖动当帧即死锁。DOM 侧 setPointerCapture 只做 renderer 内事件路由，
+   不会调用原生 SetCapture，救不了这个场景。
+   实测旁证：EnumWindows 查 mpv hwnd 的 owner 已是直播窗（v3.0.71 的
+   GWLP_HWNDPARENT 方案生效中）、exstyle=0x100 无 WS_EX_TOPMOST、
+   位置 = 直播窗 + 34px 偏移；WM_NCHITTEST 打标题栏 y=10..40 全返回
+   HTCLIENT(1)、y=3 返回 HTTOP(12) —— 事件本身能到 renderer，不是穿透问题。
+   修法（不再依赖 renderer 事件）：
+   - main.js 新增 __dragPollTimer / __dragPollStop() / __dragPollStart(d)：
+     拖动期间主进程按 screen.getCursorScreenPoint() 每 16ms 驱动一次
+     setBounds（保持 w0/h0 不变，只改 x/y），与渲染层原路径共用同一
+     (ox,oy,sx,sy) 基准，不打架；首帧（ticks<2）跳过，避免起步抖一下。
+   - 光标连续静止 600ms（Windows 双击判定本身就是 500ms 量级，取 600 不会
+     把「拖动中手停一下」误判成结束）、或 win-drag-end / win-drag-move 的
+     buttons=0 分支到达，即收尾：清 __winDragState、补 __winDragEndAt、
+     触发 __ghostBurst 刷底色，并给渲染层发 window-drag-cancelled。
+   - maxPending（最大化待还原）期间 poll 主动让位，交给原 move 分支处理还原。
+   - win-drag-start 时用主进程读到的光标校准 st.sx/st.sy，消掉缩放偏差。
+   - titlebar-inject.js 两套 bar 实现（build / buildEmbed）各加一条
+     ipcRenderer.on('window-drag-cancelled') -> __endDrag()，
+     让尺寸钉死（__pinSize）与 __fnosDs* 残留复位，否则下一次 resize
+     会带着旧的 clientWidth/Height 走。
+
+② MPV 前置等级过高 —— 根因：
+   v3.0.71 的 owned-window 方案（C# SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT,
+   宿主hwnd)，owner-attached -> _ownerOk -> _applyTopPolicy 把 ontop 设 no）
+   本来是对的，实测 owner 也确实挂上了；但 mpv-surface.js 的 _raiseMpv
+   在宿主每次 move / resize / focus / show / restore / loaded 时都
+   「无条件」player.setOntop(true)，等于一遍遍把 mpv 重新打成 HWND_TOPMOST，
+   刚挂上的 owner 从属关系被反复废掉 —— 这就是用户看到的「前置等级还没改过来」。
+   修法：_raiseMpv 在 _ownerOk && !_standalone 时改走 _applyTopPolicy()，
+   常规窗口化播放 ontop=no，靠 Windows owned-window 规则保证
+   「恒在宿主之上、但不盖住别的程序」；只有画中画 / 宿主全屏
+   （_applyTopPolicy 里的 _pip / _isHostFs）才真置顶。
+   owner 尚未挂上或独立播放器（--ontop=no 的另一条路径）时保留旧行为，
+   避免 helper 起不来导致 mpv 被宿主盖住看不见。
+
+验证：
+- node --check main.js / mpv-surface.js / titlebar-inject.js 全通过；
+- 单测 C:\nodetmp\ut77.js（vm 从 main.js 抽 __dragPollStart，注入
+  fake setInterval/clearInterval + mock screen.getCursorScreenPoint，
+  fake timer 手动推进时钟）22 条全绿：
+  跟随位移 / 尺寸不变 / lx-ly 同步 / 位移不重复叠加 / 首帧不动 /
+  拖动中已移动 / 未到 600ms 不结束 / 超时结束 / 通知渲染层复位 /
+  ghostBurst 触发 / 结束时间已写 / 定时器已停 / 还原等待期不动 /
+  还原后正常跟随 / 状态清空后自停 / 不误移动窗口 / 销毁后停止；
+  _raiseMpv 决策 5 组：owner 已挂只调 _applyTopPolicy（不再 setOntop）、
+  owner 未挂保留 setOntop(true)、pip 不动、docked 不动、standalone 保留旧行为；
+- 版本号两处同步 3.0.76 -> 3.0.77（package.json + main.js APP_VERSION）。

@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- v2.4.13 r15：内嵌窗型宿主壳页面。硬规则：内嵌窗口绝不剥离 fnOS 框架转独立跳出窗、
+     绝不顶层裸 loadURL 应用 URL——应用以内嵌 iframe 元素渲染（≡fnOS 桌面 iframe 窗搬家到桌面）。 -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>FNOS Embed</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #1f1f1f; overflow: hidden; }
+    iframe { border: 0; width: 100%; height: 100%; display: block; background: #fff; }
+  </style>
+</head>
+<body>
+  <iframe id="app" allow="autoplay; fullscreen; clipboard-read; clipboard-write; fullscreen" allowfullscreen></iframe>
+  <script>
+    (function () {
+      try {
+        var u = '';
+        try { u = new URLSearchParams(location.search).get('url') || ''; } catch (_) {}
+        if (/^https?:\/\//i.test(u)) {
+          document.getElementById('app').src = u;
+        } else {
+          document.body.innerHTML = '<div style="color:#eee;font:14px sans-serif;padding:24px">无效的应用地址</div>';
+        }
+      } catch (_) {}
+    })();
+  </script>
+</body>
+</html>

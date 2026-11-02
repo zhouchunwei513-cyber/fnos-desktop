@@ -1,0 +1,46 @@
+﻿=== help.html @ 7128
+-thumb:hover,
+body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,.28);
+}
+</style>
+<style>
+/* v3.0.62：可选「透明界面」——去掉页面自带黑底与壁纸层，只留淡蒙层保证可读 */
+html.fnos-ui-transparent body { background: rgba(6,8,14,.38) !important; }
+html.fnos-ui-transparent .bg-wrap { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="bg-wrap">
+  <div class="bg">
+    <svg class="streak s1" viewBox="0 0 1000 600" preserveAs
+=== about.html @ 2425
+8b; }
+  .link { margin-top: 10px; font-size: 11px; color: #46536b; letter-spacing: .3px; }
+</style>
+<style>
+/* v3.0.62：可选「透明界面」——去掉页面自带黑底与渐变层，只留淡蒙层保证可读 */
+html.fnos-ui-transparent body { background: rgba(5,6,10,.38) !important; }
+html.fnos-ui-transparent .bg { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="bg"></div>
+  <div class="wrap">
+    <img class="logo" src="assets/fnos-logo.png" alt="FNOS">
+
+=== settings.css @ 21713
+nter;
+  padding: 0;
+}
+.skin-card:hover .skin-del { display: flex; }
+.skin-del:hover { background: #e5484d; }
+
+
+/* v3.0.62：可选「透明界面」——开启后设置页蒙层变淡，背后窗口内容可见 */
+html.fnos-ui-transparent .scrim {
+  background: radial-gradient(ellipse at 50% 40%, rgba(8,10,22,.10), rgba(5,6,10,.26) 70%) !important;
+}
+html.fnos-ui-transparent .settings-head { border-bottom-color: rgba(255,255,255,.10); }
+html.fnos-ui-transparent .settings-sec

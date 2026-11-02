@@ -1,0 +1,142 @@
+ // Windows 上 Electron 原生 acrylic 与自定义 20px 圆角不可兼得（实测：非透明窗才出磨砂，
+    // 而非透明窗的 SetWindowRgn / DWM 圆角都到不了 20px）。因此磨砂改为「自绘」：
+    // 主进程抓取窗口背后的真实屏幕画面（titlebar-frost.js），这里做低分辨率放大 + blur，
+    // 视觉上等价于「透出桌面且模糊」，同时透明窗 + 10px/20px/半圆角全部保持不变。
+    let __frostGeom = null;   // { url, sw, sh, wx, wy }
+    let __frostClip = null;   // 裁切容器（只裁磨砂层，不影响皮肤异形层）
+    let __frostEl = null;     // 模糊层本体
+
+    function __ensureFrostLayer(bar) {
+      if (__frostClip && __frostClip.parentNode === bar && __frostEl) return __frostEl;
+      if (!__frostClip) {
+        __frostClip = document.createElement('div');
+        __frostClip.id = 'fnos-tb-frost-clip';
+        __frostClip.setAttribute('aria-hidden', 'true');
+        __setCss(__frostClip, [
+          'position:absolute', 'left:0', 'top:0', 'right:0', 'bottom:0',
+          'overflow:hidden', 'pointer-events:none', 'z-index:0',
+          'border-radius:inherit'
+        ].join(';'));
+        __frostEl = document.createElement('div');
+        __frostEl.id = 'fnos-tb-frost';
+        __frostEl.setAttribute('aria-hidden', 'true');
+        __setCss(__frostEl, [
+          'position:absolute', 'left:-72px', 'top:-72px', 'right:-72px', 'bottom:-72px',
+          'pointer-events:none', 'background-repeat:no-repeat',
+          'filter:blur(18px) saturate(150%)',
+          'transform:translateZ(0)', 'will-change:background-position'
+        ].join(';'));
+        __frostClip.appendChild(__frostEl);
+      }
+      try { bar.insertBefore(__frostClip, bar.firstChild); } catch (_) {}
+      __paintFrost(bar);
+      return __frostEl;
+    }
+
+    function __dropFrostLayer(bar) {
+      try {
+        if (__frostClip && __frostClip.parentNode) __frostClip.parentNode.removeChild(__frostClip);
+      } catch (_) {}
+    }
+
+    function __paintFrost(bar) {
+      if (!__frostEl) return;
+      const g = __frostGeom;
+      if (!g || !g.url) {
+        __frostEl.style.backgroundImage = 'none';
+        return;
+      }
+      // 模糊层的坐标系原点在标题栏左上角 -72px 处；窗口左上角在屏幕上的逻辑坐标为 (wx, wy)
+      // v3.0.78：磨砂层是不透明截图，会把 bar 自己的 tint 底色盖掉 →
+      // 改成多重背景：第一层 linear-gradient = 染色，第二层 = 窗口背后的模糊截图
+      const __fa = Math.max(0.02, Math.min(0.35, (TB.frostAlpha == null ? 10 : Number(TB.frostAlpha)) / 100));
+      const __tint = hexToRgba(TB.frostColor || '#ffffff', __fa);
+      __frostEl.style.backgroundImage = 'linear-gradient(' + __tint + ',' + __tint + '), url("' + g.url + '")';
+      __frostEl.style.backgroundSize = '100% 100%, ' + g.sw + 'px ' + g.sh + 'px';
+      __frostEl.style.backgroundPosition = '0 0, ' + (72 - g.wx) + 'px ' + (72 - g.wy) + 'px';
+    }
+
+    // 主进程采样结果（titlebar-frost.js 每 0.24~1.1s 推一次）
+    try {
+      ipcRenderer.on('titlebar-frost-bg', (_e, d) => {
+        try {
+          if (!d || !d.url) return;
+          __frostGeom = d;
+          const bar0 = document.getElementById('fnos-titlebar');
+          if (bar0 && TB.material === 'frosted') __paintFrost(bar0);
+        } catch (_) {}
+      });
+    } catch (_) {}
+
+    function applyStyle(bar) {
+      try {
+        if (!bar) return;
+        if (__applySkinLayers(bar)) {
+          bar.style.setProperty('-webkit-app-region', 'no-drag');
+          bar.__skinNoDrag = true;
+          bar.style.background = 'transparent';
+          bar.style.backgroundImage = 'none';
+          bar.style.backdropFilter = 'none';
+          bar.style.webkitBackdropFilter = 'none';
+          bar.style.boxShadow = 'none';
+          const __skinIconDark = !!(__skinState.skin && __skinState.skin.titlebar && __skinState.skin.titlebar.content && __skinState.skin.titlebar.content.iconDark);
+          bar.__useDarkIcon = !__skinIconDark;
+          const __skStroke = __skinIconDark ? 'rgba(20,20,20,0.92)' : 'rgba(255,255,255,0.95)';
+          const __skShadow = __skinIconDark ? 'drop-shadow(0 1px 1px rgba(255,255,255,0.6))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))';
+          bar.querySelectorAll('svg').forEach((svg) => {
+            svg.querySelectorAll('path,line,rect').forEach((p) => { try { p.style.setProperty('stroke', __skStroke, 'important'); } catch (_) { p.setAttribute('stroke', __skStroke); } });
+            svg.style.filter = __skShadow;
+          });
+          return;
+        }
+        {
+          if (bar.__skinNoDrag) { bar.__skinNoDrag = false; try { bar.style.setProperty('-webkit-app-region', 'drag'); } catch (_) {} }
+          // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
+          const a = TB.opacity / 100;
+          // v2.19.0（用户要求）：磨砂玻璃材质。三层叠加做出"雾面玻璃"：
+          //   1) 细噪点（SVG feTurbulence）—— 关键是它让磨砂"成立"：标题栏盖在 <webview> 等
+          //      跨进程内容之上时，backdrop-filter 未必采样得到，但噪点+高光依然呈现雾面颗粒感
+          //   2) 顶部白色高光渐变 —— 玻璃上沿的受光质感
+          //   3) 底色 —— 用户颜色（磨砂下最低 10% alpha，太透会完全看不见材质）
+          const frosted = TB.material === 'frosted';
+          if (frosted) {
+            // v3.0.78（用户方案）：磨砂 = 透出桌面 + 模糊 + 极淡染色 + 固定 1px 内高光。
+            // 背景由 __frostEl（主进程抓屏 + blur）提供，这里只负责染色与高光，绝不再写 backdrop-filter。
+            const __fa = Math.max(0.02, Math.min(0.35, (TB.frostAlpha == null ? 10 : Number(TB.frostAlpha)) / 100));
+            // 内嵌 bar（webview / 应用窗页面里的标题栏 buildEmbed）收不到 titlebar-frost-bg：
+            // 主进程抓屏只发给窗口自己的 webContents。这里回退为「淡色 + 模糊页面内容」，
+            // 避免变成一层没有背景的半透明白雾。主窗仍走自绘磨砂。
+            const __isEmbed = !!(bar && bar.querySelector && bar.querySelector('#fnos-embed-title'));
+            if (__isEmbed) {
+              __dropFrostLayer(bar);
+              bar.style.background = hexToRgba(TB.frostColor || '#ffffff', __fa);
+              const __fb = 'blur(14px) saturate(140%)';
+              bar.style.backdropFilter = __fb;
+              bar.style.webkitBackdropFilter = __fb;
+              bar.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.06)';
+              bar.style.borderBottom = '1px solid rgba(255,255,255,0.10)';
+            } else {
+              __ensureFrostLayer(bar);
+              bar.style.background = hexToRgba(TB.frostColor || '#ffffff', __fa);
+              bar.style.backdropFilter = 'none';
+              bar.style.webkitBackdropFilter = 'none';
+              bar.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.06)';
+              bar.style.borderBottom = '1px solid rgba(255,255,255,0.10)';
+              __paintFrost(bar);
+            }
+          } else {
+            // v3.0.78（用户方案）：纯色 = 完全不透明，只有底色 + 一条分隔线，不要内高光。
+            __dropFrostLayer(bar);
+            const __sa = Math.max(0.90, Math.min(1, (TB.solidAlpha == null ? 100 : Number(TB.solidAlpha)) / 100));
+            bar.style.background = hexToRgba(TB.solidColor || TB.color || '#101426', __sa);
+            bar.style.backdropFilter = 'none';
+            bar.style.webkitBackdropFilter = 'none';
+            bar.style.boxShadow = 'none';
+            bar.style.borderBottom = TB.divider === false ? 'none' : '1px solid rgba(0,0,0,0.06)';
+          }
+        }
+        // 底色较深时图标用白，较浅时图标用深色——保证对比
+        // v2.15.14：opacity=0 默认走深色渐变 → 也用白图标
+        // v2.19.0：磨砂玻璃底色偏深（用户色+白高光+噪点），图标一律用白
+        // v3.0.78：磨砂底色由「tint 色 + 玻璃浓度」决定，按 tint 亮度判色（白 tint → 深图标）
+        const __lu

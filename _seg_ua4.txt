@@ -1,0 +1,20 @@
+CON_PATH, // v3.0.24：用户反馈层级过高，改普通层级
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: UPD_PROGRESS_PRELOAD,
+      contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
+    },
+  });
+  win.__isGlassDialog = true;
+  win.__noTop = true; // v3.0.24：不参与「阻挡窗强行 screen-saver 置顶」
+  win.webContents.on('did-finish-load', () => __applyGlassUiTheme(win));
+  win.loadFile(UPD_PROGRESS_PAGE, { query: { v: String(ver || '') } }).catch(() => {});
+  win.once('ready-to-show', () => {
+    try { win.show(); win.setAlwaysOnTop(false); win.focus(); } catch (_) {} // v3.0.24：普通层级，不压其它程序
+  });
+  win.on('closed', () => { if (__updProgressWin === win) __updProgressWin = null; });
+  __updProgressWin = win;
+}
+
+function __closeUpdProgress() {
+  const w = __updPr

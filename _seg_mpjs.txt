@@ -1,0 +1,87 @@
+/* v3.0.64 应用菜单（自绘）渲染逻辑
+ * 由 main.js 通过 preload 暴露的 window.fnMenu 通信：
+ *   收 fnmenu:data({items, theme}) → 构建面板 → 量尺寸 → 回报 ready({w,h}) → 显示
+ *   点击叶子项 → invoke(id)（main 按 id 调回原 MenuItem.click）
+ */
+(function () {
+  'use strict';
+
+  var PAD = 18;   /* 留给阴影的边距 */
+  var GAP = 6;    /* 子菜单与父面板的间隙 */
+
+  var root = document.getElementById('root');
+  var panels = [];      /* 所有面板（含各级子菜单） */
+  var basePanel = null;
+  var openChain = [];   /* 当前展开链：{ item, panel } */
+
+  /* ---------- 构建 ---------- */
+
+  function makePanel(items, level) {
+    var panel = document.createElement('div');
+    panel.className = 'panel';
+    panel.dataset.level = String(level);
+    panel.style.display = 'block';
+    panel.style.visibility = 'hidden';
+    panel.style.left = PAD + 'px';
+    panel.style.top = PAD + 'px';
+    allPanels.push(panel);
+    root.appendChild(panel);
+
+    for (var i = 0; i < items.length; i++) {
+      var node = items[i];
+      if (node.t === 'sep') {
+        var sep = document.createElement('div');
+        sep.className = 'sep';
+        panel.appendChild(sep);
+        continue;
+      }
+      var row = document.createElement('div');
+      row.className = 'item' + (node.enabled === false ? ' disabled' : '');
+      row.dataset.id = node.id || '';
+
+      if (node.t === 'checkbox' || node.t === 'radio') {
+        var mark = document.createElement('span');
+        mark.className = 'mark';
+        mark.textContent = node.checked ? '✓' : '';
+        row.appendChild(mark);
+      }
+
+      var lbl = document.createElement('span');
+      lbl.className = 'lbl';
+      lbl.textContent = node.label || ' ';
+      if (node.label) lbl.title = node.label;
+      row.appendChild(lbl);
+
+      if (node.t === 'sub') {
+        var arrow = document.createElement('span');
+        arrow.className = 'arrow';
+        arrow.textContent = '›';
+        row.appendChild(arrow);
+        row.__child = makePanel(node.items || [], level + 1);
+        addHoverHandlers(row, level);
+        bindSubClick(row, level);
+      } else {
+        var acc = document.createElement('span');
+        acc.className = 'acc';
+        acc.textContent = node.accel || '';
+        row.appendChild(acc);
+        addHoverHandlers(row, level);
+        bindClick(row, node);
+      }
+
+      panel.appendChild(row);
+    }
+    return panel;
+  }
+
+  var allPanels = [];
+
+  function addHoverHandlers(row, level) {
+    row.addEventListener('mouseenter', function () {
+      if (row.__child) openChild(row, level);
+      else closeFrom(level);
+    });
+  }
+
+  function bindSubClick(row, level) {
+    row.addEventListener('click', function () { o

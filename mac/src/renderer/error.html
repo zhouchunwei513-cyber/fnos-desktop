@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>页面打不开</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#141821; --muted:#5c6675; --line:#e6e9ef; --card:#ffffff;
+    --soft:#f6f7fa; --accent:#e5484d; --accent-soft:#fdecec; --primary:#2563eb; --primary-fg:#fff;
+    --shadow:0 10px 30px rgba(15,23,42,.07);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#101319; --fg:#e9ecf2; --muted:#98a3b5; --line:#232a36; --card:#161b23;
+      --soft:#1b212b; --accent:#ff6b6b; --accent-soft:#2a1a1c; --primary:#3b82f6; --primary-fg:#fff;
+      --shadow:0 12px 36px rgba(0,0,0,.45);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    /* 内容比窗口高时必须能滚动：align-items:center 在溢出场景会把卡片顶部裁掉（900x566 实测），
+       所以用 flex-start + 卡片 margin:auto 实现"内容少时居中、内容多时从顶部开始滚"。 */
+    display:flex; align-items:flex-start; justify-content:center; padding:24px;
+    overflow:auto;
+  }
+  .card{
+    margin:auto 0; flex:0 0 auto;
+    width:100%; max-width:660px; background:var(--card); border:1px solid var(--line);
+    border-radius:16px; box-shadow:var(--shadow); padding:26px 28px 22px;
+  }
+  .head{display:flex; gap:16px; align-items:flex-start}
+  .ic{
+    flex:0 0 auto; width:46px; height:46px; border-radius:13px; background:var(--accent-soft);
+    display:flex; align-items:center; justify-content:center; color:var(--accent);
+  }
+  .ic svg{width:24px;height:24px}
+  h1{margin:2px 0 4px; font-size:19px; font-weight:650; letter-spacing:.2px}
+  .sub{margin:0; color:var(--muted); font-size:12.5px; word-break:break-all}
+  .sub b{color:var(--fg); font-weight:600}
+  .errbar{
+    margin:18px 0 0; padding:11px 14px; border-radius:10px; background:var(--soft);
+    border:1px solid var(--line); display:flex; gap:10px; align-items:baseline; flex-wrap:wrap;
+  }
+  .errbar .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; color:var(--accent)}
+  .errbar .tip{color:var(--muted); font-size:12.5px}
+  h2{margin:22px 0 10px; font-size:13px; font-weight:650; color:var(--muted); letter-spacing:.4px}
+  ol{margin:0; padding:0; list-style:none; counter-reset:r}
+  li{
+    counter-increment:r; position:relative; padding:0 0 0 30px; margin:0 0 12px;
+  }
+  li:last-child{margin-bottom:0}
+  li::before{
+    content:counter(r); position:absolute; left:0; top:1px; width:20px; height:20px; border-radius:50%;
+    background:var(--soft); border:1px solid var(--line); color:var(--muted);
+    font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center;
+  }
+  li .t{font-weight:600; font-size:13.5px}
+  li .d{color:var(--muted); font-size:12.8px; margin-top:2px}
+  li.hot::before{background:var(--accent-soft); border-color:transparent; color:var(--accent)}
+  .acts{display:flex; gap:10px; margin-top:22px; flex-wrap:wrap}
+  button{
+    font:inherit; font-size:13px; padding:9px 16px; border-radius:9px; cursor:pointer;
+    border:1px solid var(--line); background:var(--soft); color:var(--fg); transition:.15s;
+  }
+  button:hover{border-color:var(--muted)}
+  button.primary{background:var(--primary); border-color:transparent; color:var(--primary-fg)}
+  button.primary:hover{filter:brightness(1.08)}
+  button:disabled{opacity:.55; cursor:default}
+  .foot{margin:16px 0 0; color:var(--muted); font-size:12px; line-height:1.7}
+  .foot code{font-family:ui-monospace,Menlo,Consolas,monospace; background:var(--soft); padding:1px 5px; border-radius:4px; font-size:11.5px}
+  .toast{
+    position:fixed; left:50%; bottom:26px; transform:translate(-50%,10px); opacity:0;
+    background:rgba(20,24,33,.92); color:#fff; padding:8px 16px; border-radius:8px; font-size:12.5px;
+    transition:.22s; pointer-events:none;
+  }
+  .toast.on{opacity:1; transform:translate(-50%,0)}
+  @media (max-width:560px){ .card{padding:20px 18px} body{padding:14px} }
+  /* 矮窗口（应用窗拉到 900x566 这类）压缩留白，让 4 条原因 + 按钮尽量一屏看到，少滚动 */
+  @media (max-height:680px){
+    body{padding:14px}
+    .card{padding:18px 20px 16px}
+    .head{gap:12px}
+    .ic{width:38px;height:38px;border-radius:11px}
+    .ic svg{width:20px;height:20px}
+    h1{font-size:18px}
+    h2{margin:14px 0 8px}
+    ol li{margin-bottom:9px;padding-left:26px}
+    ol li .d{font-size:12.5px;line-height:1.6}
+    .acts{margin-top:14px}
+    .foot{margin-top:12px;font-size:11.5px}
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="head">
+      <div class="ic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </div>
+      <div style="min-width:0">
+        <h1 id="title">页面打不开</h1>
+        <p class="sub" id="sub"></p>
+      </div>
+    </div>
+
+    <div class="errbar">
+      <span class="code" id="code"></span>
+      <span class="tip" id="tip"></span>
+    </div>
+
+    <h2 id="rh">可能的原因（按可能性排序）</h2>
+    <ol id="reasons"></ol>
+
+    <div class="acts">
+      <button id="btnRetry" class="primary">重新加载</button>
+      <button id="btnCopy">复制诊断信息</button>
+    </div>
+
+    <p class="foot" id="foot">
+      如果反复出现，可在「设置 → 日志」查看 <code>fnos-web.log</code>；向开发者反馈时请附上上面的错误码。
+    </p>
+  </div>
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  function g(k) { return q.get(k) || ''; }
+  var app = g('app'), url = g('url'), code = g('code'), desc = g('desc');
+  var http = g('http'), kind = g('kind') || 'network';
+
+  // ---------- 原因库 ----------
+  // hot: 该错误码下最可能的一条，会在序号上高亮
+  var NET = {
+    '-102': {
+      tip: '目标端口拒绝连接',
+      list: [
+        ['应用服务没有运行', '端口拒绝连接最常见的原因是应用进程已退出、正在重启或启动失败。请到 NAS「应用中心」确认该应用是否在运行，必要时点「重启」。'],
+        ['服务只在 NAS 本机（127.0.0.1）上监听', '部分应用只对回环地址开放，仅 NAS 本机能访问；从客户端或其他设备直接连会被拒绝。需要在应用自身配置里把监听地址改为 0.0.0.0，或改为通过反向代理访问。'],
+        ['端口已经变了', '应用重启后可能换了端口，而快捷方式仍指向旧端口。删除此快捷方式，回 NAS 桌面重新打开一次即可刷新地址。'],
+        ['端口被防火墙或反向代理拦截', '检查 NAS 防火墙规则、Docker 端口映射、反向代理是否放行该端口。']
+      ]
+    },
+    '-105': {
+      tip: '域名解析失败',
+      list: [
+        ['域名或 DDNS 已失效', '客户端用的是域名访问，但该域名已过期、DDNS 记录未更新或解析被拦截。改用 IP 直连测试一次即可确认。'],
+        ['DNS 设置异常', '本机 DNS 无法解析该域名。可尝试更换 DNS，或直接用 NAS 的 IP 地址连接。'],
+        ['FNID / 隧道服务未连通', '如果走的是 FNID 远程访问，请确认 NAS 的远程访问服务在线。']
+      ]
+    },
+    '-137': {
+      tip: '名称解析失败',
+      list: [
+        ['主机名无法解析', '目标主机名在本机解析不到。请确认 NAS 地址写的是可访问的 IP 或域名。'],
+        ['本地 hosts / DNS 缓存过期', '局域网 IP 变化后缓存未刷新，重启客户端或清 DNS 缓存后重试。']
+      ]
+    },
+    '-106': {
+      tip: '本机网络已断开',
+      list: [
+        ['客户端所在设备没有联网', '检查本机网络连接（有线 / Wi-Fi / VPN）。'],
+        ['网络切换导致连接中断', '刚刚切换过网络或 VPN 时容易触发，恢复网络后点「重新加载」。']
+      ]
+    },
+    '-118': {
+      tip: '连接超时',
+      list: [
+        ['NAS 关机、休眠或不在线', '目标地址能解析但连不上，通常是对端不可达。确认 NAS 已开机且未休眠。'],
+        ['端口没有对外映射', '外网访问时需要在路由器 / 反代上把该端口映射出去。'],
+        ['防火墙丢弃了数据包', '静默丢包表现为超时而非拒绝连接，检查防火墙与安全软件。'],
+        ['网络链路质量差', '弱网 / 高丢包下握手会超时，换网络后重试。']
+      ]
+    },
+    '-7': {
+      tip: '请求超时',
+      list: [
+        ['NAS 响应过慢或不可达', '应用后端卡住时也会超时。确认 NAS 负载与磁盘状态，稍后重试。'],
+        ['网络链路不稳定', '弱网 / 高丢包下会超时。']
+      ]
+    },
+    '-101': {
+      tip: '连接被重置',
+      list: [
+        ['反向代理或网关主动断开', '反代超时配置过短、后端崩溃都会重置连接。检查反代日志。'],
+        ['TLS 握手失败', 'https 端口用 http 访问（或反之）会被重置，确认协议与端口是否匹配。'],
+        ['安全软件拦截', '部分安全软件会重置可疑连接，临时关闭后复测。']
+      ]
+    },
+    '-107': {
+      tip: 'TLS 协议错误',
+      list: [
+        ['自签名证书未被信任', 'NAS 常用自签证书，客户端通常已放行；若仍报错，确认是否被系统证书策略拦截。'],
+        ['协议与端口不匹配', '用 https 连了 http 端口（或反之）。检查地址里的协议前缀。'],
+        ['TLS 版本过低', '服务端只支持老版本 TLS 时会被拒绝。']
+      ]
+    },
+    '-202': {
+      tip: '证书无效',
+      list: [
+        ['证书已过期或域名不匹配', '用 IP 访问但证书签给域名时会被判无效；改用证书覆盖的域名访问，或改用 http。']
+      ]
+    },
+    '-324': {
+      tip: '服务端返回空响应',
+      list: [
+        ['后端进程崩溃或未就绪', '连接建立成功但没有返回内容，通常是后端异常。重启该应用后重试。'],
+        ['反向代理后端不可用', '反代指向的后端服务已停止。']
+      ]
+    },
+    '-21': {
+      tip: '网络已切换',
+      list: [
+        ['切换网络或 VPN 导致连接失效', '恢复网络后点「重新加载」即可。']
+      ]
+    },
+    '-2': {
+      tip: '加载失败',
+      list: [
+        ['目标页面无法访问', '服务端拒绝或连接异常导致通用失败，先确认 NAS 与应用状态。'],
+        ['地址拼接有误', '快捷方式保存的地址可能缺路径或端口，删除后从 NAS 桌面重新打开。']
+      ]
+    }
+  };
+
+  var HTTP = {
+    '404': {
+      tip: '页面不存在',
+      list: [
+        ['应用未安装或已卸载', 'NAS 上找不到这个应用的入口。请到「应用中心」确认是否已安装。'],
+        ['入口地址变了', '应用升级后入口路径可能变化，旧快捷方式指向的地址已失效。删除此快捷方式后从 NAS 桌面重新打开。'],
+        ['该路径不支持直接打开', '飞牛新版桌面有部分页面只支持站内跳转（SPA 路由），直接访问会返回 404。']
+      ]
+    },
+    '401': {
+      tip: '未登录或登录已过期',
+      list: [
+        ['会话已过期', '回主页重新登录一次，再打开此应用。'],
+        ['该应用需要单独授权', '部分应用需要在应用内再登录一次。']
+      ]
+    },
+    '403': {
+      tip: '没有访问权限',
+      list: [
+        ['当前账号无权访问', '换用有权限的账号，或在 NAS 上为该账号授权。'],
+        ['文件 / 目录权限不足', '目标资源对当前用户不可读。']
+      ]
+    },
+    '500': {
+      tip: '应用内部错误',
+      list: [
+        ['应用后端异常', '服务端处理出错，通常需要重启该应用；若持续出现请查看 NAS 应用日志。']
+      ]
+    },
+    '502': {
+      tip: '网关错误',
+      list: [
+        ['反向代理连不上后端', '反代配置的后端地址/端口不正确，或后端已停止。']
+      ]
+    },
+    '503': {
+      tip: '服务不可用',
+      list: [
+        ['应用正在启动或已停止', '稍等片刻后重试；持续出现请重启应用。']
+      ]
+    },
+    '504': {
+      tip: '网关超时',
+      list: [
+        ['后端响应超时', '应用处理过慢或卡死，检查 NAS 负载与磁盘，必要时重启应用。']
+      ]
+    }
+  };
+
+  var ENTRY = {
+    tip: '所有启动入口都打不开',
+    list: [
+      ['应用在 NAS 上不存在或未安装', '请到「应用中心」确认该应用已安装并处于运行状态。'],
+      ['快捷方式已失效', 'NAS 上的应用入口发生过变化（升级 / 迁移 / 重装），旧快捷方式还指向旧地址。删除此快捷方式后从 NAS 桌面重新创建。'],
+      ['该应用不是桌面应用', '个别功能（如 UPS 电源管理）的入口在「系统设置」里而不是桌面，请从系统设置打开。'],
+      ['Docker 应用端口未映射', '容器型应用需要映射端口，容器未启动或端口未放行时所有入口都会失败。']
+    ]
+  };
+
+  var STALL = {
+    tip: '页面长时间没有任何内容',
+    list: [
+      ['应用后端卡住或无响应', '页面框架已打开，但应用自己的接口迟迟不返回（转圈/白屏）。先点「重新加载」，仍不动就到 NAS「应用中心」重启该应用。'],
+      ['应用正在启动或初始化', '刚启动的容器型应用需要几十秒准备时间，稍等后重新加载即可。'],
+      ['NAS 负载过高或磁盘很慢', 'CPU 打满、机械盘阵列重建、正在做大文件校验时，应用页面会长时间出不来。'],
+      ['连接通路半开（无数据返回）', 'TCP 连上了但数据过不来，常见于反向代理超时、隧道抖动、防火墙静默丢包。'],
+      ['该应用不支持在客户端内嵌打开', '个别应用只提供独立网页界面，在客户端窗口内会卡住。可先从浏览器直接访问确认。']
+    ]
+  };
+
+  function pick() {
+    if (kind === 'stall') return STALL;
+    // HTTP 状态最确定：有 404/401/5xx 时优先按它给原因，比"入口不存在"更准确
+    if (http && HTTP[http]) return HTTP[http];
+    if (kind === 'entry') return ENTRY;
+    if (code && NET[code]) return NET[code];
+    if (http && /^\d+$/.test(http)) return { tip: 'HTTP ' + http, list: [
+      ['服务端返回了错误状态', 'HTTP ' + http + ' 说明请求已到达服务器但被拒绝。请检查该应用状态与账号权限。'],
+      ['地址或路径有误', '确认快捷方式指向的地址仍有效，必要时删除后重建。']
+    ] };
+    return { tip: '未知错误', list: [
+      ['目标服务不可达', '请确认 NAS 已开机、该应用正在运行，并且网络可访问。'],
+      ['地址有误', '确认快捷方式或访问地址正确，必要时删除后从 NAS 桌面重新打开。']
+    ] };
+  }
+
+  // ---------- 渲染 ----------
+  var info = pick();
+  var titleEl = document.getElementById('title');
+  var subEl = document.getElementById('sub');
+
+  var titleText = kind === 'stall'
+    ? '页面没有响应'
+    : ((kind === 'entry' && !(http && HTTP[http])) ? '应用打不开' : '页面打不开');
+  titleEl.textContent = titleText;
+
+  var subParts = [];
+  if (app) subParts.push('<b>' + esc(app) + '</b>');
+  if (url) subParts.push('<span title="' + esc(url) + '">' + esc(shortUrl(url)) + '</span>');
+  subEl.innerHTML = subParts.join(' · ');
+
+  var codeText = '';
+  if (http) codeText = 'HTTP ' + http;
+  if (code || desc) {
+    var nt = (desc ? desc : '') + (code ? ' (' + code + ')' : '');
+    codeText = codeText ? codeText + ' · ' + nt : nt;
+  }
+  if (!codeText) codeText = '未获取到错误码';
+  document.getElementById('code').textContent = codeText;
+  document.getElementById('tip').textContent = info.tip ? '· ' + info.tip : '';
+
+  var ol = document.getElementById('reasons');
+  info.list.forEach(function (row, i) {
+    var li = document.createElement('li');
+    if (i === 0) li.className = 'hot';
+    li.innerHTML = '<div class="t">' + esc(row[0]) + '</div><div class="d">' + esc(row[1]) + '</div>';
+    ol.appendChild(li);
+  });
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function shortUrl(u) {
+    u = String(u);
+    return u.length > 78 ? u.slice(0, 46) + ' … ' + u.slice(-28) : u;
+  }
+
+  // ---------- 操作 ----------
+  var toastEl = document.getElementById('toast');
+  var toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('on'); }, 1800);
+  }
+
+  function diagText() {
+    return [
+      'FNOS 客户端 · 页面加载失败',
+      '时间: ' + new Date().toLocaleString(),
+      '应用: ' + (app || '-'),
+      '地址: ' + (url || '-'),
+      '错误码: ' + (code || '-'),
+      '错误描述: ' + (desc || '-'),
+      'HTTP 状态: ' + (http || '-'),
+      '类型: ' + kind,
+      '判断: ' + (info.tip || '-')
+    ].join('\n');
+  }
+
+  var btnRetry = document.getElementById('btnRetry');
+  var retryUrl = g('retry') || url;
+  if (!retryUrl) btnRetry.style.display = 'none';
+  btnRetry.addEventListener('click', function () {
+    if (!retryUrl) return;
+    btnRetry.disabled = true;
+    btnRetry.textContent = '正在重新加载…';
+    location.href = retryUrl;
+    setTimeout(function () {
+      btnRetry.disabled = false;
+      btnRetry.textContent = '重新加载';
+    }, 1200);
+  });
+
+  document.getElementById('btnCopy').addEventListener('click', function () {
+    var text = diagText();
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        toast(ok ? '诊断信息已复制' : '复制失败，请手动截图');
+      } catch (e) { toast('复制失败，请手动截图'); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast('诊断信息已复制'); }, fallback);
+    } else { fallback(); }
+  });
+
+  // 键盘：R 重新加载
+  document.addEventListener('keydown', function (e) {
+    if ((e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey && retryUrl) {
+      btnRetry.click();
+    }
+  });
+})();
+</script>
+</body>
+</html>

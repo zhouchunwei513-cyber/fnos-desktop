@@ -1,0 +1,80 @@
+atch (_) {}
+            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
+            W.__fnosDsPid = null;
+            __unpinSize(); // v3.0.51：松手解锁页面尺寸
+          };
+          dragStrip.addEventListener('pointerdown', function (e) {
+            // v3.0.66：此处不再捕获指针——预捕获会把按钮的 click 抢走（工单⑤ setPointerCapture）
+            try { if (e.pointerId != null) W.__fnosDsPid = e.pointerId; } catch (_) {}
+          });
+          dragStrip.addEventListener('mousedown', function (e) {
+            if (e.button !== 0) return;
+            if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
+            W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
+            W.__fnosDsDrag = false;
+            // v3.0.66：win-drag-start 不再在这里发，改由 __fwd 判定超过 4px 阈值后迟发
+          });
+          dragStrip.addEventListener('dblclick', function (e) {
+            W.__fnosDsDown = null; W.__fnosDsDrag = true;
+            __unpinSize(); // v3.0.51：双击最大化前解除尺寸钉死
+            try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+            try { ipcRenderer.send('window-maximize'); } catch (_) {}
+          });
+          if (!W.__fnosDsHooked) {
+            W.__fnosDsHooked = true; W.__fnosDsDrag = false;
+            W.__fnosDsRaf = 0; W.__fnosDsPend = null;
+            const __fwd = function (e) {
+              if (!W.__fnosDsDown) return;
+              // v3.0.66：左键已经松开（pointerup 被吞过）——立刻复位，绝不继续拖动
+              if (e.buttons === 0) { __endDrag(); return; }
+              try {
+                if (!W.__fnosDsDrag) {
+                  // 工单②：4px 阈值。低于阈值一律当单击，让按钮的 click 正常触发
+                  if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 4 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 4) return;
+                  W.__fnosDsDrag = true;
+                  // 以「越过阈值这一刻」的鼠标位置作为拖动基准，主进程按当前窗口位置起步
+                  W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
+                  try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
+                  // v3.0.66：捕获在真正开始拖动时才开；pointerId 缺失时用本帧事件兜底
+                  try {
+                    const __pid = (W.__fnosDsPid != null ? W.__fnosDsPid : e.pointerId);
+                    if (__pid != null) { W.__fnosDsPid = __pid; if (dragStrip.setPointerCapture) dragStrip.setPointerCapture(__pid); }
+                  } catch (_) {}
+                  __pinSize(); // v3.0.51：拖动期间钉死页面尺寸，消掉每帧重排导致的边沿抖动
+                  return;
+                }
+                // 每次移动都把最新屏幕坐标交给主进程（rAF 合并，60fps 上限）
+                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0), buttons: 1 };
+                if (!W.__fnosDsRaf) {
+                  W.__fnosDsRaf = (W.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
+                    W.__fnosDsRaf = 0;
+                    const p = W.__fnosDsPend;
+                    W.__fnosDsPend = null;
+                    if (!p) return;
+                    try { ipcRenderer.send('win-drag-move', p); } catch (_) {}
+                  });
+                }
+              } catch (_) {}
+            };
+            W.addEventListener('mousemove', __fwd, true);
+            W.addEventListener('pointermove', __fwd, true);
+            W.addEventListener('mouseup', __endDrag, true);
+            W.addEventListener('pointerup', __endDrag, true);
+            // v3.0.66：失焦 / 页面隐藏也要复位（拖动中切窗、锁屏、任务视图都会丢 pointerup）
+            W.addEventListener('blur', __endDrag, true);
+            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
+            W.addEventListener('pointercancel', __endDrag, true);
+            // v3.0.77（电视直播窗拖不动）——鼠标落进 MPV 原生窗后松开，本层收不到 mouseup，
+            // 主进程会按「光标连续静止」自行收尾并发这条消息；这里把拖动残留状态（尺寸钉死、
+            // __fnosDs*）复位，否则下一次 resize 会带着旧的 clientWidth/Height 走。
+            try {
+              ipcRenderer.on('window-drag-cancelled', function () {
+                try { __endDrag(); } catch (_) {}
+              });
+            } catch (_) {}
+          }
+        })();
+        bar.appendChild(dragStrip);
+        bar.appendChild(btns);
+        __

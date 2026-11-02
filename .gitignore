@@ -39,3 +39,11 @@ zdy-fpk/app.tgz
 # 本地临时脚本与备份(禁止提交) 
 _fnpatch/ 
 *.bak*
+
+# 本地临时脚本（可能含凭据）
+_mkgitcred2.py
+_mkaskpass.py
+_gitcred*.txt
+
+_mkgitcred.py
+

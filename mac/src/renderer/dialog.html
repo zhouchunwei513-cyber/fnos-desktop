@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline';" />
+<title>FNOS</title>
+<link rel="stylesheet" href="dialog.css" />
+</head>
+<body>
+<div class="bg-wrap">
+  <div class="bg">
+    <svg class="streak s1" viewBox="0 0 1000 600" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="d1" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#ff2d55" stop-opacity="0"/>
+          <stop offset="20%" stop-color="#ff5e3a" stop-opacity=".8"/>
+          <stop offset="45%" stop-color="#ffb347" stop-opacity=".85"/>
+          <stop offset="70%" stop-color="#ffe066" stop-opacity=".7"/>
+          <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M-50,380 C200,200 400,180 620,300 C820,410 950,320 1100,260" fill="none" stroke="url(#d1)" stroke-width="140" stroke-linecap="round"/>
+    </svg>
+    <svg class="streak s2" viewBox="0 0 1000 600" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="d2" x1="0%" y1="100%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#0055ff" stop-opacity="0"/>
+          <stop offset="25%" stop-color="#00b4ff" stop-opacity=".8"/>
+          <stop offset="55%" stop-color="#22e5c8" stop-opacity=".75"/>
+          <stop offset="80%" stop-color="#a78bfa" stop-opacity=".65"/>
+          <stop offset="100%" stop-color="#f472b6" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="M-100,520 C180,380 380,420 600,280 C820,140 960,200 1150,80" fill="none" stroke="url(#d2)" stroke-width="160" stroke-linecap="round"/>
+    </svg>
+    <div class="bg-veil"></div>
+    <div class="bg-grain"></div>
+  </div>
+</div>
+
+<main class="wrap">
+  <section class="card" role="dialog" aria-modal="true">
+    <h1 id="dlg-title" class="title">提示</h1>
+    <div id="dlg-message" class="message" hidden></div>
+    <div id="dlg-detail" class="detail" hidden>
+      <pre id="dlg-detail-text" class="detail-text"></pre>
+    </div>
+    <div id="dlg-buttons" class="foot"></div>
+  </section>
+</main>
+
+<script src="dialog.js"></script>
+</body>
+</html>

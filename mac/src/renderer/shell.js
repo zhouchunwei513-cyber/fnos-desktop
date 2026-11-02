@@ -1,491 +1,272 @@
-'use strict';
-
-/**
- * FNOS macOS 壳页逻辑
- * - 单 webview 承载 NAS 页面；工具栏由本页绘制（macOS 上红绿灯内嵌）
- * - 外观（vibrancy 材质 / 界面透明度 / 工具栏高度）由偏好设置写入，本页只负责套用变量
- * - 所有系统级动作通过 window.fnos（preload 白名单）转主进程
- */
-
+// 玻璃外壳渲染逻辑：自定义标题栏 + 菜单栏 + 动态 webview（支持切换 partition）
 (function () {
-  const F = window.fnos;
-  const $ = (id) => document.getElementById(id);
+  'use strict';
+  const shell = window.fnosShell;
+  const content = document.getElementById('content');
+  const loader = document.getElementById('loader');
+  const loaderText = document.getElementById('loader-text');
+  const titleEl = document.getElementById('app-title');
 
-  const view = $('view');
-  const elConnect = $('connect');
-  const elError = $('error');
-  const elProgress = $('progress');
-  const elFindbar = $('findbar');
-  const elAddrHost = $('addr-host');
-  const elAddrPath = $('addr-path');
-  const elAddrLock = $('addr-lock');
-  const elToast = $('toast');
+  let view = null;
 
-  let boot = null;
-  let viewReady = false;
-  let pendingUrl = '';
-  let zoom = 0;
-  let toastTimer = null;
-  let findMatches = 0;
-  let findActive = 0;
+  document.getElementById('btn-min').addEventListener('click', () => shell.minimize());
+  document.getElementById('btn-max').addEventListener('click', () => shell.toggleMaximize());
+  document.getElementById('btn-close').addEventListener('click', () => shell.close());
 
-  // ---------------- 主题 ----------------
-  const mq = window.matchMedia('(prefers-color-scheme: dark)');
-  const useDark = () => mq.matches;
+  shell.onMaximized((isMax) => {
+    document.body.setAttribute('data-maximized', isMax ? 'true' : 'false');
+    const ic = document.getElementById('icon-max');
+    if (isMax) {
+      ic.innerHTML = '<rect x="3" y="3" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1"/><path d="M5 3V2.5H9.5V7H9" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/>';
+    } else {
+      ic.innerHTML = '<rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/>';
+    }
+  });
+  shell.onTitle((t) => { if (t) titleEl.textContent = t; });
 
-  function syncTheme() {
-    document.body.classList.toggle('theme-dark', useDark());
-    document.body.classList.toggle('theme-light', !useDark());
-  }
-
-  try {
-    mq.addEventListener('change', syncTheme);
-  } catch (_) {
-    if (mq.addListener) mq.addListener(syncTheme);
-  }
-  syncTheme();
-
-  // ---------------- 外观 ----------------
-  function applyAppearance(a) {
-    if (!a) return;
-    const pct = Number(a.uiAlpha);
-    const alpha = Number.isFinite(pct) ? Math.max(0, Math.min(1, (100 - pct) / 100)) : 0.38;
-    document.documentElement.style.setProperty('--fnos-ui-a', String(alpha));
-
-    const th = Number(a.toolbarHeight);
-    document.documentElement.style.setProperty('--tb-h', (Number.isFinite(th) ? th : 52) + 'px');
-
-    document.body.classList.toggle('material-solid', a.material === 'none');
-    syncTheme();
-  }
-
-  // ---------------- Toast ----------------
-  function toast(msg, ms) {
-    if (!msg) return;
-    elToast.textContent = String(msg);
-    elToast.hidden = false;
-    requestAnimationFrame(() => elToast.classList.add('show'));
-    if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      elToast.classList.remove('show');
-      setTimeout(() => { elToast.hidden = true; }, 200);
-    }, ms || 2200);
-  }
-
-  // ---------------- 地址栏 ----------------
-  function renderAddr(url) {
-    let host = '未连接';
-    let path = '';
-    let secure = false;
+  // 主题色：设置页可选的标题栏颜色（自绘标题栏透明/可选色）
+  shell.onTheme((theme) => {
     try {
-      const u = new URL(String(url));
-      if (u.protocol === 'http:' || u.protocol === 'https:') {
-        host = u.host;
-        path = (u.pathname || '/') + (u.search || '');
-        secure = u.protocol === 'https:';
+      if (theme && theme.themeColor) {
+        const c = theme.themeColor;
+        // 用用户选定颜色生成半透明毛玻璃背景（保留透明度，透出下层内容）
+        const withAlpha = (hex, a) => {
+          const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+          if (!m) return hex;
+          const n = parseInt(m[1], 16);
+          return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+        };
+        document.documentElement.style.setProperty('--tb-bg', withAlpha(c, 0.72));
       }
     } catch (_) {}
-    elAddrHost.textContent = host;
-    elAddrPath.textContent = path;
-    elAddrLock.hidden = !secure;
-    $('addr').title = String(url || '');
-  }
+  });
 
-  // ---------------- 导航按钮 ----------------
-  function updateNavButtons() {
-    let canBack = false;
-    let canFwd = false;
-    if (viewReady) {
-      try {
-        canBack = view.canGoBack();
-        canFwd = view.canGoForward();
-      } catch (_) {}
-    }
-    $('btn-back').disabled = !canBack;
-    $('btn-forward').disabled = !canFwd;
-  }
+  document.querySelectorAll('.menu-item').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      shell.popupMenu({ id: el.dataset.menu, x: Math.round(rect.left), y: Math.round(rect.bottom) });
+    });
+  });
 
-  function currentUrl() {
-    try { return viewReady ? view.getURL() : ''; } catch (_) { return ''; }
+  function showLoader(text) {
+    if (text) loaderText.textContent = text;
+    loader.classList.remove('hidden');
   }
+  function hideLoader() { loader.classList.add('hidden'); }
 
-  // ---------------- 载入 ----------------
-  function loadUrl(url) {
-    const target = String(url || '');
-    if (!target) return;
-    elError.hidden = true;
-    if (!viewReady) {
-      pendingUrl = target;
-      return;
-    }
+  // v1.71.0：飞牛主页按窗口大小自动缩放页面及图标。
+  // 大窗口下飞牛主页图标网格偏大/错位，这里以 1440x885（45:27.65）为基准整体 zoom 缩放
+  // （窗口越大缩放越小，图标相对窗口变小），小窗口保持 1.0；窗口尺寸变化与
+  // SPA 路由切换时自动重新计算。
+  function injectHomeScale(wv) {
     try {
-      const p = view.loadURL(target);
-      if (p && p.catch) p.catch(() => {});
-    } catch (e) {
-      showError('无法载入', String(e && e.message ? e.message : e));
-    }
-  }
-
-  function applyZoom() {
-    if (!viewReady) return;
-    try { view.setZoomFactor(Math.pow(1.1, zoom)); } catch (_) {}
-  }
-
-  function showError(title, detail) {
-    $('err-title').textContent = title || '无法载入页面';
-    $('err-detail').textContent = detail || '';
-    elError.hidden = false;
-  }
-
-  // ---------------- 连接页 ----------------
-  function serversNow() {
-    return (boot && boot.servers) || [];
-  }
-
-  function renderSaved() {
-    const list = $('saved-list');
-    const wrap = $('saved-wrap');
-    const items = serversNow();
-    list.innerHTML = '';
-    if (!items.length) {
-      wrap.hidden = true;
-      return;
-    }
-    wrap.hidden = false;
-    items.forEach((sv) => {
-      const li = document.createElement('li');
-      const span = document.createElement('span');
-      span.className = 'sv-url';
-      span.textContent = sv.url;
-      const del = document.createElement('button');
-      del.className = 'sv-del';
-      del.textContent = '移除';
-      del.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        const r = await F.server.remove(sv.url);
-        if (r.ok) {
-          boot.servers = r.data.servers;
-          renderSaved();
+      wv.executeJavaScript(`(function () {
+        'use strict';
+        function isHomePage() {
+          var p = location.pathname || '/';
+          return p === '/' || p === '/apps' || p === '/desktop' || p === '/home' || p === '/app';
         }
-      });
-      li.appendChild(span);
-      li.appendChild(del);
-      li.addEventListener('click', () => {
-        $('in-server').value = sv.url;
-        doConnect();
-      });
-      list.appendChild(li);
-    });
-  }
-
-  function showConnect(prefill) {
-    $('hint-server').className = 'field-hint';
-    $('hint-server').textContent = '支持 IP、IP:端口、域名；不填协议默认 http';
-    if (typeof prefill === 'string' && prefill) $('in-server').value = prefill;
-    elError.hidden = true;
-    elConnect.hidden = false;
-    renderSaved();
-    setTimeout(() => { try { $('in-server').focus(); $('in-server').select(); } catch (_) {} }, 60);
-  }
-
-  function hideConnect() {
-    elConnect.hidden = true;
-  }
-
-  function hint(text, kind) {
-    const el = $('hint-server');
-    el.textContent = text;
-    el.className = 'field-hint' + (kind ? ' is-' + kind : '');
-  }
-
-  async function doConnect() {
-    const raw = $('in-server').value.trim();
-    if (!raw) {
-      hint('请填写服务器地址', 'error');
-      return;
-    }
-    const btn = $('btn-connect');
-    btn.disabled = true;
-    hint('正在连接…');
-
-    const add = await F.server.add(raw);
-    if (!add.ok) {
-      btn.disabled = false;
-      hint('地址无效：' + (add.error || '未知原因'), 'error');
-      return;
-    }
-    const finalUrl = add.data.url;
-
-    // 刷新本地服务器列表（供下次启动/托盘使用）
-    const lst = await F.server.list();
-    if (lst.ok) boot.servers = lst.data;
-
-    // 裸 443/8443 的 http 地址：先探 https，成功则优先
-    let target = finalUrl;
-    if (add.data.suggestHttps) {
-      hint('正在尝试 HTTPS…');
-      const t = await F.server.test(finalUrl);
-      if (t.ok && t.data && t.data.url) target = t.data.url;
-    }
-
-    btn.disabled = false;
-    hideConnect();
-    renderSaved();
-    loadUrl(target);
-    toast('已连接 ' + finalUrl);
-  }
-
-  async function doTest() {
-    const raw = $('in-server').value.trim();
-    if (!raw) {
-      hint('请填写服务器地址', 'error');
-      return;
-    }
-    const btn = $('btn-test');
-    btn.disabled = true;
-    hint('正在测试…');
-    const r = await F.server.test(raw);
-    btn.disabled = false;
-    if (r.ok && r.data && r.data.ok) {
-      hint('连接正常（HTTP ' + r.data.status + '）' + (r.data.url && r.data.url.indexOf('https:') === 0 ? ' · HTTPS' : ''), 'ok');
-    } else {
-      const err = (r.data && r.data.error) || r.error || '无法访问';
-      hint('连接失败：' + err + '。若是自签 HTTPS，可直接点"连接"继续。', 'error');
-    }
-  }
-
-  // ---------------- 查找 ----------------
-  function openFind() {
-    elFindbar.hidden = false;
-    document.body.classList.add('find-open');
-    setTimeout(() => { try { $('find-input').focus(); $('find-input').select(); } catch (_) {} }, 40);
-  }
-
-  function closeFind() {
-    elFindbar.hidden = true;
-    document.body.classList.remove('find-open');
-    try { view.stopFindInPage('clearSelection'); } catch (_) {}
-    findMatches = 0;
-    findActive = 0;
-    $('find-count').textContent = '0/0';
-  }
-
-  function runFind(forward) {
-    const text = $('find-input').value;
-    if (!viewReady) return;
-    if (!text) {
-      try { view.stopFindInPage('clearSelection'); } catch (_) {}
-      $('find-count').textContent = '0/0';
-      return;
-    }
-    try {
-      view.findInPage(text, { forward: forward !== false, findNext: forward === false ? false : true });
+        function applyScale() {
+          try {
+            if (!isHomePage()) return;
+            var s = Math.min(1440 / window.innerWidth, 885 / window.innerHeight);
+            s = Math.max(0.55, Math.min(1.0, s));
+            var el = document.documentElement;
+            var cur = parseFloat(el.style.zoom) || 1;
+            if (Math.abs(cur - s) > 0.01) el.style.zoom = s;
+          } catch (_) {}
+        }
+        window.addEventListener('resize', applyScale);
+        var _lastPath = location.pathname;
+        setInterval(function () {
+          try { if (location.pathname !== _lastPath) { _lastPath = location.pathname; applyScale(); } } catch (_) {}
+        }, 800);
+        applyScale();
+      })();`, true).catch(() => {});
     } catch (_) {}
   }
 
-  // ---------------- webview 事件 ----------------
-  view.addEventListener('dom-ready', () => {
-    viewReady = true;
-    applyZoom();
-    if (pendingUrl) {
-      const u = pendingUrl;
-      pendingUrl = '';
-      loadUrl(u);
-    }
-    updateNavButtons();
-  });
-
-  view.addEventListener('did-start-loading', () => {
-    elProgress.hidden = false;
-  });
-
-  view.addEventListener('did-stop-loading', () => {
-    elProgress.hidden = true;
-    updateNavButtons();
-    renderAddr(currentUrl());
-  });
-
-  view.addEventListener('did-navigate', (e) => {
-    renderAddr(e.url);
-    updateNavButtons();
-    if (F && F.nav) F.nav.recordUrl(e.url);
-  });
-
-  view.addEventListener('did-navigate-in-page', (e) => {
-    renderAddr(e.url);
-    updateNavButtons();
-  });
-
-  view.addEventListener('page-title-updated', (e) => {
-    document.title = e.title || 'FNOS';
-  });
-
-  view.addEventListener('did-fail-load', (e) => {
-    if (e.errorCode === -3) return; // ABORTED
-    if (e.isMainFrame === false) return;
-    const desc = e.errorDescription || '未知错误';
-    showError('无法载入页面', desc + '（' + e.errorCode + '）\n' + (e.validatedURL || ''));
-  });
-
-  view.addEventListener('found-in-page', (e) => {
-    const r = e.result || {};
-    findMatches = r.matches || 0;
-    findActive = r.activeMatchOrdinal || 0;
-    $('find-count').textContent = findMatches ? findActive + '/' + findMatches : '0/0';
-  });
-
-  view.addEventListener('crashed', () => {
-    showError('页面进程已退出', '可尝试重新载入；若反复出现，请在帮助菜单复制诊断信息。');
-  });
-
-  // ---------------- 主进程命令 ----------------
-  const COMMANDS = {
-    back: () => { try { if (view.canGoBack()) view.goBack(); } catch (_) {} },
-    forward: () => { try { if (view.canGoForward()) view.goForward(); } catch (_) {} },
-    reload: () => { try { view.reload(); } catch (_) {} },
-    'force-reload': () => { try { view.reloadIgnoringCache(); } catch (_) {} },
-    home: () => {
-      const home = (boot && (boot.server || (boot.servers[0] && boot.servers[0].url))) || '';
-      if (home) loadUrl(home);
-      else showConnect('');
-    },
-    goto: (msg) => {
-      if (msg && msg.url) {
-        hideConnect();
-        loadUrl(msg.url);
-      }
-    },
-    'zoom-step': (msg) => {
-      const step = Number(msg && msg.step);
-      zoom = step === 0 ? 0 : Math.max(-3, Math.min(5, zoom + (step > 0 ? 1 : -1)));
-      applyZoom();
-      F.zoom.set(zoom);
-      toast('缩放 ' + Math.round(Math.pow(1.1, zoom) * 100) + '%');
-    },
-    zoom: (msg) => {
-      zoom = Number(msg && msg.value) || 0;
-      applyZoom();
-    },
-    'toggle-toolbar': () => {
-      document.body.classList.toggle('toolbar-hidden');
-    },
-    find: () => openFind(),
-    'guest-devtools': () => { try { view.openDevTools(); } catch (_) {} },
-    'connect-new': () => showConnect(''),
-    'switch-server': () => showConnect('')
-  };
-
-  F.on('shell:command', (msg) => {
-    if (!msg || !msg.op) return;
-    const fn = COMMANDS[msg.op];
-    if (fn) {
-      try { fn(msg); } catch (e) { console.error(e); }
-    }
-  });
-
-  F.on('shell:appearance', (a) => applyAppearance(a));
-  F.on('shell:fullscreen', (p) => {
-    document.body.classList.toggle('fullscreen', !!(p && p.fullscreen));
-  });
-  F.on('shell:load-failed', (p) => {
-    if (!p) return;
-    showError('无法载入页面', (p.desc || '') + '（' + (p.code || '') + '）\n' + (p.url || ''));
-  });
-  F.on('shell:crashed', () => {
-    showError('页面进程已退出', '可尝试重新载入。');
-  });
-  F.on('shell:title', (p) => {
-    if (p && p.title) document.title = p.title;
-  });
-
-  // ---------------- 工具栏交互 ----------------
-  $('btn-back').addEventListener('click', () => COMMANDS.back());
-  $('btn-forward').addEventListener('click', () => COMMANDS.forward());
-  $('btn-reload').addEventListener('click', () => COMMANDS.reload());
-  $('btn-home').addEventListener('click', () => COMMANDS.home());
-  $('btn-server').addEventListener('click', () => showConnect(''));
-  $('btn-settings').addEventListener('click', () => F.settingsWindow.open());
-
-  $('btn-test').addEventListener('click', doTest);
-  $('btn-connect').addEventListener('click', doConnect);
-  $('in-server').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') doConnect();
-    if (e.key === 'Escape') {
-      if (boot && (boot.server || boot.lastUrl)) hideConnect();
-    }
-  });
-
-  $('btn-err-retry').addEventListener('click', () => {
-    elError.hidden = true;
-    COMMANDS.reload();
-  });
-  $('btn-err-connect').addEventListener('click', () => {
-    elError.hidden = true;
-    showConnect('');
-  });
-
-  $('find-input').addEventListener('input', () => runFind(true));
-  $('find-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') runFind(!e.shiftKey);
-    if (e.key === 'Escape') closeFind();
-  });
-  $('find-next').addEventListener('click', () => runFind(true));
-  $('find-prev').addEventListener('click', () => runFind(false));
-  $('find-close').addEventListener('click', closeFind);
-
-  $('brand-logo').addEventListener('error', (e) => {
-    e.target.style.display = 'none';
-  });
-
-  // ---------------- 初始化 ----------------
-  function urlFromHash() {
+  // v1.73.0：扫描主页中的应用入口（SPA 渲染完成后的应用卡片）
+  //   1) a[href] 指向同主机不同端口的独立应用（原有）
+  //   2) 常见应用卡片容器（app-card/app-item/app-entry/desktop-app 等，应用可能
+  //      不是 <a> 而是 div+图标+onclick 结构）——应用增减时都能扫到
+  //   3) 图标支持 data: URL（内联 SVG/PNG），名称做空白清理
+  // v1.74.0：重写应用扫描——飞牛主页应用打开走前端路由(appview?anchor)或独立端口，
+  // 卡片多为 div+图标+onclick 结构（非 <a>），且应用可增可减。多策略：
+  //   1) 所有 a[href]：不再限不同端口，同主机同端口路径/相对路径也收
+  //   2) 从图标 img 向上找名称容器：紧凑卡片（图标+短名称）即应用，高效且
+  //      不依赖具体 class 名；从图标路径提取 appName（/icons/{appName}/ 模式）
+  //      构造 appview anchor 打开地址
+  //   3) 名称清洗、图标转绝对、按最终 URL 去重——应用增减自动同步
+  // v1.75.0：持续循环扫描应用。修复：飞牛主页未登录时是登录页（无应用卡片），
+  // 登录后 SPA 才渲染应用卡片，旧版固定次数(1.5/4/8s)扫描会错过登录后的渲染，
+  // 导致 apps 永远为空、快捷方式/任务栏图标无法创建。现在每 10s 循环扫描一次，
+  // 仅当结果变化（应用增/减）时才上报，自动同步。
+  let __lastAppsSig = '';
+  let __appScanTimer = null;
+  function collectApps(wv) {
     try {
-      const h = String(location.hash || '');
-      const m = h.match(/#url=([^&]+)/);
-      if (m) return decodeURIComponent(m[1]);
+      wv.executeJavaScript(`(function(){
+        try {
+          // v1.75.0：登录页没有应用卡片，直接跳过（SPA 登录态未就绪时也是空）
+          var pp = (location.pathname || '').toLowerCase();
+          if (pp.indexOf('/login') === 0 || pp === 'login') return '__SKIP__';
+          var origin = location.origin;
+          var res = [];
+          var seen = {};
+          var clean = function(s){ return String(s||'').replace(/\s+/g,' ').trim(); };
+          var toAbs = function(u){
+            if (!u) return '';
+            try { return new URL(u, origin).href; } catch(e){ return ''; }
+          };
+          // 飞牛应用图标常见路径：/static/app/icons/{appName}/icon.png、/icons/{appName}.png
+          var appNameFromUrl = function(u){
+            if (!u) return '';
+            var m = /\/icons\/([^\/?#]+?)(?:\/|\.[a-z0-9]+$|$)/i.exec(u);
+            if (m) { try { return decodeURIComponent(m[1]); } catch(e){ return m[1]; } }
+            return '';
+          };
+          var pushApp = function(name, url, icon, appName){
+            if (!name) return;
+            if (name.length > 40) name = name.slice(0, 40);
+            var abs = toAbs(url);
+            var finalUrl = /^https?:/i.test(abs) ? abs : '';
+            if (!finalUrl && appName) {
+              // 前端路由打开：/appview?anchor=https://{appName}
+              finalUrl = origin + '/appview?anchor=' + encodeURIComponent('https://' + appName);
+            }
+            if (!finalUrl) return;
+            if (seen[finalUrl]) return;
+            seen[finalUrl] = 1;
+            res.push({ name: name, url: finalUrl, icon: icon || '', appName: appName || '' });
+          };
+          // 1) 所有链接（同主机不同端口/同端口路径/相对路径都收，不再过滤端口）
+          var links = document.querySelectorAll('a[href]');
+          for (var i = 0; i < links.length; i++) {
+            var a = links[i];
+            var img = a.querySelector('img');
+            var icon = img ? (img.currentSrc || img.src || '') : '';
+            var nm = clean(a.innerText || a.title || (img && img.alt) || '');
+            if (!nm && img) nm = clean(img.alt || '');
+            pushApp(nm, a.href, icon, appNameFromUrl(icon));
+          }
+          // 2) 图标 img 向上找名称容器（应用卡片 = 图标 + 短名称，最多上溯 4 层）
+          var imgs = document.querySelectorAll('img');
+          var done = {};
+          for (var q = 0; q < imgs.length; q++) {
+            var im = imgs[q];
+            var icon2 = im.currentSrc || im.src || '';
+            var nm2 = clean(im.alt || '');
+            var href2 = '';
+            var cur = im;
+            for (var d = 0; d < 4 && cur; d++) {
+              var pe = cur.parentElement;
+              if (!pe) break;
+              if (!href2 && pe.tagName === 'A') href2 = pe.href || '';
+              var t = clean(pe.innerText || '');
+              if (t && t.length <= 40 && !/\s/.test(t)) nm2 = t;
+              cur = pe;
+            }
+            if (!nm2 || nm2.length > 40) continue;
+            var k2 = href2 || icon2;
+            if (done[k2]) continue;
+            done[k2] = 1;
+            pushApp(nm2, href2, icon2, appNameFromUrl(icon2));
+          }
+          return JSON.stringify(res);
+        } catch (e) { return '[]'; }
+      })()`, true).then((json) => {
+        try {
+          if (json === '__SKIP__') return;
+          const apps = JSON.parse(json || '[]');
+          const sig = JSON.stringify(apps);
+          if (sig === __lastAppsSig) return;
+          __lastAppsSig = sig;
+          if (window.fnosShell && window.fnosShell.reportApps) {
+            window.fnosShell.reportApps(apps);
+          }
+        } catch (_) {}
+      }).catch(() => {});
     } catch (_) {}
-    return '';
   }
 
-  async function init() {
+  // v1.75.0：启动持续扫描——立即扫一次 + 每 10s 循环（登录后/应用增减自动同步）
+  function startAppScan(wv) {
     try {
-      boot = await F.bootstrap();
-    } catch (e) {
-      showError('初始化失败', String(e && e.message ? e.message : e));
-      return;
-    }
-    if (!boot || !boot.settings) {
-      showError('初始化失败', '无法读取应用配置');
-      return;
-    }
-
-    applyAppearance(boot.settings.appearance);
-    zoom = Number(boot.settings.zoom) || 0;
-    renderSaved();
-
-    const start = urlFromHash() || boot.lastUrl || boot.server || '';
-    if (start) {
-      hideConnect();
-      renderAddr(start);
-      loadUrl(start);
-    } else {
-      showConnect('');
-    }
-
-    if (boot.isFullScreen) document.body.classList.add('fullscreen');
-
-    F.on('settings:changed', (s) => {
-      if (!s) return;
-      boot.settings = s;
-      boot.servers = s.servers || [];
-      applyAppearance(s.appearance);
-      zoom = Number(s.zoom) || 0;
-      applyZoom();
-      renderSaved();
-    });
-
-    F.on('shell:system-theme', () => syncTheme());
+      if (__appScanTimer) { clearInterval(__appScanTimer); __appScanTimer = null; }
+      collectApps(wv);
+      __appScanTimer = setInterval(() => { try { collectApps(wv); } catch (_) {} }, 10000);
+    } catch (_) {}
   }
 
-  init();
+  function createWebView(partition, src) {
+    if (view) { try { view.remove(); } catch (_) {} view = null; }
+    const wv = document.createElement('webview');
+    wv.setAttribute('partition', partition);
+    wv.setAttribute('src', src);
+    wv.setAttribute('preload', 'preload.js');
+    wv.setAttribute('allowpopups', 'true');
+    wv.setAttribute('webpreferences',
+      'contextIsolation=true,nativeWindowOpen=true,allowRunningInsecureContent=true,nodeIntegration=false,backgroundThrottling=false');
+    wv.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;width:100%;height:100%;border:0;outline:none;';
+    content.appendChild(wv);
+    view = wv;
+
+    wv.addEventListener('did-start-loading', () => showLoader('正在加载…'));
+    wv.addEventListener('dom-ready', () => {
+      try {
+        // v1.69.0：侧边栏透明玻璃 + 滚动条美化。飞牛 NAS 网页（webview 内）的左侧
+        // 导航侧边栏默认是纯深色实底，这里统一注入半透明毛玻璃：低透明底色透出下层
+        // 内容 + backdrop blur 磨砂。选择器尽量覆盖常见 sidebar/aside 类名与属性片段，
+        // 避免命中 nav（会误伤顶部导航）等过宽元素。
+        wv.insertCSS(`
+html,body{overscroll-behavior:none;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:rgba(120,130,150,.45);border-radius:6px;}
+::-webkit-scrollbar-thumb:hover{background:rgba(140,150,170,.65);}
+aside, .sidebar, .side-bar, .side-nav, .left-nav, .left-sidebar, .layout-sidebar,
+.el-aside, .aside-container, .menu-container, .drawer, .side-panel,
+[class*="sidebar"], [class*="side-bar"], [class*="side-nav"], [class*="left-nav"],
+[class*="left-sidebar"], [class*="aside"] {
+  background: rgba(18, 22, 32, 0.42) !important;
+  backdrop-filter: blur(18px) saturate(1.35) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.35) !important;
+  border-right: 1px solid rgba(255,255,255,0.06) !important;
+  box-shadow: none !important;
+}`);
+      } catch (_) {}
+      injectHomeScale(wv);
+      startAppScan(wv);
+    });
+    wv.addEventListener('did-navigate', () => {
+      injectHomeScale(wv);
+      startAppScan(wv);
+    });
+    wv.addEventListener('did-stop-loading', () => hideLoader());
+    wv.addEventListener('did-fail-load', (e) => { if (e.errorCode !== -3) hideLoader(); });
+    wv.addEventListener('page-title-updated', (e) => { if (e.title) titleEl.textContent = e.title; });
+    showLoader('正在连接…');
+    return wv;
+  }
+
+  shell.onOpen((target) => {
+    if (!target) return;
+    if (target.replace) {
+      createWebView(target.partition || 'persist:connect', target.url || 'about:blank');
+    } else if (view && /^https?:/i.test(target.url || '')) {
+      view.loadURL(target.url);
+    }
+  });
+
+  shell.onNavigate((action) => {
+    if (!view) return;
+    try {
+      if (action === 'reload') view.reload();
+      else if (action === 'forceReload') view.reloadIgnoringCache();
+      else if (action === 'back' && view.canGoBack()) view.goBack();
+      else if (action === 'forward' && view.canGoForward()) view.goForward();
+    } catch (_) {}
+  });
 })();

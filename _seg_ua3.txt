@@ -1,0 +1,13 @@
+sibility(false); } catch (_) {}
+  aboutWin.once('ready-to-show', () => { try { aboutWin.show(); } catch (_) {} });
+  aboutWin.on('closed', () => { if (aboutWindow === aboutWin) aboutWindow = null; });
+  const ABOUT_PAGE = path.join(__dirname, 'about.html');
+  aboutWin.webContents.on('did-finish-load', () => __applyGlassUiTheme(aboutWin));
+  aboutWin.loadFile(ABOUT_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
+  return aboutWin;
+}
+
+function buildMenuTemplate() {
+  const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
+
+  const switchWindowItems = chil

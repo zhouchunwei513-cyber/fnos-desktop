@@ -1488,6 +1488,14 @@ module.exports = function injectTitleBar(ctx) {
             W.addEventListener('blur', __endDrag, true);
             document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
             W.addEventListener('pointercancel', __endDrag, true);
+            // v3.0.77（电视直播窗拖不动）——鼠标落进 MPV 原生窗后松开，本层收不到 mouseup，
+            // 主进程会按「光标连续静止」自行收尾并发这条消息；这里把拖动残留状态（尺寸钉死、
+            // __fnosDs*）复位，否则下一次 resize 会带着旧的 clientWidth/Height 走。
+            try {
+              ipcRenderer.on('window-drag-cancelled', function () {
+                try { __endDrag(); } catch (_) {}
+              });
+            } catch (_) {}
           }
         })();
         bar.appendChild(dragStrip);
@@ -2017,6 +2025,14 @@ module.exports = function injectTitleBar(ctx) {
             W.addEventListener('blur', __endDrag, true);
             document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
             W.addEventListener('pointercancel', __endDrag, true);
+            // v3.0.77（电视直播窗拖不动）——鼠标落进 MPV 原生窗后松开，本层收不到 mouseup，
+            // 主进程会按「光标连续静止」自行收尾并发这条消息；这里把拖动残留状态（尺寸钉死、
+            // __fnosDs*）复位，否则下一次 resize 会带着旧的 clientWidth/Height 走。
+            try {
+              ipcRenderer.on('window-drag-cancelled', function () {
+                try { __endDrag(); } catch (_) {}
+              });
+            } catch (_) {}
           }
         })();
         bar.appendChild(dragStrip);

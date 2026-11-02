@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.76';
+const APP_VERSION = '3.0.77';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3306,6 +3306,58 @@ function __winDragBegin(w, sx, sy) {
     };
   } catch (_) { return null; }
 }
+// v3.0.77（用户工单：电视直播窗口拖动不了）——
+// 根因：拖动链路是「渲染层收到 mousemove → 发 win-drag-move → 主进程 setBounds」。电视直播窗上
+// MPV 是独立的原生窗口，从内容区顶边(y=34)往下整片盖着宿主窗；拖动时窗口移动略滞后于鼠标，
+// 鼠标一旦越过 y=34 就落进 MPV 窗口，Chromium 的 renderer 再也收不到 mousemove，拖动当帧就
+// 卡死（表现就是「拖不动」）。主窗点播也有同样的覆盖，只是那边窗口跟得上、鼠标不易掉进去。
+// 修法：拖动期间由主进程自己按屏幕光标驱动窗口位置（16ms 一帧），完全不依赖 renderer 事件；
+// 光标连续静止 600ms、或渲染层报松开，即判定结束。渲染层的 win-drag-move 保留作原路径，
+// 两者共用同一 (ox,oy,sx,sy) 基准，不会互相打架。
+let __dragPollTimer = null;
+function __dragPollStop() {
+  try { if (__dragPollTimer) { clearInterval(__dragPollTimer); __dragPollTimer = null; } } catch (_) {}
+}
+function __dragPollStart(d) {
+  __dragPollStop();
+  if (!d || !d.win || d.win.isDestroyed()) return;
+  let lastX = null, lastY = null, still = 0, ticks = 0;
+  __dragPollTimer = setInterval(() => {
+    try {
+      if (__winDragState !== d || !d.win || d.win.isDestroyed()) { __dragPollStop(); return; }
+      // 最大化窗口的首帧还原交给渲染层那条 move 处理（它要 unmaximize + 回填拖动基准）
+      if (d.maxPending) { still = 0; return; }
+      ticks += 1;
+      if (ticks < 2) return; // 头一帧放宽：等渲染层的 start 基准落定
+      const p = screen.getCursorScreenPoint();
+      if (p.x !== lastX || p.y !== lastY) { lastX = p.x; lastY = p.y; still = 0; }
+      else { still += 16; }
+      const nx = Math.round(d.ox + p.x - d.sx);
+      const ny = Math.round(d.oy + p.y - d.sy);
+      if (nx !== d.lx || ny !== d.ly) {
+        d.lx = nx; d.ly = ny;
+        try {
+          if (d.w0 && d.h0) d.win.setBounds({ x: nx, y: ny, width: d.w0, height: d.h0 });
+          else d.win.setPosition(nx, ny);
+        } catch (_) {}
+      }
+      if (still >= 600) {
+        // 鼠标多半是在 MPV 原生窗上松的手，renderer 收不到 mouseup：这里收尾并让渲染层复位
+        __dragPollStop();
+        try { if (__winDragState === d) __winDragState = null; } catch (_) {}
+        try { __winDragEndAt = Date.now(); } catch (_) {}
+        try { if (__ghostBurst) __ghostBurst(); } catch (_) {}
+        try { fnosLog('info', 'window', 'drag.poll-end win=' + d.win.id); } catch (_) {}
+        try {
+          const wc = d.win.webContents;
+          if (wc && !wc.isDestroyed()) wc.send('window-drag-cancelled', {});
+        } catch (_) {}
+      }
+    } catch (_) { try { __dragPollStop(); } catch (_) {} }
+  }, 16);
+  try { if (__dragPollTimer.unref) __dragPollTimer.unref(); } catch (_) {}
+}
+
 ipcMain.on('win-drag-start', (e, p) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
@@ -3313,6 +3365,12 @@ ipcMain.on('win-drag-start', (e, p) => {
     const st = __winDragBegin(w, p.sx, p.sy);
     if (!st) return;
     __winDragState = st;
+    // v3.0.77：以主进程读到的光标为拖动基准（与渲染层 screenX/Y 同为 DIP，但能消除缩放偏差）
+    try {
+      const cp = screen.getCursorScreenPoint();
+      if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)) { st.sx = cp.x; st.sy = cp.y; }
+    } catch (_) {}
+    __dragPollStart(st);
     try {
       fnosLog('info', 'window', 'drag.start win=' + w.id + ' o=' + st.ox + ',' + st.oy
         + ' maxPending=' + (st.maxPending ? [st.maxPending.x, st.maxPending.y, st.maxPending.width, st.maxPending.height].join(',') : '-'));
@@ -3331,6 +3389,7 @@ ipcMain.on('win-drag-move', (e, p) => {
     // 旧调用方不带 buttons 字段（undefined），保持原行为，不影响旧路径。
     if (typeof p.buttons === 'number' && p.buttons === 0) {
       __winDragState = null;
+      try { __dragPollStop(); } catch (_) {}
       try { fnosLog('info', 'window', 'drag.move.reject win=' + d.win.id + ' reason=no-button'); } catch (_) {}
       try { if (__ghostBurst) __ghostBurst(); } catch (_) {}
       return;
@@ -3377,6 +3436,7 @@ ipcMain.on('win-drag-end', (e) => {
   try {
     const d = __winDragState;
     __winDragState = null;
+    try { __dragPollStop(); } catch (_) {}
     __winDragEndAt = Date.now(); // v3.0.23：供主窗比例锁压掉拖动尾巴上的伪 resized
     if (d && d.win && !d.win.isDestroyed()) {
       // v3.0.23：松手再核一次尺寸，被系统在拖动尾部改大的也一并纠正。

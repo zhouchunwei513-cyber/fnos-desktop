@@ -80,7 +80,20 @@ class MpvSurface {
     if (parentWin && !parentWin.isDestroyed()) {
       // v1.63：嵌入 mpv 虽常驻 ontop，但宿主窗口拖动/激活时偶尔会被系统提到 mpv 之上
       // （mpv 跑到飞牛窗口后面被盖住）。移动结束/恢复/首帧后强制重新置顶 mpv 一次。
-      this._raiseMpv = () => { try { if (this.player && this.player.isRunning() && !this._pip && !this._docked) this.player.setOntop(true); } catch (_) {} };
+      // v3.0.77（用户工单：MPV 前置等级太高，要跟随宿主窗层级）——
+      // 旧实现在宿主每次 move/resize/focus/show/loaded 时都无条件 setOntop(true)，等于把 mpv
+      // 一次次重新打成系统级 topmost（HWND_TOPMOST），把微信/桌面/任务栏全压在下面，v3.0.71
+      // 辛苦挂上的 owner 从属关系等于白挂——这就是「前置等级还没改过来」的直接原因。
+      // 现在 owner 已挂上时改走 _applyTopPolicy()：常规窗口化播放 ontop=no，靠 Windows 的
+      // owned-window 规则保证「恒在宿主之上、但不会盖住别的程序」；只有画中画 / 宿主全屏
+      // 这两种本来就要盖住任务栏的场景才真正置顶。
+      this._raiseMpv = () => {
+        try {
+          if (!this.player || !this.player.isRunning() || this._pip || this._docked) return;
+          if (this._ownerOk && !this._standalone) { this._applyTopPolicy(); return; }
+          this.player.setOntop(true);
+        } catch (_) {}
+      };
       this._moveHandler = () => { this._trackTransit('move', 700); this._burstRect(400); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(8); } catch (_) {} };
       this._resizeHandler = () => { this._trackTransit('resize', 900); this._burstRect(700); this._applyGeometry(); this._raiseMpv(); try { if (!this._chasing) this._chase(12); } catch (_) {} };
       this._minHandler = () => { try { this.player.hideWindow(); } catch (_) {} };

@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.71';
+const APP_VERSION = '3.0.72';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -12224,6 +12224,10 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
       blur: clampInt(opts?.titleBarBlur, 0, 40, 20),
       highlight: clampInt(opts?.titleBarHighlight, 0, 100, 55),
     };
+    // v3.0.71：四角实时预览透传。v3.0.70 的预览消息体没有这两个字段，
+    // 渲染层收到后无值可改，于是「点直角不即时生效」；这里按需带上（不带时保持现状不动）。
+    if (opts && (opts.barCorner === 'round' || opts.barCorner === 'square')) tbPayload.barCorner = opts.barCorner;
+    if (opts && (opts.winCorner === 'round' || opts.winCorner === 'square')) tbPayload.winCorner = opts.winCorner;
     const __skinCfgP = resolveSkinConfig();
     tbPayload.skinDir = __skinCfgP.skinDir;
     tbPayload.skin = __skinCfgP.skin;

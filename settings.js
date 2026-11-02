@@ -362,6 +362,7 @@
       if (!btn) return;
       tbCorner.bar = (btn.getAttribute('data-corner') === 'square') ? 'square' : 'round';
       syncCornerBtns();
+      tbPreview(); // v3.0.71：点选后立即广播预览，标题栏四角即时生效（不必等保存）
     });
   }
   if (winCornerGroup) {
@@ -370,6 +371,7 @@
       if (!btn) return;
       tbCorner.win = (btn.getAttribute('data-corner') === 'square') ? 'square' : 'round';
       syncCornerBtns();
+      tbPreview(); // v3.0.71：点选后立即广播预览，窗口四角即时生效（不必等保存）
     });
   }
 
@@ -422,6 +424,9 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
           titleBarMaterial: tbState.material,
           titleBarBlur: tbState.blur,
           titleBarHighlight: tbState.highlight,
+          // v3.0.71：四角随预览一起广播 —— v3.0.70 只改本地选中态、从不发预览，页面永远收不到
+          barCorner: tbCorner.bar,
+          winCorner: tbCorner.win,
         });
       } catch (_) {}
     }, 40);
@@ -541,7 +546,15 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
         if (res && res.ok) {
           optSave.textContent = '已 保 存（即时生效）';
           setTimeout(() => { optSave.textContent = '保存界面设置'; }, 1800);
+        } else {
+          // v3.0.71：保存失败必须看得见。v3.0.70 四角字段被 preload 白名单吞掉时按钮静默还原，
+          // 用户看到的就是「点了保存没反应、设置也没存」。
+          optSave.textContent = '保存失败，请重试';
+          setTimeout(() => { optSave.textContent = '保存界面设置'; }, 2200);
         }
+      } catch (_) {
+        optSave.textContent = '保存失败，请重试';
+        setTimeout(() => { optSave.textContent = '保存界面设置'; }, 2200);
       } finally {
         optSave.disabled = false;
         if (optSave.textContent === '保 存 中') optSave.textContent = '保存界面设置';

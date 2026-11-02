@@ -16,6 +16,7 @@ const {
 } = require('electron');
 const path = require('path');
 const url = require('url');
+const titlebarFrost = require('./titlebar-frost'); // v3.0.78 标题栏磨砂：屏幕背景采样
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
@@ -171,7 +172,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.77';
+const APP_VERSION = '3.0.78';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -2000,6 +2001,12 @@ function defaultSettings() {
     themeColor: '#1e1b2e',
     // v3.0.24：标题栏默认样式（新安装即不透明，避免用户找不到标题栏）
     titleBarOpacity: 96,
+  // v3.0.78（用户方案）：磨砂/纯色两套视觉参数各自独立、互不共用
+  titleBarFrostColor: '#ffffff',
+  titleBarFrostAlpha: 10,
+  titleBarSolidColor: '#101426',
+  titleBarSolidAlpha: 100,
+  titleBarDivider: true,
     titleBarColor: '#101426',
     titleBarMaterial: 'solid',
     // 标题栏皮肤目录名（%APPDATA%/<app>/skins/<activeSkin>），空 = 默认标题栏
@@ -12214,6 +12221,11 @@ ipcMain.handle('settings:get', async () => {
     // v2.19.0：标题栏材质（solid 纯色 / frosted 磨砂玻璃）+ 磨砂强度 0~40px
     titleBarMaterial: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
     titleBarBlur: clampInt(s.titleBarBlur, 0, 40, 20),
+    titleBarFrostColor: String(s.titleBarFrostColor || '#ffffff'),
+    titleBarFrostAlpha: clampInt(s.titleBarFrostAlpha, 2, 35, 10),
+    titleBarSolidColor: String(s.titleBarSolidColor || s.titleBarColor || '#101426'),
+    titleBarSolidAlpha: clampInt(s.titleBarSolidAlpha, 90, 100, 100),
+    titleBarDivider: s.titleBarDivider === undefined ? true : !!s.titleBarDivider,
     titleBarHighlight: clampInt(s.titleBarHighlight, 0, 100, 55),
     themeColor: String(s.themeColor || '#4F6EF7'),
     activeSkin: String(s.activeSkin || ''),
@@ -12370,6 +12382,13 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
       material: opts?.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
       blur: clampInt(opts?.titleBarBlur, 0, 40, 20),
       highlight: clampInt(opts?.titleBarHighlight, 0, 100, 55),
+      frostColor: String(opts?.titleBarFrostColor || '#ffffff'),
+      frostAlpha: clampInt(opts?.titleBarFrostAlpha, 2, 35, 10),
+      solidColor: String(opts?.titleBarSolidColor || opts?.titleBarColor || '#101426'),
+      solidAlpha: clampInt(opts?.titleBarSolidAlpha, 90, 100, 100),
+      divider: opts?.titleBarDivider === undefined ? true : !!opts.titleBarDivider,
+      // 预览也立即同步采样开关（切到磨砂当场出效果）
+      __frost: (function () { try { __syncFrostAll(opts?.titleBarMaterial === 'frosted'); } catch (_) {} return 1; })(),
     };
     // v3.0.71：四角实时预览透传。v3.0.70 的预览消息体没有这两个字段，
     // 渲染层收到后无值可改，于是「点直角不即时生效」；这里按需带上（不带时保持现状不动）。
@@ -12419,6 +12438,22 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     const tbHighlight = (opts && opts.titleBarHighlight != null && Number.isFinite(Number(opts.titleBarHighlight)))
       ? clampInt(opts.titleBarHighlight, 0, 100, 55)
       : clampInt(cachedSettings.titleBarHighlight, 0, 100, 55);
+    // v3.0.78：磨砂/纯色两套参数各自独立记忆（切回来不丢值）
+    const tbFrostColor = (opts && typeof opts.titleBarFrostColor === 'string' && opts.titleBarFrostColor)
+      ? opts.titleBarFrostColor
+      : String(cachedSettings.titleBarFrostColor || '#ffffff');
+    const tbFrostAlpha = (opts && opts.titleBarFrostAlpha != null && Number.isFinite(Number(opts.titleBarFrostAlpha)))
+      ? clampInt(opts.titleBarFrostAlpha, 2, 35, 10)
+      : clampInt(cachedSettings.titleBarFrostAlpha, 2, 35, 10);
+    const tbSolidColor = (opts && typeof opts.titleBarSolidColor === 'string' && opts.titleBarSolidColor)
+      ? opts.titleBarSolidColor
+      : String(cachedSettings.titleBarSolidColor || cachedSettings.titleBarColor || '#101426');
+    const tbSolidAlpha = (opts && opts.titleBarSolidAlpha != null && Number.isFinite(Number(opts.titleBarSolidAlpha)))
+      ? clampInt(opts.titleBarSolidAlpha, 90, 100, 100)
+      : clampInt(cachedSettings.titleBarSolidAlpha, 90, 100, 100);
+    const tbDivider = (opts && typeof opts.titleBarDivider === 'boolean')
+      ? opts.titleBarDivider
+      : (cachedSettings.titleBarDivider === undefined ? true : !!cachedSettings.titleBarDivider);
     const accent = String(opts?.themeColor || cachedSettings.themeColor || '#4F6EF7');
     // v3.0.27：只有"显式传了非空皮肤名"才改；否则保留 settings.json 里的值。
     // 旧逻辑在被传入空串（或 cached 尚未就绪）时会把 activeSkin 写成 ''，导致"装好的皮肤
@@ -12466,6 +12501,11 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       titleBarMaterial: tbMaterial,
       titleBarBlur: tbBlur,
       titleBarHighlight: tbHighlight,
+    titleBarFrostColor: tbFrostColor,
+    titleBarFrostAlpha: tbFrostAlpha,
+    titleBarSolidColor: tbSolidColor,
+    titleBarSolidAlpha: tbSolidAlpha,
+    titleBarDivider: tbDivider,
       themeColor: accent,
       activeSkin: activeSkin,
       hideAccountBall: hideBall,
@@ -12481,6 +12521,12 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.titleBarMaterial = tbMaterial;
     cachedSettings.titleBarBlur = tbBlur;
     cachedSettings.titleBarHighlight = tbHighlight;
+    cachedSettings.titleBarFrostColor = tbFrostColor;
+    cachedSettings.titleBarFrostAlpha = tbFrostAlpha;
+    cachedSettings.titleBarSolidColor = tbSolidColor;
+    cachedSettings.titleBarSolidAlpha = tbSolidAlpha;
+    cachedSettings.titleBarDivider = tbDivider;
+    try { __syncFrostAll(tbMaterial === 'frosted'); } catch (_) {}
     cachedSettings.themeColor = accent;
     cachedSettings.activeSkin = activeSkin;
     cachedSettings.hideAccountBall = hideBall;
@@ -12651,6 +12697,51 @@ ipcMain.handle('settings:delete-skin', async (_e, payload) => {
 // （日志实证：121 条 titlebar.skin 里 109 条 skinDir 为空，只有靠设置页广播才恢复），
 // 因此把"主进程主动推送"做成权威路径：窗口每次加载完成都下发一次完整 payload，
 // 主窗 / 设置页 / 帮助页 / 应用窗 / appview 一律覆盖。
+
+// ==================== v3.0.78：标题栏磨砂采样 ====================
+// 磨砂效果需要「窗口背后的真实屏幕画面」；只在磨砂模式下开启，纯色模式完全不采样（零开销）。
+// 采样器日志桥：titlebar-frost 用 (level, tag, evt, obj) 四参，dlog 是 (level, event, extra) 三参
+try {
+  titlebarFrost.setLogger((lv, tag, evt, obj) => dlog(lv, String(tag || 'titlebar') + '.' + String(evt || ''), obj));
+} catch (_) {}
+
+function __frostWanted() {
+  try {
+    const s = loadSettings() || {};
+    return s.titleBarMaterial === 'frosted';
+  } catch (_) { return false; }
+}
+
+function __wireFrost(win) {
+  if (!win || win.isDestroyed() || win.__frostWired) return;
+  win.__frostWired = true;
+  const kick = () => { try { titlebarFrost.kick(win); } catch (_) {} };
+  try {
+    win.on('move', kick);
+    win.on('resize', kick);
+    win.on('show', kick);
+    win.on('restore', kick);
+    win.on('focus', kick);
+    win.on('closed', () => { try { titlebarFrost.dispose(win); } catch (_) {} });
+  } catch (_) {}
+  try { titlebarFrost.setEnabled(win, __frostWanted()); } catch (_) {}
+}
+
+function __syncFrostAll(forceOn) {
+  try {
+    const on = (typeof forceOn === 'boolean') ? forceOn : __frostWanted();
+    const wins = BrowserWindow.getAllWindows();
+    for (const w of wins) {
+      if (!w || w.isDestroyed()) continue;
+      try { __wireFrost(w); } catch (_) {}
+      try { titlebarFrost.setEnabled(w, on); } catch (_) {}
+    }
+    dlog('info', 'titlebar', 'frost.sync', { on: on, wins: wins.length });
+  } catch (_) {}
+}
+
+try { app.on('browser-window-created', (_e, win) => { try { __wireFrost(win); } catch (_) {} }); } catch (_) {}
+
 function __titlebarPayload() {
   let s = {};
   try { s = loadSettings() || {}; } catch (_) { s = {}; }
@@ -12663,6 +12754,11 @@ function __titlebarPayload() {
     material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
     blur: clampInt(s.titleBarBlur, 0, 40, 20),
     highlight: clampInt(s.titleBarHighlight, 0, 100, 55),
+    frostColor: String(s.titleBarFrostColor || '#ffffff'),
+    frostAlpha: clampInt(s.titleBarFrostAlpha, 2, 35, 10),
+    solidColor: String(s.titleBarSolidColor || s.titleBarColor || '#101426'),
+    solidAlpha: clampInt(s.titleBarSolidAlpha, 90, 100, 100),
+    divider: s.titleBarDivider === undefined ? true : !!s.titleBarDivider,
     skinDir: String(sk.skinDir || ''),
     skin: sk.skin || null,
     hideAccountBall: s.hideAccountBall === true,
@@ -12737,6 +12833,11 @@ ipcMain.on('settings:get-titlebar', (e) => {
       material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
       blur: clampInt(s.titleBarBlur, 0, 40, 20),
       highlight: clampInt(s.titleBarHighlight, 0, 100, 55),
+      frostColor: String(s.titleBarFrostColor || '#ffffff'),
+      frostAlpha: clampInt(s.titleBarFrostAlpha, 2, 35, 10),
+      solidColor: String(s.titleBarSolidColor || s.titleBarColor || '#101426'),
+      solidAlpha: clampInt(s.titleBarSolidAlpha, 90, 100, 100),
+      divider: s.titleBarDivider === undefined ? true : !!s.titleBarDivider,
       skinDir: String(__sk.skinDir || ''),
       skin: __sk.skin || null,
       hideAccountBall: s.hideAccountBall === true,
@@ -12747,7 +12848,7 @@ ipcMain.on('settings:get-titlebar', (e) => {
       winCorner: (s.winCorner === 'square' || s.winCorner === 'half') ? s.winCorner : 'round',
     };
   } catch (__e2) {
-    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round', winCorner: 'round' };
+    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round', winCorner: 'round' };
     try { fnosLog('error', 'titlebar', 'get.fail', { err: String((__e2 && __e2.message) || __e2).slice(0, 140) }); } catch (_) {}
   }
   try { e.returnValue = __tb; } catch (__e3) {

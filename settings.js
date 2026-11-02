@@ -391,7 +391,13 @@
   // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
   // v2.19.0：material = 纯色/磨砂玻璃，blur = 磨砂强度
   // v3.0.24：默认值与主进程一致（新装默认 96% 不透明 + 深色，避免标题栏看不见）
-const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55 };
+// v3.0.78（用户方案）：磨砂 / 纯色两套视觉参数各自独立、互不共用，切换后各自记住自己的值
+  const tbState = {
+    opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55,
+    frostColor: '#FFFFFF', frostAlpha: 10,   // 磨砂：染色 + 玻璃浓度 2~35
+    solidColor: '#101426', solidAlpha: 100,  // 纯色：实色 + 浓度 90~100
+    divider: true,
+  };
   const tbOpacity = document.getElementById('tb-opacity');
   const tbOpacityVal = document.getElementById('tb-opacity-val');
   const tbColorInput = document.getElementById('tb-color-input');
@@ -410,6 +416,12 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
   const tbHl = document.getElementById('tb-hl');
   const tbHlVal = document.getElementById('tb-hl-val');
   const tbHlRow = document.getElementById('tb-hl-row');
+  // v3.0.78：动态文案 / 分隔线开关
+  const tbStrengthTitle = document.getElementById('tb-strength-title');
+  const tbStrengthSub = document.getElementById('tb-strength-sub');
+  const tbColorTitle = document.getElementById('tb-color-title');
+  const tbDivider = document.getElementById('tb-divider');
+  const tbDividerRow = document.getElementById('tb-divider-row');
 
   // #RGB / #RRGGBB / #RRGGBBAA 都收，统一归一成 #RRGGBB（Alpha 交给不透明度滑块，避免两个口径打架）
   const hexOk = (h) => /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(String(h || '').trim());
@@ -436,6 +448,12 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
           titleBarMaterial: tbState.material,
           titleBarBlur: tbState.blur,
           titleBarHighlight: tbState.highlight,
+          // v3.0.78：磨砂 / 纯色两套参数（各自独立记忆）
+          titleBarFrostColor: tbState.frostColor,
+          titleBarFrostAlpha: tbState.frostAlpha,
+          titleBarSolidColor: tbState.solidColor,
+          titleBarSolidAlpha: tbState.solidAlpha,
+          titleBarDivider: !!tbState.divider,
           // v3.0.71：四角随预览一起广播 —— v3.0.70 只改本地选中态、从不发预览，页面永远收不到
           barCorner: tbCorner.bar,
           winCorner: tbCorner.win,
@@ -456,40 +474,67 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
     }
     if (tbMaterialHint) {
       tbMaterialHint.textContent = tbState.material === 'frosted'
-        ? '磨砂玻璃：模糊下层内容并叠加细噪点，透出背景质感（Win11 毛玻璃观感）'
-        : '纯色：标题栏为单一底色块；想透出背景质感请选「磨砂玻璃」';
+        ? '磨砂玻璃：透出桌面/背后窗口并模糊，只叠很淡的染色 + 1px 内高光（Windows 原生材质与 20px 圆角不可兼得，这里用实时采样实现）'
+        : '纯色：不透明实色，背后什么都不透，只有底色 +（可选）1px 分隔线';
     }
-    const off = tbState.material !== 'frosted';
-    if (tbBlurRow) tbBlurRow.classList.toggle('is-off', off);
-    if (tbBlur) tbBlur.disabled = off;
-    if (tbBlurVal) tbBlurVal.textContent = tbState.blur + 'px';
-    if (tbHlRow) tbHlRow.classList.toggle('is-off', off);
-    if (tbHl) tbHl.disabled = off;
-    if (tbHlVal) tbHlVal.textContent = String(tbState.highlight);
+    const frosted = tbState.material === 'frosted';
+    // v3.0.78：强度行按材质切换标签 / 取值范围 / 当前值（两套值各自记忆）
+    if (tbStrengthTitle) tbStrengthTitle.textContent = frosted ? '玻璃浓度' : '纯色浓度';
+    if (tbStrengthSub) {
+      tbStrengthSub.textContent = frosted
+        ? '染色叠加强度 2%~35%，越低越通透（模糊半径由系统固定，不可调）'
+        : '实心色浓度 90%~100%，纯色不透明、不露背后内容';
+    }
+    if (tbColorTitle) tbColorTitle.textContent = frosted ? '玻璃染色' : '纯色颜色';
+    if (tbColorHint) tbColorHint.textContent = frosted ? '磨砂玻璃的染色（很淡地叠在模糊背景上）' : '纯色标题栏的实心颜色';
+    if (tbDividerRow) tbDividerRow.style.display = frosted ? 'none' : 'flex';
   };
   const syncTbSliders = () => {
-    if (tbOpacity) tbOpacity.value = String(tbState.opacity);
-    if (tbOpacityVal) tbOpacityVal.textContent = tbState.opacity + '%';
-    // 颜色区的 Alpha 与「标题栏不透明度」是同一个值，双向联动
+    // v3.0.78：同一个滑杆位，磨砂走 2~35（玻璃浓度），纯色走 90~100（纯色浓度）
+    const frosted = tbState.material === 'frosted';
+    const v = frosted ? tbState.frostAlpha : tbState.solidAlpha;
+    if (tbOpacity) {
+      tbOpacity.min = frosted ? '2' : '90';
+      tbOpacity.max = frosted ? '35' : '100';
+      tbOpacity.value = String(v);
+    }
+    if (tbOpacityVal) tbOpacityVal.textContent = v + '%';
+    // 颜色 alpha 滑块已隐藏（磨砂/纯色浓度各自独立，不再共用颜色 alpha 口径）
     if (tbAlpha) tbAlpha.value = String(tbState.opacity);
     if (tbAlphaVal) tbAlphaVal.textContent = tbState.opacity + '%';
-
   };
+  const tbCurColor = () => (tbState.material === 'frosted' ? tbState.frostColor : tbState.solidColor);
   const syncTbColor = () => {
-    if (tbColorInput) tbColorInput.value = tbState.color;
-    if (tbColorHex && document.activeElement !== tbColorHex) tbColorHex.value = tbState.color;
-    if (tbColorPreview) tbColorPreview.style.background = tbState.color;
+    const c = tbCurColor();
+    if (tbColorInput) tbColorInput.value = c;
+    if (tbColorHex && document.activeElement !== tbColorHex) tbColorHex.value = c;
+    if (tbColorPreview) tbColorPreview.style.background = c;
   };
   const setTbColor = (c) => {
     const n = hexNorm6(c);
     if (!n) return false;
+    if (tbState.material === 'frosted') tbState.frostColor = n; else tbState.solidColor = n;
     tbState.color = n;
     syncTbColor();
     return true;
   };
-  const setTbOpacity = (v) => { tbState.opacity = clampInt(v, 0, 100, 0); syncTbSliders(); };
+  // v3.0.78：强度滑杆写入按材质分流（磨砂 → frostAlpha，纯色 → solidAlpha）
+  const setTbOpacity = (v) => {
+    if (tbState.material === 'frosted') {
+      tbState.frostAlpha = clampInt(v, 2, 35, 10);
+    } else {
+      tbState.solidAlpha = clampInt(v, 90, 100, 100);
+      tbState.opacity = tbState.solidAlpha;   // 旧字段兼容
+    }
+    syncTbSliders();
+  };
   // v2.19.0：材质 / 磨砂强度
-  const setTbMaterial = (m) => { tbState.material = (m === 'frosted') ? 'frosted' : 'solid'; syncTbMaterialBtns(); };
+  const setTbMaterial = (m) => {
+    tbState.material = (m === 'frosted') ? 'frosted' : 'solid';
+    syncTbMaterialBtns();
+    syncTbSliders();
+    syncTbColor();
+  };
   const setTbBlur = (v) => {
     tbState.blur = clampInt(v, 0, 40, 20);
     if (tbBlur) tbBlur.value = String(tbState.blur);
@@ -517,6 +562,8 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       tbPreview();
     });
   }
+  // v3.0.78：分隔线开关（纯色效果）
+  if (tbDivider) tbDivider.addEventListener('change', () => { tbState.divider = !!tbDivider.checked; tbPreview(); });
   if (tbBlur) tbBlur.addEventListener('input', () => { setTbBlur(tbBlur.value); tbPreview(); });
   if (tbHl) tbHl.addEventListener('input', () => { setTbHighlight(tbHl.value); tbPreview(); });
   // v3.0.76：拖动透明界面滑块 —— 本页立刻变 + 广播给其它窗口预览，松手不落盘，点保存才生效
@@ -545,6 +592,17 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 96);
       tbState.color = hexNorm6(info.titleBarColor) || '#101426';
       tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'solid';
+      // v3.0.78：两套参数各自读自己的值（老配置从共享字段折算，观感不断层）
+      tbState.frostColor = hexNorm6(info.titleBarFrostColor) || '#FFFFFF';
+      tbState.frostAlpha = (info.titleBarFrostAlpha != null)
+        ? clampInt(info.titleBarFrostAlpha, 2, 35, 10)
+        : clampInt(Math.round(tbState.opacity * 0.35 / 100 * 100) / 10 + 4, 2, 35, 10);
+      tbState.solidColor = hexNorm6(info.titleBarSolidColor) || hexNorm6(info.titleBarColor) || '#101426';
+      tbState.solidAlpha = (info.titleBarSolidAlpha != null)
+        ? clampInt(info.titleBarSolidAlpha, 90, 100, 100)
+        : clampInt(tbState.opacity, 90, 100, 100);
+      tbState.divider = info.titleBarDivider === undefined ? true : !!info.titleBarDivider;
+      if (tbDivider) tbDivider.checked = !!tbState.divider;
       tbState.blur = clampInt(info.titleBarBlur, 0, 40, 20);
       if (tbBlur) tbBlur.value = String(tbState.blur);
       tbState.highlight = clampInt(info.titleBarHighlight, 0, 100, 55);
@@ -564,6 +622,12 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
           titleBarMaterial: tbState.material,
           titleBarBlur: tbState.blur,
           titleBarHighlight: tbState.highlight,
+          // v3.0.78：磨砂 / 纯色两套参数分别落盘
+          titleBarFrostColor: tbState.frostColor,
+          titleBarFrostAlpha: tbState.frostAlpha,
+          titleBarSolidColor: tbState.solidColor,
+          titleBarSolidAlpha: tbState.solidAlpha,
+          titleBarDivider: !!tbState.divider,
           hideAccountBall: !!(optHideBall && optHideBall.checked),
           // v3.0.76：透明界面以百分比落盘（0 = 深色实底）
           uiTransparentAlpha: uiAlphaPct,

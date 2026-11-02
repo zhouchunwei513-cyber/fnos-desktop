@@ -310,11 +310,11 @@
       <!-- v1.58：不透明度滑块 -->
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
-          <div class="hotkey-title">标题栏不透明度</div>
-          <div class="hotkey-sub">0 为完全透明；数值越大标题栏底色越明显</div>
+          <div class="hotkey-title" id="tb-strength-title">纯色浓度</div>
+          <div class="hotkey-sub" id="tb-strength-sub">实心色浓度，90%~100%（纯色不透明，不露背后内容）</div>
         </div>
         <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
-          <input type="range" id="tb-opacity" min="0" max="100" value="0" class="tb-range" style="flex:1" />
+          <input type="range" id="tb-opacity" min="90" max="100" value="100" class="tb-range" style="flex:1" />
           <span id="tb-opacity-val" class="tb-range-val">0%</span>
         </div>
       </div>
@@ -322,7 +322,7 @@
       <!-- v2.17.24：标题栏颜色改用标准取色器（系统拾色面板 + 十六进制色值 + Alpha），删除原 6 个预设色圈 -->
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
-          <div class="hotkey-title">标题栏颜色</div>
+          <div class="hotkey-title" id="tb-color-title">纯色颜色</div>
           <div class="hotkey-sub" id="tb-color-hint">标题栏底色（透明材质下为标题栏纯色底色）</div>
         </div>
         <div class="tb-color-tools">
@@ -331,7 +331,7 @@
             <span class="tb-color-preview" id="tb-color-preview"></span>
           </label>
           <input type="text" id="tb-color-hex" class="hotkey-input tb-hex-input" value="#3B82F6" maxlength="9" placeholder="#RRGGBB" spellcheck="false" title="支持 #RRGGBB 或 #RRGGBBAA" />
-          <div class="tb-alpha-wrap" title="颜色透明度（Alpha），与上方「标题栏不透明度」联动">
+          <div class="tb-alpha-wrap" style="display:none" title="颜色透明度（Alpha）">
             <input type="range" id="tb-alpha" min="0" max="100" value="0" class="tb-range tb-alpha-range" />
             <span id="tb-alpha-val" class="tb-range-val">0%</span>
           </div>
@@ -341,7 +341,7 @@
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
           <div class="hotkey-title">标题栏材质</div>
-          <div class="hotkey-sub" id="tb-material-hint">纯色：标题栏为单一底色块；磨砂玻璃：模糊下层内容并叠加细噪点，呈现 Win11 毛玻璃质感</div>
+          <div class="hotkey-sub" id="tb-material-hint">纯色：不透明实色，背后什么都不透；磨砂玻璃：透出桌面/背后窗口并模糊，只加很淡的染色与 1px 内高光</div>
         </div>
         <div class="tb-material-group" data-tb-material>
           <button type="button" class="tb-mat-btn" data-material="solid">纯色</button>
@@ -349,27 +349,15 @@
         </div>
       </div>
 
-      <!-- v2.19.0：磨砂强度（仅磨砂玻璃材质生效） -->
-      <div class="color-picker-row" id="tb-blur-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+      <!-- v3.0.78（用户方案）：删除「磨砂强度」（系统模糊半径不可调，改名「玻璃浓度」并入上方强度行）
+           与「磨砂高光」（改固定 1px 内高光）两个滑杆 -->
+      <!-- v3.0.78：纯色效果专用 —— 底部分隔线 -->
+      <div class="color-picker-row" id="tb-divider-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>
-          <div class="hotkey-title">磨砂强度</div>
-          <div class="hotkey-sub">模糊半径，0 为最通透，数值越大雾面越重（仅磨砂玻璃材质生效）</div>
+          <div class="hotkey-title">底部分隔线</div>
+          <div class="hotkey-sub">纯色效果下标题栏底部一条 1px 分隔线（磨砂效果不使用）</div>
         </div>
-        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
-          <input type="range" id="tb-blur" min="0" max="40" value="20" class="tb-range" style="flex:1" />
-          <span id="tb-blur-val" class="tb-range-val">20px</span>
-        </div>
-      </div>
-      <!-- v2.19.2：磨砂高光强度 -->
-      <div class="color-picker-row" id="tb-hl-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
-        <div>
-          <div class="hotkey-title">磨砂高光</div>
-          <div class="hotkey-sub">玻璃上沿的受光强度，越大越接近 Win11 亚克力质感（仅磨砂玻璃材质生效）</div>
-        </div>
-        <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
-          <input type="range" id="tb-hl" min="0" max="100" value="55" class="tb-range" style="flex:1" />
-          <span id="tb-hl-val" class="tb-range-val">55</span>
-        </div>
+        <label class="switch"><input type="checkbox" id="tb-divider" checked /><span class="slider"></span></label>
       </div>
 
       <!-- v3.0.19：标题栏皮肤 -->

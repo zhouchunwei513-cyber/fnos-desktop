@@ -843,7 +843,9 @@ module.exports = function injectTitleBar(ctx) {
     }
 
     // v3.0.70：barCorner = 标题栏四角（round 10px 默认 / square 直角），winCorner = 窗口四角（round 20px 默认 / square 直角）
-    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false, barCorner: 'round', winCorner: 'round' };
+    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false, barCorner: 'round', winCorner: 'round',
+      // v3.0.78：磨砂/纯色两套视觉参数各自独立（互不共用），见用户方案第五节
+      frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
       if (r && typeof r === 'object') {
@@ -854,6 +856,12 @@ module.exports = function injectTitleBar(ctx) {
         TB.material = (r.material === 'frosted') ? 'frosted' : 'solid';
         if (r.blur != null) TB.blur = Math.max(0, Math.min(40, Number(r.blur) || 0));
         if (r.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(r.highlight)));
+        // v3.0.78：磨砂/纯色两套参数（老配置缺字段时从共享的 opacity/color 折算，观感不断层）
+        if (r.frostColor) TB.frostColor = String(r.frostColor);
+        if (r.frostAlpha != null) TB.frostAlpha = Math.max(2, Math.min(35, Number(r.frostAlpha) || 10));
+        if (r.solidColor) TB.solidColor = String(r.solidColor);
+        if (r.solidAlpha != null) TB.solidAlpha = Math.max(90, Math.min(100, Number(r.solidAlpha) || 100));
+        if (typeof r.divider === 'boolean') TB.divider = r.divider;
         if (r.skinDir) __skinState.skinDir = String(r.skinDir);
         if (r.skin && typeof r.skin === 'object') __skinState.skin = r.skin;
         // v3.0.23：悬浮球隐藏开关
@@ -933,6 +941,78 @@ module.exports = function injectTitleBar(ctx) {
 
 
     // 根据设置计算标题栏背景/模糊并应用；同时调整图标配色
+
+    // ================= v3.0.78：标题栏磨砂层 =================
+    // Windows 上 Electron 原生 acrylic 与自定义 20px 圆角不可兼得（实测：非透明窗才出磨砂，
+    // 而非透明窗的 SetWindowRgn / DWM 圆角都到不了 20px）。因此磨砂改为「自绘」：
+    // 主进程抓取窗口背后的真实屏幕画面（titlebar-frost.js），这里做低分辨率放大 + blur，
+    // 视觉上等价于「透出桌面且模糊」，同时透明窗 + 10px/20px/半圆角全部保持不变。
+    let __frostGeom = null;   // { url, sw, sh, wx, wy }
+    let __frostClip = null;   // 裁切容器（只裁磨砂层，不影响皮肤异形层）
+    let __frostEl = null;     // 模糊层本体
+
+    function __ensureFrostLayer(bar) {
+      if (__frostClip && __frostClip.parentNode === bar && __frostEl) return __frostEl;
+      if (!__frostClip) {
+        __frostClip = document.createElement('div');
+        __frostClip.id = 'fnos-tb-frost-clip';
+        __frostClip.setAttribute('aria-hidden', 'true');
+        __setCss(__frostClip, [
+          'position:absolute', 'left:0', 'top:0', 'right:0', 'bottom:0',
+          'overflow:hidden', 'pointer-events:none', 'z-index:0',
+          'border-radius:inherit'
+        ].join(';'));
+        __frostEl = document.createElement('div');
+        __frostEl.id = 'fnos-tb-frost';
+        __frostEl.setAttribute('aria-hidden', 'true');
+        __setCss(__frostEl, [
+          'position:absolute', 'left:-72px', 'top:-72px', 'right:-72px', 'bottom:-72px',
+          'pointer-events:none', 'background-repeat:no-repeat',
+          'filter:blur(18px) saturate(150%)',
+          'transform:translateZ(0)', 'will-change:background-position'
+        ].join(';'));
+        __frostClip.appendChild(__frostEl);
+      }
+      try { bar.insertBefore(__frostClip, bar.firstChild); } catch (_) {}
+      __paintFrost(bar);
+      return __frostEl;
+    }
+
+    function __dropFrostLayer(bar) {
+      try {
+        if (__frostClip && __frostClip.parentNode) __frostClip.parentNode.removeChild(__frostClip);
+      } catch (_) {}
+    }
+
+    function __paintFrost(bar) {
+      if (!__frostEl) return;
+      const g = __frostGeom;
+      if (!g || !g.url) {
+        __frostEl.style.backgroundImage = 'none';
+        return;
+      }
+      // 模糊层的坐标系原点在标题栏左上角 -72px 处；窗口左上角在屏幕上的逻辑坐标为 (wx, wy)
+      // v3.0.78：磨砂层是不透明截图，会把 bar 自己的 tint 底色盖掉 →
+      // 改成多重背景：第一层 linear-gradient = 染色，第二层 = 窗口背后的模糊截图
+      const __fa = Math.max(0.02, Math.min(0.35, (TB.frostAlpha == null ? 10 : Number(TB.frostAlpha)) / 100));
+      const __tint = hexToRgba(TB.frostColor || '#ffffff', __fa);
+      __frostEl.style.backgroundImage = 'linear-gradient(' + __tint + ',' + __tint + '), url("' + g.url + '")';
+      __frostEl.style.backgroundSize = '100% 100%, ' + g.sw + 'px ' + g.sh + 'px';
+      __frostEl.style.backgroundPosition = '0 0, ' + (72 - g.wx) + 'px ' + (72 - g.wy) + 'px';
+    }
+
+    // 主进程采样结果（titlebar-frost.js 每 0.24~1.1s 推一次）
+    try {
+      ipcRenderer.on('titlebar-frost-bg', (_e, d) => {
+        try {
+          if (!d || !d.url) return;
+          __frostGeom = d;
+          const bar0 = document.getElementById('fnos-titlebar');
+          if (bar0 && TB.material === 'frosted') __paintFrost(bar0);
+        } catch (_) {}
+      });
+    } catch (_) {}
+
     function applyStyle(bar) {
       try {
         if (!bar) return;
@@ -964,48 +1044,54 @@ module.exports = function injectTitleBar(ctx) {
           //   2) 顶部白色高光渐变 —— 玻璃上沿的受光质感
           //   3) 底色 —— 用户颜色（磨砂下最低 10% alpha，太透会完全看不见材质）
           const frosted = TB.material === 'frosted';
-          const __blur = Math.max(0, Math.min(40, Number(TB.blur) || 0));
           if (frosted) {
-            const alpha = a > 0.001 ? Math.max(a, 0.10) : 0.24;
-            const noiseOpacity = Math.max(0.04, Math.min(0.15, 0.15 - __blur * 0.0025)).toFixed(2);
-            const noise = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'120\' height=\'120\'%3E%3Cfilter id=\'n\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.85\' numOctaves=\'2\' stitchTiles=\'stitch\'/%3E%3CfeColorMatrix type=\'saturate\' values=\'0\'/%3E%3C/filter%3E%3Crect width=\'120\' height=\'120\' filter=\'url(%23n)\' opacity=\'' + noiseOpacity + '\'/%3E%3C/svg%3E")';
-            // v2.19.2（用户要求）：高光强度可调，默认拉到接近 Win11 亚克力那种"上沿亮、向下渐弱"的受光。
-            // hl=0 → 0.06（几乎无高光，纯靠模糊+噪点）；hl=55 → 0.40；hl=100 → 0.68
-            const __hl = Math.max(0, Math.min(100, (TB.highlight == null ? 55 : Number(TB.highlight))));
-            const __hi = 0.06 + (__hl / 100) * 0.62;
-            const __w = (k) => 'rgba(255,255,255,' + (__hi * k).toFixed(3) + ')';
-            // v2.19.2（用户要求加强高光）：顶部 1.5px 硬亮线 + 上小下大的快衰减，
-            // 对齐 Win11 标题栏「上沿受光、往下越暗、底部反光」的层次
-            const __topline = 'linear-gradient(180deg, ' + __w(1.4) + ' 0px, ' + __w(1.4) + ' 1.5px, rgba(255,255,255,0) 1.5px)';
-            bar.style.backgroundImage = noise + ', ' + __topline + ', linear-gradient(180deg, ' + __w(1) + ' 0%, ' + __w(0.86) + ' 14%, ' + __w(0.50) + ' 46%, ' + __w(0.26) + ' 80%, ' + __w(0.34) + ' 100%)';
-            bar.style.backgroundRepeat = 'repeat, no-repeat, no-repeat';
-            bar.style.backgroundSize = '120px 120px, 100% 100%, auto';
-            bar.style.backgroundColor = a > 0.001 ? hexToRgba(TB.color, alpha) : 'rgba(16,20,36,0.34)';
-            bar.style.backdropFilter = 'blur(' + __blur + 'px) saturate(160%)';
-            bar.style.webkitBackdropFilter = 'blur(' + __blur + 'px) saturate(160%)';
-            bar.style.boxShadow = 'inset 0 1px 0 ' + __w(0.9) + ', inset 0 -1px 0 ' + __w(0.35);
-          } else if (a > 0.001) {
-            bar.style.background = hexToRgba(TB.color, a);
-            bar.style.backdropFilter = 'none';
-            bar.style.webkitBackdropFilter = 'none';
-            bar.style.boxShadow = 'none';
+            // v3.0.78（用户方案）：磨砂 = 透出桌面 + 模糊 + 极淡染色 + 固定 1px 内高光。
+            // 背景由 __frostEl（主进程抓屏 + blur）提供，这里只负责染色与高光，绝不再写 backdrop-filter。
+            const __fa = Math.max(0.02, Math.min(0.35, (TB.frostAlpha == null ? 10 : Number(TB.frostAlpha)) / 100));
+            // 内嵌 bar（webview / 应用窗页面里的标题栏 buildEmbed）收不到 titlebar-frost-bg：
+            // 主进程抓屏只发给窗口自己的 webContents。这里回退为「淡色 + 模糊页面内容」，
+            // 避免变成一层没有背景的半透明白雾。主窗仍走自绘磨砂。
+            const __isEmbed = !!(bar && bar.querySelector && bar.querySelector('#fnos-embed-title'));
+            if (__isEmbed) {
+              __dropFrostLayer(bar);
+              bar.style.background = hexToRgba(TB.frostColor || '#ffffff', __fa);
+              const __fb = 'blur(14px) saturate(140%)';
+              bar.style.backdropFilter = __fb;
+              bar.style.webkitBackdropFilter = __fb;
+              bar.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.06)';
+              bar.style.borderBottom = '1px solid rgba(255,255,255,0.10)';
+            } else {
+              __ensureFrostLayer(bar);
+              bar.style.background = hexToRgba(TB.frostColor || '#ffffff', __fa);
+              bar.style.backdropFilter = 'none';
+              bar.style.webkitBackdropFilter = 'none';
+              bar.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.06)';
+              bar.style.borderBottom = '1px solid rgba(255,255,255,0.10)';
+              __paintFrost(bar);
+            }
           } else {
-            // v2.15.69：设置窗口透明后标题栏透出桌面灰边，改深色渐变；主/应用窗口保持 transparent 透出下层
-            var __argvS = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
-            // v2.15.77：补排除直播窗口（--fnos-live-window）。直播窗口既无 --fnos-shell 也无
-            // --fnos-app-window，旧条件会把它误判成设置窗口 → bar 被刷成深色渐变不透明，
-            // 压在透明标题栏位置就成了用户看到的"长方形黑条"。
-            var __isSettingsS = __argvS.indexOf('--fnos-shell') < 0 && __argvS.indexOf('--fnos-app-window') < 0 && __argvS.indexOf('--fnos-live-window') < 0;
-            bar.style.background = __isSettingsS ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
+            // v3.0.78（用户方案）：纯色 = 完全不透明，只有底色 + 一条分隔线，不要内高光。
+            __dropFrostLayer(bar);
+            const __sa = Math.max(0.90, Math.min(1, (TB.solidAlpha == null ? 100 : Number(TB.solidAlpha)) / 100));
+            bar.style.background = hexToRgba(TB.solidColor || TB.color || '#101426', __sa);
             bar.style.backdropFilter = 'none';
             bar.style.webkitBackdropFilter = 'none';
             bar.style.boxShadow = 'none';
+            bar.style.borderBottom = TB.divider === false ? 'none' : '1px solid rgba(0,0,0,0.06)';
           }
         }
         // 底色较深时图标用白，较浅时图标用深色——保证对比
         // v2.15.14：opacity=0 默认走深色渐变 → 也用白图标
         // v2.19.0：磨砂玻璃底色偏深（用户色+白高光+噪点），图标一律用白
-        const darkBg = (TB.material === 'frosted') ? (TB.opacity <= 60) : (TB.opacity > 45 || TB.opacity <= 0.001);
+        // v3.0.78：磨砂底色由「tint 色 + 玻璃浓度」决定，按 tint 亮度判色（白 tint → 深图标）
+        const __lum = (function (hex) {
+          const h = String(hex || '#ffffff').replace('#', '');
+          const r0 = parseInt(h.slice(0, 2), 16) || 0, g0 = parseInt(h.slice(2, 4), 16) || 0, b0 = parseInt(h.slice(4, 6), 16) || 0;
+          return (0.299 * r0 + 0.587 * g0 + 0.114 * b0) / 255;
+        })(TB.frostColor);
+        const darkBg = (TB.material === 'frosted')
+          ? (__lum < 0.55 || (TB.frostAlpha == null ? 10 : TB.frostAlpha) < 8)
+          : (TB.opacity > 45 || TB.opacity <= 0.001);
         bar.__useDarkIcon = !darkBg; // true = 浅底用深图标
         const iconStroke = darkBg ? 'rgba(255,255,255,0.95)' : 'rgba(20,20,20,0.92)';
         const iconShadow = darkBg
@@ -1045,6 +1131,12 @@ module.exports = function injectTitleBar(ctx) {
             if (val.material) TB.material = (val.material === 'frosted') ? 'frosted' : 'solid';
             if (val.blur != null) TB.blur = Math.max(0, Math.min(40, Number(val.blur) || 0));
             if (val.highlight != null) TB.highlight = Math.max(0, Math.min(100, Number(val.highlight)));
+            // v3.0.78：磨砂/纯色两套参数实时刷新（拖动滑块即时预览）
+            if (val.frostColor) TB.frostColor = String(val.frostColor);
+            if (val.frostAlpha != null) TB.frostAlpha = Math.max(2, Math.min(35, Number(val.frostAlpha) || 10));
+            if (val.solidColor) TB.solidColor = String(val.solidColor);
+            if (val.solidAlpha != null) TB.solidAlpha = Math.max(90, Math.min(100, Number(val.solidAlpha) || 100));
+            if (typeof val.divider === 'boolean') TB.divider = val.divider;
             const __skBefore = String(__skinState.skinDir || '');
             if (val.skinDir != null) __skinState.skinDir = String(val.skinDir);
             // v3.0.36：切回默认皮肤时主进程下发 skin:null；旧写法 `val.skin != null` 为 false 会

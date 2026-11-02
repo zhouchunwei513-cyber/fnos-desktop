@@ -38,6 +38,14 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
       // v2.19.2：磨砂高光强度
       titleBarHighlight: opts?.titleBarHighlight != null ? Number(opts.titleBarHighlight) : undefined,
+      // v3.0.78（用户方案）：磨砂 / 纯色两套视觉参数各自独立、互不共用
+      titleBarFrostColor: opts?.titleBarFrostColor ? String(opts.titleBarFrostColor) : undefined,
+      titleBarFrostAlpha: (opts?.titleBarFrostAlpha != null && Number.isFinite(Number(opts.titleBarFrostAlpha)))
+        ? Number(opts.titleBarFrostAlpha) : undefined,
+      titleBarSolidColor: opts?.titleBarSolidColor ? String(opts.titleBarSolidColor) : undefined,
+      titleBarSolidAlpha: (opts?.titleBarSolidAlpha != null && Number.isFinite(Number(opts.titleBarSolidAlpha)))
+        ? Number(opts.titleBarSolidAlpha) : undefined,
+      titleBarDivider: typeof opts?.titleBarDivider === 'boolean' ? opts.titleBarDivider : undefined,
       // v3.0.19：标题栏皮肤（空字符串 = 默认无皮肤）
       activeSkin: opts?.activeSkin != null ? String(opts.activeSkin) : undefined,
       // v3.0.27：悬浮球隐藏开关 —— v3.0.23 引入该开关时本白名单漏加此字段，
@@ -63,6 +71,14 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       // v2.19.0：磨砂材质实时预览
       titleBarMaterial: opts?.titleBarMaterial ? String(opts.titleBarMaterial) : undefined,
       titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
+      // v3.0.78（用户方案）：磨砂 / 纯色两套视觉参数各自独立、互不共用
+      titleBarFrostColor: opts?.titleBarFrostColor ? String(opts.titleBarFrostColor) : undefined,
+      titleBarFrostAlpha: (opts?.titleBarFrostAlpha != null && Number.isFinite(Number(opts.titleBarFrostAlpha)))
+        ? Number(opts.titleBarFrostAlpha) : undefined,
+      titleBarSolidColor: opts?.titleBarSolidColor ? String(opts.titleBarSolidColor) : undefined,
+      titleBarSolidAlpha: (opts?.titleBarSolidAlpha != null && Number.isFinite(Number(opts.titleBarSolidAlpha)))
+        ? Number(opts.titleBarSolidAlpha) : undefined,
+      titleBarDivider: typeof opts?.titleBarDivider === 'boolean' ? opts.titleBarDivider : undefined,
       // v3.0.76：透明度实时预览（只广播、不落盘）
       uiTransparentAlpha: (opts?.uiTransparentAlpha != null && Number.isFinite(Number(opts.uiTransparentAlpha)))
         ? Number(opts.uiTransparentAlpha) : undefined,

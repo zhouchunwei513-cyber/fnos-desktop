@@ -23,7 +23,7 @@ const { desktopCapturer, screen } = require('electron');
 const THUMB_W = 352;        // 缩略图宽度（越小越糊、传输越省；v3.0.82 从 480 降下来减回读量）
 const JPEG_Q = 58;
 const ACTIVE_MS = 480;      // 移动结束后紧接着的那次补抓之后，稍等再抓一张（应对连续轻推）
-const IDLE_MS = 15000;      // 静止兜底间隔（壁纸/桌面变化时仍能更新，代价可忽略）
+const IDLE_MS = 45000;      // 静止兜底：45s 一次（原 6s → 15s → 45s，降低静止期的抓屏开销）
 const MIN_GAP = 90;         // 两次抓取的最小间隔，防抖
 const KICK_DEBOUNCE = 220;  // 窗口动过之后多久才允许抓（拖动过程中不抓）
 

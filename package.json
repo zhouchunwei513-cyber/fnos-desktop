@@ -10,8 +10,7 @@
     "dev": "electron .",
     "dist": "electron-builder --win nsis --x64",
     "build": "electron-builder --win nsis --x64",
-    "dist:setup": "electron-builder --win nsis --x64 --publish never",
-    "dist:mac": "electron-builder --mac --x64 --arm64 --publish never"
+    "dist:setup": "electron-builder --win nsis --x64 --publish never"
   },
   "devDependencies": {
     "electron": "^44.3.0",
@@ -110,39 +109,6 @@
       "runAfterFinish": true,
       "include": "installer-custom.nsi",
       "artifactName": "FNOS-${version}-setup.${ext}"
-    },
-    "mac": {
-      "category": "public.app-category.entertainment",
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "icon": "icon.png",
-      "artifactName": "FNOS-${version}-mac-${arch}.${ext}",
-      "identity": "-",
-      "hardenedRuntime": false,
-      "extraResources": [
-        {
-          "from": "mpv/mac-arm64",
-          "to": "mpv/mac-arm64"
-        },
-        {
-          "from": "mpv/mac-x64",
-          "to": "mpv/mac-x64"
-        },
-        {
-          "from": "mpv-config",
-          "to": "mpv-config"
-        }
-      ]
-    },
-    "dmg": {
-      "artifactName": "FNOS-${version}-mac-${arch}.dmg"
     }
   },
   "dependencies": {

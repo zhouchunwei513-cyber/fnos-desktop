@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.73';
+const APP_VERSION = '3.0.74';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -12143,8 +12143,9 @@ ipcMain.handle('settings:get', async () => {
     uiTransparent: s.uiTransparent !== false,
     // v3.0.70（用户要求：直角/圆角二选一，标题栏与窗口可分别设置）——
     // round = 现有圆角（标题栏 10px / 窗口 20px，数值与逻辑完全不变，默认）；square = 四角直角
-    barCorner: s.barCorner === 'square' ? 'square' : 'round',
-    winCorner: s.winCorner === 'square' ? 'square' : 'round',
+    // v3.0.74：round / half / square 三档
+    barCorner: (s.barCorner === 'square' || s.barCorner === 'half') ? s.barCorner : 'round',
+    winCorner: (s.winCorner === 'square' || s.winCorner === 'half') ? s.winCorner : 'round',
     ballPos: (s.ballPos && Number.isFinite(Number(s.ballPos.fx)) && Number.isFinite(Number(s.ballPos.fy)))
       ? { fx: Number(s.ballPos.fx), fy: Number(s.ballPos.fy) } : null,
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
@@ -12291,8 +12292,9 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
     };
     // v3.0.71：四角实时预览透传。v3.0.70 的预览消息体没有这两个字段，
     // 渲染层收到后无值可改，于是「点直角不即时生效」；这里按需带上（不带时保持现状不动）。
-    if (opts && (opts.barCorner === 'round' || opts.barCorner === 'square')) tbPayload.barCorner = opts.barCorner;
-    if (opts && (opts.winCorner === 'round' || opts.winCorner === 'square')) tbPayload.winCorner = opts.winCorner;
+    // v3.0.74：四角新增 half（半圆角）——上两角圆、下两角直角
+    if (opts && (opts.barCorner === 'round' || opts.barCorner === 'square' || opts.barCorner === 'half')) tbPayload.barCorner = opts.barCorner;
+    if (opts && (opts.winCorner === 'round' || opts.winCorner === 'square' || opts.winCorner === 'half')) tbPayload.winCorner = opts.winCorner;
     const __skinCfgP = resolveSkinConfig();
     tbPayload.skinDir = __skinCfgP.skinDir;
     tbPayload.skin = __skinCfgP.skin;
@@ -12347,13 +12349,14 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       ? opts.uiTransparent
       : (__fileCfg && __fileCfg.uiTransparent !== false);
     // v3.0.70：标题栏四角 / 窗口四角（round 圆角默认 / square 直角）——没传就保留文件里的值
-    const __cornerOk = (v) => (v === 'round' || v === 'square');
+    const __cornerOk = (v) => (v === 'round' || v === 'square' || v === 'half');
+    const __cornerFrom = (v) => ((v === 'square' || v === 'half') ? v : 'round');
     const barCorner = (opts && __cornerOk(opts.barCorner))
       ? opts.barCorner
-      : ((__fileCfg && __fileCfg.barCorner === 'square') ? 'square' : 'round');
+      : __cornerFrom(__fileCfg && __fileCfg.barCorner);
     const winCorner = (opts && __cornerOk(opts.winCorner))
       ? opts.winCorner
-      : ((__fileCfg && __fileCfg.winCorner === 'square') ? 'square' : 'round');
+      : __cornerFrom(__fileCfg && __fileCfg.winCorner);
     fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', {
       fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'),
       value: hideBall,
@@ -12641,8 +12644,8 @@ ipcMain.on('settings:get-titlebar', (e) => {
       hideAccountBall: s.hideAccountBall === true,
       uiTransparent: s.uiTransparent !== false,
       // v3.0.70：标题栏 / 窗口四角（round 圆角默认 / square 直角）
-      barCorner: s.barCorner === 'square' ? 'square' : 'round',
-      winCorner: s.winCorner === 'square' ? 'square' : 'round',
+      barCorner: (s.barCorner === 'square' || s.barCorner === 'half') ? s.barCorner : 'round',
+      winCorner: (s.winCorner === 'square' || s.winCorner === 'half') ? s.winCorner : 'round',
     };
   } catch (__e2) {
     __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round', winCorner: 'round' };
@@ -18417,7 +18420,9 @@ app.whenReady().then(() => {
   try {
     if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') {
       const __cs = loadSettings();
-      MpvPlayerMod.setCornerStyle((__cs && __cs.winCorner === 'square') ? 'square' : 'round');
+      // v3.0.74：三档跟随（round / half / square）
+      const __wcv = __cs && __cs.winCorner;
+      MpvPlayerMod.setCornerStyle((__wcv === 'square' || __wcv === 'half') ? __wcv : 'round');
     }
   } catch (_) {}
   // v2.3.5（需求 2.6.4）：托盘图标丢失自动重建。

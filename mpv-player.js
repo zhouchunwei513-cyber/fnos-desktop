@@ -241,7 +241,7 @@ function cornerDllPath() {
     if (!base) return '';
     const dir = path.join(base, 'fnos-desktop');
     try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
-    return path.join(dir, 'fmpvc4.dll');
+    return path.join(dir, 'fmpvc5.dll');
   } catch (_) { return ''; }
 }
 
@@ -285,7 +285,7 @@ function cornerCsSource() {
     '    if (IntPtr.Size == 8) { SetWindowLongPtrW(h, -8, o); } else { SetWindowLongW(h, -8, o.ToInt32()); }',
     '    return IntPtr.Size == 8 ? GetWindowLongPtrW(h, -8).ToInt64() : (long)GetWindowLongW(h, -8);',
     '  }',
-    '  public static int Version() { return 3; }',
+    '  public static int Version() { return 4; }',
     '  public static int Apply(uint pid, int mode, int d, int halfD) {',
     '    IntPtr h = ByPid(pid);',
     '    if (h == IntPtr.Zero) return -1;',
@@ -294,6 +294,10 @@ function cornerCsSource() {
     '    int w = r.R - r.L, ht = r.B - r.T;',
     '    if (w <= 40 || ht <= 40) return -3;',
     '    IntPtr rgn = CreateRoundRectRgn(0, 0, w + 1, ht + 1, d, d);',
+    '    if (mode == 3) {',
+    '      IntPtr pt = CreateRectRgn(0, 0, w + 1, halfD + 1);',
+    '      CombineRgn(rgn, rgn, pt, 2);',
+    '    }',
     '    if (mode == 2) {',
     '      IntPtr pl = CreateRectRgn(0, 0, halfD + 1, ht + 1);',
     '      IntPtr pb = CreateRectRgn(0, ht - halfD, w + 1, ht + 1);',
@@ -315,13 +319,13 @@ function cornerHelperScript() {
     'if ($dll) { $dd=Split-Path $dll -Parent; if ($dd -and -not (Test-Path $dd)) { New-Item -ItemType Directory -Force -Path $dd | Out-Null } }',
     '$ok=$false;',
     // v2.24.1：快通道——上次已经编译好就直接载入（Version() 顺带校验类型可用）
-    'if ($dll -and (Test-Path $dll)) { try { [void][System.Reflection.Assembly]::LoadFrom($dll); if ([FMPVC]::Version() -eq 3) { $ok=$true } } catch { $ok=$false } }',
+    'if ($dll -and (Test-Path $dll)) { try { [void][System.Reflection.Assembly]::LoadFrom($dll); if ([FMPVC]::Version() -eq 4) { $ok=$true } } catch { $ok=$false } }',
     'if (-not $ok) {',
     "$src=@'",
     src,
     "'@",
     // 慢通道：in-memory 编译保证这次能用；同时后台隐藏进程把它编译成 DLL，下次走快通道
-    '  try { Add-Type -TypeDefinition $src; if ([FMPVC]::Version() -eq 3) { $ok=$true } } catch { $ok=$false }',
+    '  try { Add-Type -TypeDefinition $src; if ([FMPVC]::Version() -eq 4) { $ok=$true } } catch { $ok=$false }',
     '}',
     'if (-not $ok) { [Console]::Out.WriteLine("FAIL"); exit 1 }',
     "[Console]::Out.WriteLine('READY');",
@@ -342,7 +346,7 @@ function cornerHelperScript() {
     "  }",
     "  if($p[0] -ne 'a'){ continue }",
     '  $tpid=[uint32]$p[1]; $md=$p[2]; $dd=[int]$p[3]; $hd=[int]$p[4];',
-    '  $m=1; if($md -eq "none"){ $m=0 } elseif($md -eq "top-right"){ $m=2 }',
+    '  $m=1; if($md -eq "none"){ $m=0 } elseif($md -eq "top-right"){ $m=2 } elseif($md -eq "half"){ $m=3 }',
     '  [void][FMPVC]::Apply($tpid,$m,$dd,$hd)',
     '}'
   ].join('\n');
@@ -530,8 +534,13 @@ function prewarmCorners() { try { ensureCornerHelper(); } catch (_) {} }
 // v3.0.70（用户要求：标题栏 / 窗口四角可分别选直角、圆角，MPV 播放器逻辑跟着变）——
 // 'round'：保持原有形态（点播四角 / 直播右上角，20px 半径），逻辑完全不变；
 // 'square'：窗口四角为直角，不再对 mpv 原生窗口做 SetWindowRgn 裁剪（下发 none 清掉已裁区域）。
+// v3.0.74：新增 'half'（半圆角）——
+//   点播：上边左右两角直角 + 下边左右两角 20px 圆角（mode=3）；
+//   电视直播：四角全直（直播窗只在圆角模式保留右上角 R 角，半圆角 / 直角都是全直）。
 let __cornerStyle = 'round';
-function setCornerStyle(v) { __cornerStyle = (v === 'square') ? 'square' : 'round'; }
+function setCornerStyle(v) {
+  __cornerStyle = (v === 'square' || v === 'half') ? v : 'round';
+}
 
 class MpvPlayer extends EventEmitter {
   constructor() {
@@ -1513,7 +1522,13 @@ class MpvPlayer extends EventEmitter {
     let mode = 'none';
     // fullscreen 铺满整屏时四角是屏幕四角（直角），退出后按点播/直播形态恢复圆角
     if (this._fsOn) { mode = 'none'; }
-    else if (!this._standalone) { mode = this._isLive ? 'top-right' : 'all'; }
+    else if (!this._standalone) {
+      // v3.0.74：半圆角（half）——
+      //   点播：上边两角直角 + 下边两角圆角（helper mode=3）
+      //   电视直播：四角全直（直播窗只在圆角档保留右上角 R 角）
+      if (__cornerStyle === 'half') mode = this._isLive ? 'none' : 'half';
+      else mode = this._isLive ? 'top-right' : 'all';
+    }
     // v3.0.70：设置页「窗口四角」选了直角 → mpv 原生窗口也保持直角（下发 none 清掉裁剪区域）
     if (__cornerStyle === 'square') mode = 'none';
     // 独立播放器（直播/独立窗口）恒为直角，从未裁过区域，无需再下 none 指令

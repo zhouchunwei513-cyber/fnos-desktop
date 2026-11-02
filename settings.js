@@ -360,7 +360,9 @@
     barCornerGroup.addEventListener('click', (e) => {
       const btn = e.target && e.target.closest ? e.target.closest('.tb-mat-btn') : null;
       if (!btn) return;
-      tbCorner.bar = (btn.getAttribute('data-corner') === 'square') ? 'square' : 'round';
+      // v3.0.74：新增 half（半圆角）——上两角圆、下两角直角
+      const __bcv = btn.getAttribute('data-corner');
+      tbCorner.bar = (__bcv === 'square' || __bcv === 'half') ? __bcv : 'round';
       syncCornerBtns();
       tbPreview(); // v3.0.71：点选后立即广播预览，标题栏四角即时生效（不必等保存）
     });
@@ -369,7 +371,8 @@
     winCornerGroup.addEventListener('click', (e) => {
       const btn = e.target && e.target.closest ? e.target.closest('.tb-mat-btn') : null;
       if (!btn) return;
-      tbCorner.win = (btn.getAttribute('data-corner') === 'square') ? 'square' : 'round';
+      const __wcv = btn.getAttribute('data-corner');
+      tbCorner.win = (__wcv === 'square' || __wcv === 'half') ? __wcv : 'round';
       syncCornerBtns();
       tbPreview(); // v3.0.71：点选后立即广播预览，窗口四角即时生效（不必等保存）
     });
@@ -513,8 +516,8 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
       if (optHideBall) { optHideBall.checked = info.hideAccountBall === true; syncHideBallLabel(); }
       if (optUiTrans) { optUiTrans.checked = info.uiTransparent !== false; syncUiTransLabel(); }
-      tbCorner.bar = info.barCorner === 'square' ? 'square' : 'round';
-      tbCorner.win = info.winCorner === 'square' ? 'square' : 'round';
+      tbCorner.bar = (info.barCorner === 'square' || info.barCorner === 'half') ? info.barCorner : 'round';
+      tbCorner.win = (info.winCorner === 'square' || info.winCorner === 'half') ? info.winCorner : 'round';
       syncCornerBtns();
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 96);
       tbState.color = hexNorm6(info.titleBarColor) || '#101426';

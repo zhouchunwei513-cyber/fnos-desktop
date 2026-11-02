@@ -602,8 +602,12 @@ module.exports = function injectTitleBar(ctx) {
       try {
         if (!bar) return;
         // v3.0.70：标题栏四角直角 = 0px；圆角保持原 10px（数值不变）
-        const __R = (TB.barCorner === 'square') ? '0px' : '10px';
-        const __C = (TB.barCorner === 'square') ? 'inset(0 round 0px)' : 'inset(0 round 10px)';
+        // v3.0.74：新增 half（半圆角）= 上方左右两角 10px 圆角 + 下方左右两角直角
+        //   border-radius / inset() 的四值顺序统一是 左上 右上 右下 左下
+        const __R = (TB.barCorner === 'square') ? '0px'
+          : ((TB.barCorner === 'half') ? '10px 10px 0 0' : '10px');
+        const __C = (TB.barCorner === 'square') ? 'inset(0 round 0px)'
+          : ((TB.barCorner === 'half') ? 'inset(0 round 10px 10px 0 0)' : 'inset(0 round 10px)');
         try { bar.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
         const bl = bar.__bgLayer;
         if (bl && bl.style) {
@@ -844,8 +848,9 @@ module.exports = function injectTitleBar(ctx) {
         // v3.0.62：可选「透明界面」——给 html 挂 class，由各页面 CSS 接管
         try { document.documentElement.classList.toggle('fnos-ui-transparent', r.uiTransparent !== false); } catch (_) {}
         // v3.0.70：标题栏四角 / 窗口四角（缺字段回落圆角，行为与老版本完全一致）
-        TB.barCorner = (r.barCorner === 'square') ? 'square' : 'round';
-        TB.winCorner = (r.winCorner === 'square') ? 'square' : 'round';
+        // v3.0.74：round 圆角 / half 半圆角 / square 直角（缺字段回落圆角）
+        TB.barCorner = (r.barCorner === 'square' || r.barCorner === 'half') ? r.barCorner : 'round';
+        TB.winCorner = (r.winCorner === 'square' || r.winCorner === 'half') ? r.winCorner : 'round';
       }
     } catch (_) {}
     __applyTitlebarHeight();
@@ -863,9 +868,17 @@ module.exports = function injectTitleBar(ctx) {
           el.id = 'fnos-win-corner';
           (document.documentElement || document.head || document.body).appendChild(el);
         }
+        // v3.0.74：half（半圆角）= 窗口上方左右两角直角 + 下方（标题栏下方另一端）左右两角 20px 圆角。
+        // 半径仍走 calc(20px / var(--fnos-f,1)) 保持 DPI 缩放跟随，数值本身不变。
+        // 四值顺序：左上 右上 右下 左下 -> 0 0 R R = 上直下圆
+        const __wr = '0 0 calc(20px / var(--fnos-f, 1)) calc(20px / var(--fnos-f, 1))';
         el.textContent = (TB.winCorner === 'square')
           ? 'html:root,html:root>body{clip-path:none !important;-webkit-clip-path:none !important;border-radius:0 !important;}'
-          : '';
+          : ((TB.winCorner === 'half')
+            ? ('html:root>body{clip-path:inset(0 round ' + __wr + ') !important;'
+              + '-webkit-clip-path:inset(0 round ' + __wr + ') !important;'
+              + 'border-radius:0 !important;}')
+            : '');
       } catch (_) {}
     }
 
@@ -1041,8 +1054,8 @@ module.exports = function injectTitleBar(ctx) {
             }
             // v3.0.70：标题栏四角 / 窗口四角实时切换（无需重启）
             let __cornerChanged = false;
-            if (val.barCorner === 'round' || val.barCorner === 'square') { __cornerChanged = __cornerChanged || TB.barCorner !== val.barCorner; TB.barCorner = val.barCorner; }
-            if (val.winCorner === 'round' || val.winCorner === 'square') { __cornerChanged = __cornerChanged || TB.winCorner !== val.winCorner; TB.winCorner = val.winCorner; }
+            if (val.barCorner === 'round' || val.barCorner === 'square' || val.barCorner === 'half') { __cornerChanged = __cornerChanged || TB.barCorner !== val.barCorner; TB.barCorner = val.barCorner; }
+            if (val.winCorner === 'round' || val.winCorner === 'square' || val.winCorner === 'half') { __cornerChanged = __cornerChanged || TB.winCorner !== val.winCorner; TB.winCorner = val.winCorner; }
             if (__cornerChanged) {
               try { __applyWinCornerStyle(); } catch (_) {}
               try { const __b = document.getElementById('fnos-titlebar'); if (__b) __fixBarRadius(__b); } catch (_) {}

@@ -632,7 +632,7 @@ body::-webkit-scrollbar-thumb:hover {
 }
 
 /* v2.19.0：标题栏材质切换（纯色 / 磨砂玻璃） */
-.tb-material-group { display: flex; gap: 8px; }
+.tb-material-group { display: flex; gap: 8px; flex: 0 0 auto; }
 .tb-mat-btn {
   padding: 7px 16px;
   border-radius: 10px;

@@ -47,8 +47,8 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       uiTransparent: typeof opts?.uiTransparent === 'boolean' ? opts.uiTransparent : undefined,
       // v3.0.71：标题栏四角 / 窗口四角（round 圆角 / square 直角）
       // v3.0.70 漏了这两个字段 —— 设置页选了直角，主进程永远收不到，保存后仍是圆角（用户实测「保存不了」）
-      barCorner: (opts?.barCorner === 'round' || opts?.barCorner === 'square') ? opts.barCorner : undefined,
-      winCorner: (opts?.winCorner === 'round' || opts?.winCorner === 'square') ? opts.winCorner : undefined,
+      barCorner: (opts?.barCorner === 'round' || opts?.barCorner === 'square' || opts?.barCorner === 'half') ? opts.barCorner : undefined,
+      winCorner: (opts?.winCorner === 'round' || opts?.winCorner === 'square' || opts?.winCorner === 'half') ? opts.winCorner : undefined,
     }),
   // v2.17.24：标题栏颜色实时预览（只广播，不落盘；保存仍走 setUIOptions）
   previewTitleBar: (opts) =>
@@ -60,8 +60,8 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       titleBarMaterial: opts?.titleBarMaterial ? String(opts.titleBarMaterial) : undefined,
       titleBarBlur: opts?.titleBarBlur != null ? Number(opts.titleBarBlur) : undefined,
       // v3.0.71：四角实时预览（只广播、不落盘）
-      barCorner: (opts?.barCorner === 'round' || opts?.barCorner === 'square') ? opts.barCorner : undefined,
-      winCorner: (opts?.winCorner === 'round' || opts?.winCorner === 'square') ? opts.winCorner : undefined,
+      barCorner: (opts?.barCorner === 'round' || opts?.barCorner === 'square' || opts?.barCorner === 'half') ? opts.barCorner : undefined,
+      winCorner: (opts?.winCorner === 'round' || opts?.winCorner === 'square' || opts?.winCorner === 'half') ? opts.winCorner : undefined,
     }),
   setAccentColor: (color) =>
     ipcRenderer.invoke('settings:set-accent-color', String(color || '#5865F2')),

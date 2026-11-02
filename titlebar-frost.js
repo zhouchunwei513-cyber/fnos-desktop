@@ -1,6 +1,6 @@
 'use strict';
 /**
- * titlebar-frost.js —— 标题栏「磨砂」效果的屏幕背景采样器（v3.0.78）
+ * titlebar-frost.js —— 标题栏「磨砂」效果的屏幕背景采样器
  *
  * 背景：Windows 上 Electron 的原生 backgroundMaterial:'acrylic' 只在「窗口非透明」时生效，
  * 而非透明窗口拿不到本项目要的 20px 自定义圆角（SetWindowRgn 也裁不掉 DWM 磨砂层，已实测）。
@@ -10,18 +10,22 @@
  * 关键点：
  *  1. 抓屏前给窗口设 setContentProtection(true)（WDA_EXCLUDEFROMCAPTURE），否则截到的是窗口自己；
  *     抓完立刻恢复原值，避免影响用户截图/录屏。
- *  2. 缩略图取小（480px 宽）→ 天然低分辨率 + 渲染层再 blur，得到磨砂颗粒感，同时数据量小。
- *  3. 采样节奏：窗口移动/缩放/激活后走 ACTIVE_MS；静止 IDLE_MS；最小化/隐藏则停。
+ *  2. 缩略图取小（352px 宽）→ 天然低分辨率 + 渲染层再 blur，得到磨砂颗粒感，同时数据量小。
+ *  3. v3.0.82：采样从「120ms 常驻轮询」改成「事件驱动 + debounce」。原来的常驻轮询在窗口
+ *     移动时每 480ms 就抓一次，而 desktopCapturer.getSources 单次约 300ms 且跑在主进程 ——
+ *     等于每半秒把事件循环堵一次，setBounds/IPC 全排队，用户看到的就是「拖动一卡一卡、
+ *     菜单点不出来」。现在只在「手停下来 220ms 后 / 切换磨砂 / 松手 / 15s 静止兜底」抓一张。
  *  4. 只在磨砂模式且窗口可见时工作，纯色模式零开销。
  */
 
 const { desktopCapturer, screen } = require('electron');
 
-const THUMB_W = 480;        // 缩略图宽度（越小越糊、传输越省）
+const THUMB_W = 352;        // 缩略图宽度（越小越糊、传输越省；v3.0.82 从 480 降下来减回读量）
 const JPEG_Q = 58;
-const ACTIVE_MS = 480;      // 活动期采样间隔（v3.0.80：拖动已改为本地平移重定位，不必高频重抓）
-const IDLE_MS = 6000;       // 静止期采样间隔（实测单次抓取约 300ms，静止期拉长以降低干扰与功耗）
+const ACTIVE_MS = 480;      // 移动结束后紧接着的那次补抓之后，稍等再抓一张（应对连续轻推）
+const IDLE_MS = 15000;      // 静止兜底间隔（壁纸/桌面变化时仍能更新，代价可忽略）
 const MIN_GAP = 90;         // 两次抓取的最小间隔，防抖
+const KICK_DEBOUNCE = 220;  // 窗口动过之后多久才允许抓（拖动过程中不抓）
 
 const entryOf = new Map();  // win.id -> entry
 
@@ -116,10 +120,18 @@ function send(entry, shot) {
   } catch (_) {}
 }
 
-function tick(entry) {
-  if (!entry.enabled) return;
-  if (entry.suspend) return;   // v3.0.80：拖动窗口期间完全不抓屏（见 setSuspend）
-  if (entry.busy) return;
+// 单次调度（替代原来的 120ms 常驻轮询）
+function schedule(entry, delay) {
+  if (!entry || !entry.enabled) return;
+  if (entry.timer) { try { clearTimeout(entry.timer); } catch (_) {} }
+  entry.timer = setTimeout(() => {
+    entry.timer = null;
+    runOnce(entry);
+  }, Math.max(0, Math.round(delay || 0)));
+  try { if (entry.timer.unref) entry.timer.unref(); } catch (_) {}
+}
+
+function cpReset(entry) {
   // 兜底：若窗口还停在「排除捕获」状态而当前并没有在抓取（上次 finally 因异常没跑到），强制复位，
   // 否则用户截图/录屏里会看不到自己的窗口
   try {
@@ -129,32 +141,31 @@ function tick(entry) {
       logInfo('frost.cp-reset', { win: entry.win.id });
     }
   } catch (_) {}
-  const now = Date.now();
-  const gap = now - (entry.lastAt || 0);
-  const want = entry.active ? ACTIVE_MS : IDLE_MS;
-  if (gap < Math.max(MIN_GAP, want)) return;
+}
+
+function runOnce(entry) {
+  if (!entry || !entry.enabled) return;
+  if (!entry.win || entry.win.isDestroyed()) return;
+  // 拖动中：不抓，稍后再看一眼（松手会主动 schedule(0) 补抓）
+  if (entry.suspend) { schedule(entry, 1200); return; }
+  if (entry.busy) { schedule(entry, 200); return; }
+  const gap = Date.now() - (entry.lastAt || 0);
+  if (gap < MIN_GAP) { schedule(entry, MIN_GAP - gap); return; }
+
+  cpReset(entry);
   entry.busy = true;
   Promise.resolve()
     .then(() => capture(entry))
     .then((shot) => { if (shot) send(entry, shot); })
     .catch(() => {})
-    .then(() => { entry.busy = false; });
+    .then(() => {
+      entry.busy = false;
+      // 兜底：静止后长时间无事件时仍按 IDLE_MS 更新一次（壁纸/桌面可能变了）
+      schedule(entry, entry.active ? ACTIVE_MS : IDLE_MS);
+    });
 }
 
-function ensureTimer(entry) {
-  if (entry.timer) return;
-  entry.timer = setInterval(() => tick(entry), 120);
-  try { if (entry.timer.unref) entry.timer.unref(); } catch (_) {}
-}
-
-function stopTimer(entry) {
-  if (entry.timer) {
-    try { clearInterval(entry.timer); } catch (_) {}
-    entry.timer = null;
-  }
-}
-
-/** 标记窗口「刚动过」，接下来一段时间用高频采样 */
+/** 标记窗口「刚动过」：debounce 到动作停止后再抓一张（拖动中零抓屏） */
 function kick(win, ms) {
   const entry = entryOf.get(win && win.id);
   if (!entry || !entry.enabled) return;
@@ -163,8 +174,8 @@ function kick(win, ms) {
   entry.activeTimer = setTimeout(() => {
     entry.active = false;
     entry.activeTimer = null;
-  }, ms || 1400);
-  tick(entry);
+  }, ms || 2000);
+  schedule(entry, KICK_DEBOUNCE);
 }
 
 /** 立即抓一张（切到磨砂模式 / 改浓度时用） */
@@ -173,7 +184,7 @@ function refresh(win) {
   if (!entry || !entry.enabled) return;
   entry.lastAt = 0;
   entry.active = true;
-  tick(entry);
+  schedule(entry, 0);
 }
 
 /** 启用/停用某窗口的磨砂采样 */
@@ -186,18 +197,17 @@ function setEnabled(win, on) {
   }
   const want = !!on;
   if (entry.enabled === want) {
-    if (want) { entry.lastAt = 0; entry.active = true; tick(entry); }
+    if (want) { entry.lastAt = 0; entry.active = true; schedule(entry, 0); }
     return;
   }
   entry.enabled = want;
   if (want) {
-    ensureTimer(entry);
     entry.lastAt = 0;
     entry.active = true;
-    tick(entry);
+    schedule(entry, 0);
     logInfo('frost.enable', { win: win.id });
   } else {
-    stopTimer(entry);
+    if (entry.timer) { try { clearTimeout(entry.timer); } catch (_) {} entry.timer = null; }
     if (entry.activeTimer) { try { clearTimeout(entry.activeTimer); } catch (_) {} entry.activeTimer = null; }
     logInfo('frost.disable', { win: win.id });
   }
@@ -205,11 +215,11 @@ function setEnabled(win, on) {
 
 /**
  * v3.0.80（用户反馈：磨砂模式下按住标题栏拖动严重不跟手）——
- * 根因：desktopCapturer.getSources 单次约 300ms 且跑在主进程，拖动期间每 0.5s 卡一次事件循环，
- * setBounds 被排在后面 → 窗口一卡一卡地追鼠标。
+ * 根因：desktopCapturer.getSources 单次约 300ms 且跑在主进程，拖动期间每 0.5s 卡一次事件循环。
  * 但拖动根本不需要重新抓图：抓到的是一整张屏幕画面，窗口只是在这张图上平移取景框。
  * 所以拖动期间整段挂起（渲染层用 titlebar-frost-pos 自己挪 background-position），
  * 松手后再补抓一张（桌面内容可能已经变了）。
+ * v3.0.82：挂起动作前移到指针按下那一刻（main.js 的 win-drag-arm），不再等 win-drag-start。
  */
 function setSuspend(win, on) {
   const entry = entryOf.get(win && win.id);
@@ -221,7 +231,10 @@ function setSuspend(win, on) {
   if (!want) {
     entry.lastAt = 0;
     entry.active = true;
-    tick(entry);
+    schedule(entry, 0);
+  } else if (entry.timer) {
+    try { clearTimeout(entry.timer); } catch (_) {}
+    entry.timer = null;
   }
 }
 
@@ -229,7 +242,7 @@ function setSuspend(win, on) {
 function dispose(win) {
   const entry = entryOf.get(win && win.id);
   if (!entry) return;
-  stopTimer(entry);
+  if (entry.timer) { try { clearTimeout(entry.timer); } catch (_) {} entry.timer = null; }
   if (entry.activeTimer) { try { clearTimeout(entry.activeTimer); } catch (_) {} }
   entry.enabled = false;
   entryOf.delete(win.id);

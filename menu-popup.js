@@ -162,14 +162,52 @@
 
   /* ---------- 入口 ---------- */
 
+  /* v3.0.82：窗口常驻复用后，连续开关同一个菜单会重复推同一份数据。
+   * 结构没变就不重建 DOM（几百个节点全销毁重插是肉眼可见的一下顿），只重新量尺寸回报；
+   * 有变化（勾选态/后台窗口列表/透明界面滑块）才整棵重建。 */
+  var __lastKey = '';
+
+  function measureAndReport() {
+    var w = Math.round(needWidth(basePanel) + PAD * 2);
+    var h = Math.round(maxHeight() + PAD * 2);
+    w = Math.max(150, Math.min(780, w));
+    h = Math.max(80, Math.min(880, h));
+    try { window.fnMenu.ready({ w: w, h: h }); } catch (_) {}
+  }
+
+  function resetOpenChain() {
+    openChain = [];
+    for (var i = 0; i < allPanels.length; i++) {
+      if ((allPanels[i].dataset.level - 0) > 0) {
+        allPanels[i].style.display = 'none';
+        allPanels[i].style.visibility = 'hidden';
+      }
+    }
+    if (basePanel) basePanel.style.visibility = 'visible';
+  }
+
   function build(data) {
+    var key = '';
+    try {
+      key = JSON.stringify({
+        i: (data && data.items) || [],
+        t: (data && data.theme) || '',
+        a: (data && data.alpha != null) ? Number(data.alpha) : 0.38,
+      });
+    } catch (_) { key = ''; }
+
+    if (key && key === __lastKey && basePanel) {
+      resetOpenChain();
+      measureAndReport();
+      return;
+    }
+    __lastKey = key;
+
     allPanels = [];
     openChain = [];
     root.innerHTML = '';
     document.body.className = (data && data.theme === 'glass') ? 'glass' : 'dark';
-    /* v3.0.81：菜单背景 alpha 跟随「透明界面」滑块（main 随 fnmenu:data 一起下发）。
-     * 之前只按百分比在 glass / dark 两套皮之间切换，具体数值没进来，
-     * .panel 背景永远写死 .38，用户拖滑块看不出菜单有任何变化。 */
+    /* v3.0.81：菜单背景 alpha 跟随「透明界面」滑块（main 随 fnmenu:data 一起下发）。 */
     try {
       var __a = (data && data.alpha != null) ? Number(data.alpha) : 0.38;
       if (!isFinite(__a) || __a < 0) __a = 0.38;
@@ -179,18 +217,11 @@
 
     basePanel = makePanel((data && data.items) || [], 0);
     /* 全部面板此刻均为 display:block + visibility:hidden，可量尺寸 */
-    var w = Math.round(needWidth(basePanel) + PAD * 2);
-    var h = Math.round(maxHeight() + PAD * 2);
-    w = Math.max(150, Math.min(780, w));
-    h = Math.max(80, Math.min(880, h));
-
-    /* 隐藏子菜单，只显示一级 */
     for (var i = 0; i < allPanels.length; i++) {
       if (allPanels[i].dataset.level - 0 > 0) allPanels[i].style.display = 'none';
     }
     basePanel.style.visibility = 'visible';
-
-    try { window.fnMenu.ready({ w: w, h: h }); } catch (_) {}
+    measureAndReport();
   }
 
   /* 点击空白关闭 */

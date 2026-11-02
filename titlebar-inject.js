@@ -1536,7 +1536,10 @@ module.exports = function injectTitleBar(ctx) {
             try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
           };
           const __endDrag = function () {
-            try { if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end'); } catch (_) {}
+            try {
+              if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end');
+              else ipcRenderer.send('win-drag-arm-end');
+            } catch (_) {}
             W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
             try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
             W.__fnosDsPid = null;
@@ -1551,6 +1554,9 @@ module.exports = function injectTitleBar(ctx) {
             if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
+            // v3.0.82：按下就通知主进程「准备拖」（只登记起点 + 挂起磨砂采样，不动窗口、
+            // 不还原最大化）。越过阈值时 win-drag-start 直接沿用这个起点，起步没有死区。
+            try { ipcRenderer.send('win-drag-arm', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
             // v3.0.66：win-drag-start 不再在这里发，改由 __fwd 判定超过 4px 阈值后迟发
           });
           dragStrip.addEventListener('dblclick', function (e) {
@@ -1572,9 +1578,10 @@ module.exports = function injectTitleBar(ctx) {
                   // 2px 仍能区分单击（拖起来后立刻松开就是一次普通点击，不会误判）
                   if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 2 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 2) return;
                   W.__fnosDsDrag = true;
-                  // 以「越过阈值这一刻」的鼠标位置作为拖动基准，主进程按当前窗口位置起步
-                  W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
-                  try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
+                  // v3.0.82：不再把基准改到「越过阈值这一刻」（那等于把已经发生的 2px 位移吞掉，
+                  // 用户感受就是「拖了一下窗口还没动」）。继续用按下点，主进程按 arm 记录的窗口
+                  // 位置 + 按下点算位移，窗口立刻跟手（最多跳 2px，符合直觉）。
+                  try { ipcRenderer.send('win-drag-start', { sx: W.__fnosDsDown.x, sy: W.__fnosDsDown.y }); } catch (_) {}
                   // v3.0.66：捕获在真正开始拖动时才开；pointerId 缺失时用本帧事件兜底
                   try {
                     const __pid = (W.__fnosDsPid != null ? W.__fnosDsPid : e.pointerId);
@@ -2074,7 +2081,10 @@ module.exports = function injectTitleBar(ctx) {
             try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
           };
           const __endDrag = function () {
-            try { if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end'); } catch (_) {}
+            try {
+              if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end');
+              else ipcRenderer.send('win-drag-arm-end');
+            } catch (_) {}
             W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
             try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
             W.__fnosDsPid = null;
@@ -2089,6 +2099,9 @@ module.exports = function injectTitleBar(ctx) {
             if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
+            // v3.0.82：按下就通知主进程「准备拖」（只登记起点 + 挂起磨砂采样，不动窗口、
+            // 不还原最大化）。越过阈值时 win-drag-start 直接沿用这个起点，起步没有死区。
+            try { ipcRenderer.send('win-drag-arm', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
             // v3.0.66：win-drag-start 不再在这里发，改由 __fwd 判定超过 4px 阈值后迟发
           });
           dragStrip.addEventListener('dblclick', function (e) {
@@ -2110,9 +2123,10 @@ module.exports = function injectTitleBar(ctx) {
                   // 2px 仍能区分单击（拖起来后立刻松开就是一次普通点击，不会误判）
                   if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 2 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 2) return;
                   W.__fnosDsDrag = true;
-                  // 以「越过阈值这一刻」的鼠标位置作为拖动基准，主进程按当前窗口位置起步
-                  W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
-                  try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
+                  // v3.0.82：不再把基准改到「越过阈值这一刻」（那等于把已经发生的 2px 位移吞掉，
+                  // 用户感受就是「拖了一下窗口还没动」）。继续用按下点，主进程按 arm 记录的窗口
+                  // 位置 + 按下点算位移，窗口立刻跟手（最多跳 2px，符合直觉）。
+                  try { ipcRenderer.send('win-drag-start', { sx: W.__fnosDsDown.x, sy: W.__fnosDsDown.y }); } catch (_) {}
                   // v3.0.66：捕获在真正开始拖动时才开；pointerId 缺失时用本帧事件兜底
                   try {
                     const __pid = (W.__fnosDsPid != null ? W.__fnosDsPid : e.pointerId);

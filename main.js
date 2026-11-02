@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.81';
+const APP_VERSION = '3.0.82';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3317,6 +3317,87 @@ function __winDragBegin(w, sx, sy) {
     };
   } catch (_) { return null; }
 }
+// ==================== v3.0.82：最大化窗口拖动「还原第 0 帧」 ====================
+// 用户工单②「一开始拖不动」。旧实现两个坑：
+//   ① 主进程 16ms 轮询里 `if (d.maxPending) return;` 把最大化窗口整段跳过，全靠渲染层第一条 move
+//      来触发还原——而渲染层那条 move 要等主进程空闲才轮得上，起步就是几百毫秒死区；
+//   ② 还原那一帧只还原、不位移（基准重置到「当前光标」），用户先白等一帧才跟手。
+// 现在收敛成一个函数：主进程自己判「已离开起点」就同步执行还原，还原后把基准设成当前光标、
+// 尺寸/位置设成还原后的值，下一帧位移直接落在正确位置（不会跳到鼠标下面），并校验竞态。
+function __doMaxRestore(d, curX, curY) {
+  try {
+    if (!d || !d.win || d.win.isDestroyed()) return;
+    const pb = d.maxPending;
+    d.maxPending = null;
+    if (!pb) return;
+    const target = {
+      x: Math.round(pb.x), y: Math.round(pb.y),
+      width: Math.round(pb.width), height: Math.round(pb.height)
+    };
+    __maxRestoreAt = Date.now(); // v3.0.23：还原期压制主窗比例锁
+    try { __maxInfo.set(d.win, { on: false, pre: null, pseudo: false }); } catch (_) {}
+    try { d.win.unmaximize(); } catch (_) {}
+    try { d.win.setBounds(target); } catch (_) {}
+    // v3.0.82：竞态实锤（fnos-2026-11-02.log 01:57:10 win=8）——1280x820 被还原成 2560x1392。
+    // unmaximize 是异步生效的，紧跟着的 setBounds 会被系统「铺满」覆盖回去。这里读回实际 bounds 校验，
+    // 发现被撑到工作区尺寸就再钉一次（此时 unmaximize 已落定，第二次 setBounds 不会再被覆盖）。
+    let fixed = null;
+    try {
+      const b = d.win.getBounds();
+      const wa = screen.getDisplayMatching(b).workArea;
+      const wantBig = target.width >= wa.width - 40 && target.height >= wa.height - 40;
+      const blown = !wantBig && b.width >= wa.width - 2 && b.height >= wa.height - 2;
+      const wrong = b.width !== target.width || b.height !== target.height;
+      if (blown || wrong) {
+        try { d.win.setBounds(target); } catch (_) {}
+        fixed = d.win.getBounds();
+      }
+    } catch (_) {}
+    const cx = Number.isFinite(curX) ? curX : (Number(d.sx) || 0);
+    const cy = Number.isFinite(curY) ? curY : (Number(d.sy) || 0);
+    d.ox = target.x; d.oy = target.y;
+    d.sx = cx; d.sy = cy;
+    d.lx = target.x; d.ly = target.y;
+    d.w0 = target.width; d.h0 = target.height;
+    try {
+      fnosLog('info', 'window', 'drag.restore win=' + d.win.id
+        + ' b=' + [target.x, target.y, target.width, target.height].join(',')
+        + (fixed ? ' fixed=' + fixed.width + 'x' + fixed.height : ''));
+    } catch (_) {}
+  } catch (_) {}
+}
+// ==================== v3.0.82：按下即「武装」拖动 ====================
+// 用户工单②的另一半：渲染层 v3.0.66 起把 win-drag-start 推迟到「位移超过 2px」才发，本意是不误判单击，
+// 但副作用是主进程在按下后的头 2px 里完全不知情——磨砂采样还在跑、轮询还没起、最大化还原更没影。
+// 现在 pointerdown 先发一条 win-drag-arm（不动窗口、不还原，只登记按下点 + 挂起磨砂采样），
+// 越过阈值后的 win-drag-start 直接沿用 arm 的起点，位移从按下那一瞬算起，起步零死区。
+let __winDragArm = null;
+ipcMain.on('win-drag-arm', (e, p) => {
+  try {
+    const w = hostWindowFromSender(e && e.sender);
+    if (!w || w.isDestroyed()) return;
+    if (__winDragArm && __winDragArm.timer) { try { clearTimeout(__winDragArm.timer); } catch (_) {} }
+    const b = w.getBounds();
+    const arm = {
+      win: w, sx: Number(p && p.sx) || 0, sy: Number(p && p.sy) || 0,
+      bx: b.x, by: b.y, at: Date.now(), timer: null
+    };
+    // 单击（没越过阈值）不会来 win-drag-start：1.5s 后自动清掉并恢复磨砂采样
+    arm.timer = setTimeout(() => {
+      try { if (__winDragArm === arm) __winDragArm = null; } catch (_) {}
+      if (!__winDragState) { try { __frostDragEnd(); } catch (_) {} }
+    }, 1500);
+    try { if (arm.timer.unref) arm.timer.unref(); } catch (_) {}
+    __winDragArm = arm;
+    __frostDragStart(w); // 磨砂采样在「按下」就挂起，不等 win-drag-start 排队
+  } catch (_) {}
+});
+ipcMain.on('win-drag-arm-end', () => {
+  try {
+    if (__winDragArm) { try { clearTimeout(__winDragArm.timer); } catch (_) {} __winDragArm = null; }
+    if (!__winDragState) { try { __frostDragEnd(); } catch (_) {} }
+  } catch (_) {}
+});
 // v3.0.77（用户工单：电视直播窗口拖动不了）——
 // 根因：拖动链路是「渲染层收到 mousemove → 发 win-drag-move → 主进程 setBounds」。电视直播窗上
 // MPV 是独立的原生窗口，从内容区顶边(y=34)往下整片盖着宿主窗；拖动时窗口移动略滞后于鼠标，
@@ -3367,7 +3448,17 @@ function __dragPollStart(d) {
     try {
       if (__winDragState !== d || !d.win || d.win.isDestroyed()) { __dragPollStop(); return; }
       // 最大化窗口的首帧还原交给渲染层那条 move 处理（它要 unmaximize + 回填拖动基准）
-      if (d.maxPending) { still = 0; return; }
+      // v3.0.82：最大化窗口不再把轮询整体跳过。按下标题栏后由主进程自己判位移，
+      // 一旦离开起点就同步执行「还原第 0 帧」，随后 16ms 轮询直接接管
+      //（不再等渲染层第一条 move —— 那条 move 要等主进程空闲，正是起步死区的来源）。
+      if (d.maxPending) {
+        const p0 = screen.getCursorScreenPoint();
+        if (!p0 || (Math.abs(p0.x - d.sx) <= 3 && Math.abs(p0.y - d.sy) <= 3)) { still = 0; return; }
+        __doMaxRestore(d, p0.x, p0.y);
+        // 还原第 0 帧不算「拖起来」：moved 仍交给下面的 >4px 判定，
+        // 否则用户按下→还原→停 600ms，会被静止收尾误判成松手，又变成「拖两下才动」。
+        lastX = p0.x; lastY = p0.y; still = 0;
+      }
       ticks += 1;
       // v3.0.81：原来头一帧直接 return（等于空等 16ms 才动第一次）。
       // 用户主观感受就是「刚按下那一下拖不动，动起来就跟手了」。
@@ -3413,14 +3504,24 @@ ipcMain.on('win-drag-start', (e, p) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
     if (!w || w.isDestroyed() || !p) return;
-    const st = __winDragBegin(w, p.sx, p.sy);
+    const arm = (__winDragArm && __winDragArm.win === w) ? __winDragArm : null;
+    const st = arm ? __winDragBegin(w, arm.sx, arm.sy) : __winDragBegin(w, p.sx, p.sy);
     if (!st) return;
+    if (arm && (arm.sx || arm.sy)) {
+      // v3.0.82：沿用「按下」那一刻的窗口位置与光标坐标，位移从按下算起（起步没有 2px 死区）
+      st.ox = arm.bx; st.oy = arm.by; st.lx = arm.bx; st.ly = arm.by;
+      st.sx = arm.sx; st.sy = arm.sy;
+      try { clearTimeout(arm.timer); } catch (_) {}
+      if (__winDragArm === arm) __winDragArm = null;
+    } else {
+      if (arm) { try { clearTimeout(arm.timer); } catch (_) {} if (__winDragArm === arm) __winDragArm = null; }
+      // v3.0.77：以主进程读到的光标为拖动基准（与渲染层屏幕坐标同为 DIP，但能消除缩放偏差）
+      try {
+        const cp = screen.getCursorScreenPoint();
+        if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)) { st.sx = cp.x; st.sy = cp.y; }
+      } catch (_) {}
+    }
     __winDragState = st;
-    // v3.0.77：以主进程读到的光标为拖动基准（与渲染层 screenX/Y 同为 DIP，但能消除缩放偏差）
-    try {
-      const cp = screen.getCursorScreenPoint();
-      if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)) { st.sx = cp.x; st.sy = cp.y; }
-    } catch (_) {}
     __dragPollStart(st);
     __frostDragStart(w);
     try {
@@ -3440,6 +3541,9 @@ ipcMain.on('win-drag-move', (e, p) => {
     // 这里加一道硬守卫：渲染层报上来的 buttons 为 0（左键没按着）就立刻终止本次拖动。
     // 旧调用方不带 buttons 字段（undefined），保持原行为，不影响旧路径。
     if (typeof p.buttons === 'number' && p.buttons === 0) {
+      // v3.0.82：拖动起步 150ms 内忽略 buttons:0。渲染层的按键状态偶尔慢半拍，
+      // 旧逻辑会把这种帧当成「已经松手」直接终止整次拖动 —— 表现为「按住拖了没反应」。
+      if (Date.now() - (d.at || 0) < 150) return;
       __winDragState = null;
       try { __dragPollStop(); } catch (_) {}
       try { fnosLog('info', 'window', 'drag.move.reject win=' + d.win.id + ' reason=no-button'); } catch (_) {}
@@ -3447,22 +3551,11 @@ ipcMain.on('win-drag-move', (e, p) => {
       return;
     }
     const sx = Number(p.sx) || 0, sy = Number(p.sy) || 0;
-    if (d.maxPending) {
-      // 这一帧只做还原：unmaximize + 回到最大化前的 x/y/宽/高（与双击还原同一结果），
-      // 然后把拖动基准改到还原后的位置，本次不移动，避免窗口瞬间跳到鼠标下面。
-      const pb = d.maxPending;
-      d.maxPending = null;
-      const target = {
-        x: Math.round(pb.x), y: Math.round(pb.y),
-        width: Math.round(pb.width), height: Math.round(pb.height)
-      };
-      __maxRestoreAt = Date.now(); // v3.0.23：还原期压制比例锁
-      try { __maxInfo.set(d.win, { on: false, pre: null, pseudo: false }); } catch (_) {}
-      try { d.win.unmaximize(); } catch (_) {}
-      try { d.win.setBounds(target); } catch (_) {}
-      d.ox = target.x; d.oy = target.y; d.sx = sx; d.sy = sy; d.lx = target.x; d.ly = target.y;
-      d.w0 = target.width; d.h0 = target.height; // 还原后的尺寸就是本次拖动的基准尺寸
-      try { fnosLog('info', 'window', 'drag.restore win=' + d.win.id + ' b=' + [target.x, target.y, target.width, target.height].join(',')); } catch (_) {}
+        if (d.maxPending) {
+      // v3.0.82：统一走 __doMaxRestore（它会在还原后校验实际 bounds，
+      // 顺手修掉 unmaximize 与 setBounds 竞态把窗口撑到工作区尺寸的老问题）。
+      // 本次仍不位移：还原帧只摆正窗口，下一帧 move 才按新基准跟手。
+      __doMaxRestore(d, sx, sy);
       return;
     }
     const nx = Math.round(d.ox + sx - d.sx);
@@ -3644,42 +3737,44 @@ function __menuAnchorFrom(hostWin, anchor) {
   } catch (_) { return null; }
 }
 
-// 打开自绘菜单；返回 false 表示自绘不可用（调用方回退原生菜单）
-function showCustomAppMenu(hostWin, anchor) {
-  const registry = Object.create(null);
-  let items = [];
-  try {
-    const menu = Menu.buildFromTemplate(buildMenuTemplate());
-    items = __serializeMenu(menu, registry, { n: 0 }, []);
-  } catch (err) {
-    try { dlog('warn', 'menu.custom.build', { err: String(err && err.message || err) }); } catch (_) {}
-    return false;
-  }
-  if (!items.length) return false;
+// ==================== v3.0.82：菜单窗口常驻复用 ====================
+// 用户工单「点 ☰ 要等一会儿才出来，还有停滞感」。实测 83 次样本：平均 781ms、最大 1924ms。
+// 根因是每次打开都 new BrowserWindow + loadFile + 等渲染层 ready 才 show —— 一次完整冷启动。
+// 现在：
+//   ① 窗口只在首次创建，之后 hide() 复用（隐藏状态下页面与渲染进程都活着，不销毁）；
+//   ② 先 show 后补数据：用上一次的尺寸立刻摆位显示，数据推过去后再由 fnmenu:ready 微调尺寸；
+//   ③ 启动 3 秒后预热一次，让「第一次点 ☰」也走复用路径。
+let __menuLastSize = { w: 320, h: 420 };
+let __menuLoadedOnce = false;
+let __menuPendingPayload = null;
+let __menuReadyAt = 0;
 
-  let theme = 'glass';
-  // v3.0.81：菜单背景 alpha 也要跟着「透明界面」滑块走。
-  // v3.0.76 只按 pct 切了 glass / dark 两套皮，具体百分比从没传进菜单，
-  // 菜单背景永远写死 rgba(5,6,10,.38)，用户调了滑块看不到任何变化。
-  let __menuAlpha = 0.38;
-  try {
-    const __mp = __uiAlphaPct(loadSettings());
-    if (__mp <= 3) theme = 'dark';
-    __menuAlpha = __uiAlphaCss(__mp);
-  } catch (_) {}
+// 按锚点（☰ 左下角）算菜单位置，并夹到工作区内
+function __menuPlace(w, h) {
+  const pt = __menuAnchor || screen.getCursorScreenPoint();
+  let wa = { x: 0, y: 0, width: 1920, height: 1080 };
+  try { wa = screen.getDisplayNearestPoint(pt).workArea; } catch (_) {}
+  let x = Math.round(__menuAnchor ? pt.x : pt.x - 18);
+  let y = Math.round(__menuAnchor ? pt.y : pt.y - 18);
+  if (x + w > wa.x + wa.width) x = wa.x + wa.width - w;
+  if (y + h > wa.y + wa.height) y = wa.y + wa.height - h;
+  if (x < wa.x) x = wa.x;
+  if (y < wa.y) y = wa.y;
+  return { x: x, y: y, width: w, height: h };
+}
 
-  __closeMenuPopupWindow();
-  __menuRegistry = registry;
-  __menuCtxWin = (hostWin && !hostWin.isDestroyed()) ? hostWin : null;
-  __menuAnchor = __menuAnchorFrom(hostWin, anchor);
-  __menuShownAt = 0;
-  __mpvMenuOpening = true;
-  try { _applyMpvLayer(true, 'app-menu-open'); } catch (_) {}
+// 关闭 = 隐藏（窗口和渲染进程都留着，下次直接复用）
+function __hideMenuPopup() {
+  __menuRegistry = Object.create(null);
+  const w = __menuPopupWin;
+  if (w && !w.isDestroyed()) { try { w.hide(); } catch (_) {} }
+}
 
+function __createMenuPopupWindow() {
   let win = null;
   try {
     win = new BrowserWindow({
-      width: 320, height: 420,
+      width: __menuLastSize.w, height: __menuLastSize.h,
       show: false,
       frame: false,
       transparent: true,
@@ -3706,33 +3801,107 @@ function showCustomAppMenu(hostWin, anchor) {
     });
   } catch (err) {
     try { dlog('warn', 'menu.custom.win', { err: String(err && err.message || err) }); } catch (_) {}
-    __mpvMenuOpening = false;
-    try { _applyMpvLayer(false, 'app-menu-open-fail'); } catch (_) {}
-    return false;
+    return null;
   }
-
   win.__isMenuPopup = true;
   __menuPopupWin = win;
+  __menuLoadedOnce = false;
   try { win.setMenuBarVisibility(false); } catch (_) {}
   try { win.setAlwaysOnTop(true, 'pop-up-menu'); } catch (_) {}
-  win.loadFile(path.join(__dirname, 'menu-popup.html')).catch(() => {});
   win.webContents.once('did-finish-load', () => {
-    try { win.webContents.send('fnmenu:data', { items: items, theme: theme, alpha: __menuAlpha }); } catch (_) {}
+    __menuLoadedOnce = true;
+    const p = __menuPendingPayload;
+    __menuPendingPayload = null;
+    if (p) { try { win.webContents.send('fnmenu:data', p); } catch (_) {} }
   });
   // 失焦即关（等价原生菜单点外面关）；__menuShownAt 前 150ms 的不算，避免开窗瞬间自己吃掉
   win.on('blur', () => {
     if (__menuPopupWin !== win) return;
     if (Date.now() - __menuShownAt < 150) return;
-    __closeMenuPopupWindow();
+    __hideMenuPopup();
     __afterAppMenuClosed();
   });
-  win.on('closed', () => { if (__menuPopupWin === win) __menuPopupWin = null; });
-  // 兜底：2 秒内没收到渲染层的 ready 就当作渲染失败，收掉并让上层回退原生菜单
-  setTimeout(() => {
-    if (__menuPopupWin === win && !__menuShownAt) {
-      __closeMenuPopupWindow();
-      __afterAppMenuClosed();
+  win.on('closed', () => {
+    if (__menuPopupWin === win) { __menuPopupWin = null; __menuLoadedOnce = false; __menuPendingPayload = null; }
+  });
+  win.loadFile(path.join(__dirname, 'menu-popup.html')).catch(() => {});
+  return win;
+}
+
+// 预热：启动后悄悄建好菜单窗并加载页面，把首次点击的冷启动成本提前付掉
+function __prewarmMenuPopup() {
+  try {
+    if (__menuPopupWin && !__menuPopupWin.isDestroyed()) return;
+    __createMenuPopupWindow();
+    try { dlog('info', 'menu.custom.prewarm', {}); } catch (_) {}
+  } catch (_) {}
+}
+try {
+  if (app && app.whenReady) app.whenReady().then(() => setTimeout(__prewarmMenuPopup, 3000)).catch(() => {});
+} catch (_) {}
+
+// 打开自绘菜单；返回 false 表示自绘不可用（调用方回退原生菜单）
+function showCustomAppMenu(hostWin, anchor) {
+  const registry = Object.create(null);
+  let items = [];
+  try {
+    const menu = Menu.buildFromTemplate(buildMenuTemplate());
+    items = __serializeMenu(menu, registry, { n: 0 }, []);
+  } catch (err) {
+    try { dlog('warn', 'menu.custom.build', { err: String(err && err.message || err) }); } catch (_) {}
+    return false;
+  }
+  if (!items.length) return false;
+
+  let theme = 'glass';
+  // v3.0.81：菜单背景 alpha 也要跟着「透明界面」滑块走。
+  let __menuAlpha = 0.38;
+  try {
+    const __mp = __uiAlphaPct(loadSettings());
+    if (__mp <= 3) theme = 'dark';
+    __menuAlpha = __uiAlphaCss(__mp);
+  } catch (_) {}
+
+  __menuRegistry = registry;
+  __menuCtxWin = (hostWin && !hostWin.isDestroyed()) ? hostWin : null;
+  __menuAnchor = __menuAnchorFrom(hostWin, anchor);
+  __menuShownAt = 0;
+  __menuReadyAt = 0;
+  __mpvMenuOpening = true;
+  try { _applyMpvLayer(true, 'app-menu-open'); } catch (_) {}
+
+  let win = __menuPopupWin;
+  if (!win || win.isDestroyed()) {
+    win = __createMenuPopupWindow();
+    if (!win) {
+      __mpvMenuOpening = false;
+      try { _applyMpvLayer(false, 'app-menu-open-fail'); } catch (_) {}
+      return false;
     }
+  }
+
+  // 先见人：按上一次的尺寸立刻摆位显示，不等渲染层 ready（差的那几十像素由 ready 再微调）
+  try { win.setBounds(__menuPlace(__menuLastSize.w, __menuLastSize.h)); } catch (_) {}
+  try { win.show(); } catch (_) {}
+  try { win.focus(); } catch (_) {}
+  __menuShownAt = Date.now();
+
+  const payload = { items: items, theme: theme, alpha: __menuAlpha };
+  if (__menuLoadedOnce) {
+    // 复用路径：立即推数据（渲染层做差分，菜单结构没变时只重新量尺寸，不重建 DOM）
+    try { win.webContents.send('fnmenu:data', payload); } catch (_) {}
+  } else {
+    __menuPendingPayload = payload; // did-finish-load 后自动补发
+  }
+
+  // 兜底：2 秒还没 ready 说明渲染层异常，记日志（窗口已显示，不再销毁，避免闪一下消失）
+  const __win0 = win;
+  setTimeout(() => {
+    try {
+      if (__menuPopupWin === __win0 && !__menuReadyAt) {
+        dlog('warn', 'menu.custom.ready-timeout', { loaded: __menuLoadedOnce });
+      }
+    } catch (_) {}
   }, 2000);
   return true;
 }
@@ -3743,20 +3912,10 @@ ipcMain.on('fnmenu:ready', (e, size) => {
     if (!win || win !== __menuPopupWin || win.isDestroyed()) return;
     const w = Math.max(140, Math.min(820, Math.round((size && size.w) || 320)));
     const h = Math.max(80, Math.min(920, Math.round((size && size.h) || 320)));
-    // v3.0.69：有锚点就贴 ☰ 左下角；没有（自绘菜单被非标题栏路径打开）才回落光标 - 18
-    const pt = __menuAnchor || screen.getCursorScreenPoint();
-    let wa = { x: 0, y: 0, width: 1920, height: 1080 };
-    try { wa = screen.getDisplayNearestPoint(pt).workArea; } catch (_) {}
-    let x = Math.round(__menuAnchor ? pt.x : pt.x - 18);
-    let y = Math.round(__menuAnchor ? pt.y : pt.y - 18);
-    if (x + w > wa.x + wa.width) x = wa.x + wa.width - w;
-    if (y + h > wa.y + wa.height) y = wa.y + wa.height - h;
-    if (x < wa.x) x = wa.x;
-    if (y < wa.y) y = wa.y;
-    win.setBounds({ x: x, y: y, width: w, height: h });
-    win.show();
-    win.focus();
-    __menuShownAt = Date.now();
+    __menuReadyAt = Date.now();
+    __menuLastSize = { w: w, h: h };
+    win.setBounds(__menuPlace(w, h));
+    if (!win.isVisible()) { win.show(); win.focus(); }
     try { dlog('info', 'menu.custom.ready', { w: w, h: h }); } catch (_) {}
   } catch (_) {}
 });
@@ -3765,7 +3924,7 @@ ipcMain.on('fnmenu:close', (e) => {
   try {
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win || win !== __menuPopupWin) return;
-    __closeMenuPopupWindow();
+    __hideMenuPopup();
     __afterAppMenuClosed();
   } catch (_) {}
 });
@@ -3776,7 +3935,7 @@ ipcMain.on('fnmenu:invoke', (e, id) => {
     if (!win || win !== __menuPopupWin) return;
     const it = __menuRegistry[String(id || '')] || null;
     const host = __menuCtxWin;
-    __closeMenuPopupWindow();
+    __hideMenuPopup();
     __afterAppMenuClosed();
     if (!it) return;
     // 先关窗并把焦点还给宿主窗口：菜单里很多动作内部用的是 BrowserWindow.getFocusedWindow()，
@@ -3801,6 +3960,7 @@ ipcMain.on('fnmenu:invoke', (e, id) => {
     }, 60);
   } catch (_) {}
 });
+
 // ===================== 自绘应用菜单代码结束 =====================
 
 // v1.48.0：无边框标题栏的「☰ 菜单」按钮——弹出与原系统菜单栏完全一致的应用菜单

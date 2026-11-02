@@ -332,13 +332,22 @@
   };
   if (optHideBall) optHideBall.addEventListener('change', syncHideBallLabel);
 
-  // v3.0.62：透明界面开关（设置 / 帮助 / 检查更新（关于）页面半透明）
-  const optUiTrans = document.getElementById('opt-ui-transparent');
-  const optUiTransLabel = document.getElementById('opt-ui-transparent-label');
-  const syncUiTransLabel = () => {
-    if (optUiTransLabel) optUiTransLabel.textContent = (optUiTrans && optUiTrans.checked) ? '已开启' : '已关闭';
+  // v3.0.76（用户要求：删除深色模式，改成调透明度）——
+  // 「透明界面」由开关改为百分比滑块：0% = 深色实底（原深色模式）、100% = 完全透明。
+  // 拖动时只做预览（本页立即变 + 广播给其它窗口），点「保存界面设置」才落盘生效。
+  const optUiAlpha = document.getElementById('opt-ui-alpha');
+  const optUiAlphaVal = document.getElementById('opt-ui-alpha-val');
+  let uiAlphaPct = 62;
+  const syncUiAlphaLabel = () => {
+    if (optUiAlphaVal) optUiAlphaVal.textContent = String(uiAlphaPct) + '%';
   };
-  if (optUiTrans) optUiTrans.addEventListener('change', syncUiTransLabel);
+  const applyUiAlphaLocal = () => {
+    try {
+      const el = document.documentElement;
+      el.style.setProperty('--fnos-ui-a', String((100 - uiAlphaPct) / 100));
+      el.classList.toggle('fnos-ui-transparent', uiAlphaPct > 0);
+    } catch (_) {}
+  };
 
   // v3.0.70：标题栏四角 / 窗口四角（圆角 / 直角，可分别设置；保存时生效）
   const barCornerGroup = document.querySelector('[data-bar-corner]');
@@ -430,6 +439,8 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
           // v3.0.71：四角随预览一起广播 —— v3.0.70 只改本地选中态、从不发预览，页面永远收不到
           barCorner: tbCorner.bar,
           winCorner: tbCorner.win,
+          // v3.0.76：透明度滑块拖动即时预览（不落盘）
+          uiTransparentAlpha: uiAlphaPct,
         });
       } catch (_) {}
     }, 40);
@@ -508,6 +519,15 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
   }
   if (tbBlur) tbBlur.addEventListener('input', () => { setTbBlur(tbBlur.value); tbPreview(); });
   if (tbHl) tbHl.addEventListener('input', () => { setTbHighlight(tbHl.value); tbPreview(); });
+  // v3.0.76：拖动透明界面滑块 —— 本页立刻变 + 广播给其它窗口预览，松手不落盘，点保存才生效
+  if (optUiAlpha) {
+    optUiAlpha.addEventListener('input', () => {
+      uiAlphaPct = Math.max(0, Math.min(100, Math.round(Number(optUiAlpha.value) || 0)));
+      syncUiAlphaLabel();
+      applyUiAlphaLocal();
+      tbPreview();
+    });
+  }
 
   // 载入当前设置填充界面
   fnosSettings.getSettings().then((info) => {
@@ -515,7 +535,10 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       if (!info) return;
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
       if (optHideBall) { optHideBall.checked = info.hideAccountBall === true; syncHideBallLabel(); }
-      if (optUiTrans) { optUiTrans.checked = info.uiTransparent !== false; syncUiTransLabel(); }
+      uiAlphaPct = (info.uiTransparentAlpha != null && Number.isFinite(Number(info.uiTransparentAlpha)))
+        ? Math.max(0, Math.min(100, Math.round(Number(info.uiTransparentAlpha))))
+        : 62;
+      if (optUiAlpha) { optUiAlpha.value = String(uiAlphaPct); syncUiAlphaLabel(); applyUiAlphaLocal(); }
       tbCorner.bar = (info.barCorner === 'square' || info.barCorner === 'half') ? info.barCorner : 'round';
       tbCorner.win = (info.winCorner === 'square' || info.winCorner === 'half') ? info.winCorner : 'round';
       syncCornerBtns();
@@ -542,7 +565,8 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
           titleBarBlur: tbState.blur,
           titleBarHighlight: tbState.highlight,
           hideAccountBall: !!(optHideBall && optHideBall.checked),
-          uiTransparent: !!(optUiTrans && optUiTrans.checked),
+          // v3.0.76：透明界面以百分比落盘（0 = 深色实底）
+          uiTransparentAlpha: uiAlphaPct,
           barCorner: tbCorner.bar,
           winCorner: tbCorner.win,
         });

@@ -14,6 +14,19 @@ module.exports = function injectTitleBar(ctx) {
   if (!ipcRenderer) return;
   try {
     if (typeof window === 'undefined') return;
+    // v3.0.76（用户要求：删除深色模式，改为调透明度）——
+    // pct = 用户看到的「透明度」百分比：0 = 深色实底，100 = 完全透明。
+    // 统一写成一个变量 --fnos-ui-a（0~1 不透明度），各页把硬编码 .38 换成 var(--fnos-ui-a,.38)，
+    // 于是拖动滑块时所有页面背景同步变化。
+    function __applyUiAlpha(pct) {
+      try {
+        const p = (pct == null || !isFinite(Number(pct))) ? 62 : Math.max(0, Math.min(100, Number(pct)));
+        const a = (100 - p) / 100;
+        const el = document.documentElement;
+        el.style.setProperty('--fnos-ui-a', String(Math.round(a * 1000) / 1000));
+        el.classList.toggle('fnos-ui-transparent', p > 0);
+      } catch (_) {}
+    }
     // v2.5.7 r23（问题1/3 根修）：子帧（含跨源 iframe）不再整段跳过——appview 应用窗的假窗控
     //（"—▣✕"）与日夜混搭都在 iframe 内容里（截图实锤：Docker 窗控挂 iframe 内标题区、黑栏=壳/
     // 白区=iframe）。nodeIntegrationInSubFrames 开启后 preload 进每个 iframe：子帧只跑 chrome
@@ -845,8 +858,9 @@ module.exports = function injectTitleBar(ctx) {
         if (r.skin && typeof r.skin === 'object') __skinState.skin = r.skin;
         // v3.0.23：悬浮球隐藏开关
         if (typeof r.hideAccountBall === 'boolean') TB.hideAccountBall = r.hideAccountBall;
-        // v3.0.62：可选「透明界面」——给 html 挂 class，由各页面 CSS 接管
-        try { document.documentElement.classList.toggle('fnos-ui-transparent', r.uiTransparent !== false); } catch (_) {}
+        // v3.0.62：可选「透明界面」——给 html 挂 class + 写 --fnos-ui-a，由各页面 CSS 接管
+        // v3.0.76：改由透明度百分比驱动；老配置只有布尔值时按 62 / 0 折算
+        __applyUiAlpha(r.uiTransparentAlpha != null ? r.uiTransparentAlpha : (r.uiTransparent === false ? 0 : 62));
         // v3.0.70：标题栏四角 / 窗口四角（缺字段回落圆角，行为与老版本完全一致）
         // v3.0.74：round 圆角 / half 半圆角 / square 直角（缺字段回落圆角）
         TB.barCorner = (r.barCorner === 'square' || r.barCorner === 'half') ? r.barCorner : 'round';
@@ -1049,8 +1063,11 @@ module.exports = function injectTitleBar(ctx) {
               try { if (window.__fnApplyBallHidden) window.__fnApplyBallHidden(val.hideAccountBall); } catch (_) {}
             }
             // v3.0.62：透明界面实时切换（无需重启）
-            if (typeof val.uiTransparent === 'boolean') {
-              try { document.documentElement.classList.toggle('fnos-ui-transparent', val.uiTransparent === true); } catch (_) {}
+            // v3.0.76：改按透明度百分比实时刷新（拖动滑块即时可见）
+            if (val.uiTransparentAlpha != null && isFinite(Number(val.uiTransparentAlpha))) {
+              __applyUiAlpha(val.uiTransparentAlpha);
+            } else if (typeof val.uiTransparent === 'boolean') {
+              __applyUiAlpha(val.uiTransparent ? 62 : 0);
             }
             // v3.0.70：标题栏四角 / 窗口四角实时切换（无需重启）
             let __cornerChanged = false;
@@ -1514,7 +1531,7 @@ module.exports = function injectTitleBar(ctx) {
         // 四角 clip-path 由 10px 改回 20px，与主窗口、应用窗口完全同一数值。
         // v2.18.0 曾为了与标题栏 bar 的 10px 同比例收到 10px，实测观感偏方，现按用户回归 20px。
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
-          'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}html.fnos-ui-transparent>body{background:rgba(5,6,10,.38) !important;}';
+          'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}';
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v3.0.46（网友反馈：Docker/qBittorrent 等第三方应用在客户端里底部状态栏压住"信息"面板
         // 的字段、整页显示不正常；浏览器打开正常）：

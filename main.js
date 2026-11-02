@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.75';
+const APP_VERSION = '3.0.76';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3545,7 +3545,8 @@ function showCustomAppMenu(hostWin, anchor) {
   if (!items.length) return false;
 
   let theme = 'glass';
-  try { const st = loadSettings(); if (st && st.uiTransparent === false) theme = 'dark'; } catch (_) {}
+  // v3.0.76：透明度拉到 0%（= 深色实底）时菜单用深色皮，其余跟随透明度
+  try { if (__uiAlphaPct(loadSettings()) <= 3) theme = 'dark'; } catch (_) {}
 
   __closeMenuPopupWindow();
   __menuRegistry = registry;
@@ -4984,18 +4985,36 @@ function openFinishedDownload(dlIdOrIdx) {
 // 设置页的「透明界面」是靠 titlebar-inject 给 documentElement 挂 fnos-ui-transparent，
 // 而 dialog / update-progress / about 这些独立小窗不注入 titlebar-inject，class 从来没挂上过，
 // 页面里写得再全的两套皮也永不生效。这里由主进程在建窗后直接挂 class。
-function __glassUiTransparent() {
-  try { const s = loadSettings(); return !(s && s.uiTransparent === false); } catch (_) { return true; }
+// v3.0.76（用户要求：删除深色模式选项，改成调透明度）——
+// 「透明界面」由布尔开关改为「透明度百分比」pct：
+//   pct = 0   深色实底（即原「关闭 / 深色模式」）
+//   pct = 62  默认，等同原来的 rgba(5,6,10,.38)
+//   pct = 100 完全透明，只剩背后桌面
+// 各页面的背景 alpha 统一读 CSS 变量 --fnos-ui-a（0~1 不透明度），拖动滑块即时生效。
+// 旧配置只有布尔 uiTransparent：false → 0，true / 缺省 → 62，行为与升级前一致。
+const UI_ALPHA_DEFAULT = 62;
+function __uiAlphaPct(cfg) {
+  try {
+    const s = cfg || loadSettings() || {};
+    if (s.uiTransparentAlpha != null && Number.isFinite(Number(s.uiTransparentAlpha))) {
+      return Math.max(0, Math.min(100, Math.round(Number(s.uiTransparentAlpha))));
+    }
+    return (s.uiTransparent === false) ? 0 : UI_ALPHA_DEFAULT;
+  } catch (_) { return UI_ALPHA_DEFAULT; }
 }
-function __applyGlassUiTheme(win) {
+function __uiAlphaCss(pct) { return Math.max(0, Math.min(1, (100 - pct) / 100)); }
+function __applyUiAlphaTo(win, pct) {
   try {
     if (!win || win.isDestroyed()) return;
-    const tr = __glassUiTransparent();
-    const code = 'try{document.documentElement.classList.toggle("fnos-ui-transparent",'
-      + (tr ? 'true' : 'false') + ');}catch(e){}';
+    const p = (pct == null) ? __uiAlphaPct() : pct;
+    const code = 'try{var el=document.documentElement;'
+      + 'el.style.setProperty("--fnos-ui-a","' + __uiAlphaCss(p) + '");'
+      + 'el.classList.toggle("fnos-ui-transparent",' + (p > 0 ? 'true' : 'false') + ');}catch(e){}';
     try { win.webContents.executeJavaScript(code, true).catch(() => {}); } catch (_) {}
   } catch (_) {}
 }
+function __glassUiTransparent() { return __uiAlphaPct() > 0; }
+function __applyGlassUiTheme(win) { __applyUiAlphaTo(win, __uiAlphaPct()); }
 
 function showGlassDialog(parent, options = {}) {
   return new Promise((resolve) => {
@@ -12140,7 +12159,9 @@ ipcMain.handle('settings:get', async () => {
     activeSkin: String(s.activeSkin || ''),
     // v3.0.23（用户反馈：悬浮球挡操作 / 启动后位置乱跑）——隐藏开关 + 归一化位置
     hideAccountBall: s.hideAccountBall === true,
-    uiTransparent: s.uiTransparent !== false,
+    // v3.0.76：透明界面改为透明度百分比（0~100），uiTransparent 保留向后兼容
+    uiTransparent: __uiAlphaPct(s) > 0,
+    uiTransparentAlpha: __uiAlphaPct(s),
     // v3.0.70（用户要求：直角/圆角二选一，标题栏与窗口可分别设置）——
     // round = 现有圆角（标题栏 10px / 窗口 20px，数值与逻辑完全不变，默认）；square = 四角直角
     // v3.0.74：round / half / square 三档
@@ -12295,11 +12316,23 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
     // v3.0.74：四角新增 half（半圆角）——上两角圆、下两角直角
     if (opts && (opts.barCorner === 'round' || opts.barCorner === 'square' || opts.barCorner === 'half')) tbPayload.barCorner = opts.barCorner;
     if (opts && (opts.winCorner === 'round' || opts.winCorner === 'square' || opts.winCorner === 'half')) tbPayload.winCorner = opts.winCorner;
+    // v3.0.76：透明度滑块拖动即时预览（只广播、不落盘，点「保存界面设置」才持久化）
+    if (opts && opts.uiTransparentAlpha != null && Number.isFinite(Number(opts.uiTransparentAlpha))) {
+      tbPayload.uiTransparentAlpha = Math.max(0, Math.min(100, Math.round(Number(opts.uiTransparentAlpha))));
+    }
     const __skinCfgP = resolveSkinConfig();
     tbPayload.skinDir = __skinCfgP.skinDir;
     tbPayload.skin = __skinCfgP.skin;
     for (const wc of require('electron').webContents.getAllWebContents()) {
       try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
+    }
+    // 关于 / 帮助 / 检查更新 / 提示框这些独立页不跑 titlebar-inject，直接给它们灌变量
+    if (tbPayload.uiTransparentAlpha != null) {
+      try {
+        for (const w of require('electron').BrowserWindow.getAllWindows()) {
+          __applyUiAlphaTo(w, tbPayload.uiTransparentAlpha);
+        }
+      } catch (_) {}
     }
     return { ok: true };
   } catch (err) {
@@ -12345,9 +12378,11 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       ? opts.hideAccountBall
       : (__fileCfg && __fileCfg.hideAccountBall === true);
     // v3.0.62：可选「透明界面」（设置 / 帮助 / 检查更新（关于）页面半透明）
-    const uiTransparent = (opts && typeof opts.uiTransparent === 'boolean')
-      ? opts.uiTransparent
-      : (__fileCfg && __fileCfg.uiTransparent !== false);
+    // v3.0.76：透明界面存透明度百分比；旧字段 uiTransparent 继续写（= pct>0）便于回退
+    const uiTransparentAlpha = (opts && opts.uiTransparentAlpha != null && Number.isFinite(Number(opts.uiTransparentAlpha)))
+      ? Math.max(0, Math.min(100, Math.round(Number(opts.uiTransparentAlpha))))
+      : __uiAlphaPct(__fileCfg);
+    const uiTransparent = uiTransparentAlpha > 0;
     // v3.0.70：标题栏四角 / 窗口四角（round 圆角默认 / square 直角）——没传就保留文件里的值
     const __cornerOk = (v) => (v === 'round' || v === 'square' || v === 'half');
     const __cornerFrom = (v) => ((v === 'square' || v === 'half') ? v : 'round');
@@ -12375,6 +12410,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       activeSkin: activeSkin,
       hideAccountBall: hideBall,
       uiTransparent,
+      uiTransparentAlpha,
       barCorner,
       winCorner,
     });
@@ -12389,6 +12425,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.activeSkin = activeSkin;
     cachedSettings.hideAccountBall = hideBall;
     cachedSettings.uiTransparent = uiTransparent;
+    cachedSettings.uiTransparentAlpha = uiTransparentAlpha;
     cachedSettings.barCorner = barCorner;
     cachedSettings.winCorner = winCorner;
     // v3.0.70/75：点播 MPV 圆角跟随「窗口四角」三档；电视直播窗另看「标题栏四角」
@@ -12410,7 +12447,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
     const __skinCfg = resolveSkinConfig();
-    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall, uiTransparent, barCorner, winCorner };
+    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall, uiTransparent, uiTransparentAlpha, barCorner, winCorner };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
@@ -12569,7 +12606,8 @@ function __titlebarPayload() {
     skinDir: String(sk.skinDir || ''),
     skin: sk.skin || null,
     hideAccountBall: s.hideAccountBall === true,
-    uiTransparent: s.uiTransparent !== false,
+    uiTransparent: __uiAlphaPct(s) > 0,
+    uiTransparentAlpha: __uiAlphaPct(s),
   };
 }
 function __pushTitlebarTo(wc, why) {
@@ -12642,7 +12680,8 @@ ipcMain.on('settings:get-titlebar', (e) => {
       skinDir: String(__sk.skinDir || ''),
       skin: __sk.skin || null,
       hideAccountBall: s.hideAccountBall === true,
-      uiTransparent: s.uiTransparent !== false,
+      uiTransparent: __uiAlphaPct(s) > 0,
+      uiTransparentAlpha: __uiAlphaPct(s),
       // v3.0.70：标题栏 / 窗口四角（round 圆角默认 / square 直角）
       barCorner: (s.barCorner === 'square' || s.barCorner === 'half') ? s.barCorner : 'round',
       winCorner: (s.winCorner === 'square' || s.winCorner === 'half') ? s.winCorner : 'round',
@@ -12726,11 +12765,14 @@ function __showUpdChecking() {
   win.__isGlassDialog = true;
   win.__noTop = true; // v3.0.24：不参与「阻挡窗强行 screen-saver 置顶」（见 _applyMpvLayer）
   // v3.0.69：检查中悬浮窗跟随「透明界面」——深色皮 = 深色玻璃底；透明皮 = 淡蒙层（与设置页同一套）
-  const __tr = __glassUiTransparent();
+  // v3.0.76：toast 背景也跟透明度走（原来是 .38 与实底二选一）
+  const __trPct = __uiAlphaPct();
+  const __tr = __trPct > 0;
+  const __trA = __uiAlphaCss(__trPct);
   const html = '<!doctype html><html><head><meta charset="utf-8"><style>'
     + 'html,body{margin:0;height:100%;background:transparent;overflow:hidden}'
     + '.c{box-sizing:border-box;height:100%;border-radius:16px;display:flex;align-items:center;gap:12px;padding:0 18px;-webkit-app-region:drag;'
-    + 'background:' + (__tr ? 'rgba(5,6,10,.38)' : 'linear-gradient(160deg,rgba(20,26,44,.97),rgba(8,11,20,.98))') + ';border:1px solid rgba(255,255,255,.14);'
+    + 'background:' + (__tr ? ('rgba(5,6,10,' + __trA + ')') : 'linear-gradient(160deg,rgba(20,26,44,.97),rgba(8,11,20,.98))') + ';border:1px solid rgba(255,255,255,.14);'
     + 'box-shadow:0 20px 50px -18px rgba(0,0,0,.85),inset 0 1px 0 rgba(255,255,255,.08);'
     + 'color:#e9efff;font-family:"Microsoft YaHei",system-ui,sans-serif}'
     + '.s{width:18px;height:18px;border:2px solid rgba(255,255,255,.18);border-top-color:#7cecff;border-right-color:#7c83ff;'

@@ -270,16 +270,16 @@
         </label>
       </div>
 
-        <!-- v3.0.62/63：透明界面（设置 / 帮助 / 检查更新 半透明，可看到背后窗口） -->
+        <!-- v3.0.76（用户要求：删除深色模式，改为调透明度）：开关 -> 百分比滑块，拖动即时预览 -->
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
           <div>
             <div class="hotkey-title">透明界面</div>
-            <div class="hotkey-sub">开启后设置页、帮助页、检查更新（关于）页以及 ☰ 下拉菜单均为半透明玻璃，可看到背后的窗口与桌面壁纸；关闭则全部恢复深色不透明界面。默认开启。</div>
+            <div class="hotkey-sub">设置页、帮助页、检查更新（关于）页、☰ 下拉菜单与提示框的背景透明度：0% 为深色实底（即原「深色模式」），数值越大越透，100% 完全透明、能完整看到背后的窗口与桌面壁纸。拖动即时预览，点下方「保存界面设置」后生效。</div>
           </div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
-            <input type="checkbox" id="opt-ui-transparent" style="width:18px;height:18px;cursor:pointer" />
-            <span id="opt-ui-transparent-label" style="font-size:13px;color:var(--text-secondary,#aab0c0)">已关闭</span>
-          </label>
+          <div style="flex:0 0 260px;display:flex;align-items:center;gap:10px">
+            <input type="range" id="opt-ui-alpha" min="0" max="100" step="1" value="62" class="tb-range" style="flex:1" />
+            <span id="opt-ui-alpha-val" class="tb-range-val">62%</span>
+          </div>
         </div>
 
         <!-- v3.0.70（用户要求：直角 / 圆角二选一，标题栏与窗口分别设置） -->

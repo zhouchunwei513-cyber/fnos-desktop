@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "3.0.78",
+  "version": "3.0.79",
   "description": "FNOS 桌面客户端",
   "main": "main.js",
   "author": "FNOS",
@@ -44,6 +44,7 @@
       "settings-preload.js",
       "shell-preload.js",
       "titlebar-inject.js",
+      "titlebar-frost.js",
       "logger.js",
       "update-progress-preload.js",
       "update-progress.html",

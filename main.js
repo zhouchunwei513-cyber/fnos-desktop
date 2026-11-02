@@ -16,7 +16,11 @@ const {
 } = require('electron');
 const path = require('path');
 const url = require('url');
-const titlebarFrost = require('./titlebar-frost'); // v3.0.78 标题栏磨砂：屏幕背景采样
+let titlebarFrost = {
+  setLogger: function () {}, setEnabled: function () {}, refresh: function () {},
+  kick: function () {}, dispose: function () {}, isEnabled: function () { return false; }
+};
+try { titlebarFrost = require('./titlebar-frost'); } catch (_) { /* v3.0.79: 缺文件不许把主进程带崩 */ } // v3.0.78 标题栏磨砂：屏幕背景采样
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
@@ -172,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.78';
+const APP_VERSION = '3.0.79';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3328,7 +3332,7 @@ function __dragPollStop() {
 function __dragPollStart(d) {
   __dragPollStop();
   if (!d || !d.win || d.win.isDestroyed()) return;
-  let lastX = null, lastY = null, still = 0, ticks = 0;
+  let lastX = null, lastY = null, still = 0, ticks = 0, moved = false;
   __dragPollTimer = setInterval(() => {
     try {
       if (__winDragState !== d || !d.win || d.win.isDestroyed()) { __dragPollStop(); return; }
@@ -3339,6 +3343,10 @@ function __dragPollStart(d) {
       const p = screen.getCursorScreenPoint();
       if (p.x !== lastX || p.y !== lastY) { lastX = p.x; lastY = p.y; still = 0; }
       else { still += 16; }
+      // v3.0.79: 只有真的拖起来过（离开起点 >4px），静止阈值才算数。
+      // 否则「按下标题栏 -> 停一下 -> 再移动」会被 600ms 静止判成收尾，
+      // 后面的 win-drag-move 找不到 __winDragState，表现就是「第一次拖不动，第二次才行」。
+      if (!moved && (Math.abs(p.x - d.sx) > 4 || Math.abs(p.y - d.sy) > 4)) moved = true;
       const nx = Math.round(d.ox + p.x - d.sx);
       const ny = Math.round(d.oy + p.y - d.sy);
       if (nx !== d.lx || ny !== d.ly) {
@@ -3348,7 +3356,7 @@ function __dragPollStart(d) {
           else d.win.setPosition(nx, ny);
         } catch (_) {}
       }
-      if (still >= 600) {
+      if (moved && still >= 600) {
         // 鼠标多半是在 MPV 原生窗上松的手，renderer 收不到 mouseup：这里收尾并让渲染层复位
         __dragPollStop();
         try { if (__winDragState === d) __winDragState = null; } catch (_) {}

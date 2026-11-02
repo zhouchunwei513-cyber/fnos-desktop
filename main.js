@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.80';
+const APP_VERSION = '3.0.81';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3363,13 +3363,15 @@ function __dragPollStart(d) {
   __dragPollStop();
   if (!d || !d.win || d.win.isDestroyed()) return;
   let lastX = null, lastY = null, still = 0, ticks = 0, moved = false;
-  __dragPollTimer = setInterval(() => {
+  const __step = () => {
     try {
       if (__winDragState !== d || !d.win || d.win.isDestroyed()) { __dragPollStop(); return; }
       // 最大化窗口的首帧还原交给渲染层那条 move 处理（它要 unmaximize + 回填拖动基准）
       if (d.maxPending) { still = 0; return; }
       ticks += 1;
-      if (ticks < 2) return; // 头一帧放宽：等渲染层的 start 基准落定
+      // v3.0.81：原来头一帧直接 return（等于空等 16ms 才动第一次）。
+      // 用户主观感受就是「刚按下那一下拖不动，动起来就跟手了」。
+      // 渲染层发 win-drag-start 时已经把基准换成此刻光标位置，首帧落位不会跳。
       const p = screen.getCursorScreenPoint();
       if (p.x !== lastX || p.y !== lastY) { lastX = p.x; lastY = p.y; still = 0; }
       else { still += 16; }
@@ -3400,7 +3402,10 @@ function __dragPollStart(d) {
         } catch (_) {}
       }
     } catch (_) { try { __dragPollStop(); } catch (_) {} }
-  }, 16);
+  };
+  // v3.0.81：起步立刻落一帧，不再等第一个 16ms 定时器
+  __step();
+  __dragPollTimer = setInterval(__step, 16);
   try { if (__dragPollTimer.unref) __dragPollTimer.unref(); } catch (_) {}
 }
 
@@ -3653,8 +3658,15 @@ function showCustomAppMenu(hostWin, anchor) {
   if (!items.length) return false;
 
   let theme = 'glass';
-  // v3.0.76：透明度拉到 0%（= 深色实底）时菜单用深色皮，其余跟随透明度
-  try { if (__uiAlphaPct(loadSettings()) <= 3) theme = 'dark'; } catch (_) {}
+  // v3.0.81：菜单背景 alpha 也要跟着「透明界面」滑块走。
+  // v3.0.76 只按 pct 切了 glass / dark 两套皮，具体百分比从没传进菜单，
+  // 菜单背景永远写死 rgba(5,6,10,.38)，用户调了滑块看不到任何变化。
+  let __menuAlpha = 0.38;
+  try {
+    const __mp = __uiAlphaPct(loadSettings());
+    if (__mp <= 3) theme = 'dark';
+    __menuAlpha = __uiAlphaCss(__mp);
+  } catch (_) {}
 
   __closeMenuPopupWindow();
   __menuRegistry = registry;
@@ -3705,7 +3717,7 @@ function showCustomAppMenu(hostWin, anchor) {
   try { win.setAlwaysOnTop(true, 'pop-up-menu'); } catch (_) {}
   win.loadFile(path.join(__dirname, 'menu-popup.html')).catch(() => {});
   win.webContents.once('did-finish-load', () => {
-    try { win.webContents.send('fnmenu:data', { items: items, theme: theme }); } catch (_) {}
+    try { win.webContents.send('fnmenu:data', { items: items, theme: theme, alpha: __menuAlpha }); } catch (_) {}
   });
   // 失焦即关（等价原生菜单点外面关）；__menuShownAt 前 150ms 的不算，避免开窗瞬间自己吃掉
   win.on('blur', () => {

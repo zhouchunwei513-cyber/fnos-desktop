@@ -1568,8 +1568,9 @@ module.exports = function injectTitleBar(ctx) {
               if (e.buttons === 0) { __endDrag(); return; }
               try {
                 if (!W.__fnosDsDrag) {
-                  // 工单②：4px 阈值。低于阈值一律当单击，让按钮的 click 正常触发
-                  if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 4 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 4) return;
+                  // v3.0.81：阈值 4px -> 2px。4px 死区偏大，用户感受到的是「刚按下那一下拖不动」；
+                  // 2px 仍能区分单击（拖起来后立刻松开就是一次普通点击，不会误判）
+                  if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 2 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 2) return;
                   W.__fnosDsDrag = true;
                   // 以「越过阈值这一刻」的鼠标位置作为拖动基准，主进程按当前窗口位置起步
                   W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
@@ -2105,8 +2106,9 @@ module.exports = function injectTitleBar(ctx) {
               if (e.buttons === 0) { __endDrag(); return; }
               try {
                 if (!W.__fnosDsDrag) {
-                  // 工单②：4px 阈值。低于阈值一律当单击，让按钮的 click 正常触发
-                  if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 4 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 4) return;
+                  // v3.0.81：阈值 4px -> 2px。4px 死区偏大，用户感受到的是「刚按下那一下拖不动」；
+                  // 2px 仍能区分单击（拖起来后立刻松开就是一次普通点击，不会误判）
+                  if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 2 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 2) return;
                   W.__fnosDsDrag = true;
                   // 以「越过阈值这一刻」的鼠标位置作为拖动基准，主进程按当前窗口位置起步
                   W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };

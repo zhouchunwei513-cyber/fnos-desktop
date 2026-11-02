@@ -167,6 +167,15 @@
     openChain = [];
     root.innerHTML = '';
     document.body.className = (data && data.theme === 'glass') ? 'glass' : 'dark';
+    /* v3.0.81：菜单背景 alpha 跟随「透明界面」滑块（main 随 fnmenu:data 一起下发）。
+     * 之前只按百分比在 glass / dark 两套皮之间切换，具体数值没进来，
+     * .panel 背景永远写死 .38，用户拖滑块看不出菜单有任何变化。 */
+    try {
+      var __a = (data && data.alpha != null) ? Number(data.alpha) : 0.38;
+      if (!isFinite(__a) || __a < 0) __a = 0.38;
+      if (__a > 1) __a = 1;
+      document.documentElement.style.setProperty('--fnos-ui-a', String(__a));
+    } catch (_) {}
 
     basePanel = makePanel((data && data.items) || [], 0);
     /* 全部面板此刻均为 display:block + visibility:hidden，可量尺寸 */

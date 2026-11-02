@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.79';
+const APP_VERSION = '3.0.80';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3326,8 +3326,38 @@ function __winDragBegin(w, sx, sy) {
 // 光标连续静止 600ms、或渲染层报松开，即判定结束。渲染层的 win-drag-move 保留作原路径，
 // 两者共用同一 (ox,oy,sx,sy) 基准，不会互相打架。
 let __dragPollTimer = null;
+// ==================== v3.0.80：拖动期间挂起磨砂采样 ====================
+// 用户反馈「设置磨砂效果后按住标题栏拖动严重不跟手」。根因：磨砂背景靠主进程 desktopCapturer
+// 抓屏，单次约 300ms 且跑在主进程，拖动时每半秒把事件循环堵一次 → setBounds 排队 → 窗口一卡一卡。
+// 但拖动根本不需要重抓：抓到的是整张屏幕画面，窗口只是在这张图上平移取景框。所以拖动期间
+// 整段挂起采样，只把新窗口位置推给渲染层（background-position 平移），松手后再补抓一张。
+let __frostDragWin = null;
+function __frostDragStart(w) {
+  try {
+    if (!w || w.isDestroyed()) return;
+    if (!titlebarFrost.isEnabled(w)) return;
+    __frostDragWin = w;
+    titlebarFrost.setSuspend(w, true);
+  } catch (_) {}
+}
+function __frostDragEnd() {
+  const w = __frostDragWin;
+  __frostDragWin = null;
+  if (!w) return;
+  try { if (!w.isDestroyed()) titlebarFrost.setSuspend(w, false); } catch (_) {}
+}
+function __frostPosTick(w, x, y) {
+  try {
+    if (!w || w.isDestroyed()) return;
+    if (!titlebarFrost.isEnabled(w)) return;
+    const wc = w.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    wc.send('titlebar-frost-pos', { x: x, y: y });
+  } catch (_) {}
+}
 function __dragPollStop() {
   try { if (__dragPollTimer) { clearInterval(__dragPollTimer); __dragPollTimer = null; } } catch (_) {}
+  __frostDragEnd();
 }
 function __dragPollStart(d) {
   __dragPollStop();
@@ -3355,6 +3385,7 @@ function __dragPollStart(d) {
           if (d.w0 && d.h0) d.win.setBounds({ x: nx, y: ny, width: d.w0, height: d.h0 });
           else d.win.setPosition(nx, ny);
         } catch (_) {}
+        __frostPosTick(d.win, nx, ny);
       }
       if (moved && still >= 600) {
         // 鼠标多半是在 MPV 原生窗上松的手，renderer 收不到 mouseup：这里收尾并让渲染层复位
@@ -3386,6 +3417,7 @@ ipcMain.on('win-drag-start', (e, p) => {
       if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)) { st.sx = cp.x; st.sy = cp.y; }
     } catch (_) {}
     __dragPollStart(st);
+    __frostDragStart(w);
     try {
       fnosLog('info', 'window', 'drag.start win=' + w.id + ' o=' + st.ox + ',' + st.oy
         + ' maxPending=' + (st.maxPending ? [st.maxPending.x, st.maxPending.y, st.maxPending.width, st.maxPending.height].join(',') : '-'));
@@ -3445,6 +3477,7 @@ ipcMain.on('win-drag-move', (e, p) => {
     } catch (_) {
       try { d.win.setPosition(nx, ny); } catch (_) {}
     }
+    __frostPosTick(d.win, nx, ny);
   } catch (_) {}
 });
 ipcMain.on('win-drag-end', (e) => {

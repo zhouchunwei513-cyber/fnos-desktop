@@ -989,6 +989,7 @@ module.exports = function injectTitleBar(ctx) {
       const g = __frostGeom;
       if (!g || !g.url) {
         __frostEl.style.backgroundImage = 'none';
+        __frostEl.__paintKey = '';
         return;
       }
       // 模糊层的坐标系原点在标题栏左上角 -72px 处；窗口左上角在屏幕上的逻辑坐标为 (wx, wy)
@@ -996,8 +997,15 @@ module.exports = function injectTitleBar(ctx) {
       // 改成多重背景：第一层 linear-gradient = 染色，第二层 = 窗口背后的模糊截图
       const __fa = Math.max(0.02, Math.min(0.35, (TB.frostAlpha == null ? 10 : Number(TB.frostAlpha)) / 100));
       const __tint = hexToRgba(TB.frostColor || '#ffffff', __fa);
-      __frostEl.style.backgroundImage = 'linear-gradient(' + __tint + ',' + __tint + '), url("' + g.url + '")';
-      __frostEl.style.backgroundSize = '100% 100%, ' + g.sw + 'px ' + g.sh + 'px';
+      // v3.0.80：只有「图 / 染色 / 尺寸」变了才重写 background-image。
+      // 拖动时窗口每帧都在动，但图不变，只需改 background-position（纯合成层平移，GPU 直接搬）；
+      // 若每帧重新赋 data URL，会触发重新解码整张图，反而把帧率拖死。
+      const __pk = g.url + '|' + __tint + '|' + g.sw + 'x' + g.sh;
+      if (__frostEl.__paintKey !== __pk) {
+        __frostEl.__paintKey = __pk;
+        __frostEl.style.backgroundImage = 'linear-gradient(' + __tint + ',' + __tint + '), url("' + g.url + '")';
+        __frostEl.style.backgroundSize = '100% 100%, ' + g.sw + 'px ' + g.sh + 'px';
+      }
       __frostEl.style.backgroundPosition = '0 0, ' + (72 - g.wx) + 'px ' + (72 - g.wy) + 'px';
     }
 
@@ -1009,6 +1017,21 @@ module.exports = function injectTitleBar(ctx) {
           __frostGeom = d;
           const bar0 = document.getElementById('fnos-titlebar');
           if (bar0 && TB.material === 'frosted') __paintFrost(bar0);
+        } catch (_) {}
+      });
+    } catch (_) {}
+
+    // v3.0.80：拖动期间主进程挂起抓屏，只推窗口新位置；这里用同一张图平移取景框，
+    // 所以拖动时磨砂背景仍然实时跟着窗口走，而不是冻在半路或一卡一卡。
+    try {
+      ipcRenderer.on('titlebar-frost-pos', (_e, d) => {
+        try {
+          if (!d || !__frostGeom) return;
+          if (TB.material !== 'frosted') return;
+          __frostGeom.wx = Number(d.x) || 0;
+          __frostGeom.wy = Number(d.y) || 0;
+          const bar0 = document.getElementById('fnos-titlebar');
+          if (bar0) __paintFrost(bar0);
         } catch (_) {}
       });
     } catch (_) {}

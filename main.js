@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.67';
+const APP_VERSION = '3.0.68';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -1092,14 +1092,24 @@ function __rememberFsBounds(win) {
   try {
     if (!win || win.isDestroyed() || __preFsBounds.has(win)) return;
     if (__isFsOn(win)) return; // 已在全屏态：此时 bounds 是全屏尺寸，不能当还原基准
-    const max = __maxOn(win);
-    const b = max ? (__maxPre(win) || win.getNormalBounds()) : win.getBounds();
+    // v3.0.68（用户工单：全屏退不出 / 退出后黑窗小视频 / 最大化还原不了）——
+    // 工单③：还原基准一律走 getNormalBounds()。getBounds() 在全屏/最大化时返回的是屏幕尺寸，
+    // 一旦被当成“退出后要还原的尺寸”，退出就停在满屏（=用户说的“最大化还原不了”）。
+    // 但最大化态本身就贴近工作区，此时不能再用“贴近工作区即丢弃”的保护，否则压根不留记录。
+    let __maxNow = __maxOn(win);
+    if (!__maxNow) { try { __maxNow = !!win.isMaximized(); } catch (_) { __maxNow = false; } }
+    let b = null;
+    try {
+      b = __maxNow
+        ? (__maxPre(win) || win.getNormalBounds() || win.getBounds())
+        : (win.getNormalBounds() || win.getBounds());
+    } catch (_) { b = null; }
     try {
       // 尺寸已经贴近屏幕工作区（Windows 会先把窗口撑满再通知）时同样不可信
       const wa = screen.getPrimaryDisplay().workAreaSize;
-      if (b && wa && b.width >= wa.width - 8 && b.height >= wa.height - 8) return;
+      if (!__maxNow && b && wa && b.width >= wa.width - 8 && b.height >= wa.height - 8) return;
     } catch (_) {}
-    __preFsBounds.set(win, { bounds: b, max });
+    __preFsBounds.set(win, { bounds: b, max: __maxNow });
   } catch (_) {}
 }
 // v2.17.35：全屏状态改为【自维护】，不再读 win.isFullScreen()。
@@ -1108,6 +1118,17 @@ function __rememberFsBounds(win) {
 const __fsStateMap = new WeakMap(); // win -> 是否处于（我们发起的）全屏
 function __isFsOn(win) {
   try { return !!__fsStateMap.get(win); } catch (_) { return false; }
+}
+// v3.0.68（用户工单：飞牛影视“全屏退不出”，要按多次 ESC）——
+// 页面里调 requestFullscreen() 走的是 Electron 原生 HTML 全屏，与上面这套 setFullScreen 状态机完全平行，
+// 此前除 MPV 播放器（mpv-surface.js）外全项目没有任何人接管。于是：
+//   ①页面全屏时窗口 bounds 只由 Chromium 半失败地改（任务栏仍可见）；
+//   ②退出后没人还原窗口、没人触发重排（黑底小视频）；
+//   ③ESC 被 before-input-event 无条件吞掉，页面根本收不到。
+// 这里只补一个“页面是否在 HTML 全屏”的旁路状态，供 ESC 判定与 UI 同步使用，不动 __fsStateMap。
+const __htmlFsMap = new WeakMap(); // win -> 页面是否处于 HTML5 全屏
+function __htmlFsOn(win) {
+  try { return !!__htmlFsMap.get(win); } catch (_) { return false; }
 }
 function __exitFullScreenWin(win) {
   try {
@@ -1249,7 +1270,21 @@ function __restoreWinBounds(win, pb) {
 function __toggleMaxWin(win) {
   try {
     if (!win || win.isDestroyed()) return;
-    const st = __maxInfo.get(win);
+    let st = __maxInfo.get(win);
+    // v3.0.68（用户工单⑤：最大化/还原必须按真实状态切换）——
+    // 系统已经是最大化、但自维护状态还是「否」时先对齐，否则点按钮仍在走 maximize()、
+    // 永远进不了 unmaximize = 用户说的"最大化还原不了"。
+    // 只做单向补齐（系统=最大化 → 补状态），不做反向清除：transparent 无边框窗上
+    // isMaximized() 并不可靠（与本文件里 isFullScreen() 恒 false 同源），反向清除会误清历史状态。
+    let __sysMax = false;
+    try { __sysMax = !!win.isMaximized(); } catch (_) { __sysMax = false; }
+    if (__sysMax && (!st || !st.on)) {
+      let __preM = null;
+      try { __preM = win.getNormalBounds(); } catch (_) { __preM = null; }
+      st = { on: true, pre: __normalizeRestoreBounds(win, __preM), pseudo: false };
+      __maxInfo.set(win, st);
+      try { fnosLog('info', 'window', 'max state.sync win=' + win.id + ' pre=' + (st.pre ? [st.pre.x, st.pre.y, st.pre.width, st.pre.height].join(',') : '-')); } catch (_) {}
+    }
     if (st && st.on) {
       const pb = st.pre;
       __maxInfo.set(win, { on: false, pre: null, pseudo: false });
@@ -1338,7 +1373,7 @@ ipcMain.on('win-fs-state', (e) => {
   let on = 0;
   try {
     const w = hostWindowFromSender(e.sender);
-    if (w && !w.isDestroyed()) on = (__isFsOn(w) || w.isFullScreen()) ? 1 : 0;
+    if (w && !w.isDestroyed()) on = (__isFsOn(w) || __htmlFsOn(w) || w.isFullScreen()) ? 1 : 0;
   } catch (_) {}
   try { e.returnValue = on; } catch (_) {}
 });
@@ -1495,6 +1530,83 @@ function __applyFsFor(win, on) {
     }
   } catch (_) {}
 }
+// v3.0.68（用户工单：飞牛影视「全屏退不出」+「退出后黑窗小视频 / 最大化还原不了」）——
+// 页面里调 requestFullscreen() 走的是 Electron 原生 HTML 全屏，与 __fsStateMap 这套 setFullScreen
+// 状态机完全平行，此前除 MPV 播放器（mpv-surface.js 自己那一路）外全项目没有任何人接管：
+//   · 进入：Chromium 在这些 transparent + frame:false 窗口上会半失败（位置挪到左上、尺寸没撑满），
+//     用户录屏里"全屏"时顶部 Dock/任务栏一直可见、按 ESC 又退不掉，就是这么来的；
+//   · 退出：既不还原窗口 bounds，也不给页面一次重排 → 大黑窗里缩着一小块视频（录屏 f1660）。
+// 这里只做补充接管，不动原有状态机：进入时补记还原基准（getNormalBounds）+ 幂等撑满所在显示器；
+// 退出时按基准还原 + 强制页面重排（清掉全屏期按 100vw/100vh 算出来的内联尺寸）。
+function __onHtmlFsEnter(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    if (__htmlFsOn(win)) return;
+    __htmlFsMap.set(win, true);
+    __rememberFsBounds(win);
+    __syncFsUIFor(win, true);
+    try {
+      const b0 = win.getBounds();
+      fnosLog('info', 'fullscreen', 'html-fs enter win=' + win.id + ' b=' + [b0.x, b0.y, b0.width, b0.height].join(','));
+    } catch (_) {}
+    const __fill = (tag) => {
+      try {
+        if (!win || win.isDestroyed() || !__htmlFsOn(win)) return;
+        const b = win.getBounds();
+        const fb = screen.getDisplayMatching(b).bounds;
+        if (b.width >= fb.width - 2 && b.height >= fb.height - 2) return;
+        win.setBounds({ x: fb.x, y: fb.y, width: fb.width, height: fb.height });
+        try { fnosLog('warn', 'fullscreen', 'html-fs fill ' + tag + ' win=' + win.id + ' from=' + [b.x, b.y, b.width, b.height].join(',') + ' to=' + [fb.x, fb.y, fb.width, fb.height].join(',')); } catch (_) {}
+      } catch (_) {}
+    };
+    [80, 320, 900, 1500].forEach((ms) => setTimeout(() => __fill('t' + ms), ms));
+  } catch (_) {}
+}
+
+function __onHtmlFsLeave(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const __was = __htmlFsOn(win);
+    __htmlFsMap.set(win, false);
+    if (!__was) return;
+    try { fnosLog('info', 'fullscreen', 'html-fs leave win=' + win.id); } catch (_) {}
+    // 窗口层若另有全屏（F11 / 菜单那条线），UI 交回那边的状态机，不在这里撤
+    if (!__isFsOn(win)) {
+      __syncFsUIFor(win, false);
+      __restoreFsBoundsFor(win);
+    }
+    // 工单③：退出后必须让页面重排一次，否则容器留着全屏尺寸、video 缩回小方块 = f1660 的黑底小视频。
+    const __relayout = () => {
+      try {
+        if (!win || win.isDestroyed()) return;
+        const __code = 'try{window.dispatchEvent(new Event("resize"));}catch(e){}'
+          + 'try{if(window.visualViewport){window.visualViewport.dispatchEvent(new Event("resize"));}}catch(e){}';
+        const __wc = win.webContents;
+        let __frames = [];
+        try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
+        if (!__frames.length) { try { __wc.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} return; }
+        for (const __f of __frames) { try { __f.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} }
+      } catch (_) {}
+    };
+    [0, 120, 380, 760].forEach((ms) => setTimeout(__relayout, ms));
+  } catch (_) {}
+}
+
+// v3.0.68（工单⑦）：页面若把播放器放在 iframe 里，requestFullscreen/exitFullscreen 必须在
+// iframe 自己的 document 上调用。父文档 document.fullscreenElement 为空，单层调用打不到目标，
+// 所以逐帧尝试（主帧 + framesInSubtree，含同分区子帧）。任一帧成功即可，其余帧的调用是空操作。
+function __htmlFsExitDeep(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const __wc = win.webContents;
+    const __code = 'try{if(document.fullscreenElement){document.exitFullscreen().catch(function(){});}}catch(e){}';
+    let __frames = [];
+    try { if (__wc.mainFrame) __frames = __wc.mainFrame.framesInSubtree || [__wc.mainFrame]; } catch (_) { __frames = []; }
+    if (!__frames.length) { try { __wc.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} return; }
+    for (const __f of __frames) { try { __f.executeJavaScript(__code, true).catch(() => {}); } catch (_) {} }
+  } catch (_) {}
+}
+
 function __onWindowMaximize(win) {
   try {
     if (!win || win.isDestroyed()) return;
@@ -5836,18 +5948,21 @@ function registerWindow(win, opts = {}) {
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.key !== 'Escape') return;
     if (input.alt || input.control || input.meta || input.shift) return;
-    // v2.17.41（用户反馈：应用窗口全屏后按 ESC 退出，标题栏消失、20px 圆角变直角）——
-    // 旧实现只要 document.fullscreenElement 非空就直接 return，主进程完全不插手；而 ESC 又
-    // 已经 preventDefault，于是窗口由 Chromium 引擎自己退出全屏，leave-full-screen 在这类
-    // transparent + frame:false 窗口上并不触发（实测 win=3/6/8 只有 ui enter、没有 ui leave），
-    // 状态机永远卡在"全屏"，渲染层就带着全屏样式继续跑。现在无条件接管：先把页面级 HTML5
-    // 全屏退掉，再退我们自己的窗口级全屏。
-    try {
-      win.webContents.executeJavaScript('try{if(document.fullscreenElement){document.exitFullscreen().catch(function(){});}}catch(e){}', true).catch(() => {});
-    } catch (_) {}
-    if (__isFsOn(win)) __exitFullScreenWin(win);
-    else if (__maxOn(win)) __toggleMaxWin(win);
-    event.preventDefault();
+    // v3.0.68（用户工单：飞牛影视全屏要按多次 ESC 才退得出来）——
+    // 旧实现无条件 event.preventDefault()：窗口既不在我们发起的全屏、也不在最大化时，
+    // ESC 依然被吞掉，页面/播放器永远收不到，于是“按一次没反应、按三次才逐层剥掉”。
+    // 现在三种状态（我们的窗口全屏 / 页面 HTML 全屏 / 最大化）都没有时直接放行。
+    if (!__isFsOn(win) && !__htmlFsOn(win) && !__maxOn(win)) return;
+    // v2.17.41 背景（应用窗全屏后 ESC 退出，标题栏消失、20px 圆角变直角）：leave-full-screen 在
+    // transparent + frame:false 窗口上不触发（实测 win=3/6/8 只有 ui enter、没有 ui leave），
+    // 所以这两种"我们自己发起"的状态必须由主进程主动收尾。
+    // 我们的窗口全屏 / 最大化：自己退，并吞掉这一下
+    if (__isFsOn(win)) { __exitFullScreenWin(win); event.preventDefault(); return; }
+    if (__maxOn(win)) { __toggleMaxWin(win); event.preventDefault(); return; }
+    // 只剩「页面 HTML 全屏」这一层：放行，让 Chromium 自己响应 ESC（真全屏的 ESC 语义才有意义）；
+    // 同时逐帧兜底退一次（工单⑦：全屏元素可能在 iframe 里，父文档 document.fullscreenElement 为空，
+    // 单层 exitFullscreen 打不到目标）。
+    try { __htmlFsExitDeep(win); } catch (_) {}
   });
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.key !== 'F11') return;
@@ -5880,6 +5995,16 @@ function registerWindow(win, opts = {}) {
     } catch (_) {}
     __applyFsFor(win, false);
   });
+  // v3.0.68（用户工单：飞牛影视“全屏退不出 + 退出后黑窗小视频 + 最大化还原不了”）——
+  // 页面内 requestFullscreen() 走 Electron 原生 HTML 全屏，此前除 MPV 播放器外完全没人接管：
+  //   · 进入：这些 transparent + frame:false 窗口上 Chromium 的 setFullScreen 会半失败
+  //     （位置挪到左上、尺寸没撑满 → 用户录屏里“顶部任务栏一直可见”）；
+  //   · 退出：不还原窗口 bounds、不给页面一次重排 → 大黑窗里缩着一小块视频（f1660）。
+  // 这里只做两件事：进入时补记还原基准 + 幂等把窗口撑满所在显示器；退出时还原 + 强制重排。
+  // v3.0.68：页面内 requestFullscreen() 走 Electron 原生 HTML 全屏，此前除 MPV 播放器外没人接管。
+  // 主窗口与各应用窗都在这里接线；<webview> guest 的那一份见 did-attach-webview。
+  win.webContents.on('enter-html-full-screen', () => __onHtmlFsEnter(win));
+  win.webContents.on('leave-html-full-screen', () => __onHtmlFsLeave(win));
   win.on('maximize', () => __onWindowMaximize(win));
   win.on('unmaximize', () => __onWindowUnmaximize(win));
   win.on('focus', () => { try { if (__isFsOn(win)) win.webContents.focus(); } catch (_) {} });
@@ -18281,6 +18406,20 @@ app.whenReady().then(() => {
           guest.on('dom-ready', injectNoDrag);
           guest.on('did-navigate', injectNoDrag);
           guest.on('did-navigate-in-page', injectNoDrag);
+          // v3.0.68：飞牛影视/直播这类页面装在 <webview> 里，它自己调 requestFullscreen() 时
+          // html 全屏事件只在 guest 上触发、不会冒到宿主 webContents，这里单独接一份交给宿主窗口。
+          const __host = () => {
+            try {
+              const w = hostWindowFromSender(guest);
+              if (w) return w;
+            } catch (_) {}
+            try {
+              if (guest.hostWebContents) return BrowserWindow.fromWebContents(guest.hostWebContents);
+            } catch (_) {}
+            return null;
+          };
+          guest.on('enter-html-full-screen', () => { const w = __host(); if (w) __onHtmlFsEnter(w); });
+          guest.on('leave-html-full-screen', () => { const w = __host(); if (w) __onHtmlFsLeave(w); });
         } catch (_) {}
       });
     }

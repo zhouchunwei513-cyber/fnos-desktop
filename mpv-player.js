@@ -447,6 +447,12 @@ function killCornerHelper() {
 // 目的是首帧显示时圆角已生效，不再出现『先直角、一秒多后变圆角』。
 function prewarmCorners() { try { ensureCornerHelper(); } catch (_) {} }
 
+// v3.0.70（用户要求：标题栏 / 窗口四角可分别选直角、圆角，MPV 播放器逻辑跟着变）——
+// 'round'：保持原有形态（点播四角 / 直播右上角，20px 半径），逻辑完全不变；
+// 'square'：窗口四角为直角，不再对 mpv 原生窗口做 SetWindowRgn 裁剪（下发 none 清掉已裁区域）。
+let __cornerStyle = 'round';
+function setCornerStyle(v) { __cornerStyle = (v === 'square') ? 'square' : 'round'; }
+
 class MpvPlayer extends EventEmitter {
   constructor() {
     super();
@@ -1424,6 +1430,8 @@ class MpvPlayer extends EventEmitter {
     // fullscreen 铺满整屏时四角是屏幕四角（直角），退出后按点播/直播形态恢复圆角
     if (this._fsOn) { mode = 'none'; }
     else if (!this._standalone) { mode = this._isLive ? 'top-right' : 'all'; }
+    // v3.0.70：设置页「窗口四角」选了直角 → mpv 原生窗口也保持直角（下发 none 清掉裁剪区域）
+    if (__cornerStyle === 'square') mode = 'none';
     // 独立播放器（直播/独立窗口）恒为直角，从未裁过区域，无需再下 none 指令
     if (mode === 'none' && this._standalone) return;
     const scale = this._scaleFactor || 1;
@@ -1755,5 +1763,6 @@ module.exports = {
   getMpvInfo,
   play,
   killAll,
-  prewarmCorners
+  prewarmCorners,
+  setCornerStyle
 };

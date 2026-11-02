@@ -282,6 +282,29 @@
           </label>
         </div>
 
+        <!-- v3.0.70（用户要求：直角 / 圆角二选一，标题栏与窗口分别设置） -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+          <div>
+            <div class="hotkey-title">标题栏四角</div>
+            <div class="hotkey-sub">圆角：标题栏四个角为 10px 小圆角（默认，与原版一致）；直角：标题栏四个角为直角。与下方「窗口四角」相互独立，可任意组合。</div>
+          </div>
+          <div class="tb-material-group" data-bar-corner>
+            <button type="button" class="tb-mat-btn" data-corner="round">圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="square">直角</button>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+          <div>
+            <div class="hotkey-title">窗口四角</div>
+            <div class="hotkey-sub">圆角：窗口四个角为 20px 圆角（默认，与原版一致）；直角：窗口四个角为直角。MPV 播放器（点播 / 直播）的圆角跟随此设置。</div>
+          </div>
+          <div class="tb-material-group" data-win-corner>
+            <button type="button" class="tb-mat-btn" data-corner="round">圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="square">直角</button>
+          </div>
+        </div>
+
       <!-- v1.58：不透明度滑块 -->
       <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
         <div>

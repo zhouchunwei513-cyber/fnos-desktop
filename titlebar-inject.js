@@ -601,8 +601,9 @@ module.exports = function injectTitleBar(ctx) {
     function __fixBarRadius(bar) {
       try {
         if (!bar) return;
-        const __R = '10px';
-        const __C = 'inset(0 round 10px)';
+        // v3.0.70：标题栏四角直角 = 0px；圆角保持原 10px（数值不变）
+        const __R = (TB.barCorner === 'square') ? '0px' : '10px';
+        const __C = (TB.barCorner === 'square') ? 'inset(0 round 0px)' : 'inset(0 round 10px)';
         try { bar.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
         const bl = bar.__bgLayer;
         if (bl && bl.style) {
@@ -824,7 +825,8 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) { return false; }
     }
 
-    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false };
+    // v3.0.70：barCorner = 标题栏四角（round 10px 默认 / square 直角），winCorner = 窗口四角（round 20px 默认 / square 直角）
+    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false, barCorner: 'round', winCorner: 'round' };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
       if (r && typeof r === 'object') {
@@ -841,10 +843,31 @@ module.exports = function injectTitleBar(ctx) {
         if (typeof r.hideAccountBall === 'boolean') TB.hideAccountBall = r.hideAccountBall;
         // v3.0.62：可选「透明界面」——给 html 挂 class，由各页面 CSS 接管
         try { document.documentElement.classList.toggle('fnos-ui-transparent', r.uiTransparent !== false); } catch (_) {}
+        // v3.0.70：标题栏四角 / 窗口四角（缺字段回落圆角，行为与老版本完全一致）
+        TB.barCorner = (r.barCorner === 'square') ? 'square' : 'round';
+        TB.winCorner = (r.winCorner === 'square') ? 'square' : 'round';
       }
     } catch (_) {}
     __applyTitlebarHeight();
     let AUTO_HIDE = TB.autoHide;
+
+    // v3.0.70（用户要求：直角 / 圆角二选一，标题栏与窗口分别设置）——
+    // 窗口四角「直角」用一条更高优先级的规则，把下面各窗口分支写的 20px 圆角 clip-path 整段覆盖掉
+    // （设置窗 / 第三方应用窗(xapp) / 应用窗 / 认证页 / 主窗口 五处裁剪一次覆盖）；
+    // 「圆角」时规则内容清空，恢复原样——20px 数值与原有裁剪逻辑一字未改。
+    function __applyWinCornerStyle() {
+      try {
+        let el = document.getElementById('fnos-win-corner');
+        if (!el) {
+          el = document.createElement('style');
+          el.id = 'fnos-win-corner';
+          (document.documentElement || document.head || document.body).appendChild(el);
+        }
+        el.textContent = (TB.winCorner === 'square')
+          ? 'html:root,html:root>body{clip-path:none !important;-webkit-clip-path:none !important;border-radius:0 !important;}'
+          : '';
+      } catch (_) {}
+    }
 
     const root = () => document.documentElement || document.body || document;
     // v2.17.11: titlebar actual height (CSS px). Offset and push-down both use it,
@@ -1015,6 +1038,14 @@ module.exports = function injectTitleBar(ctx) {
             // v3.0.62：透明界面实时切换（无需重启）
             if (typeof val.uiTransparent === 'boolean') {
               try { document.documentElement.classList.toggle('fnos-ui-transparent', val.uiTransparent === true); } catch (_) {}
+            }
+            // v3.0.70：标题栏四角 / 窗口四角实时切换（无需重启）
+            let __cornerChanged = false;
+            if (val.barCorner === 'round' || val.barCorner === 'square') { __cornerChanged = __cornerChanged || TB.barCorner !== val.barCorner; TB.barCorner = val.barCorner; }
+            if (val.winCorner === 'round' || val.winCorner === 'square') { __cornerChanged = __cornerChanged || TB.winCorner !== val.winCorner; TB.winCorner = val.winCorner; }
+            if (__cornerChanged) {
+              try { __applyWinCornerStyle(); } catch (_) {}
+              try { const __b = document.getElementById('fnos-titlebar'); if (__b) __fixBarRadius(__b); } catch (_) {}
             }
             __applyTitlebarHeight();
             const bar0 = document.getElementById('fnos-titlebar');
@@ -1433,6 +1464,8 @@ module.exports = function injectTitleBar(ctx) {
         bar.appendChild(btns);
         __attachSkinLayers(bar);
         root().appendChild(bar);
+        // v3.0.70：挂载后立刻按「标题栏四角」设置收口半径（直角=0px / 圆角=10px）
+        try { __fixBarRadius(bar); } catch (_) {}
     // v2.15.51：四角 R 角 + 修复飞牛主页底部裁切 + 滚动条顶部落到标题栏下方。
     // 1) 四角 R 角：body 加 clip-path:inset(0 round 20px)（标题栏保持长方形直角，仅 body 四角圆角），
     //    html 不加 clip-path——避免 v2.15.47 把标题栏顶部两角也裁成圆角的问题。
@@ -1592,6 +1625,8 @@ module.exports = function injectTitleBar(ctx) {
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);
+      // v3.0.70：窗口四角直角/圆角（必须在 __padStyle 之后落，保证覆盖生效）
+      __applyWinCornerStyle();
       // v2.17.0（DPI 方案 A）：飞牛桌面应用网格的列/行/间距是 JS 直接写的 inline style
       // （repeat(auto-fill,100px)/110px/10px），CSS 选择器匹配不到（无 class/id），须用 JS 覆盖为
       // calc(Npx * var(--ui-scale)) 以跟随 --ui-scale。React 重渲染会重置 inline style，故用

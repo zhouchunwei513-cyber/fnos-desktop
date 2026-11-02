@@ -340,6 +340,39 @@
   };
   if (optUiTrans) optUiTrans.addEventListener('change', syncUiTransLabel);
 
+  // v3.0.70：标题栏四角 / 窗口四角（圆角 / 直角，可分别设置；保存时生效）
+  const barCornerGroup = document.querySelector('[data-bar-corner]');
+  const winCornerGroup = document.querySelector('[data-win-corner]');
+  const tbCorner = { bar: 'round', win: 'round' };
+  const syncCornerBtns = () => {
+    if (barCornerGroup) {
+      barCornerGroup.querySelectorAll('.tb-mat-btn').forEach((b) => {
+        b.classList.toggle('active', b.getAttribute('data-corner') === tbCorner.bar);
+      });
+    }
+    if (winCornerGroup) {
+      winCornerGroup.querySelectorAll('.tb-mat-btn').forEach((b) => {
+        b.classList.toggle('active', b.getAttribute('data-corner') === tbCorner.win);
+      });
+    }
+  };
+  if (barCornerGroup) {
+    barCornerGroup.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('.tb-mat-btn') : null;
+      if (!btn) return;
+      tbCorner.bar = (btn.getAttribute('data-corner') === 'square') ? 'square' : 'round';
+      syncCornerBtns();
+    });
+  }
+  if (winCornerGroup) {
+    winCornerGroup.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest('.tb-mat-btn') : null;
+      if (!btn) return;
+      tbCorner.win = (btn.getAttribute('data-corner') === 'square') ? 'square' : 'round';
+      syncCornerBtns();
+    });
+  }
+
   // v1.58：标题栏材质 / 不透明度 / 磨砂程度 / 颜色
   // v2.17.24：磨砂材质修复（真毛玻璃 + 滑块生效）、颜色改为标准取色器（拾色面板/十六进制/Alpha）
   // v2.19.0：material = 纯色/磨砂玻璃，blur = 磨砂强度
@@ -475,6 +508,9 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
       if (optHideBall) { optHideBall.checked = info.hideAccountBall === true; syncHideBallLabel(); }
       if (optUiTrans) { optUiTrans.checked = info.uiTransparent !== false; syncUiTransLabel(); }
+      tbCorner.bar = info.barCorner === 'square' ? 'square' : 'round';
+      tbCorner.win = info.winCorner === 'square' ? 'square' : 'round';
+      syncCornerBtns();
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 96);
       tbState.color = hexNorm6(info.titleBarColor) || '#101426';
       tbState.material = info.titleBarMaterial === 'frosted' ? 'frosted' : 'solid';
@@ -499,6 +535,8 @@ const tbState = { opacity: 96, color: '#101426', material: 'solid', blur: 20, hi
           titleBarHighlight: tbState.highlight,
           hideAccountBall: !!(optHideBall && optHideBall.checked),
           uiTransparent: !!(optUiTrans && optUiTrans.checked),
+          barCorner: tbCorner.bar,
+          winCorner: tbCorner.win,
         });
         if (res && res.ok) {
           optSave.textContent = '已 保 存（即时生效）';

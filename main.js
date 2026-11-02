@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.69';
+const APP_VERSION = '3.0.70';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -12076,6 +12076,10 @@ ipcMain.handle('settings:get', async () => {
     // v3.0.23（用户反馈：悬浮球挡操作 / 启动后位置乱跑）——隐藏开关 + 归一化位置
     hideAccountBall: s.hideAccountBall === true,
     uiTransparent: s.uiTransparent !== false,
+    // v3.0.70（用户要求：直角/圆角二选一，标题栏与窗口可分别设置）——
+    // round = 现有圆角（标题栏 10px / 窗口 20px，数值与逻辑完全不变，默认）；square = 四角直角
+    barCorner: s.barCorner === 'square' ? 'square' : 'round',
+    winCorner: s.winCorner === 'square' ? 'square' : 'round',
     ballPos: (s.ballPos && Number.isFinite(Number(s.ballPos.fx)) && Number.isFinite(Number(s.ballPos.fy)))
       ? { fx: Number(s.ballPos.fx), fy: Number(s.ballPos.fy) } : null,
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
@@ -12273,6 +12277,14 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     const uiTransparent = (opts && typeof opts.uiTransparent === 'boolean')
       ? opts.uiTransparent
       : (__fileCfg && __fileCfg.uiTransparent !== false);
+    // v3.0.70：标题栏四角 / 窗口四角（round 圆角默认 / square 直角）——没传就保留文件里的值
+    const __cornerOk = (v) => (v === 'round' || v === 'square');
+    const barCorner = (opts && __cornerOk(opts.barCorner))
+      ? opts.barCorner
+      : ((__fileCfg && __fileCfg.barCorner === 'square') ? 'square' : 'round');
+    const winCorner = (opts && __cornerOk(opts.winCorner))
+      ? opts.winCorner
+      : ((__fileCfg && __fileCfg.winCorner === 'square') ? 'square' : 'round');
     fnosLog('info', 'ball', 'set-ui-options.hideAccountBall', {
       fromOpts: !!(opts && typeof opts.hideAccountBall === 'boolean'),
       value: hideBall,
@@ -12291,6 +12303,8 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       activeSkin: activeSkin,
       hideAccountBall: hideBall,
       uiTransparent,
+      barCorner,
+      winCorner,
     });
     cachedSettings.autoHideMenuBar = autoHide;
     cachedSettings.titleBarAutoHide = tbAutoHide;
@@ -12303,6 +12317,10 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.activeSkin = activeSkin;
     cachedSettings.hideAccountBall = hideBall;
     cachedSettings.uiTransparent = uiTransparent;
+    cachedSettings.barCorner = barCorner;
+    cachedSettings.winCorner = winCorner;
+    // v3.0.70：MPV 播放器圆角跟随「窗口四角」——直角时不再对 mpv 原生窗口 SetWindowRgn
+    try { if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') MpvPlayerMod.setCornerStyle(winCorner); } catch (_) {}
     {
       const __oldStrip = __titlebarStrip;
       refreshTitlebarStrip();
@@ -12320,7 +12338,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // v1.58：广播【完整标题栏样式对象】（autoHide+opacity+color）
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
     const __skinCfg = resolveSkinConfig();
-    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall, uiTransparent };
+    const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall, uiTransparent, barCorner, winCorner };
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
@@ -12553,9 +12571,12 @@ ipcMain.on('settings:get-titlebar', (e) => {
       skin: __sk.skin || null,
       hideAccountBall: s.hideAccountBall === true,
       uiTransparent: s.uiTransparent !== false,
+      // v3.0.70：标题栏 / 窗口四角（round 圆角默认 / square 直角）
+      barCorner: s.barCorner === 'square' ? 'square' : 'round',
+      winCorner: s.winCorner === 'square' ? 'square' : 'round',
     };
   } catch (__e2) {
-    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, skinDir: '', skin: null, hideAccountBall: false };
+    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round', winCorner: 'round' };
     try { fnosLog('error', 'titlebar', 'get.fail', { err: String((__e2 && __e2.message) || __e2).slice(0, 140) }); } catch (_) {}
   }
   try { e.returnValue = __tb; } catch (__e3) {
@@ -18323,6 +18344,13 @@ app.whenReady().then(() => {
   // v2.24.1：预热 MPV 圆角 helper（C# 首次要编译、之后载入 DLL，都是秒级）。
   // 放在这里与主窗口创建并行，等用户真正开始播放时圆角已就绪，首帧不会再先看到直角。
   try { if (MpvPlayerMod && typeof MpvPlayerMod.prewarmCorners === 'function') MpvPlayerMod.prewarmCorners(); } catch (_) {}
+  // v3.0.70：启动即把「窗口四角」设置同步给 mpv 圆角模块（直角模式不再裁圆角）
+  try {
+    if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') {
+      const __cs = loadSettings();
+      MpvPlayerMod.setCornerStyle((__cs && __cs.winCorner === 'square') ? 'square' : 'round');
+    }
+  } catch (_) {}
   // v2.3.5（需求 2.6.4）：托盘图标丢失自动重建。
   // Windows 下 Explorer 重启/托盘被系统回收时图标会消失：定时检查 + 系统恢复事件兜底重建。
   try {

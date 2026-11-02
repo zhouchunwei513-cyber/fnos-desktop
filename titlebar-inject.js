@@ -1341,19 +1341,35 @@ module.exports = function injectTitleBar(ctx) {
               W.__fnosPin = null;
             } catch (_) {}
           };
-          // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时仍持续收到
+          // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时也能持续收到
           // 移动事件（否则 Windows 停止投递 WM_MOUSEMOVE，拖动会中途卡住）。
+          // ---- v3.0.66 拖动重建（用户工单：拖动标题栏后点 × 点不中、窗口跟着鼠标一起跑）----
+          // 旧实现的三个坑：① pointerdown 无条件 setPointerCapture，把后续指针事件全锁给拖动层；
+          //   ② mousedown 立刻发 win-drag-start，主进程马上进入拖动态（最大化窗口会在首条 move 时
+          //   unmaximize 并跳位）；③ 没有阈值，1px 抖动就算拖动，单击被吞成拖动。
+          // 现在：按钮/控件按下直接放行（不捕获、不发拖动消息）；移动超过 4px 才进入拖动并迟发
+          //   win-drag-start；指针捕获也在那一刻才开；松手 / 失焦 / 左键已抬起 立刻释放并复位；
+          //   每条 move 都带上 buttons，主进程再验一次「左键确实按着」，杜绝状态残留导致窗口漂移。
+          const __isCtl = function (t) {
+            try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
+          };
+          const __endDrag = function () {
+            try { if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end'); } catch (_) {}
+            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
+            W.__fnosDsPid = null;
+            __unpinSize(); // v3.0.51：松手解锁页面尺寸
+          };
           dragStrip.addEventListener('pointerdown', function (e) {
-            try { dragStrip.setPointerCapture(e.pointerId); } catch (_) {}
+            // v3.0.66：此处不再捕获指针——预捕获会把按钮的 click 抢走（工单⑤ setPointerCapture）
+            try { if (e.pointerId != null) W.__fnosDsPid = e.pointerId; } catch (_) {}
           });
           dragStrip.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
+            if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
-            // v2.17.47：本层是 no-drag 交互层，原生 -webkit-app-region:drag 用不了，
-            // 改由主进程真实拖动（main.js win-drag-start/win-drag-move/win-drag-end）。
-            try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
-            __pinSize(); // v3.0.51：拖动期间钉死页面尺寸，消掉每帧重排导致的边沿抖动
+            // v3.0.66：win-drag-start 不再在这里发，改由 __fwd 判定超过 4px 阈值后迟发
           });
           dragStrip.addEventListener('dblclick', function (e) {
             W.__fnosDsDown = null; W.__fnosDsDrag = true;
@@ -1366,12 +1382,26 @@ module.exports = function injectTitleBar(ctx) {
             W.__fnosDsRaf = 0; W.__fnosDsPend = null;
             const __fwd = function (e) {
               if (!W.__fnosDsDown) return;
-              if (e.buttons === 0) { W.__fnosDsDown = null; W.__fnosDsDrag = false; return; }
+              // v3.0.66：左键已经松开（pointerup 被吞过）——立刻复位，绝不继续拖动
+              if (e.buttons === 0) { __endDrag(); return; }
               try {
-                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) W.__fnosDsDrag = true;
-                if (!W.__fnosDsDrag) return;
+                if (!W.__fnosDsDrag) {
+                  // 工单②：4px 阈值。低于阈值一律当单击，让按钮的 click 正常触发
+                  if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 4 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 4) return;
+                  W.__fnosDsDrag = true;
+                  // 以「越过阈值这一刻」的鼠标位置作为拖动基准，主进程按当前窗口位置起步
+                  W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
+                  try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
+                  // v3.0.66：捕获在真正开始拖动时才开；pointerId 缺失时用本帧事件兜底
+                  try {
+                    const __pid = (W.__fnosDsPid != null ? W.__fnosDsPid : e.pointerId);
+                    if (__pid != null) { W.__fnosDsPid = __pid; if (dragStrip.setPointerCapture) dragStrip.setPointerCapture(__pid); }
+                  } catch (_) {}
+                  __pinSize(); // v3.0.51：拖动期间钉死页面尺寸，消掉每帧重排导致的边沿抖动
+                  return;
+                }
                 // 每次移动都把最新屏幕坐标交给主进程（rAF 合并，60fps 上限）
-                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0) };
+                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0), buttons: 1 };
                 if (!W.__fnosDsRaf) {
                   W.__fnosDsRaf = (W.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
                     W.__fnosDsRaf = 0;
@@ -1385,14 +1415,12 @@ module.exports = function injectTitleBar(ctx) {
             };
             W.addEventListener('mousemove', __fwd, true);
             W.addEventListener('pointermove', __fwd, true);
-            const __end = function () {
-              if (W.__fnosDsDown) { try { ipcRenderer.send('win-drag-end'); } catch (_) {} }
-              W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
-              __unpinSize(); // v3.0.51：松手解锁页面尺寸
-            };
-            W.addEventListener('mouseup', __end, true);
-            W.addEventListener('pointerup', __end, true);
-            W.addEventListener('pointercancel', __end, true);
+            W.addEventListener('mouseup', __endDrag, true);
+            W.addEventListener('pointerup', __endDrag, true);
+            // v3.0.66：失焦 / 页面隐藏也要复位（拖动中切窗、锁屏、任务视图都会丢 pointerup）
+            W.addEventListener('blur', __endDrag, true);
+            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
+            W.addEventListener('pointercancel', __endDrag, true);
           }
         })();
         bar.appendChild(dragStrip);
@@ -1838,19 +1866,35 @@ module.exports = function injectTitleBar(ctx) {
               W.__fnosPin = null;
             } catch (_) {}
           };
-          // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时仍持续收到
+          // v2.17.47：按住标题栏时把指针捕获到本层，鼠标甩出窗口/窗口追不上鼠标时也能持续收到
           // 移动事件（否则 Windows 停止投递 WM_MOUSEMOVE，拖动会中途卡住）。
+          // ---- v3.0.66 拖动重建（用户工单：拖动标题栏后点 × 点不中、窗口跟着鼠标一起跑）----
+          // 旧实现的三个坑：① pointerdown 无条件 setPointerCapture，把后续指针事件全锁给拖动层；
+          //   ② mousedown 立刻发 win-drag-start，主进程马上进入拖动态（最大化窗口会在首条 move 时
+          //   unmaximize 并跳位）；③ 没有阈值，1px 抖动就算拖动，单击被吞成拖动。
+          // 现在：按钮/控件按下直接放行（不捕获、不发拖动消息）；移动超过 4px 才进入拖动并迟发
+          //   win-drag-start；指针捕获也在那一刻才开；松手 / 失焦 / 左键已抬起 立刻释放并复位；
+          //   每条 move 都带上 buttons，主进程再验一次「左键确实按着」，杜绝状态残留导致窗口漂移。
+          const __isCtl = function (t) {
+            try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
+          };
+          const __endDrag = function () {
+            try { if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end'); } catch (_) {}
+            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
+            W.__fnosDsPid = null;
+            __unpinSize(); // v3.0.51：松手解锁页面尺寸
+          };
           dragStrip.addEventListener('pointerdown', function (e) {
-            try { dragStrip.setPointerCapture(e.pointerId); } catch (_) {}
+            // v3.0.66：此处不再捕获指针——预捕获会把按钮的 click 抢走（工单⑤ setPointerCapture）
+            try { if (e.pointerId != null) W.__fnosDsPid = e.pointerId; } catch (_) {}
           });
           dragStrip.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
+            if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
-            // v2.17.47：本层是 no-drag 交互层，原生 -webkit-app-region:drag 用不了，
-            // 改由主进程真实拖动（main.js win-drag-start/win-drag-move/win-drag-end）。
-            try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
-            __pinSize(); // v3.0.51：拖动期间钉死页面尺寸，消掉每帧重排导致的边沿抖动
+            // v3.0.66：win-drag-start 不再在这里发，改由 __fwd 判定超过 4px 阈值后迟发
           });
           dragStrip.addEventListener('dblclick', function (e) {
             W.__fnosDsDown = null; W.__fnosDsDrag = true;
@@ -1863,12 +1907,26 @@ module.exports = function injectTitleBar(ctx) {
             W.__fnosDsRaf = 0; W.__fnosDsPend = null;
             const __fwd = function (e) {
               if (!W.__fnosDsDown) return;
-              if (e.buttons === 0) { W.__fnosDsDown = null; W.__fnosDsDrag = false; return; }
+              // v3.0.66：左键已经松开（pointerup 被吞过）——立刻复位，绝不继续拖动
+              if (e.buttons === 0) { __endDrag(); return; }
               try {
-                if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) > 3 || Math.abs((e.screenY || 0) - W.__fnosDsDown.y) > 3) W.__fnosDsDrag = true;
-                if (!W.__fnosDsDrag) return;
+                if (!W.__fnosDsDrag) {
+                  // 工单②：4px 阈值。低于阈值一律当单击，让按钮的 click 正常触发
+                  if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 4 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 4) return;
+                  W.__fnosDsDrag = true;
+                  // 以「越过阈值这一刻」的鼠标位置作为拖动基准，主进程按当前窗口位置起步
+                  W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
+                  try { ipcRenderer.send('win-drag-start', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
+                  // v3.0.66：捕获在真正开始拖动时才开；pointerId 缺失时用本帧事件兜底
+                  try {
+                    const __pid = (W.__fnosDsPid != null ? W.__fnosDsPid : e.pointerId);
+                    if (__pid != null) { W.__fnosDsPid = __pid; if (dragStrip.setPointerCapture) dragStrip.setPointerCapture(__pid); }
+                  } catch (_) {}
+                  __pinSize(); // v3.0.51：拖动期间钉死页面尺寸，消掉每帧重排导致的边沿抖动
+                  return;
+                }
                 // 每次移动都把最新屏幕坐标交给主进程（rAF 合并，60fps 上限）
-                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0) };
+                W.__fnosDsPend = { sx: (e.screenX || 0), sy: (e.screenY || 0), buttons: 1 };
                 if (!W.__fnosDsRaf) {
                   W.__fnosDsRaf = (W.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
                     W.__fnosDsRaf = 0;
@@ -1882,14 +1940,12 @@ module.exports = function injectTitleBar(ctx) {
             };
             W.addEventListener('mousemove', __fwd, true);
             W.addEventListener('pointermove', __fwd, true);
-            const __end = function () {
-              if (W.__fnosDsDown) { try { ipcRenderer.send('win-drag-end'); } catch (_) {} }
-              W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
-              __unpinSize(); // v3.0.51：松手解锁页面尺寸
-            };
-            W.addEventListener('mouseup', __end, true);
-            W.addEventListener('pointerup', __end, true);
-            W.addEventListener('pointercancel', __end, true);
+            W.addEventListener('mouseup', __endDrag, true);
+            W.addEventListener('pointerup', __endDrag, true);
+            // v3.0.66：失焦 / 页面隐藏也要复位（拖动中切窗、锁屏、任务视图都会丢 pointerup）
+            W.addEventListener('blur', __endDrag, true);
+            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
+            W.addEventListener('pointercancel', __endDrag, true);
           }
         })();
         bar.appendChild(dragStrip);

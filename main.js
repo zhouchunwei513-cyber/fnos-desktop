@@ -171,7 +171,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '3.0.65';
+const APP_VERSION = '3.0.66';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3169,6 +3169,7 @@ function __winDragBegin(w, sx, sy) {
       if (pending) pending = __normalizeRestoreBounds(w, pending);
     }
     return {
+      at: Date.now(), // v3.0.66：拖动起点时间戳
       win: w, ox: b.x, oy: b.y,
       sx: Number(sx) || 0, sy: Number(sy) || 0,
       lx: b.x, ly: b.y, maxPending: pending,
@@ -3195,6 +3196,17 @@ ipcMain.on('win-drag-move', (e, p) => {
     const d = __winDragState;
     if (!d || !p || !d.win || d.win.isDestroyed()) return;
     if (hostWindowFromSender(e && e.sender) !== d.win) return; // 多窗口时只认发起拖动的那个
+    // v3.0.66（用户工单：拖动标题栏后点 × 点不中，窗口跟着鼠标一起平移）——
+    // 根因链：渲染层的拖动状态在 pointerup 被系统吞掉后残留，之后只要鼠标滑过标题栏，
+    // 残留状态就会把每条 move 转发上来，窗口一路粘着鼠标走，× 永远躲手。
+    // 这里加一道硬守卫：渲染层报上来的 buttons 为 0（左键没按着）就立刻终止本次拖动。
+    // 旧调用方不带 buttons 字段（undefined），保持原行为，不影响旧路径。
+    if (typeof p.buttons === 'number' && p.buttons === 0) {
+      __winDragState = null;
+      try { fnosLog('info', 'window', 'drag.move.reject win=' + d.win.id + ' reason=no-button'); } catch (_) {}
+      try { if (__ghostBurst) __ghostBurst(); } catch (_) {}
+      return;
+    }
     const sx = Number(p.sx) || 0, sy = Number(p.sy) || 0;
     if (d.maxPending) {
       // 这一帧只做还原：unmaximize + 回到最大化前的 x/y/宽/高（与双击还原同一结果），

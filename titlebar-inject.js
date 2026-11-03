@@ -39,6 +39,40 @@ module.exports = function injectTitleBar(ctx) {
     const isMac = (typeof process !== 'undefined' && process.platform === 'darwin') ||
       (typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(String(navigator.platform || '') + String(navigator.userAgent || '')));
 
+    // ================= v4.0.28：内嵌窗标题栏的 ↻ 刷新 / ↗ 新标签打开 一律隐藏 =================
+    // 用户工单：主程序内打开的所有应用（内嵌窗、独立跳出窗）标题栏都不要这两个按钮。
+    // 内嵌窗的这两个按钮不是我们画的，是飞牛前端自己挂上去的（WINDOW-TYPES.md 实测）：
+    //   .trim-ui__app-layout--header → .flex.items-center 按钮组，排在 — □ ✕ 左边，
+    //   id = iframe-btns-<应用路径签名>-refresh / -newwindow，
+    //   title = "刷新页面" / "新标签页打开"，且要等 iframe 页加载完 1~6 秒才挂上。
+    // 做法：一行 CSS 把它们从布局里摘掉（display:none 自动收回那 92px 宽度）。CSS 规则对之后
+    // 动态插入的节点同样生效，不需要等按钮出现、不需要轮询找元素，也不会和飞牛的重渲染打架。
+    // 选择器只认这两个 id 后缀 / 两个 title，☰ 与 — □ ✕ 一概不碰。
+    try {
+      if (!__SUB) {
+        const __css28 = '[id^="iframe-btns-"][id$="-refresh"],[id^="iframe-btns-"][id$="-newwindow"],'
+          + '[id^="iframe-btns-"][title="刷新页面"],[id^="iframe-btns-"][title="新标签页打开"]'
+          + '{display:none !important;width:0 !important;min-width:0 !important;margin:0 !important;padding:0 !important;}';
+        const __mk28 = () => {
+          try {
+            if (document.getElementById('fnos-hide-iframe-btns')) return;
+            const st = document.createElement('style');
+            st.id = 'fnos-hide-iframe-btns';
+            st.textContent = __css28;
+            (document.head || document.documentElement).appendChild(st);
+          } catch (_) {}
+        };
+        __mk28();
+        // 切换应用时 SPA 偶尔会把 head 整体重建，补一次（低频、只查 id）
+        try {
+          const __iv28 = setInterval(() => {
+            try { if (!document.getElementById('fnos-hide-iframe-btns')) __mk28(); } catch (_) {}
+          }, 3000);
+          setTimeout(() => { try { clearInterval(__iv28); } catch (_) {} }, 120000);
+        } catch (_) {}
+      }
+    } catch (_) {}
+
     // ---------------- v2.5.2 r18：appview 容器页 chrome 清理 + 布局修复 + 状态埋点 ----------------
     // r18 实测（图2/5/7）：appview?anchor= 顶层独立窗里 fnOS 前端把桌面壳残留全部渲染：右上角
     // 模拟窗口按钮（与本注入标题栏叠成两套最大化/关闭=双标题栏问题）、左侧 dock 黑块（挤占内容
@@ -234,6 +268,26 @@ module.exports = function injectTitleBar(ctx) {
       }
     } catch (_) {}
 
+    // ---------------- v4.0.25：自家页面 / 第三方页面判定（亮模式配色异常根修） ----------------
+    // 现象：Docker 应用（Next Terminal、qBittorrent、Lucky…）在暗模式显示正常、亮模式「黑底深字」。
+    // 根因：壳把常量深色 #05060a 写进了页面 body（不随亮暗切换），而页面正文颜色跟着主题切换
+    // ——暗模式深底+浅字恰好能读，亮模式深底+深字就读不出来。同时 matchMedia 桥 / colorScheme /
+    // body[theme-*] 也被无条件压给第三方页，页面连"自己是亮还是暗"都判断不了。
+    // 判定：以主进程下发的 nasOrigin 为界，只有同源前缀匹配的飞牛自家页面归壳管；其余 http(s)
+    // 页面（含 *.fnos.net 下的 Docker 应用、100.x 直连应用）一律不碰，主题与底色交还页面自己。
+    const __fnNasOrigin25 = String(window.__fnosNasOrigin || '');
+    const __fnIsThirdParty25 = (() => {
+      try {
+        const href = String(location.href || '');
+        if (!/^https?:/i.test(href)) return false;   // file:// = 自家页面（连接页/设置/关于/帮助）
+        if (!__fnNasOrigin25) return false;          // 主进程没给基准 → 宁可不改，避免误伤自家页
+        return href.indexOf(__fnNasOrigin25) !== 0;
+      } catch (_) { return false; }
+    })();
+    const __fnLog25 = (stage, o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: stage }, o)); } catch (_) {} };
+    // 壳色常量：只用于自家页面 / 窗口垫底，第三方页面不再使用（见 __padStyle 与全屏样式）
+    const __FN_SHELL_BG25 = '#05060a';
+
     // ---------------- v2.5.4 r20：全 NAS 页面日夜模式统一跟随系统（问题3根修） ----------------
     // 特征值三层（实锤自 fnOS 前端 bundle）：系统=nativeTheme.shouldUseDarkColors（Windows 注册表
     // AppsUseLightTheme）→matchMedia('(prefers-color-scheme: dark)')；fnOS 存储 localStorage
@@ -299,6 +353,23 @@ module.exports = function injectTitleBar(ctx) {
       };
       __refreshDark();
       try { setInterval(__refreshDark, 30000); } catch (_) {}
+      // v4.0.25：第三方页面整段跳过——不装 matchMedia 桥（并掉页面自己的 prefers-color-scheme 真值）、
+      // 不写 html colorScheme、不写/删 body[theme-dark|theme-light]、不重写 iframe 主题参数。
+      // 只留一条"我们没动"的日志 + 页面原始底色探针（回归时用日志就能证明壳没碰它）。
+      if (__fnIsThirdParty25) {
+        try {
+          const __b25 = document.body;
+          __log({
+            kind: 'skip', reason: 'third-party-page',
+            href: String(location.href || '').slice(0, 140),
+            htmlBg: (() => { try { return getComputedStyle(document.documentElement).backgroundColor; } catch (_) { return ''; } })(),
+            bodyBg: __b25 ? (() => { try { return getComputedStyle(__b25).backgroundColor; } catch (_) { return ''; } })() : '',
+            pageColorScheme: String((document.documentElement && document.documentElement.style.colorScheme) || ''),
+            mqDark: (() => { try { return !!(__origMQ && __origMQ('(prefers-color-scheme: dark)').matches); } catch (_) { return null; } })(),
+          });
+        } catch (_) {}
+        return;
+      }
       try {
         if (__origMQ) {
           window.matchMedia = function (q) {
@@ -344,6 +415,20 @@ module.exports = function injectTitleBar(ctx) {
         } catch (e) { __log({ kind: 'store-err', err: String(e && e.message || e) }); }
       }
       __apply(document);
+      // v4.0.25：把"到底往这页写了什么"记下来（此前只有 mq-patched / store-respect29，
+      // 出问题只能靠截图猜像素）
+      try {
+        __log({
+          kind: 'apply', isNas: __isNas, thirdParty: false, dark: __isDark(),
+          colorScheme: String((document.documentElement && document.documentElement.style.colorScheme) || ''),
+          bodyAttr: document.body
+            ? (document.body.getAttribute('theme-dark') !== null ? 'theme-dark'
+              : (document.body.getAttribute('theme-light') !== null ? 'theme-light' : ''))
+            : '',
+          mqDark: __sysDark,
+          href: String(location.href || '').slice(0, 140),
+        });
+      } catch (_) {}
       try {
         const mo = new MutationObserver(() => { __apply(document); });
         mo.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ['theme-dark', 'theme-light'] });
@@ -421,8 +506,10 @@ module.exports = function injectTitleBar(ctx) {
     // #desktopFooterWrapper/#desktopFooter/#transferInfo，其它页面/应用零影响。
     try {
       const __qbFixCss = [
-        '#desktopFooterWrapper{z-index:2000 !important;background-color:var(--color-background,#ffffff) !important;-webkit-user-select:none !important;user-select:none !important;}',
-        '#desktopFooter{background-color:var(--color-background,#ffffff) !important;white-space:nowrap !important;overflow:hidden !important;-webkit-user-select:none !important;user-select:none !important;}',
+        // v4.0.25：兜底值 #ffffff 会在深色主题下凭空画出一条白底栏（与整页割裂）。
+        // 取不到 --color-background 就交还给页面自己的底色（transparent）。
+        '#desktopFooterWrapper{z-index:2000 !important;background-color:var(--color-background,transparent) !important;-webkit-user-select:none !important;user-select:none !important;}',
+        '#desktopFooter{background-color:var(--color-background,transparent) !important;white-space:nowrap !important;overflow:hidden !important;-webkit-user-select:none !important;user-select:none !important;}',
         '#desktopFooter table,#desktopFooter td{white-space:nowrap !important;}',
         '#transferInfo{white-space:nowrap !important;overflow:hidden !important;flex-wrap:nowrap !important;}',
         '#transferInfo,#transferInfo *{white-space:nowrap !important;}',
@@ -1533,40 +1620,26 @@ module.exports = function injectTitleBar(ctx) {
     // 内嵌窗（webview）有主窗的不透明底垫着，所以看不出问题。
     // 做法：给 body 补一个不透明底色（优先取页面自身背景色，取不到按深浅色主题兜底），
     // 标题栏区域（html，y=0~barH）仍保持透明，磨砂/透桌面不受影响。
-    const __xappBodyBg = () => {
-      try {
-        const b = document.body;
-        if (!b) return '';
-        const c = getComputedStyle(b).backgroundColor;
-        if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') return c;
-        // 页面把底色画在根容器上（Vue/React 常见）：扫有限个可见大块元素
-        const kids = b.querySelectorAll('*');
-        const n = Math.min(kids.length, 40);
-        for (let i = 0; i < n; i++) {
-          const el = kids[i];
-          if (!el || el.nodeType !== 1) continue;
-          let r = null;
-          try { r = el.getBoundingClientRect(); } catch (_) { continue; }
-          if (!r || r.width < 100 || r.height < 100) continue;
-          const cc = getComputedStyle(el).backgroundColor;
-          if (cc && cc !== 'transparent' && cc !== 'rgba(0, 0, 0, 0)') return cc;
-        }
-      } catch (_) {}
-      try { return matchMedia('(prefers-color-scheme: dark)').matches ? '#141414' : '#ffffff'; } catch (_) {}
-      return '#ffffff';
-    };
-
+    // v4.0.25（亮模式配色异常 P0-4）：补底色逻辑降级。
+    // 旧逻辑会扫 body 前 40 个元素"抢"第一个不透明大块的颜色：抢到装饰块/遮罩层就整页涂错色，
+    // 而且以 !important 写进 body，页面之后自己的主题切换再也盖不回来（亮模式下尤其明显）。
+    // 现在只处理「html 与 body 都没画底色」这一种真空透明的情况：值用壳色常量、不加 !important，
+    // 只在页面加载完成后补一次，页面自己有任何 background-color 就完全不碰。
     const __applyXappBodyBg = () => {
       try {
         const body = document.body;
         if (!body) return;
-        const bg = __xappBodyBg();
-        if (!bg) return;
-        if (body.style.getPropertyValue('background-color') === bg) return;
-        body.style.setProperty('background-color', bg, 'important');
-        try {
-          ipcRenderer.send('fnos:media-log', { stage: 'titlebar.xapp-bg', bg: bg });
-        } catch (_) {}
+        if (String(document.readyState) !== 'complete') return;   // 页面还没画完 → 交给它自己
+        const __tr25 = (c) => (!c || c === 'transparent' || c === 'rgba(0, 0, 0, 0)');
+        const htmlBg = (() => { try { return getComputedStyle(document.documentElement).backgroundColor; } catch (_) { return ''; } })();
+        const bodyBg = (() => { try { return getComputedStyle(body).backgroundColor; } catch (_) { return ''; } })();
+        if (!__tr25(htmlBg) || !__tr25(bodyBg)) return;              // 页面自己画了底色 → 不碰
+        if (body.style.getPropertyValue('background-color')) return; // 已补过 → 不重复覆盖
+        body.style.setProperty('background-color', __FN_SHELL_BG25);
+        __fnLog25('titlebar.xapp-bg', {
+          value: __FN_SHELL_BG25, from: 'shell-const', htmlBg: htmlBg, bodyBg: bodyBg,
+          href: String(location.href || '').slice(0, 140),
+        });
       } catch (_) {}
     };
 
@@ -1826,23 +1899,10 @@ module.exports = function injectTitleBar(ctx) {
           return b;
         };
 
-        // v4.0.21：飞牛应用窗口分三类（逆向结论见 WINDOW-TYPES.md）：
-        //   ① 内嵌窗 · 标题栏无 ↻/↗ —— 第三方 FPK 页（/app/<id>/、/cgi/ThirdParty/...、外部端口）
-        //   ② 内嵌窗 · 标题栏有 ↻/↗ —— 窗内是飞牛自有页面（appview 容器页 / 原生应用页）
-        //   ③ 独立跳出窗 · 无 ↻/↗ —— 我们 createAppWindow 打开的窗口，飞牛侧不画这两钮
-        // ①② 由飞牛自己渲染内嵌窗，我们一个按钮都不加（v4.0.20 的 ↗ 注入已移除）。
-        // 只有 ③ 需要我们补：自绘栏 ☰ + ↻ 刷新 + ↗ 新标签打开 + — □ ✕。
-        // 用 window.open(当前 URL, '_blank') 触发主进程 setWindowOpenHandler → createAppWindow，
-        // 等价于「在新标签打开当前页面」，不需要新增 IPC。主窗不加（刷新会把桌面整页重载）。
-        // v4.0.20 曾一刀切删掉这两钮（把 ① 的规则套到 ③ 上），导致独立窗没法刷新/开新标签，v4.0.21 恢复。
-        const reloadBtn = mkBtn('fnos-tb-reload',
-          '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/><path d="M13 2.6V5.1h-2.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-          'rgba(255,255,255,0.22)', '刷新');
-        const newtabBtn = mkBtn('fnos-tb-newtab',
-          '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M9.5 3H13v3.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L7.5 8.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/><path d="M11.5 9.8V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.2" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-          'rgba(255,255,255,0.22)', '在新标签打开');
-        reloadBtn.addEventListener('click', () => { try { location.reload(); } catch (_) {} });
-        newtabBtn.addEventListener('click', () => { try { window.open(String(location.href), '_blank'); } catch (_) {} });
+        // v4.0.28（用户工单「主程序内打开的所有应用，标题栏一律不要刷新 / 新标签打开」）：
+        // 自绘栏只保留 ☰ + — □ ✕。↻ 刷新、↗ 新标签打开两钮连同事件一起删除，
+        // 内嵌窗（B 段）与独立跳出窗（本段）都不再有这两个入口。
+        // 历史：v4.0.18 加、v4.0.20 删、v4.0.21 恢复、v4.0.28 按用户定案再次删除（且不再恢复）。
 
         const minBtn = mkBtn('fnos-tb-min',
           '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', 'rgba(255,255,255,0.22)');
@@ -1929,7 +1989,7 @@ module.exports = function injectTitleBar(ctx) {
         bar.addEventListener('mousedown', startNativeDrag);
 
         if (!isMac) {
-          if (!__isMainWin) { btns.appendChild(reloadBtn); btns.appendChild(newtabBtn); }
+          // v4.0.28：不再追加 ↻ / ↗（见上）
           btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
         }
         bar.appendChild(left);
@@ -2178,6 +2238,9 @@ module.exports = function injectTitleBar(ctx) {
       const __isAppWin = __argv.indexOf('--fnos-app-window') >= 0 || __isLiveWin;
       const __isSettings = (!__isAppWin && __argv.indexOf('--fnos-shell') < 0); // 设置窗口：无 --fnos-shell 也无 --fnos-app-window（不透明窗口，独立布局）
       const __gifBg = 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;';
+      // v4.0.25：壳色只给自家页面。第三方/Docker 应用页绝不写 body 底色——
+      // 「暗模式正常、亮模式黑底深字」就是这条 !important 深色常量造成的。
+      const __shellBgCss25 = __fnIsThirdParty25 ? '' : ('background:' + __FN_SHELL_BG25 + ' !important;');
       if (__isSettings) {
         // 设置窗口（settings.html，不透明窗口）：标题栏 bar 占顶部 34px。
         // v2.15.56：改用 body transform 下移 34px（而非 padding-top）——padding-top 无法约束 fixed 元素
@@ -2187,7 +2250,8 @@ module.exports = function injectTitleBar(ctx) {
         // 四角 clip-path 由 10px 改回 20px，与主窗口、应用窗口完全同一数值。
         // v2.18.0 曾为了与标题栏 bar 的 10px 同比例收到 10px，实测观感偏方，现按用户回归 20px。
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
-          'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;background:#05060a !important;}html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}';
+          'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;' + __shellBgCss25 + '}' +
+          (__fnIsThirdParty25 ? '' : 'html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v3.0.46（网友反馈：Docker/qBittorrent 等第三方应用在客户端里底部状态栏压住"信息"面板
         // 的字段、整页显示不正常；浏览器打开正常）：
@@ -2262,9 +2326,7 @@ module.exports = function injectTitleBar(ctx) {
         // 原值记在元素上以便还原，窗口缩放/标题栏高度变化可重算。
         try { __watchFixedTop(); } catch (_) {}
         // v4.0.16：给 body 补不透明底色，修新标签窗整窗透明透出桌面。
-        // SPA 首帧后根容器才挂上背景色，多试几次以便取到页面真实底色。
-        try { __applyXappBodyBg(); } catch (_) {}
-        try { setTimeout(__applyXappBodyBg, 500); } catch (_) {}
+        // v4.0.25：只在页面加载完成后补一次（旧版 0/500/1800 三次 + 扫元素抢色，见函数注释）
         try { setTimeout(__applyXappBodyBg, 1800); } catch (_) {}
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
@@ -2333,7 +2395,10 @@ module.exports = function injectTitleBar(ctx) {
           // Windows 下内容区比例锁定是运行时逐帧校正，受整数像素约束具有 1px 级偏差；
           // 留白区域如果透明就会露出 Electron/DWM 底色形成灰条。
           // 深色兜底后，即使有 1px 偏差也与标题栏同色，不再看得出灰条。
-          'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;background:#05060a !important;}',
+          // v4.0.25：壳色只在本页是飞牛自家页面时才写（__shellBgCss25 在第三方页为空串）。
+          // Docker/第三方应用会走 fnos-domain-in-main 直接加载进主窗，body 就是它自己的 body，
+          // 以前的 background:#05060a !important 等于把第三方页刷成深底 → 亮模式黑底深字。
+          'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;padding-top:0 !important;margin-top:0 !important;' + __shellBgCss25 + '}',
           // v2.17.0（DPI 方案 A）：飞牛桌面主页是远程 React SPA（cqfndesk），应用图标为 52px 位图，
           // 客户端无法改源码，只能注入覆盖：图标/卡片/文字/间距统一 x--ui-scale（0.8），图标 52->约 42px。
           // 选择器用 [class~="..."] 精确匹配 Tailwind token（规避 [ ] ! 转义），仅作用于主窗口主 frame。
@@ -2373,6 +2438,20 @@ module.exports = function injectTitleBar(ctx) {
         ].join('');
       }
       (document.head || document.documentElement).appendChild(__padStyle);
+      // v4.0.25：把「本次给这页写了什么底色」记下来——下次同类问题一行日志即可定位，
+      // 不用再靠截图采样像素（原日志只有 theme.normalize 的"打了补丁"，没有"改了什么"）。
+      try {
+        __fnLog25('shell.bg.write', {
+          branch: __isSettings ? 'settings'
+            : (__argv.indexOf('--fnos-xapp') >= 0 ? 'xapp' : (__isAppWin ? 'app' : 'shell')),
+          value: __shellBgCss25 ? __FN_SHELL_BG25 : '',
+          thirdParty: __fnIsThirdParty25,
+          nasOrigin: __fnNasOrigin25.slice(0, 60),
+          htmlBg: (() => { try { return getComputedStyle(document.documentElement).backgroundColor; } catch (_) { return ''; } })(),
+          bodyBg: (() => { try { return document.body ? getComputedStyle(document.body).backgroundColor : ''; } catch (_) { return ''; } })(),
+          href: String(location.href || '').slice(0, 140),
+        });
+      } catch (_) {}
       // v3.0.70：窗口四角直角/圆角（必须在 __padStyle 之后落，保证覆盖生效）
       __applyWinCornerStyle();
       // v2.17.0（DPI 方案 A）：飞牛桌面应用网格的列/行/间距是 JS 直接写的 inline style
@@ -2540,12 +2619,11 @@ module.exports = function injectTitleBar(ctx) {
         // disconnect+build() 撞 build() 防重入早退 → 拖动/按钮永久失效（自愈缺口实锤）。现全件
         // 检查（bar/hotzone/☰/—□✕），缺失即先清残留再整体重建——残留清掉后防重入早退不再拦。
         try {
-          // v4.0.18：应用窗/跳转窗多了 ↻ 刷新、↗ 新标签打开，自愈检查要一起带上，
-          // 否则 SPA 重渲染把按钮摘掉后不会被重建（主窗没有这两钮，不能加进 __need）。
+          // v4.0.28：↻ / ↗ 已删除，自愈清单不能再要求它们存在——否则这俩 id 永远查不到，
+          // MutationObserver 会把「按钮缺失」当真，DOM 一变就整件重建（重建风暴 + 标题栏闪）。
+          // 现在主窗/应用窗的清单一致：☰ + — □ ✕。
           const __need = isMac ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu']
-            : (__isMainWin
-              ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close']
-              : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-reload', 'fnos-tb-newtab', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close']);
+            : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
           const mo = new MutationObserver(() => {
             try {
               let __gone = false;
@@ -2599,7 +2677,8 @@ module.exports = function injectTitleBar(ctx) {
         __setCss(titleEl, 'color:rgba(255,255,255,0.95);font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;');
         left.appendChild(logo);
         left.appendChild(titleEl);
-        // 右：↻ — □ ✕ 四钮（r15 硬规则移除 ↗ 跳出：内嵌窗绝不剥离 fnOS 框架转独立跳出窗）
+        // 右：— □ ✕ 三钮（r15 硬规则移除 ↗ 跳出：内嵌窗绝不剥离 fnOS 框架转独立跳出窗）
+        // v4.0.28（用户工单）：↻ 刷新也一并移除，内嵌窗自绘栏只剩 — □ ✕。
         const btns = document.createElement('div');
         __setCss(btns, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;');
         const mkBtn = (id, titleTxt, svg, hoverBg) => {
@@ -2615,17 +2694,14 @@ module.exports = function injectTitleBar(ctx) {
           return b;
         };
         const W = 'stroke="#fff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"';
-        const reloadBtn = mkBtn('fnos-tb-reload', '刷新', '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6" ' + W + '/><path d="M13 2.5V5h-2.5" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
         const minBtn = mkBtn('fnos-tb-min', '最小化', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
         const maxBtn = mkBtn('fnos-tb-max', '最大化/还原', '<svg width="12" height="12" viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" ' + W + '/></svg>', 'rgba(255,255,255,0.18)');
         const closeBtn = mkBtn('fnos-tb-close', '关闭', '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" ' + W + '/></svg>', '#E81123');
-        // 功能：↻ 刷新；—/□/✕ 走现成 window-minimize/maximize/close IPC（零新增 IPC）。
         // —/□/✕ 走现成 window-minimize/maximize/close IPC（零新增 IPC）
-        reloadBtn.addEventListener('click', () => { try { location.reload(); } catch (_) {} });
         minBtn.addEventListener('click', () => { try { ipcRenderer.send('window-minimize'); } catch (_) {} });
         maxBtn.addEventListener('click', () => { try { ipcRenderer.send('window-maximize'); } catch (_) {} });
         closeBtn.addEventListener('click', () => { try { ipcRenderer.send('window-close'); } catch (_) {} });
-        btns.appendChild(reloadBtn); if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
+        if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
         bar.appendChild(left);
         const dragStrip = document.createElement('div');
         dragStrip.id = 'fnos-tb-dragstrip';
@@ -2932,7 +3008,9 @@ module.exports = function injectTitleBar(ctx) {
         } catch (_) {}
         // 防 SPA 重渲染清除：v2.10.0 r30（问题1 次因）全件检查+整件重建+解除防重入死锁（与普通标题栏同款）
         try {
-          const __need = isMac ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-reload'] : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-reload', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
+          // v4.0.28：内嵌窗自绘栏已无 ↻，清单同步去掉（原因同普通标题栏：查不到就会被当成
+          // 缺失 → 反复重建）。
+          const __need = isMac ? ['fnos-titlebar', 'fnos-titlebar-hotzone'] : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
           const mo = new MutationObserver(() => {
             try {
               let __gone = false;
@@ -3816,7 +3894,7 @@ module.exports = function injectTitleBar(ctx) {
             // 登录页），透明区域就把下层主程序桌面/桌面图标/系统监控面板整个透出来。只在全屏态补不透明
             // 底色 + min-width:100vw：不碰 html（html 透明是圆角的铁律），正常窗口态的透明与 20px 圆角
             // 完全不受影响；background-image 不动，页面自带背景图仍优先。
-            'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;min-width:100vw !important;background-color:#05060a !important;overflow-x:hidden !important;}',
+            'html[data-fnos-fs="1"]>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;clip-path:none !important;border-radius:0 !important;padding-top:0 !important;margin-top:0 !important;min-width:100vw !important;' + (__fnIsThirdParty25 ? '' : 'background-color:' + __FN_SHELL_BG25 + ' !important;') + 'overflow-x:hidden !important;}',
             // v3.0.52：第三方应用窗（--fnos-xapp）的让位挂在 html 的 padding-top 上（v3.0.46），
             // 全屏时必须一起放开，否则顶部仍留 34px 透明带（透出下层桌面）。只动 padding/clip-path，
             // 不给 html 补底色 —— html 透明是标题栏与 20px 圆角的铁律。

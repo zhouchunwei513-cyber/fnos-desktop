@@ -3,6 +3,116 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.28
+
+> 用户要求：主程序内打开的所有应用（内嵌窗、独立跳出窗），标题栏一律删除「刷新」和「新标签打开」两个按钮。
+
+### 改动
+
+这两颗按钮有两个来源，分别处理：
+
+1. **我们自绘的标题栏**（`titlebar-inject.js`）——独立跳出窗/新标签窗用的那套 ☰ + ↻ + ↗ + — □ ✕：
+   - 删除 `reloadBtn` / `newtabBtn` 的创建、点击事件与 `appendChild`，只剩 ☰ + — □ ✕；
+   - 内嵌窗自绘栏（EMBED 分支）同样删掉 ↻，只剩 — □ ✕；
+   - `__need` 自愈清单（MutationObserver 全件检查）同步移除 `fnos-tb-reload` / `fnos-tb-newtab`——**这一步必须做**，否则这两个 id 永远查不到，DOM 一变就被判定「标题栏缺件」而整件重建，表现为标题栏反复闪。
+2. **飞牛自己画在窗标题栏上的两颗**（内嵌窗，`WINDOW-TYPES.md` 类型 2）——`iframe-btns-<签名>-refresh` / `-newwindow`：
+   - 追加一条注入 CSS（`#fnos-hide-iframe-btns`）：按 `id` 前缀+后缀与 `title`（`刷新页面` / `新标签页打开`）精确定位，`display:none` + 宽度归零，布局自动收掉那 92px；
+   - CSS 规则对「iframe 加载完 1~6 秒后才挂上」的按钮同样生效，不需要轮询找元素；
+   - 只认这两个 id 后缀 / 两个 title，☰ 与 — □ ✕ 一概不碰；主窗口/子框架均注入，`head` 被 SPA 重建时自动补一次（3s 巡检，2 分钟后停）。
+
+### 影响面
+
+- 内嵌窗（桌面里出现的窗口）、独立跳出窗（新标签页开的窗口）、以及主程序自身标题栏，标题栏都只剩 ☰ 菜单 + — □ ✕。
+- 刷新仍可用：应用窗里按 `F5`/`Ctrl+R` 走正常快捷键；新标签打开不再提供入口。
+
+## v4.0.27
+
+> 用户反馈两件事：① 用 MPV 播影片「加载不上」（页面一直停在加载中，没有任何报错）；② 「记住播放进度（续播·与网页端互通）」开关根本管不住影视入口——关掉它也照样一打开就进上次那部片子。
+
+### 一、MPV 加载不上
+
+**根因**
+1. 起播流程是「先 `surf.play()` 播，再 `probeMediaRange()` 记日志」——探活结果只进 diag，不参与决策。服务端对 `/v/api/v1/media/range/<guid>` 回 400（空 body、6~15ms 即时拒绝，跨 3 个 mediaGuid、连续 4 天 100% 复现）时，mpv 只会给 `loading failed(reason 4)`，网页永远停在加载中。
+2. `mpv-player.js` 把 `end-file error` 一律当可恢复：同 URL 重试 8 次（每次还要先向网页要"新鲜地址"），4xx 属于终态，重试是纯空转，用户干等近 80 秒。
+3. 请求头构造有两处会把自己写坏：
+   - `--user-agent=fnOS-Desktop/MPV` 被无条件塞进命令行，而 headers 里本来就有 `getNasUA()` 的浏览器 UA → 请求里两条 `User-Agent`，部分反代/源站直接 400/403；
+   - `options/http-header-fields` 以**字符串**下发且做了 `,`→空格 替换（mpv 的 string-list 按逗号切分），UA/Cookie 里的合法逗号被永久篡改。
+
+**修复**
+1. `main.js` 新增 `probeMediaRangeStatus()`（Promise + 4s 超时 + 响应头），`mpv:embed` 在 `surf.play()` **之前**探活：服务端明确 4xx → 不启动 mpv，直接回 `{ok:false, httpStatus, reason}` 并记 `mpv.embed.reject`（含 Cookie 名、`urlHasQuery`、`content-type`）。网络错误/超时/5xx 一律放行，避免误杀可播流。
+   - 探活被 4xx 拒绝时**再做一次带 `Authorization` 的重探**（`mpv.embed.auth-retry`）：v2.15.88 起点播流刻意只带 Cookie（过期 JWT 会让 media/range 回 JSON 报错），但有些服务端恰好要求 JWT，于是变成 400「加载不上」。只有带 token 真拿到 2xx 才改用它，过期 token 继续 4xx → 行为与旧版一致。
+2. 起播后挂一次性 `fatal` 监听，把状态码以 `mpv:play-failed` 推回网页。
+3. `preload.js`：`mpv:embed` 返回值 `ok:false` 或收到 `mpv:play-failed` 时，撤销接管、还原网页播放器，并弹一条 shadow DOM 提示写明 HTTP 状态（4s 内只弹一次）。
+4. `mpv-player.js`：从 mpv 日志抓 `HTTP error NNN` / `HTTP/x.x NNN` 存入 `_lastHttpStatus`；`end-file` 时若 25s 内见过 4xx → 判终态（`_fatalStop`），清起播看护、发 `fatal`、不重试，`_reloadStream()` 也拒绝再拉流；`loadfile()` 重置终态标记，不影响下次切集。
+5. 头构造：headers 里已有 UA 就不再加 `--user-agent`；`options/http-header-fields` 改为**数组**形式 `set_property`（元素内逗号不再被切分），并去掉重复的 `set_property user-agent`。
+
+### 二、影视入口记不住"上次看到哪" / 关了续播还是进片子
+
+**根因**
+1. 影视前端自己会按服务端「继续观看」直接跳 `/v/video/<guid>`；
+2. 入口学习缓存把「上次停留在 `/v/video/<guid>`」记成该应用的入口，于是每次启动都命中深链——本地续播开关与它无关，所以开关看起来"不起作用"。
+
+**修复**
+1. `main.js` 新增 `lastPlayForTrimMedia()`：复用本地进度库（`userData/play-progress.json` 的 `g:<guid>` 记录），取 30 天内、>30s、未到 95% 的最近一条；**开关关闭时直接返回 null**。
+2. 影视入口（仅裸入口 `/v`，用户主动点某部片子的深链不动）在入口缓存**之前**单独决策：开关开 → 开 `/v/video/<guid>`；开关关 → 一律 `/v`，并且绕过入口缓存（`appwin.entry-cache.bypass`），同时清掉历史上被写成深链的 `/v` 缓存。
+3. `preload.js` 新增 `startTrimGuard27()`：开关关闭时，若从 `/v` 进来自动跳到 `/v/video/*`，`replaceState` 回 `/v` 并触发 `popstate`；2s 内有用户交互一律放行、最多回弹 2 次、只监控 20s。
+4. `mpv:settings-changed` 带上 `resume`，开关热生效（关掉后当前页立即武装守卫，无需重启）。
+
+### 验证
+- MPV：服务端 4xx 时应**秒级**失败并弹出「HTTP 400」提示，不再空转 80 秒；正常片源起播多一次 GET 探活（局域网约 10ms，直播/跨域直连源不探）。
+- 续播开：关掉影视窗口再打开 → 直接回到上次那部片子，进度接着走。
+- 续播关：关掉影视窗口再打开 → 影视主页；手动点某部片子仍能正常进入播放。
+
+## v4.0.26
+
+> 用户反馈：用 **UU 远程 / QQ 录屏**时客户端窗口「消失又出现」不停循环；**Windows 远程桌面**里界面轻微闪烁。
+
+### 根因（磨砂背景的采样机制与采集管线互斥）
+1. 磨砂背景要「截取窗口背后的桌面」，为此每次采样都在 `getSources` 前后各调一次 `win.setContentProtection(true/false)`。`true` 对应 Win32 `WDA_EXCLUDEFROMCAPTURE`——窗口会**从所有采集管线里消失**（录屏、远程、直播都看不见它），采样结束才恢复。
+2. 采样被 `focus / move / resize / show / restore` 五个事件踢，且活跃期每 480ms 补抓一张。录屏端看到的就是：每 0.5~1s 消失一次、每次约 300ms 的「消失↔出现」循环。
+3. 远程桌面下 Chromium 常回落软件渲染，`capturePage()` 更容易返回空帧/黑帧，被 `black-scan` 单帧判成黑屏 → `reload`，画面肉眼可见跳一下；每次采样在远程画面里也是一次闪烁。
+4. `__ghostBurst` 松手后以 8ms 连刷 90 次 `setBackgroundColor` 赶灰带，每次重合成在采集端都是一帧变化，录屏里表现为边缘/底色轻微脉动。
+
+### 修复
+1. 采样频率降两个数量级：`ACTIVE_MS 480→2000`、`IDLE_MS 45000→300000`、`MIN_GAP 90→1000`（`titlebar-frost.js`）。
+2. **聚焦不再触发采样**：`main.js` 删除 `win.on('focus', kick)`。聚焦不改变窗口背后的画面，却是最频繁的踢源。
+3. **未聚焦窗口不采样**：`runOnce` 前置判断（首图例外），延到下次事件或 5min 兜底。
+4. `__ghostBurst`：90×8ms 连续重合成 → 5 次递增间隔（8/30/80/150/300ms），带令牌作废旧轮次。
+5. `black-scan`：空图（`capturePage` 空帧 / `isEmpty`）直接跳过并记 `black-scan.skip`；黑/白判定改为**连续 2 次一致**（间隔 ≥1.5s）才 reload，避免大面积浅色的正常页面被判白屏后反复重载。
+6. 新增埋点 `frost.capture {trigger, ms, protectedMs, thumb, ok, focused}`——`protectedMs` 就是窗口在采集端「消失」的时长，可直接量化占空比；`black-scan.check` 增 `consecutive`。
+7. `setEnabled` 状态未变化时不再补抓：设置页拖动不透明度/模糊滑块每 tick 都会走 `settings:preview-titlebar → __syncFrostAll → setEnabled(win,true)`，旧逻辑每次都 `lastAt=0` + 立即抓一张（拖动期间对每个窗口持续"摘出采集管线再放回"），现在是密集闪烁的另一个来源。仅当窗口还没有底图时才补一次。
+
+### 验证
+- QQ / UU 录屏：窗口全程可见，不再周期性消失（拖窗结束后最多一次 <300ms 的采样窗口）。
+- 远程桌面：不再整窗跳变/重载；静止时零采样。
+- 正常使用：磨砂底在移动/缩放结束后照常刷新，另有 5 分钟兜底。
+
+## v4.0.25
+
+> 用户反馈（截图 + diag 日志）：Docker 应用（Next Terminal / qBittorrent 等）在程序内**暗模式正常，切到亮模式后整片"黑底深字"**读不出来。
+
+### 根因（三条都在注入层，本质都是「壳把常量色/主题硬塞给第三方页面」）
+1. `titlebar-inject.js` 主窗 / 设置窗 / 全屏态样式里写死 `background:#05060a !important` 铺在 `html>body` 上——常量，不随亮暗切换。Docker 应用经 `fnos-domain-in-main` 直接加载进主窗时，那个 `body` 就是应用自己的 body：暗模式深底浅字恰好能读，亮模式深底深字读不出。
+2. `__themeNormalize` 对**所有**注入页面无条件开工：装 `matchMedia` 桥（把页面真实的 `prefers-color-scheme` 并掉）、写 `html{color-scheme}`、写/删 `body[theme-dark|theme-light]`、重写 iframe 主题参数 → 第三方页面连"自己是亮还是暗"都判断不了。
+3. `__applyXappBodyBg` 扫 body 前 40 个元素"抢"第一个不透明大块的颜色补到 body，且带 `!important`：抢到装饰块/遮罩层就整页涂错色，页面之后也改不回来。
+
+### 修复（`titlebar-inject.js`）
+1. 新增「自家页面 / 第三方页面」判定 `__fnIsThirdParty25`：以主进程下发的 `nasOrigin`（`titlebar:should-inject`）为界，只有同源前缀匹配的飞牛自家页面归壳管；其余 http(s) 页面（`*.fnos.net` 下的 Docker 应用、`100.x` 直连应用）一律不碰。`file://` 自家页面（连接页/设置/关于）不受影响。
+2. 壳色收窄：主窗 `html>body`、设置窗 `html>body` 与 `html.fnos-ui-transparent>body`、全屏态 `html[data-fnos-fs="1"]>body` 四处硬编码的 `#05060a` 统一走 `__shellBgCss25` / `__FN_SHELL_BG25`，第三方页面为空串（不写）。
+3. 主题注入加门控：第三方页面整段跳过 `__themeNormalize`（不装 matchMedia 桥、不写 colorScheme / `body[theme-*]`、不改 iframe 主题参数），只留一条跳过日志 + 页面原始底色探针。
+4. `__applyXappBodyBg` 降级：只在 `document.readyState === 'complete'` 且 html 与 body **都透明**时补一次壳色，去掉"扫元素抢色"与 `!important`；页面自己有任何 `background-color` 就完全不碰。
+5. qBittorrent 底栏兜底 `var(--color-background,#ffffff)` → `transparent`（深色主题下原本会凭空画出一条白底栏）。
+
+### 新增埋点（`fnos:media-log` → diag 日志）
+- `theme.apply`：写入后的 colorScheme / body 主题属性 / mqDark（原先只有 `mq-patched`，看不出"到底改了什么"）
+- `theme.skip`：第三方页面被跳过 + html/body 计算底色、页面原 colorScheme、mqDark 真值
+- `shell.bg.write`：本次分支（shell/settings/app/xapp）、写入值、是否第三方、html/body 实际底色
+- `titlebar.xapp-bg`：补底色的值与来源（`from:'shell-const'`）
+
+### 验证
+- 暗模式：与旧版一致（Docker 应用仍是页面自己的暗色）。
+- 亮模式：Docker 应用恢复页面自身浅色，不再出现 `#05060a`；标题栏/圆角/缩放/内嵌窗几何不变。
+
 ## v4.0.24
 
 > 用户工单（含录屏）：程序内打开内嵌窗应用（Docker 等），点 ✕ 关不掉，点下去窗口会"躲避"一下。

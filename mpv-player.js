@@ -754,9 +754,18 @@ class MpvPlayer extends EventEmitter {
 
     // 网络健壮性（直播长时间运行易遇运营商断流/抖动，放宽超时）
     args.push('--network-timeout=120');
-    args.push('--user-agent=fnOS-Desktop/MPV');
+    // v4.0.27（用户工单：MPV 加载不上）——不再无条件塞 --user-agent：
+    // 它会在 mpv 内部额外追加一条 User-Agent 到 http-header-fields，而下面 headers 里本来
+    // 就有 getNasUA() 的浏览器 UA，请求里于是出现两条 User-Agent。部分反代/源站对重复 UA
+    // 直接回 400/403（本单日志里 media/range 的 400 就属于"服务端直接拒绝"）。
+    // 规则：headers 里带 UA 就只用它；没有才用内置标识。
+    const __hasUa = !!(opts.headers && (opts.headers['User-Agent'] || opts.headers['user-agent']));
+    if (!__hasUa) args.push('--user-agent=fnOS-Desktop/MPV');
 
     // HTTP 鉴权头（Cookie / Authorization / Referer / UA）
+    // 注意：CLI 的 --http-header-fields 是"逗号分隔的字符串列表"，值里的逗号会被当成条目分隔符，
+    // 所以这里只能把逗号换成空格（会破坏 Cookie/UA 里的合法逗号）。真正的正确值在 loadfile()
+    // 里用 set_property 数组形式重下（见下方 options/http-header-fields），首播前生效。
     if (opts.headers && Object.keys(opts.headers).length) {
       const fields = [];
       for (const [k, v] of Object.entries(opts.headers)) {
@@ -808,6 +817,14 @@ class MpvPlayer extends EventEmitter {
         s.split(/\r?\n/).forEach((line) => {
           const t = line.trim();
           if (!t) return;
+          // v4.0.27（用户工单：MPV 加载不上）——留一份"这次流被服务端拒成多少"。
+          // mpv/ffmpeg 只在日志里说 "HTTP error 400 Bad Request"，end-file 只给 reason=error，
+          // 主进程/网页完全不知道是鉴权、签名失效还是该媒体没转码。记住它用于：
+          //   1) 判定终态（同 URL 4xx 重试 8 次纯属空转，还让用户干等）
+          //   2) 把状态码回传页面/日志，一眼看出问题在哪一端
+          const mSt = t.match(/HTTP\/[0-9.]+\s+(\d{3})/) || t.match(/HTTP error\s+(\d{3})/i)
+            || t.match(/\b(\d{3})\s+(?:Bad Request|Forbidden|Unauthorized|Not Found|Gone|Method Not Allowed)\b/i);
+          if (mSt) { this._lastHttpStatus = Number(mSt[1]) || 0; this._httpFailAt = Date.now(); }
           if (/error|fail|cannot|invalid|forbidden|unauthor|denied|401|403|410|http\/[0-9.]+\s*[345]\d\d|HTTP\/[0-9.]+\s*[345]\d\d|redirect|end of file|end-file|connection|timed?\s*out|reset|refused/i.test(t)) {
             this.emit('log', t.slice(0, 500));
           }
@@ -1091,6 +1108,21 @@ class MpvPlayer extends EventEmitter {
       // 点播(isLive=false)：优先"重新签名取新鲜地址"（飞牛 media/range 是时效签名链接，
       //   播约 10 分钟后续传会 4xx，复用旧地址必失败）；取不到新鲜地址才回放旧地址兜底。
       // 直播：重连同一 URL（m3u8/分片滚动天然刷新）。
+      // v4.0.27（用户工单：MPV 加载不上，页面一直"加载中"）——
+      // 同一个 URL 被服务端回 4xx 时，重试是纯空转：媒体地址/签名/鉴权都不会因为等 400ms 而变好，
+      // 旧逻辑却要重试 8 次（每次先向网页要新鲜地址，网页也拿不到），用户看到的就是长时间加载。
+      // 4xx 一律判定终态：不重试、掐掉起播看护，发 'fatal' 让主进程把状态码回传网页。
+      const __st27 = Number(this._lastHttpStatus) || 0;
+      const __terminal27 = reason === 'error' && __st27 >= 400 && __st27 < 500
+        && (Date.now() - Number(this._httpFailAt || 0)) < 25000;
+      if (__terminal27) {
+        this._fatalStop = true;
+        try { if (this._startupTimer) { clearTimeout(this._startupTimer); this._startupTimer = null; } } catch (_) {}
+        this.emit('log', 'stream error HTTP ' + __st27 + ' -> terminal (no retry)');
+        this.emit('fatal', { httpStatus: __st27 });
+        this.emit('end-file', reason);
+        return;
+      }
       const needReload = (reason === 'error') || (this._isLive && (reason === 'eof' || reason === 'redirect'));
       // 直播断流恢复机会更多：运营商 m3u8 分片滚动/偶发 404，需持续重连；上限 30 次。
       const maxTries = this._isLive ? 30 : 8;
@@ -1137,6 +1169,8 @@ class MpvPlayer extends EventEmitter {
         this._startupTimer = null;
         try {
           if (this._dead || this._quitByUser || this._manualStop || this._refreshing) return;
+          // v4.0.27：已被判定终态（同 URL 4xx）→ 不再重试，交给页面报错
+          if (this._fatalStop) return;
           // 已经成功加载（file-loaded 触发后会置 _fileLoadedAt）或已经在播放有位置推进：健康
           if (this._fileLoadedAt) return;
           // 直播允许更多重试（m3u8 偶发首包失败）；点播 3 次
@@ -1285,6 +1319,8 @@ class MpvPlayer extends EventEmitter {
   async _reloadStream() {
     try {
       if (this._quitByUser || this._manualStop) return;
+      // v4.0.27：已判定终态（同一地址 4xx）时，卡死看护/提前 EOF 都不许再拉流重试
+      if (this._fatalStop) return;
       // 恢复冷却：提前 EOF 事件与卡死看护可能在同一时段先后触发，8s 内只恢复一次。
       const now = Date.now();
       if (now - (this._lastRecoverAt || 0) < 8000) return;
@@ -1368,6 +1404,10 @@ class MpvPlayer extends EventEmitter {
     this._scheduleCorners(); // 点播/直播形态确定后，重设窗口圆角（直播恢复直角）
     this._reloadTries = 0;
     this._refreshing = false;
+    // v4.0.27：新的播放请求重置终态标记（否则一次 4xx 之后所有后续切集都不再自动恢复）
+    this._fatalStop = false;
+    this._lastHttpStatus = 0;
+    this._httpFailAt = 0;
     const recover = !!(opts && opts.recover);
     if (recover) {
       // 恢复场景：若显式带了 resumePos 就采用，否则沿用 _reloadStream 已记录的断点；
@@ -1397,15 +1437,20 @@ class MpvPlayer extends EventEmitter {
     // 首帧前隐藏窗口：切片/切台瞬间露出网页自身加载界面，避免黑窗/待机画面（观感更快）
     try { this._armFirstFrameHide(); } catch (_) {}
     // 媒体级 http 头：通过 per-file option 传入（loadfile 的 options 仅支持部分，故用 property 兜底）
+    // v4.0.27（用户工单：MPV 加载不上）——旧版这里也做 `,`→空格 替换再 join 成字符串，
+    // 字符串形式的 options/http-header-fields 仍按逗号切分，等于把 Cookie/UA 里的逗号永久篡改
+    // （UA 变成 "Chrome/120.0.0.0 Safari/537.36" 这种被切断的残值，签名/风控类源站会回 400）。
+    // 数组形式是 mpv 的 string-list 属性，元素内的逗号不会被切分。
+    // 同时去掉单独的 set_property user-agent：UA 已在数组里，再设一次会变成两条 UA。
     if (headers && Object.keys(headers).length) {
       const fields = [];
       for (const [k, v] of Object.entries(headers)) {
-        if (v) fields.push(`${k.replace(/^[\s]+|[\s]+$/g, '')}: ${String(v).replace(/,/g, ' ')}`);
+        if (v) fields.push(`${k.replace(/^[\s]+|[\s]+$/g, '')}: ${String(v)}`);
       }
       if (fields.length) {
-        try { await this.command(['set_property', 'options/http-header-fields', fields.join(',')]); } catch (_) {}
+        try { await this.command(['set_property', 'options/http-header-fields', fields]); } catch (_) {}
         const ua = headers['User-Agent'] || headers['user-agent'];
-        if (ua) { try { await this.command(['set_property', 'user-agent', ua]); } catch (_) {} }
+        if (!ua) { try { await this.command(['set_property', 'user-agent', 'fnOS-Desktop/MPV']); } catch (_) {} }
       }
     }
     // 每个媒体加载前先清空上一部的缓存片名，避免"上一部 VOD 片名串到本次直播/新窗口"

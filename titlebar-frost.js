@@ -16,15 +16,25 @@
  *     等于每半秒把事件循环堵一次，setBounds/IPC 全排队，用户看到的就是「拖动一卡一卡、
  *     菜单点不出来」。现在只在「手停下来 220ms 后 / 切换磨砂 / 松手 / 15s 静止兜底」抓一张。
  *  4. 只在磨砂模式且窗口可见时工作，纯色模式零开销。
+ *  5. v4.0.26：每次采样都会让窗口在录屏/远程画面里短暂消失（见 ACTIVE_MS 段注释），
+ *     所以采样必须"越少越好"——聚焦不再触发采样、未聚焦窗口不采样、静止兜底拉到 5min，
+ *     并补 `frost.capture {trigger, ms, protectedMs}` 埋点，能直接量化占空比。
  */
 
 const { desktopCapturer, screen } = require('electron');
 
 const THUMB_W = 352;        // 缩略图宽度（越小越糊、传输越省；v3.0.82 从 480 降下来减回读量）
 const JPEG_Q = 58;
-const ACTIVE_MS = 480;      // 移动结束后紧接着的那次补抓之后，稍等再抓一张（应对连续轻推）
-const IDLE_MS = 45000;      // 静止兜底：45s 一次（原 6s → 15s → 45s，降低静止期的抓屏开销）
-const MIN_GAP = 90;         // 两次抓取的最小间隔，防抖
+// v4.0.26（用户工单：QQ 录屏 / UU 远程时窗口"消失又出现"不断循环，RDP 里轻微闪烁）——
+// 根因：每次采样都要在 getSources 前后开/关一次 setContentProtection(true)
+// （= Win32 WDA_EXCLUDEFROMCAPTURE，"从所有采集管线里排除"），这段时间窗口在录屏/远程画面里
+// 就是消失的；而采样被 focus/move/show 高频触发、活跃期每 480ms 补抓一张，
+// 采集端看到的就成了约 1Hz 的"消失↔出现"循环。
+// 处置：采样频率降两个数量级（活跃期 2s、静止兜底 5min、最小间隔 1s），聚焦不再触发采样，
+// 未聚焦窗口不采样。常态零采样，只有用户移动/缩放结束后抓 1 张。
+const ACTIVE_MS = 2000;      // 移动结束后紧接着的那次补抓之后，稍等再抓一张（应对连续轻推）
+const IDLE_MS = 300000;      // 静止兜底：5min 一次（壁纸变化 5 分钟刷新一次完全够用）
+const MIN_GAP = 1000;        // 两次抓取的最小间隔，防抖
 const KICK_DEBOUNCE = 220;  // 窗口动过之后多久才允许抓（拖动过程中不抓）
 
 const entryOf = new Map();  // win.id -> entry
@@ -44,7 +54,7 @@ function displayOf(win) {
   }
 }
 
-async function capture(entry) {
+async function capture(entry, trigger) {
   const win = entry.win;
   if (!win || win.isDestroyed()) return null;
   if (!entry.enabled) return null;
@@ -67,8 +77,9 @@ async function capture(entry) {
   prevCp = !!entry.cpPrev;
   // 只给主窗设即可：实测 WDA_EXCLUDEFROMCAPTURE 按窗口树生效，webview 的 OOPIF guest（独立 HWND）
   // 会随主窗一起从截图里消失，不会出现"自己糊自己"
+  const __t0 = Date.now();     // v4.0.26：整次采样耗时
   let opened = false;
-  try { win.setContentProtection(true); opened = true; } catch (_) {}
+  try { win.setContentProtection(true); opened = true; entry.__protAt = Date.now(); } catch (_) {}
   let shot = null;
   try {
     const sources = await desktopCapturer.getSources({
@@ -101,9 +112,23 @@ async function capture(entry) {
   } catch (err) {
     logInfo('frost.capture-fail', { err: String((err && err.message) || err).slice(0, 160) });
   } finally {
+    const __protMs = opened ? Math.max(0, Date.now() - (entry.__protAt || __t0)) : 0;
     if (opened) {
       try { win.setContentProtection(prevCp); } catch (_) {}
     }
+    // v4.0.26：每次采样一行日志——`protectedMs` 就是窗口在录屏/远程画面里"消失"的时长。
+    // 以前只有 capture-fail / suspend，出问题只能靠事件时序反推"这个循环是谁在踢"。
+    let __focused = null;
+    try { __focused = win.isFocused(); } catch (_) {}
+    logInfo('frost.capture', {
+      win: win.id,
+      trigger: String(trigger || 'timer'),
+      ms: Date.now() - __t0,
+      protectedMs: __protMs,
+      thumb: tw + 'x' + th,
+      ok: !!shot,
+      focused: __focused,
+    });
   }
   return shot;
 }
@@ -114,6 +139,7 @@ function send(entry, shot) {
   // v3.0.80：拖动期间整段挂起采样，抓回来的图对应的是旧窗口位置，直接丢掉
   if (entry.suspend) return;
   entry.lastAt = Date.now();
+  entry.shotAt = entry.lastAt;   // v4.0.26：是否已经有底图（未聚焦延后采样的例外判断）
   try {
     const wc = win.webContents;
     if (wc && !wc.isDestroyed()) wc.send('titlebar-frost-bg', shot);
@@ -148,14 +174,22 @@ function runOnce(entry) {
   if (!entry.win || entry.win.isDestroyed()) return;
   // 拖动中：不抓，稍后再看一眼（松手会主动 schedule(0) 补抓）
   if (entry.suspend) { schedule(entry, 1200); return; }
+  // v4.0.26：未聚焦窗口不采样。聚焦/静止都不会改变窗口背后的画面，而每采一次就要把自己
+  // 从采集管线里摘掉 ~300ms（录屏/远程端看到的就是"消失"）。
+  // 例外：这个窗口还一张图都没抓过（否则磨砂层是空的）——首次仍抓，之后一律延后。
+  let __focused = true;
+  try { __focused = !!entry.win.isFocused(); } catch (_) { __focused = true; }
+  if (!__focused && entry.shotAt) { entry.trigger = 'defer-unfocused'; schedule(entry, IDLE_MS); return; }
   if (entry.busy) { schedule(entry, 200); return; }
   const gap = Date.now() - (entry.lastAt || 0);
   if (gap < MIN_GAP) { schedule(entry, MIN_GAP - gap); return; }
 
   cpReset(entry);
   entry.busy = true;
+  const __trigger = String(entry.trigger || 'timer');
+  entry.trigger = '';
   Promise.resolve()
-    .then(() => capture(entry))
+    .then(() => capture(entry, __trigger))
     .then((shot) => { if (shot) send(entry, shot); })
     .catch(() => {})
     .then(() => {
@@ -166,9 +200,10 @@ function runOnce(entry) {
 }
 
 /** 标记窗口「刚动过」：debounce 到动作停止后再抓一张（拖动中零抓屏） */
-function kick(win, ms) {
+function kick(win, ms, trigger) {
   const entry = entryOf.get(win && win.id);
   if (!entry || !entry.enabled) return;
+  entry.trigger = String(trigger || 'kick');   // v4.0.26：埋点用（谁在踢采样）
   entry.active = true;
   if (entry.activeTimer) { try { clearTimeout(entry.activeTimer); } catch (_) {} }
   entry.activeTimer = setTimeout(() => {
@@ -183,6 +218,7 @@ function refresh(win) {
   const entry = entryOf.get(win && win.id);
   if (!entry || !entry.enabled) return;
   entry.lastAt = 0;
+  entry.trigger = 'refresh';
   entry.active = true;
   schedule(entry, 0);
 }
@@ -192,17 +228,22 @@ function setEnabled(win, on) {
   if (!win || win.isDestroyed()) return;
   let entry = entryOf.get(win.id);
   if (!entry) {
-    entry = { win, enabled: false, busy: false, lastAt: 0, active: true, timer: null, activeTimer: null, suspend: false };
+    entry = { win, enabled: false, busy: false, lastAt: 0, shotAt: 0, trigger: '', active: true, timer: null, activeTimer: null, suspend: false };
     entryOf.set(win.id, entry);
   }
   const want = !!on;
   if (entry.enabled === want) {
-    if (want) { entry.lastAt = 0; entry.active = true; schedule(entry, 0); }
+    // v4.0.26：状态没变就不要补抓。设置页拖动不透明度/模糊滑块时每 tick 都会走
+    // settings:preview-titlebar → __syncFrostAll → setEnabled(win, true)，旧逻辑每次都
+    // lastAt=0 + 立即 schedule(0)，等于拖动期间对每个窗口持续"摘出采集管线再放回"，
+    // 录屏/远程画面里就是一阵密集闪烁。仅当这张窗口还没有底图时才补一次。
+    if (want && !entry.shotAt) { entry.trigger = 'enable'; entry.active = true; schedule(entry, 0); }
     return;
   }
   entry.enabled = want;
   if (want) {
     entry.lastAt = 0;
+    entry.trigger = 'enable';
     entry.active = true;
     schedule(entry, 0);
     logInfo('frost.enable', { win: win.id });

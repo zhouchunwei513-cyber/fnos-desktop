@@ -2231,7 +2231,7 @@ function scheduleFlushProgress() {
   if (__progressFlushTimer.unref) __progressFlushTimer.unref();
 }
 
-function progressPut(key, pos, dur, title) {
+function progressPut(key, pos, dur, title, extra) {
   try {
     if (!key || !(pos > 0)) return;
     const db = loadProgress();
@@ -2242,6 +2242,10 @@ function progressPut(key, pos, dur, title) {
       t: String(title || prev.t || '').slice(0, 120),
       at: Date.now()
     };
+    // v4.0.27：顺手记下"播放这一集时网页停在哪条路径"（形如 /v/video/<guid>?season=2）。
+    // 影视入口要"回到上次那部片子"时，用它比用 guid 拼地址更准（详情页/选集参数都在里面）。
+    if (extra && extra.u) db[key].u = String(extra.u).slice(0, 220);
+    else if (prev.u) db[key].u = prev.u;
     const keys = Object.keys(db);
     if (keys.length > PLAY_PROGRESS_MAX) {
       keys.sort((a, b) => (db[a].at || 0) - (db[b].at || 0));
@@ -2312,6 +2316,33 @@ function progressGet(key) {
   } catch (_) { return null; }
 }
 
+// v4.0.27（用户工单：「记住播放进度」开关管不住"打开影视就在播上一部"）——
+// 影视入口要不要直接落到上次那部片子，由这个开关决定。判断依据是本地进度库里的
+// 最近一条「剧集 guid」记录：>30s（与续播阈值一致）、未看到 95%（看完的不算）、30 天内。
+// 这里只负责"挑出上次那部"，真正的续播位置仍由页面自己的观看记录 + resumePosFor 决定。
+function lastPlayForTrimMedia(days) {
+  try {
+    if (getMpvSettings().resume === false) return null;
+    const db = loadProgress();
+    const cutoff = Date.now() - (Number(days) || 30) * 86400000;
+    let best = null;
+    Object.keys(db || {}).forEach((k) => {
+      if (k.indexOf('g:') !== 0) return;
+      const r = db[k];
+      if (!r) return;
+      const p = Number(r.p) || 0;
+      const d = Number(r.d) || 0;
+      const at = Number(r.at) || 0;
+      if (p <= 30) return;
+      if (d > 0 && p > d * 0.95) return;
+      if (at && at < cutoff) return;
+      // u = 播放时的网页路径（/v/video/<guid>?…），老记录里没有就回落到 guid 拼地址
+      if (!best || at > best.at) best = { guid: k.slice(2), pos: p, dur: d, at: at, title: String(r.t || ''), path: String(r.u || '') };
+    });
+    return best;
+  } catch (_) { return null; }
+}
+
 // v2.23.0：把本机进度上报到飞牛服务端观看记录（POST /v/api/v1/play/record）。
 // 真正的 HTTP 调用落在渲染进程（preload 内有 Authx 签名 + 同源 Cookie），主进程只做节流与转发。
 // 与网页播放器一致的语义：ts=秒；ts=0 表示清掉该条的"继续观看"。
@@ -2355,6 +2386,18 @@ function hookProgressMemory(surf, key, title, remote) {
     if (surf.__pgHooked) return;
     surf.__pgHooked = true;
     const p = surf.player;
+    // v4.0.27：记一条"播放这集时网页停在哪"（只有 /v/video/* 才记），影视入口"回上次影片"用它，
+    // 比拿 guid 自己拼地址更准（详情页、季/集参数都在里面）。
+    const __pgPagePath27 = () => {
+      try {
+        const wc = surf.__pgRemote && surf.__pgRemote.wc;
+        if (!wc || (wc.isDestroyed && wc.isDestroyed()) || typeof wc.getURL !== 'function') return '';
+        const raw = String(wc.getURL() || '');
+        if (!/\/v\/video\//i.test(raw)) return '';
+        const pu = new URL(raw);
+        return String((pu.pathname || '') + (pu.search || '')).slice(0, 200);
+      } catch (_) { return ''; }
+    };
     p.on('time', (val) => {
       try {
         const k = surf.__pgKey;
@@ -2366,7 +2409,7 @@ function hookProgressMemory(surf, key, title, remote) {
         if (dur > 0 && val > dur * 0.95) { progressDel(k); surf.__pgLastAt = now; return; }
         if (!(val > 30)) return;   // 前 30s 不记，避免"点开就退"污染进度
         surf.__pgLastAt = now;
-        progressPut(k, val, dur, surf.__pgTitle);
+        progressPut(k, val, dur, surf.__pgTitle, { u: __pgPagePath27() });
         try { pushWatchRecord(surf, val, dur); } catch (_) {}
       } catch (_) {}
     });
@@ -2376,7 +2419,7 @@ function hookProgressMemory(surf, key, title, remote) {
         const val = (typeof p._timePosVal === 'number') ? p._timePosVal : 0;
         const dur = (typeof p._duration === 'number') ? p._duration : 0;
         if (val > 30) {
-          progressPut(surf.__pgKey, val, dur, surf.__pgTitle);
+          progressPut(surf.__pgKey, val, dur, surf.__pgTitle, { u: __pgPagePath27() });
           try { pushWatchRecord(surf, val, dur); } catch (_) {}
         }
       } catch (_) {}
@@ -6949,6 +6992,13 @@ function __entryCacheSave(key, url, reqUrl) {
       try { fnosLog('warn', 'entry', 'cache.save.skip', { key: String(key).slice(0, 60), why: 'deep-link', url: u.slice(0, 120) }); } catch (_) {}
       return;
     }
+    // v4.0.27：影视播放页永远不是「应用入口」。开启「记住播放进度」时，v4.0.27 会主动把影视
+    // 入口打开到 /v/video/<guid>，如果这一步被学进缓存，下次启动就会被深链顶掉 —— 开关一关
+    // 又"回到上次那部片子"。所以这里按路径直接拒绝入库。
+    if (/\/v\/video\//i.test(u)) {
+      try { fnosLog('warn', 'entry', 'cache.save.skip', { key: String(key).slice(0, 60), why: 'trim-deep-link', url: u.slice(0, 120) }); } catch (_) {}
+      return;
+    }
     if (reqUrl) {
       const __ok405 = __entryCacheApplicable(key, u, reqUrl);
       if (!__ok405.ok) {
@@ -7274,6 +7324,57 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     }
   } catch (_) {}
 
+  // ===== v4.0.27：影视入口单独决策（「记住播放进度」开关必须能管住"打开就进上次那部片"）=====
+  // 用户原话：开着这个开关时，关掉飞牛影视再开，要自动回到上次看的片子（进度同步）；
+  // 关掉开关时，再开必须是影视主页 —— 而现在这个开关对"打开就在播上一部"完全不起作用。
+  // 根因两条：① 影视前端自己会按服务端「继续观看」直接跳 /v/video/<guid>；
+  //          ② 入口学习缓存把「上次停留在 /v/video/<guid>」记成该应用的入口，于是每次启动都命中深链。
+  // 这里在入口缓存之前把关（只针对"点影视图标"这种裸入口 /v，用户主动点某部片子的深链不动）：
+  //   resume 开 → 有可用进度就开 /v/video/<guid>（页面自己按观看记录续播）；
+  //   resume 关 → 一律开 /v 主页，并且不再看入口缓存。
+  let __trim27 = null;
+  try {
+    const __u27 = (() => { try { return new URL(String(url || '')); } catch (_) { return null; } })();
+    const __p27 = __u27 ? String(__u27.pathname || '/') : '';
+    // 影视的入口形态有三种：裸路径 /v、FPK/appview 的 anchor=trim.media、带 appId 的 opts。
+    // 只认这几种"点图标进来"的形态；/v/video/<guid> 这种深链（用户主动点某部片子或外部跳转）不动。
+    const __byAnchor27 = /(?:anchor=|[|:])trim\.media\b/i.test(String(url || ''))
+      || String((opts && (opts.appId || opts.name)) || '') === 'trim.media';
+    const __bare27 = __p27 === '/v' || __p27 === '/v/' || __p27 === '/v/home';
+    if (__u27 && /^https?:$/i.test(__u27.protocol) && (__bare27 || __byAnchor27)) {
+      const __resumeOn27 = getMpvSettings().resume !== false;
+      const __base27 = __u27.origin;
+      if (!__resumeOn27) {
+        __trim27 = { mode: 'home', url: __base27 + '/v' };
+      } else {
+        const __lp27 = lastPlayForTrimMedia();
+        // 优先用记录里的真实页面路径（含季/集参数），老记录没有才用 guid 拼
+        const __lpUrl27 = __lp27
+          ? ((__lp27.path && /^\/v\/video\//i.test(__lp27.path))
+            ? __base27 + __lp27.path
+            : __base27 + '/v/video/' + encodeURIComponent(__lp27.guid))
+          : '';
+        __trim27 = __lp27
+          ? { mode: 'resume', guid: String(__lp27.guid), pos: Number(__lp27.pos) || 0, title: String(__lp27.title || ''), url: __lpUrl27 }
+          : { mode: 'home', why: 'no-progress', url: __base27 + '/v' };
+      }
+      url = __trim27.url;
+      // 清掉历史上被写成深链的影视入口缓存（否则开关关闭时仍可能被命中带进播放页）
+      try {
+        const __k27 = 'path:' + String(__u27.host) + '|/v';
+        const __c27 = __entryCacheGet(__k27);
+        if (__c27 && __c27.url && /\/v\/video\//i.test(String(__c27.url))) __entryCacheDrop(__k27, 'trim-deep-link');
+      } catch (_) {}
+      try {
+        dlog && dlog('info', 'appwin.trim-media.entry', {
+          mode: __trim27.mode, resumeOn: __resumeOn27, guid: String(__trim27.guid || '').slice(0, 40),
+          pos: __trim27.pos || 0, title: String(__trim27.title || '').slice(0, 40), why: __trim27.why || '',
+          app: String((opts && (opts.appId || opts.name)) || ''),
+        });
+      } catch (_) {}
+    }
+  } catch (_) {}
+
   // ===== v3.0.29：入口学习缓存命中则直接用它作首个 URL =====
   // 没命中时保持原逻辑（真入口注册表 → FPK 真入口 → appview → 猜测候选）。
   let __entryKey29 = '';
@@ -7282,7 +7383,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   try {
     __entryKey29 = __entryKeyOf(url, opts);
     const __hit29 = __entryCacheGet(__entryKey29);
-    if (__hit29 && __hit29.url) {
+    // v4.0.27：旧版会把「上次停在 /v/video/<guid>」学成影视应用的入口，于是每次启动都被深链顶掉。
+    // 命中的地址只要是影视播放页就立刻作废该条缓存（不再第二次命中）。
+    if (__hit29 && __hit29.url && /\/v\/video\//i.test(String(__hit29.url))) {
+      __entryCacheDrop(__entryKey29, 'trim-deep-link');
+    }
+    // v4.0.27：影视入口已按「记住播放进度」开关算好目标地址 → 缓存不得再改写它。
+    if (__trim27) {
+      dlog && dlog('info', 'appwin.entry-cache.bypass', {
+        key: String(__entryKey29).slice(0, 60), mode: __trim27.mode, target: String(url).slice(0, 120),
+      });
+    }
+    if (__hit29 && __hit29.url && !__trim27) {
       const __fix29 = __entryCacheHostFix(__hit29.url);
       // v4.0.5：命中也要过同一性闸门——深链请求（直播间 B/压缩页）不允许被缓存里的
       // 旧页面顶掉；path: 键还要求端口/路径/查询/哈希一致（跨端口=别的应用）。
@@ -9097,8 +9209,30 @@ function __armBlackScan(win, tag) {
             }
             if (n > 10) { const mean = sum / n; const varr = sum2 / n - mean * mean; black = mean < 8 && varr < 25; white = mean > 245 && varr < 25; }
           }
-          try { require('./logger.js').log('info', 'window', 'black-scan.check', { params: { tag: String(tag || ''), ms: __ms, black, white, empty: !bmp, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
-          if ((black || white) && !win.isDestroyed() && win.__fnBlackHeals < 3) { // v2.15.36 增加白屏检测；v2.8.0 r28（合并到 5 档快检）单窗自愈上限 2→3
+          // v4.0.26：空图直接跳过，绝不按黑屏处理——RDP/远程会话里 Chromium 常回落软件渲染，
+          // capturePage 拿到空帧的概率明显变高，按黑屏处理就会"判黑→reload→再判黑"连着闪几下。
+          if (!bmp || bmp.length <= 100) {
+            try { require('./logger.js').log('info', 'window', 'black-scan.skip', { params: { tag: String(tag || ''), ms: __ms, reason: 'empty' } }, __RUN_MODE); } catch (_) {}
+            return;
+          }
+          // v4.0.26（用户工单：远程/录屏里窗口"跳一下"、偶发连续闪）——
+          // 旧逻辑单帧即判：任何大面积浅色的正常页面（空白文档、浅色登录页）都会被判成"白屏"，
+          // 然后 bounds 微抖 + reload，窗口肉眼可见地跳一下并重载。
+          // 现在黑/白判定必须【连续 2 次一致】（间隔 ≥1.5s，对应 1.2s→3s 这两档）才动手。
+          const __kind = black ? 'black' : (white ? 'white' : '');
+          const __prevSus = win.__fnBlackSuspect || null;
+          const __nowT = Date.now();
+          let __confirmed = false;
+          if (!__kind) {
+            win.__fnBlackSuspect = null;
+          } else if (__prevSus && __prevSus.kind === __kind && (__nowT - Number(__prevSus.at || 0)) >= 1500) {
+            __confirmed = true;
+            win.__fnBlackSuspect = null;   // 确认后清空，避免同一轮重复触发
+          } else {
+            win.__fnBlackSuspect = { kind: __kind, at: __nowT };
+          }
+          try { require('./logger.js').log('info', 'window', 'black-scan.check', { params: { tag: String(tag || ''), ms: __ms, black, white, empty: !bmp, consecutive: __confirmed, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
+          if (__confirmed && !win.isDestroyed() && win.__fnBlackHeals < 3) { // v2.15.36 增加白屏检测；v2.8.0 r28（合并到 5 档快检）单窗自愈上限 2→3
             win.__fnBlackHeals++;
             try {
               const b = win.getBounds();
@@ -9283,42 +9417,141 @@ function __probeTcp53(host, port, timeoutMs, cb) {
     sock.once('error', () => fin(false));
   } catch (_) { fin(false); }
 }
-let __vpnWin53 = 0;      // 本轮等待窗口起点
+let __vpnWin53 = 0;      // 本轮等待窗口起点（只用来算 elapsed，不再当上限）
 let __vpnBusy53 = false; // 是否已有探测循环在跑
-let __vpnRounds53 = 0;   // 连续等待轮次（防"一直等下去"）
+let __vpnRounds53 = 0;   // 探测轮次（只做日志）
+let __vpnBusy53Key = ''; // 当前等待的 host:port，换目标要重新武装
+let __vpnPendingHref53 = ''; // 等待成功后要打开的地址（lastConnectHref 被清空时的兜底）
+let __vpnTickAt53 = 0;
+
+// v4.0.25：路由类失败码 —— 链路可能正在建立，进"等待"通道
+const __VPN_WAIT_CODES53 = [-118, -21, -102, -106, -137, -109, -110, -111, -104, -105];
+// v4.0.25：协议类失败码 —— 等没用，要纠正 scheme（-107 = 用 https 打了明文端口）
+const __SCHEME_WRONG53 = [-107];
+
+function __resetVpn53() {
+  __vpnWin53 = 0; __vpnRounds53 = 0; __vpnBusy53 = false; __vpnBusy53Key = ''; __vpnTickAt53 = 0;
+  // v4.0.25：目标地址也一起清掉，避免等待成功后仍留着上一个账号/NAS 的 href 被下次误用
+  // （调用方需要在 reset 之后重新赋值，如账号切换分支的 __vpnPendingHref53 = parsed.href）
+  __vpnPendingHref53 = '';
+}
+
+// 枚举本机 100.64/10（CGNAT / Tailscale）网卡：用来区分「Tailscale 没跑」和「跑了但路由未就绪」
+function __vpnIfaces53() {
+  const out = [];
+  try {
+    const ifs = require('os').networkInterfaces() || {};
+    for (const name of Object.keys(ifs)) {
+      for (const ni of (ifs[name] || [])) {
+        if (!ni || ni.internal) continue;
+        if (String(ni.family) !== 'IPv4' && ni.family !== 4) continue;
+        if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(String(ni.address || ''))) {
+          out.push({ name: name, address: ni.address });
+        }
+      }
+    }
+  } catch (_) {}
+  return out;
+}
+
+// -107（用 https 打明文端口）：一次性纠正为 http，并顺手修掉历史/账号里那条错记录
+function __fixHistoryScheme53(badUrl, goodUrl) {
+  try {
+    const b = new URL(String(badUrl));
+    const hostPort = String(b.hostname).toLowerCase() + ':' + String(b.port || '');
+    let fixed = 0;
+    try {
+      const accounts = getAccounts();
+      let touched = false;
+      accounts.forEach((a) => {
+        try {
+          const oh = a && (a.origin || a.href);
+          if (!oh || !/^https:/i.test(oh)) return;
+          const ou = new URL(oh);
+          if (String(ou.hostname).toLowerCase() + ':' + String(ou.port || '') !== hostPort) return;
+          const nh = 'http:' + String(oh).slice('https:'.length);
+          a.origin = /^https:/i.test(String(a.origin || '')) ? 'http:' + String(a.origin).slice('https:'.length) : a.origin;
+          a.href = nh;
+          if (/^persist:nas-https_/i.test(String(a.partition || ''))) a.partition = String(a.partition).replace(/-https_/i, '-http_');
+          touched = true; fixed++;
+        } catch (_) {}
+      });
+      if (touched) saveAccounts(accounts);
+    } catch (_) {}
+    try {
+      const h = Array.isArray(settings && settings.history) ? settings.history : [];
+      let touched = false;
+      h.forEach((it) => {
+        try {
+          const v = it && (it.href || it.url || it.origin);
+          if (!v || !/^https:/i.test(v)) return;
+          const u2 = new URL(v);
+          if (String(u2.hostname).toLowerCase() + ':' + String(u2.port || '') !== hostPort) return;
+          const nv = 'http:' + String(v).slice('https:'.length);
+          if (it.href) it.href = nv; if (it.url) it.url = nv; if (it.origin) it.origin = nv;
+          touched = true; fixed++;
+        } catch (_) {}
+      });
+      if (touched) saveSettings({ history: h });
+    } catch (_) {}
+    fnosLog('warn', 'network', 'history.scheme.fixed', { bad: String(badUrl).slice(0, 140), good: String(goodUrl).slice(0, 140), count: fixed });
+  } catch (_) {}
+}
+
+function __trySchemeFallback53(badUrl) {
+  try {
+    const u = new URL(String(badUrl || ''));
+    if (String(u.protocol) !== 'https:') return false;
+    if (u.port === '443' || u.port === '8443' || !u.port) return false;  // 真 TLS 端口不动
+    const httpUrl = 'http:' + String(badUrl).slice('https:'.length);
+    fnosLog('warn', 'network', 'scheme.fallback', { from: String(badUrl).slice(0, 140), to: httpUrl.slice(0, 140), why: '-107 on plain port' });
+    __vpnPendingHref53 = httpUrl;
+    try { __fixHistoryScheme53(badUrl, httpUrl); } catch (_) {}
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(httpUrl, { userAgent: getNasUA() }).catch(() => {});
+    } catch (_) {}
+    return true;
+  } catch (_) { return false; }
+}
+
 function __waitVpnPath53(rawUrl) {
   try {
     const u = new URL(String(rawUrl || ''));
     const host = u.hostname;
     const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80)) || 80;
+    const key = host + ':' + port;
     const now = Date.now();
+    // 换了目标（另一台 NAS / 另一个端口）→ 重新开窗，不继承别人的剩余时间
+    if (__vpnBusy53 && __vpnBusy53Key && __vpnBusy53Key !== key) __resetVpn53();
     if (!__vpnWin53) __vpnWin53 = now;
-    if (now - __vpnWin53 > 90000 || __vpnRounds53 >= 2) {
-      fnosLog('error', 'network', 'vpn-wait.giveup', { host, ms: now - __vpnWin53, rounds: __vpnRounds53 });
-      __vpnWin53 = 0; __vpnRounds53 = 0;
-      return false;   // 交回原有 giveup 流程（弹框 + 回连接页）
-    }
     if (__vpnBusy53) return true;
-    __vpnBusy53 = true; __vpnRounds53++;
-    const deadline = __vpnWin53 + 90000;
-    fnosLog('info', 'network', 'vpn-wait.start', { host, port, elapsed: now - __vpnWin53, round: __vpnRounds53 });
+    __vpnBusy53 = true; __vpnBusy53Key = key; __vpnRounds53++;
+    if (!__vpnPendingHref53) __vpnPendingHref53 = String(lastConnectHref || rawUrl || '');
+    const ifs0 = __vpnIfaces53();
+    fnosLog('info', 'network', 'vpn-wait.start', { host, port, elapsed: 0, round: __vpnRounds53, ifaces: ifs0, hasCgnat: ifs0.length > 0 });
+    // v4.0.25：不再有 90 秒硬上限，也不再"等待超时就弹框 + 回连接页"。
+    // Tailscale 从开机到链路可用几秒到几分钟都正常，超时就登出等于把网络抖动当成用户登出。
     const tick = () => {
       if (!mainWindow || mainWindow.isDestroyed()) { __vpnBusy53 = false; return; }
-      if (Date.now() > deadline) {
-        __vpnBusy53 = false; __vpnWin53 = 0; __vpnRounds53 = 0;
-        fnosLog('error', 'network', 'vpn-wait.timeout', { host });
-        try { dialog.showMessageBox(mainWindow, { type: 'error', title: '连接失败', message: '虚拟网络（Tailscale / VPN）未就绪，暂时连不上该地址。请确认虚拟网卡已连接后重试。', buttons: ['确定'] }); } catch (_) {}
-        setTimeout(() => { try { showConnectPage(); } catch (_) {} }, 300);
-        return;
+      const ifs = __vpnIfaces53();
+      if (Date.now() - __vpnTickAt53 > 10000) {
+        __vpnTickAt53 = Date.now();
+        fnosLog('info', 'network', 'vpn.iface.snapshot', { host, ifaces: ifs, hasCgnat: ifs.length > 0, elapsed: Date.now() - __vpnWin53 });
       }
       __probeTcp53(host, port, 2500, (ok) => {
-        if (!ok) { setTimeout(tick, 2000); return; }
-        __vpnBusy53 = false; __vpnWin53 = 0; __vpnRounds53 = 0;
-        fnosLog('info', 'network', 'vpn-wait.ready', { host, port });
+        __vpnRounds53++;
+        fnosLog('info', 'network', 'vpn.probe.tick', { host, port, ok, elapsed: Date.now() - __vpnWin53, round: __vpnRounds53, hasCgnat: ifs.length > 0 });
+        if (!ok) {
+          // 有 100.x 网卡（Tailscale 在跑，等对端路由）5s 一探；没有则 15s 一探，永不放弃
+          setTimeout(tick, ifs.length ? 5000 : 15000);
+          return;
+        }
+        const href = String(lastConnectHref || __vpnPendingHref53 || rawUrl || '');
+        __resetVpn53();
+        fnosLog('info', 'network', 'vpn-wait.ready', { host, port, href: href.slice(0, 140) });
         try {
           if (!mainWindow || mainWindow.isDestroyed()) return;
-          const t = String(lastConnectHref || '');
-          mainWindow.loadURL(/^https?:/i.test(t) ? t : String(rawUrl), { userAgent: getNasUA() }).catch(() => {});
+          mainWindow.loadURL(/^https?:/i.test(href) ? href : String(rawUrl), { userAgent: getNasUA() }).catch(() => {});
         } catch (_) {}
       });
     };
@@ -10050,6 +10283,7 @@ function createMainWindow(partition, loadTarget) {
   try {
     let __ghostTimer = null;
     let __ghostLast = 0; // v3.0.51：拖动中的节流时间戳
+    let __ghostTok = 0;  // v4.0.26：连刷令牌（连续 move/resize 时作废旧一轮定时器）
     const __refreshAlpha = () => {
       try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor('#00030610'); } catch (_) {}
     };
@@ -10064,11 +10298,18 @@ function createMainWindow(partition, loadTarget) {
       }
       __refreshAlpha();
       if (__ghostTimer) { clearInterval(__ghostTimer); __ghostTimer = null; }
-      let n = 0;
-      __ghostTimer = setInterval(() => {
-        __refreshAlpha();
-        if (++n >= 90) { clearInterval(__ghostTimer); __ghostTimer = null; }
-      }, 8);
+      // v4.0.26（用户工单：录屏/远程画面里窗口边缘与底色轻微脉动）——旧逻辑松手后以 8ms 连刷
+      // 90 次 setBackgroundColor 触发 DWM 重新合成来赶灰带；但采集/远程管线会把每次重新合成
+      // 编码成一帧变化，录屏里就是可见的闪动。改成 5 次递增间隔（8/30/80/150/300ms），
+      // 灰带兜底效果几乎不变，编码抖动大幅减少。
+      const __ghostTokNow = (__ghostTok = (__ghostTok || 0) + 1);
+      for (const __d of [8, 30, 80, 150, 300]) {
+        const __t = setTimeout(() => {
+          if (__ghostTokNow !== __ghostTok) return;   // 已被新一轮连刷取代
+          __refreshAlpha();
+        }, __d);
+        if (__t && __t.unref) __t.unref();
+      }
     };
     mainWindow.on('resize', __ghostBurst);
     mainWindow.on('move', __ghostBurst);
@@ -10161,8 +10402,15 @@ function createMainWindow(partition, loadTarget) {
         }
         // v3.0.53：CGNAT（Tailscale / VPN）组网地址的超时 / 网络变更不消耗常规重试额度，
         // 改由 __waitVpnPath53 用 Node TCP 探测等链路就绪后自动重载（窗口 90 秒）。
-        if (__isCgnatUrl53(failUrl) && [-118, -21, -102, -106, -137].indexOf(Number(errorCode)) >= 0) {
-          if (__waitVpnPath53(failUrl)) return;
+        // v4.0.25：-109（Windows 下 Tailscale 网卡在、路由未就绪时最常见的码）此前被漏掉，
+        // 直接掉进常规 1/2/4/8s 退避 → 4 次必 giveup → 弹框 + 回连接页，用户看到的就是"登录不上去"。
+        if (__isCgnatUrl53(failUrl)) {
+          const __c25b = Number(errorCode);
+          const __dec = __SCHEME_WRONG53.indexOf(__c25b) >= 0 ? 'scheme'
+            : (__VPN_WAIT_CODES53.indexOf(__c25b) >= 0 ? 'wait' : 'retry');
+          try { fnosLog('warn', 'nav', 'nav.fail', { url: String(failUrl || '').slice(0, 140), code: __c25b, desc: String(errorDesc || '').slice(0, 60), handler: 'cgnat', decision: __dec }); } catch (_) {}
+          if (__dec === 'scheme' && __trySchemeFallback53(failUrl)) return;
+          if (__dec === 'wait' && __waitVpnPath53(failUrl)) return;
         }
         // v2.0.0：记录到网络健康监控
         const isJitter = NetworkHealth.recordFailure('mainwindow', `${errorCode} ${errorDesc}`);
@@ -10171,7 +10419,7 @@ function createMainWindow(partition, loadTarget) {
           // 连接页重新输入地址。旧逻辑直接 return 黑屏卡死（异步 did-fail-load 无回退 UI）。
           dlog && dlog('warn', 'main.fail-load.giveup', { errorCode, errorDesc, url: String(failUrl).slice(0, 120) });
           try { dialog.showMessageBox(mainWindow, { type: 'error', title: '连接失败', message: '无法连接服务器，将返回连接页，请检查地址后重新输入。', buttons: ['确定'] }); } catch (_) {}
-          setTimeout(() => { try { showConnectPage(); } catch (_) {} }, 300);
+          setTimeout(() => { try { showConnectPage({ keepTarget: __failIsTransient25(failUrl) }); } catch (_) {} }, 300);
           return;
         }
         _mainFailTries++;
@@ -10403,16 +10651,66 @@ try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_)
   // else: 快捷方式冷启动 + 已登录 → 保持后台（应用打开后由 tryOpenPendingApp 决定是否隐藏到托盘）
 }
 
-function showConnectPage() {
+// v4.0.25：判断这次加载失败是否属于「链路抖动 / 尚未就绪」，而不是用户要登出。
+// 判据：① 目标是 CGNAT（100.64/10，Tailscale / VPN，链路本来就要几十秒才通）；
+//       ② NetworkHealth 认为还在抖动窗口内（上次成功 <60s 且连续失败未超阈值）。
+// 命中时 showConnectPage 只切界面，不写盘、不清目标，链路恢复后还能自动回到 NAS。
+function __failIsTransient25(url) {
+  try { if (__isCgnatUrl53(url)) return true; } catch (_) {}
+  try {
+    const nh = NetworkHealth;
+    if (!nh) return false;
+    const sinceOk = Date.now() - Number(nh.lastSuccessTime || 0);
+    const fails = Number(nh.consecutiveFailures || 0);
+    return sinceOk < 60000 && fails <= Number(nh.maxJitterFailures || 3);
+  } catch (_) { return false; }
+}
+
+// v4.0.25：网络抖动掉到连接页后，链路一恢复就自动回到 NAS——
+// 否则用户看到的就是"莫名被登出、还得自己再输一次地址"。
+// 只在"抖动掉线"留下时间点时才触发；用户主动返回连接页会把它清零。
+let __autoReturn25At = 0;
+let __autoReturn25Bound = false;
+function __bindAutoReturn25() {
+  if (__autoReturn25Bound) return;
+  __autoReturn25Bound = true;
+  try {
+    NetworkHealth.onStatusChange((status) => {
+      try {
+        if (status !== 'online' || !__autoReturn25At) return;
+        if (Date.now() - __autoReturn25At < 5000) return;  // 刚掉下去先别抢导航，等链路稳一下
+        const cur = (() => { try { return mainWindow && !mainWindow.isDestroyed() ? String(mainWindow.webContents.getURL() || '') : ''; } catch (_) { return ''; } })();
+        if (/^https?:/i.test(cur)) { __autoReturn25At = 0; return; }  // 已在 NAS 页面，无需回收
+        const s = loadSettings();
+        const target = String(s.lastConnectHref || lastConnectHref || currentOrigin || '');
+        if (!target) { __autoReturn25At = 0; return; }
+        __autoReturn25At = 0;
+        try { fnosLog('info', 'network', 'auto-return.start', { target: target.slice(0, 140) }); } catch (_) {}
+        connectTo(s.server || target);
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+
+function showConnectPage(opts) {
+  // v4.0.25：keepTarget=true 表示「网络抖了一下，不是用户要登出」——
+  // 不写盘 currentPartition、不清 lastConnectHref / currentOrigin，等链路就绪还能自动回到 NAS。
+  // 只有用户主动「返回连接页 / 移除账号 / 退出登录」才用默认的 keepTarget=false。
+  const __keep25 = !!(opts && opts.keepTarget);
+  if (__keep25) { __autoReturn25At = Date.now(); __bindAutoReturn25(); }
+  else __autoReturn25At = 0;
   if (currentPartition !== 'persist:connect') {
-    saveSettings({ currentPartition: 'persist:connect' });
+    if (!__keep25) saveSettings({ currentPartition: 'persist:connect' });
+    try { fnosLog('warn', 'window', 'window.destroy', { reason: __keep25 ? 'connectpage.keep' : 'connectpage', href: String(lastConnectHref || '').slice(0, 140) }); } catch (_) {}
     createMainWindow('persist:connect', null);
     return;
   }
   // v2.1.6：回到连接页时停止扫描，避免在 login.html 上无意义扫描
   try { stopHomeScan(); } catch (_) {}
-  currentOrigin = '';
-  lastConnectHref = '';
+  if (!__keep25) {
+    currentOrigin = '';
+    lastConnectHref = '';
+  }
   safeSetTitle(`${APP_NAME} · 连接服务器`);
   if (mainWindow && !mainWindow.isDestroyed()) {
     // v2.1.6：ERR_FAILED(-2) 重试——便携版首次解压时文件可能暂时被锁定，
@@ -10639,6 +10937,27 @@ function doConnectTo(serverInput) {
     try {
       require('./logger.js').log('info', 'account', 'account.switch', { params: { from: String(currentPartition || '').slice(0, 60), to: String(targetPartition).slice(0, 60), closedWindows: __closedAcc, ms: Date.now() - __t0Acc } }, __RUN_MODE);
     } catch (_) {}
+    // v4.0.25：新窗口必须重新武装 CGNAT 等待通道——
+    // 旧逻辑里第一次等待超时后 __vpnBusy53/__vpnWin53 带着旧窗口的状态，
+    // 后续 5 次重试全部绕过 vpn-wait（日志里 vpn-wait.start 一生只出现 1 次）。
+    try { __resetVpn53(); } catch (_) {}
+    try { __vpnPendingHref53 = String(parsed.href || ''); } catch (_) {}
+    try {
+      fnosLog('info', 'account', 'account.switch.pending', {
+        from: String(currentPartition || '').slice(0, 60),
+        to: String(targetPartition).slice(0, 60),
+        targetHref: String(parsed.href || '').slice(0, 140),
+        cgnat: __isCgnatUrl53(parsed.href),
+      });
+    } catch (_) {}
+    // 目标仍是 100.64/10：先探一次 TCP（不通也照样加载，由 did-fail-load 进等待通道）
+    try {
+      if (__isCgnatUrl53(parsed.href)) {
+        __probeTcp53(parsed.hostname, Number(parsed.port || 80) || 80, 2000, (ok) => {
+          try { fnosLog('info', 'network', 'vpn.precheck', { host: parsed.hostname, port: Number(parsed.port || 80) || 80, ok }); } catch (_) {}
+        });
+      }
+    } catch (_) {}
     createMainWindow(targetPartition, { origin: parsed.origin, href: parsed.href });
     return;
   }
@@ -10674,7 +10993,7 @@ function doConnectTo(serverInput) {
         '连接失败',
         `无法连接到 ${parsed.origin}\n\n${e.message}\n\n请检查：\n• 电脑是否与 NAS 在同一网络\n• 地址与端口是否正确\n• FN ID 是否正确、FN Connect 是否已开启`,
       );
-      showConnectPage();
+      showConnectPage({ keepTarget: __failIsTransient25(parsed.href) });
     };
     mainWindow.loadURL(parsed.href, { userAgent: getNasUA() }).catch(onFail);
     // v1.76.0：桌面快捷方式启动 --open-app 时，等待主页登录就绪后自动打开对应应用。
@@ -12626,9 +12945,11 @@ ipcMain.handle('settings:set-vlc', async (_e, patch) => {
     try {
       const __allWc = require('electron').webContents.getAllWebContents();
       for (const w of __allWc) {
-        try { if (!w.isDestroyed()) w.send('mpv:settings-changed', { enabled: next.enabled, alwaysUse: next.alwaysUse }); } catch (_) {}
+        // v4.0.27：带上 resume——「记住播放进度」也要能热生效（关掉后当前页立刻停止
+        // 自动跳上次影片/自动续播，下一次打开影视就是主页）。
+        try { if (!w.isDestroyed()) w.send('mpv:settings-changed', { enabled: next.enabled, alwaysUse: next.alwaysUse, resume: next.resume !== false }); } catch (_) {}
       }
-      try { dlog('info', 'mpv.settings.broadcast', { enabled: next.enabled, alwaysUse: next.alwaysUse }); } catch (_) {}
+      try { dlog('info', 'mpv.settings.broadcast', { enabled: next.enabled, alwaysUse: next.alwaysUse, resume: next.resume !== false }); } catch (_) {}
       if (next.enabled === false) {
         try {
           for (const [__k, __s] of Array.from(mpvSurfaces.entries())) {
@@ -13263,13 +13584,17 @@ function __wireFrost(win) {
   if (!win || win.isDestroyed() || win.__frostWired) return;
   if (win.__isMenuPopup) return; // 菜单弹窗不需要磨砂采样（show 即 kick，正好卡在菜单弹出瞬间）
   win.__frostWired = true;
-  const kick = () => { try { titlebarFrost.kick(win); } catch (_) {} };
+  const kick = (trigger) => { try { titlebarFrost.kick(win, undefined, trigger); } catch (_) {} };
   try {
-    win.on('move', kick);
-    win.on('resize', kick);
-    win.on('show', kick);
-    win.on('restore', kick);
-    win.on('focus', kick);
+    // v4.0.26（用户工单：QQ 录屏 / UU 远程里窗口"消失又出现"不断循环，RDP 轻微闪烁）——
+    // 每次采样都要 setContentProtection(true)（WDA_EXCLUDEFROMCAPTURE）约 300ms，这期间窗口
+    // 从一切采集管线里消失；而 focus 是最频繁的 kick 源（切个窗口就抓一张），聚焦本身又不会
+    // 改变窗口背后的画面 → 直接删掉。剩 move/resize/show/restore，由 frost 内部
+    // debounce(220ms) + 未聚焦延后 + MIN_GAP 吸收；埋点 trigger 能看出每次抓图是谁踢的。
+    win.on('move', () => kick('move'));
+    win.on('resize', () => kick('resize'));
+    win.on('show', () => kick('show'));
+    win.on('restore', () => kick('restore'));
     win.on('closed', () => { try { titlebarFrost.dispose(win); } catch (_) {} });
   } catch (_) {}
   try { titlebarFrost.setEnabled(win, __frostWanted()); } catch (_) {}
@@ -17911,6 +18236,55 @@ function probeMediaRange(url, headers) {
   } catch (_) {}
 }
 
+// v4.0.27（用户工单：MPV 播影片「加载不上」，页面一直停加载中，没有任何报错）——
+// 上面的 probeMediaRange 只是"播完顺手记一笔"，起播决策根本没用它。用户机上
+// /v/api/v1/media/range/<guid> 直接回 400（空 body、6~15ms 即时拒绝，3 个 mediaGuid、连续
+// 4 天 100% 复现），mpv 只会 'loading failed(reason 4)'，网页永远停在加载态。
+// 这里给"能判定"的版本：Promise + 超时 + 响应头，起播前用它先确认服务端没收下这个地址。
+// 只有服务端真的回了 4xx 才算失败；网络错误 / 超时 / 无响应一律放行（宁可让 mpv 自己试，
+// 也不能因为探活误杀可播的流）。
+function probeMediaRangeStatus(url, headers, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    let timer = null;
+    const finish = (r) => {
+      if (done) return;
+      done = true;
+      try { if (timer) clearTimeout(timer); } catch (_) {}
+      resolve(r);
+    };
+    try {
+      if (!url || !/^https?:/i.test(url)) { finish({ status: 0, skip: 'not-http' }); return; }
+      const { net } = require('electron');
+      const req = net.request({ method: 'GET', url, redirect: 'follow' });
+      try {
+        Object.keys(headers || {}).forEach((k) => { try { req.setHeader(k, String(headers[k])); } catch (_) {} });
+      } catch (_) {}
+      req.on('response', (res) => {
+        const h = res.headers || {};
+        const status = Number(res.statusCode) || 0;
+        finish({
+          ok: status >= 200 && status < 300,
+          status: status,
+          type: String(h['content-type'] || ''),
+          len: String(h['content-length'] || ''),
+          acceptRanges: String(h['accept-ranges'] || ''),
+        });
+        try { req.abort(); } catch (_) {}
+      });
+      req.on('error', (e) => finish({ status: 0, err: String((e && e.message) || e).slice(0, 160) }));
+      timer = setTimeout(() => {
+        try { req.abort(); } catch (_) {}
+        finish({ status: 0, timeout: true });
+      }, Math.max(800, Number(timeoutMs) || 4000));
+      if (timer && timer.unref) timer.unref();
+      req.end();
+    } catch (e) {
+      finish({ status: 0, err: String((e && e.message) || e).slice(0, 160) });
+    }
+  });
+}
+
 // 用 MPV 播放媒体地址（自动注入飞牛登录 Cookie / Referer / UA）
 // 记录上一次 VOD 播放的片名，用于直播场景识别 renderer 残留的旧片名
 let __lastVodTitle = '';
@@ -18887,6 +19261,63 @@ async function embedMpvPlay(hostWin, payload) {
   try { hookProgressMemory(surf, pgKey, pgTitle, pgRemote); } catch (_) {}
   if (pgPos > 0) { try { armResumeNotice(surf, pgPos); } catch (_) {} }
 
+  // v4.0.27（用户工单：MPV 加载不上）——起播前先确认服务端收不收这个地址。
+  // 顺序很关键：旧版是 play() 之后再 probeMediaRange()，探活结果只进日志，
+  // 服务端回 400 时 mpv 照样空转，网页一直「加载中」，用户看不到任何原因。
+  const __probeAt = Date.now();
+  // 直播 / 跨域直连源不探活：这类地址常是一次性签名或按次计费，先 GET 一次可能把签名/额度用掉，
+  // 反而让 mpv 真正拉流时被拒（运营商 IPTV、临时 token 直链都属于这一类）。
+  let __probe27 = (!pgIsLive && sameOrigin)
+    ? await probeMediaRangeStatus(url, headers, 4000)
+    : { status: 0, skip: pgIsLive ? 'live' : 'cross-origin' };
+  dlog('info', 'mpv.embed.probe', {
+    status: __probe27 && __probe27.status, type: (__probe27 && __probe27.type) || '',
+    len: (__probe27 && __probe27.len) || '', acceptRanges: (__probe27 && __probe27.acceptRanges) || '',
+    ms: Date.now() - __probeAt, timeout: !!(__probe27 && __probe27.timeout), err: (__probe27 && __probe27.err) || '',
+    skip: (__probe27 && __probe27.skip) || '',
+  });
+  // v4.0.27：media/range 的 4xx 先做一次"带 Authorization 重探"再决定。
+  // 历史原因（v2.15.88）点播流刻意只带 Cookie：过期的网页 JWT 会让 media/range 回 JSON 报错。
+  // 但反过来，某些服务端对 media/range 就是要求 JWT —— 此时不带就 400/401/403，用户看到
+  // "加载不上"。这里不猜：先用不带 token 的请求，被 4xx 拒绝后带 token 再探一次，只有带 token
+  // 真能拿到 2xx 才改用它（过期 token 会继续 4xx，行为与旧版一致，不会退化）。
+  if (__probe27 && __probe27.status >= 400 && __probe27.status < 500
+      && payload.token && !headers['Authorization'] && sameOrigin && !pgIsLive) {
+    const __altHdrs27 = Object.assign({}, headers, { Authorization: String(payload.token) });
+    const __probeAlt27 = await probeMediaRangeStatus(url, __altHdrs27, 3000);
+    dlog('info', 'mpv.embed.auth-retry', {
+      first: __probe27.status, second: __probeAlt27 && __probeAlt27.status,
+      ok: !!(__probeAlt27 && __probeAlt27.ok),
+    });
+    if (__probeAlt27 && __probeAlt27.ok) {
+      headers['Authorization'] = String(payload.token);
+      __probe27 = __probeAlt27;
+    }
+  }
+  // 只拦 4xx：5xx/超时/CORS 抖动继续交给 mpv 自己重试，避免把可播的流误杀。
+  if (__probe27 && __probe27.status >= 400 && __probe27.status < 500) {
+    dlog('warn', 'mpv.embed.reject', {
+      httpStatus: __probe27.status, type: __probe27.type || '', len: __probe27.len || '',
+      urlHasQuery: /\?/.test(url), url: String(url).slice(0, 180),
+      // 只记 Cookie 名不记值：400 多发生在鉴权不全（缺 ost / Trim-MC-token）或签名失效
+      cookieNames: String(headers['Cookie'] || '').split('; ').map((s) => String(s).split('=')[0]).filter(Boolean).join(','),
+      hasAuth: !!headers['Authorization'], hasPlayLink: !!headers['Play-Link'],
+    });
+    // 走到这里时 MpvSurface 已经建好（窗口已可见），不清理会留一块黑窗盖住网页视频区。
+    try {
+      if (surf) {
+        try { surf.destroy(); } catch (_) {}
+        if (mpvSurfaces.get(hostId) === surf) mpvSurfaces.delete(hostId);
+      }
+      notifyGuestMpvClosed(guestWc, true);
+    } catch (_) {}
+    return {
+      ok: false,
+      reason: '播放失败（服务端返回 HTTP ' + __probe27.status + '，可能是播放签名失效或该媒体未转码）',
+      httpStatus: __probe27.status,
+    };
+  }
+
   try {
     await surf.play(url, headers, { isLive: pgIsLive, title: pgTitle, resumePos: pgPos > 0 ? pgPos : undefined });
     dlog('info', 'mpv.embed.ok', { host: hostId, hasCookie: !!headers['Cookie'], hasAuth: !!headers['Authorization'], isLive: !!payload.isLive || payload.scope === 'live',
@@ -18894,6 +19325,29 @@ async function embedMpvPlay(hostWin, payload) {
       cookieNames: String(headers['Cookie'] || '').split('; ').map((s) => String(s).split('=')[0]).filter(Boolean).join(',') });
     // v2.17.54：播放前探一次真实响应，日志按需定位（见 probeMediaRange 注释）
     try { probeMediaRange(payload.url, headers); } catch (_) {}
+    // v4.0.27：起播后如果 mpv 直接判定为终态错误（HTTP 4xx 等），把结果推回网页——
+    // 否则网页已经把 <video> 藏了、MPV 窗口又没内容，用户看到的就是"一直加载中"。
+    // 只挂一次，避免多次切集堆叠监听。
+    try {
+      if (!surf.__fatalHook27) {
+        surf.__fatalHook27 = true;
+        surf.player.on('fatal', (info) => {
+          const st27 = Number(info && info.httpStatus) || 0;
+          dlog('warn', 'mpv.embed.fatal', { host: hostId, httpStatus: st27 });
+          try {
+            if (!guestWc.isDestroyed()) guestWc.send('mpv:play-failed', { httpStatus: st27, host: hostId });
+          } catch (_) {}
+          // MPV 窗口留在屏幕上就是一块黑幕：失败时一并回收，把画面交回网页播放器
+          try {
+            if (surf) {
+              try { surf.destroy(); } catch (_) {}
+              if (mpvSurfaces.get(hostId) === surf) mpvSurfaces.delete(hostId);
+            }
+            try { notifyGuestMpvClosed(guestWc, true); } catch (_) {}
+          } catch (_) {}
+        });
+      }
+    } catch (_) {}
     try { broadcastMpvEmbedActive(hostWin); } catch (_) {}
     return { ok: true };
   } catch (err) {

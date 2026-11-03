@@ -1109,6 +1109,71 @@ contextBridge.exposeInMainWorld('fnos', {
       } catch (_) {}
     }
 
+    // v4.0.27：MPV 起播失败提示。用 shadow DOM 装，避免被页面样式（及我们自己的暗色规则）污染。
+    // 目的很单纯：以前失败是"静默的一直加载中"，现在至少能看到失败原因（HTTP 状态码）。
+    let __mpvFailAt27 = 0;
+    function showMpvFailTip27(info) {
+      try {
+        if (Date.now() - __mpvFailAt27 < 4000) return;   // 连续失败只提示一次
+        __mpvFailAt27 = Date.now();
+        const st = Number(info && info.httpStatus) || 0;
+        const reason = String((info && info.reason) || '');
+        const text = st
+          ? 'MPV 播放失败：服务端返回 HTTP ' + st + '（可能是播放签名失效或该片未转码），已切回网页播放器'
+          : ('MPV 播放失败：' + (reason || '未知原因') + '，已切回网页播放器');
+        const old = document.getElementById('fnos-mpv-fail27');
+        if (old) old.remove();
+        const host = document.createElement('div');
+        host.id = 'fnos-mpv-fail27';
+        host.style.cssText = 'position:fixed;z-index:2147483000;left:50%;top:14%;transform:translateX(-50%);' +
+          'pointer-events:none;';
+        const sr = host.attachShadow ? host.attachShadow({ mode: 'open' }) : null;
+        const box = document.createElement('div');
+        box.style.cssText = 'max-width:min(560px,86vw);padding:12px 18px;border-radius:12px;' +
+          'background:rgba(24,26,32,.94);color:#fff;font:14px/1.5 "Microsoft YaHei",system-ui,sans-serif;' +
+          'box-shadow:0 8px 28px rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.14);';
+        box.textContent = text;
+        (sr || host).appendChild(box);
+        (document.body || document.documentElement).appendChild(host);
+        setTimeout(() => { try { host.remove(); } catch (_) {} }, 7000);
+      } catch (_) {}
+    }
+
+    // v4.0.27：影视入口守卫——「记住播放进度」关闭时，打开影视必须是主页。
+    // 主进程已经不再把影视入口指向 /v/video/<guid>（见 appwin.trim-media.entry），
+    // 但影视前端自己还会按服务端「继续观看」直接跳播放页，这里兜住这一跳。
+    // 只在"从 /v 裸入口进来"的这一轮生效、最多回弹 2 次、且 2s 内有用户交互一律放行
+    //（用户自己点某部片子不能被弹回主页）。
+    let __trimGuardOn27 = false;
+    function startTrimGuard27() {
+      try {
+        if (__trimGuardOn27) return;
+        if (state.mpvResume !== false) return;
+        if (!/^\/v\/?$/.test(String(location.pathname || ''))) return;
+        __trimGuardOn27 = true;
+        let bounced = 0;
+        let lastUserAt = Date.now();
+        const mark = () => { lastUserAt = Date.now(); };
+        try { ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach((ev) => window.addEventListener(ev, mark, true)); } catch (_) {}
+        const check = () => {
+          try {
+            if (bounced >= 2) return;
+            const p = String(location.pathname || '');
+            if (!/^\/v\/video\//.test(p)) return;
+            if (Date.now() - lastUserAt < 2000) return;   // 用户自己点的 → 放行
+            bounced++;
+            history.replaceState(history.state, '', '/v');
+            try { window.dispatchEvent(new PopStateEvent('popstate')); } catch (_) {}
+            log('trim.guard', { from: p.slice(0, 70), n: bounced });
+          } catch (_) {}
+        };
+        const iv = setInterval(check, 350);
+        setTimeout(() => { try { clearInterval(iv); } catch (_) {} }, 20000);
+        try { window.addEventListener('popstate', check); } catch (_) {}
+        log('trim.guard.arm', { path: String(location.pathname || '') });
+      } catch (_) {}
+    }
+
     let lastRectKey = '';
     function reportRect() {
       try {
@@ -1405,7 +1470,19 @@ contextBridge.exposeInMainWorld('fnos', {
       };
       log('embed.invoke', { source: direct.source, url: direct.url.slice(0, 96) });
       try {
-        await ipcRenderer.invoke('mpv:embed', payload);
+        const __r27 = await ipcRenderer.invoke('mpv:embed', payload);
+        // v4.0.27（用户工单：MPV 加载不上，页面永远停在"加载中"）——
+        // 主进程探活或起播被判失败时会回 ok:false。旧版这里直接无视返回值：网页已经把
+        // <video> 藏掉、MPV 又没起来，用户看到的就是一直加载。现在把页面还原，并弹一条
+        // 明确原因的提示（HTTP 状态码），让失败可见。
+        if (__r27 && __r27.ok === false) {
+          state.handled = false;
+          try { restoreVideoDisplay(); } catch (_) {}
+          try { restorePlayerContainers(); } catch (_) {}
+          log('embed.reject', { reason: __r27.reason || '', httpStatus: __r27.httpStatus || 0 });
+          try { showMpvFailTip27(__r27); } catch (_) {}
+          return;
+        }
         // 首次接管时飞牛详情/playinfo 接口可能尚未返回，片名先取到兜底名。
         // 接管后轮询重查，一旦拿到真实片名即实时推送给 MPV 更新标题/字幕/弹幕匹配。
         state.lastTitle = payload.title;
@@ -2105,6 +2182,16 @@ contextBridge.exposeInMainWorld('fnos', {
             log('embed.closed', { byUser: byUser, guid: String(state.itemGuid || '').slice(0, 40) });
           } catch (_) {}
         });
+        // v4.0.27：MPV 起播后被判终态（HTTP 4xx）时，主进程推这条 —— 还原网页播放器并提示原因，
+        // 否则网页的 <video> 已被隐藏、MPV 又没画面，屏幕上就是一片"加载中"。
+        ipcRenderer.on('mpv:play-failed', (_e, d) => {
+          try {
+            state.handled = false;
+            restoreVideoDisplay(); restorePlayerContainers();
+            log('mpv.play-failed', { httpStatus: Number(d && d.httpStatus) || 0 });
+            showMpvFailTip27({ httpStatus: Number(d && d.httpStatus) || 0, reason: '流加载失败' });
+          } catch (_) {}
+        });
         // v2.20.0：读取 MPV 设置（默认用 MPV 播放）
         try {
           ipcRenderer.invoke('mpv:get-settings').then((cfg) => {
@@ -2120,7 +2207,10 @@ contextBridge.exposeInMainWorld('fnos', {
                   state.epSwitchAt = Date.now();
                 }
               } catch (_) {}
-              log('mpv.settings', { alwaysUse: state.mpvAlways, enabled: !!(cfg && cfg.enabled) });
+              state.mpvResume = !(cfg && cfg.resume === false);
+              log('mpv.settings', { alwaysUse: state.mpvAlways, enabled: !!(cfg && cfg.enabled), resume: state.mpvResume });
+              // v4.0.27：影视入口守卫（「记住播放进度」关闭时不许被自动带进播放页）
+              try { if (!state.mpvResume) startTrimGuard27(); } catch (_) {}
               if (state.mpvAlways && __isPlayLikeRoute()) {
                 installDomObserver();
                 const v = getMainVideo();
@@ -2137,7 +2227,12 @@ contextBridge.exposeInMainWorld('fnos', {
             state.mpvAlways = !!(cfg && cfg.alwaysUse);
             state.mpvEnabled = !(cfg && cfg.enabled === false);
             if (state.mpvEnabled === false) { state.mpvClosedAt = 0; state.mpvClosedGuid = ''; }
-            log('mpv.settings.live', { alwaysUse: state.mpvAlways, enabled: state.mpvEnabled });
+            // v4.0.27：resume 热生效——刚关掉「记住播放进度」时立刻武装入口守卫
+            if (cfg && typeof cfg.resume === 'boolean') {
+              state.mpvResume = cfg.resume;
+              if (!cfg.resume) { try { startTrimGuard27(); } catch (_) {} }
+            }
+            log('mpv.settings.live', { alwaysUse: state.mpvAlways, enabled: state.mpvEnabled, resume: state.mpvResume });
           } catch (_) {}
         });
         // v2.20.1：MPV 菜单里直接选「第 N 集」→ 跳到对应 item guid

@@ -923,8 +923,12 @@ module.exports = function injectTitleBar(ctx) {
 
     // v2.4.9（反馈 8 两种窗口模式自动适配）：内嵌窗形态宿主窗标记（主进程 additionalArguments
     // 传入），命中时渲染 fnOS 内嵌窗样式标题栏（logo+标题+↻↗—□✕），而非跳出窗的 ☰+系统钮样式。
+    // v4.0.6（用户工单：应用窗 / 应用内跳转窗的标题栏和主程序不一致）：
+    //   「logo+标题+↻↗—□✕」这套内嵌窗标题栏一律停用——所有窗口统一走 build()，
+    //   即与主程序完全相同的 ☰ + — □ ✕。EMBED 保留变量以免散落的判断改动，恒为 false。
+    //   主进程仍会传 --fnos-embed-style，这里只忽略它，不影响开窗/落址。
     let EMBED = false;
-    try { EMBED = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv.indexOf('--fnos-embed-style') >= 0 : false; } catch (_) {}
+    try { EMBED = false; } catch (_) {}
 
     // 把 #RRGGBB + 不透明度(0~100) 转成 rgba()
     function hexToRgba(hex, a) {
@@ -1278,13 +1282,19 @@ module.exports = function injectTitleBar(ctx) {
         // （v1.57 原因：避免浅色应用顶部出现实色栏；设置窗口不透明背景本身即深色）。
         const __argvB = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
         const __isMainWin = __argvB.indexOf('--fnos-shell') >= 0 && __argvB.indexOf('--fnos-app-window') < 0;
-        const __barBg = __isMainWin ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
+        // v4.0.6（用户工单）：应用窗 / 应用内跳转窗此前是 background:transparent，
+        // 标题栏那 34px 透出的是桌面壁纸（视频里那条半透明蓝带），与主程序的实色深色条
+        // 放在一起就是两套东西。现在所有窗口都用主程序同一条渐变，标题栏永远占据
+        // 内容区上方那一条独立色带，不再透出壁纸、也不再让应用自己的顶栏看着像标题栏。
+        const __barBg = 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)';
         // v2.15.71：主窗口标题栏高度 34->35px，标题栏本体向下侵入内容区 1px 盖住接缝，
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
-        bar.__tbIsMain = __isMainWin; // 皮肤高度联动：主窗视觉高度 = 有效高度 + 2px 盖接缝
+        // v4.0.6：盖接缝的 2px 从「仅主窗」改为「所有窗口」——应用窗现在也是实色深色条，
+        // 若仍是 34px，条与内容之间那 1px 亚像素缝会透出桌面壁纸（高分 DPI 下是灰线）。
+        bar.__tbIsMain = true; // 皮肤高度联动：视觉高度 = 有效高度 + 2px 盖接缝
         __setCss(bar, [
-          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + (__isMainWin ? 2 : 0)) + 'px',
+          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + 2) + 'px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',

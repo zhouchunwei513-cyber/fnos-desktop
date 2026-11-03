@@ -3,6 +3,21 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.15
+
+> 用户工单：标题栏不压内容区了（v4.0.14 修好了），但内容区页面加载不全（被截断）。
+> band 诊断实锤两个问题。
+
+### 根因（band 字段硬数据）
+1. **小组件被误移**：`n-base-selection__border` / `n-button__border` 等组件内部装饰元素
+   也是 `position:absolute;top:0`，被 `__shiftFixedTop` 误移 → 布局错乱。
+2. **大容器下移后高度溢出**：`n-layout`（`position:absolute;top:0`）下移到 y=34 后，
+   高度未约束 → 溢出视口 34px → 底部内容被截断。
+
+### 修复（titlebar-inject.js）
+1. `position:absolute` 只移大容器（`rect.height > 80px`），避免误移组件内部小组件。
+2. 下移后同步约束 `max-height: calc(100vh - shift)`，防止高度溢出视口导致内容截断。
+
 ## v4.0.14
 
 > 用户工单：标题栏仍压住内容区。band 诊断实锤根因。

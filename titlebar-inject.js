@@ -1400,11 +1400,14 @@ module.exports = function injectTitleBar(ctx) {
               if (!(rt <= barPx + 2 && rt > -barPx)) continue;
             } else if (__pos === 'absolute') {
               // absolute：只接管 top≈0 且 rectTop≈0 的（相对视口定位的），
-              // 有定位祖先的 absolute（rectTop>0）不动
+              // 有定位祖先的 absolute（rectTop>0）不动。
+              // v4.0.15：只移大容器（rect.height > 80px），避免误移组件内部小组件
+              // （n-base-selection__border / n-button__border 等 absolute;top:0 装饰元素）。
               if (v < -2 || v > 2) continue;
-              let rt = 0;
-              try { rt = el.getBoundingClientRect().top; } catch (_) { rt = 0; }
+              let rt = 0, rh = 0;
+              try { const r = el.getBoundingClientRect(); rt = r.top; rh = r.height; } catch (_) { rt = 0; rh = 0; }
               if (!(rt >= -2 && rt <= 2)) continue;
+              if (rh < 80) continue; // 只移视口级大容器
             } else {
               // sticky：只接管 top≈0 的
               if (v < -2 || v > 2) continue;
@@ -1423,6 +1426,13 @@ module.exports = function injectTitleBar(ctx) {
           if (want) {
             // 值未变不写，避免触发 MutationObserver 自激
             if (cur !== want || curPri !== 'important') el.style.setProperty('top', want, 'important');
+            // v4.0.15：absolute 大容器下移后约束 max-height，防止高度溢出视口导致内容截断
+            if (__pos === 'absolute') {
+              try {
+                const __mh = 'calc(100vh - ' + shift + 'px)';
+                if (el.style.getPropertyValue('max-height') !== __mh) el.style.setProperty('max-height', __mh, 'important');
+              } catch (_) {}
+            }
             if (__hit.length < 4) {
               let cls = '';
               try { cls = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 32); } catch (_) {}

@@ -4,7 +4,8 @@
 > 方法：Playwright + Chrome 无头登录飞牛桌面，逐个点击 40 个桌面图标，记录
 > ①是否新开标签页 ②桌面内是否新增 `.trim-ui__app-layout--window` ③该窗标题栏里
 > 有没有 `#iframe-btns-*-refresh` / `#iframe-btns-*-newwindow` 这对按钮。
-> 脚本：`tools/classify-windows.py`、`tools/probe-embed-btn.py`；原始数据 `build-out/window-types-v4.json`。
+> 脚本：`tools/classify-windows.py`、`tools/probe-embed-btn.py`（本地工具链，`.gitignore` 的 `/tools/` 不入库）；
+> 原始数据 `build-out/window-types-v4.json`（同样不入库）。需要重跑时按文末命令即可。
 
 ## 一、三类窗口
 

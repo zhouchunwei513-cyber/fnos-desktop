@@ -3,6 +3,22 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.14
+
+> 用户工单：标题栏仍压住内容区。band 诊断实锤根因。
+
+### 根因（band 字段硬数据）
+```
+band: [{"cls":"n-layout n-layout--absolute-positioned layout","pos":"absolute","top":"0px","rectTop":0}]
+```
+Naive UI 的 `n-layout--absolute-positioned` 用 `position:absolute;top:0`（相对视口定位），
+`__shiftFixedTop` 只处理 `position:fixed/sticky`，**漏了 `position:absolute`** → 整个布局容器停在 y=0，被标题栏压住。
+
+### 修复（titlebar-inject.js）
+1. `__shiftFixedTop` 增加 `position:absolute;top≈0` 且 `rectTop≈0` 的元素接管
+   （只接管相对视口定位的 absolute，有定位祖先的不动）。
+2. CSS 兜底补充 `.absolute.top-0` 和 `[class*="absolute-positioned"]`（Naive UI 常见）。
+
 ## v4.0.13
 
 > 用户工单 1：标题栏仍压住内容区（v4.0.12 已让位但仍不够）。

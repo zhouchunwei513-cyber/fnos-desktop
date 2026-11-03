@@ -1385,21 +1385,26 @@ module.exports = function injectTitleBar(ctx) {
             try { cs = getComputedStyle(el); } catch (_) {}
             if (!cs) continue;
             const __pos = cs.position;
-            if (__pos !== 'fixed' && __pos !== 'sticky') continue;
+            // v4.0.14：position:absolute;top:0 且相对视口定位（rectTop≈0）的元素同样被标题栏压住。
+            // 实锤：Naive UI 的 n-layout--absolute-positioned 用 position:absolute;top:0，
+            // 原来只认 fixed/sticky，漏了 absolute → band 显示 rectTop:0 未被接管。
+            if (__pos !== 'fixed' && __pos !== 'sticky' && __pos !== 'absolute') continue;
             const raw = String(cs.top || '').trim();
-            // auto / 百分比 / calc 的 top 不是「贴顶」语义，一律不动
             if (!raw || raw.indexOf('%') >= 0 || raw.indexOf('calc') >= 0) continue;
             const v = parseFloat(raw);
             if (!isFinite(v)) continue;
-            // fixed：以 rect.top 为主要判据（视觉上在标题栏带内就接管），top 值仅做辅助过滤
-            // sticky：top:0 就会在滚动后贴顶，不管当前 rect 在哪，一律接管
             if (__pos === 'fixed') {
-              // 只接管 top 在 [-barPx, barPx] 范围内的（避免误伤页面中间的 fixed 元素）
               if (v < -barPx || v > barPx) continue;
               let rt = 0;
               try { rt = el.getBoundingClientRect().top; } catch (_) { rt = 0; }
-              // 视觉上在标题栏带内（允许 ±barPx 误差，覆盖 transform 父级导致的偏移）
               if (!(rt <= barPx + 2 && rt > -barPx)) continue;
+            } else if (__pos === 'absolute') {
+              // absolute：只接管 top≈0 且 rectTop≈0 的（相对视口定位的），
+              // 有定位祖先的 absolute（rectTop>0）不动
+              if (v < -2 || v > 2) continue;
+              let rt = 0;
+              try { rt = el.getBoundingClientRect().top; } catch (_) { rt = 0; }
+              if (!(rt >= -2 && rt <= 2)) continue;
             } else {
               // sticky：只接管 top≈0 的
               if (v < -2 || v > 2) continue;
@@ -2022,8 +2027,9 @@ module.exports = function injectTitleBar(ctx) {
           'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky 贴顶类名，JS 接管前先让位
-          'html>body .fixed.top-0,html>body .sticky.top-0,html>body [class*="fixed"][class*="top-0"],html>body [class*="sticky"][class*="top-0"]{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
+          // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky/absolute 贴顶类名，JS 接管前先让位
+          // v4.0.14：补充 .absolute.top-0 / [class*="absolute-positioned"]（Naive UI n-layout--absolute-positioned）
+          'html>body .fixed.top-0,html>body .sticky.top-0,html>body .absolute.top-0,html>body [class*="fixed"][class*="top-0"],html>body [class*="sticky"][class*="top-0"],html>body [class*="absolute-positioned"]{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
         // v4.0.11：页面自身 CSS 的 !important 规则可能覆盖 <style> 里的 html{padding-top}。
         // 用 inline style !important 兜底（inline !important > stylesheet !important），保证让位一定生效。

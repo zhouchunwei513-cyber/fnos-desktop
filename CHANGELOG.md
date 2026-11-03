@@ -3,6 +3,28 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.4
+
+> 修复「窗口最上排图标点不了，但按住能把窗口拖走」。
+
+### 判断依据
+- 抽帧确认：窗口内容已正常下移，桌面图标在标题栏下方可见；异常只发生在标题栏这一条。
+- 日志：11:38 时段**没有一条** `drag.arm` / `drag.start` / `drag.move`，但窗口确实被拖走了 →
+  说明走的不是自定义拖动链路，而是 Windows 的系统级拖动区（`-webkit-app-region: drag`）：
+  mousedown 被交给系统移动循环，DOM 收不到事件、click 不触发，按住却能拖窗口。
+
+### 修复
+- 标题栏、左侧区、按钮容器，以及换肤 / 自动隐藏 / 全屏回退路径里的 `-webkit-app-region: drag`
+  全部改为 `no-drag`；系统级拖动区只保留顶部 **6px** 热区。
+- 标题栏中部继续走 `win-drag-*` 自定义通道（arm → start → poll），拖动行为不变。
+
+### 日志增强（此后每次修复都会同步加强）
+- `tb.hit`：窗口顶部 150px 内任意按下都记录命中链（`tag#id.class < 父级…`）、
+  标题栏高度/底边、热区高度、拖动条高度、`body` 的 padding-top 与 transform、html padding、dpr
+  —— 下次「点不动」能直接看出是谁在上面挡着。
+- `ctl.minimize` / `ctl.maximize` / `ctl.close`：窗口按钮点击是否真的到达主进程。
+- `drag.legacy`：旧 `window-drag` 通道被触发时记录（排查「谁在拖窗口」）。
+
 ## v4.0.3
 
 > 修复 v4.0.2 引入的回归：**内容区点击变成拖动、应用图标点不动**。拖动重新严格限制在标题栏内。

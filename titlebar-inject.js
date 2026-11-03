@@ -1058,7 +1058,8 @@ module.exports = function injectTitleBar(ctx) {
           return;
         }
         {
-          if (bar.__skinNoDrag) { bar.__skinNoDrag = false; try { bar.style.setProperty('-webkit-app-region', 'drag'); } catch (_) {} }
+          // v4.0.4：换肤/取消皮肤时也保持 no-drag（系统 drag 区会吞掉点击并让整窗可拖）
+          if (bar.__skinNoDrag) { bar.__skinNoDrag = false; try { bar.style.setProperty('-webkit-app-region', 'no-drag'); } catch (_) {} }
           // v2.15.14：默认深色渐变。旧默认 opacity=0 → 'transparent' 在深色壁纸下标题栏完全隐形。
           const a = TB.opacity / 100;
           // v2.19.0（用户要求）：磨砂玻璃材质。三层叠加做出"雾面玻璃"：
@@ -1223,9 +1224,10 @@ module.exports = function injectTitleBar(ctx) {
           // 而用户要求全屏只能由 ESC / 菜单「退出全屏」结束，所以全屏时不再注册拖拽区。
           bar.style.setProperty('-webkit-app-region', 'no-drag');
         } else if (AUTO_HIDE && !bar.__skinNoDrag) {
+          // v4.0.4：自动隐藏调出时不再重新注册系统 drag 区。drag 区会让 Windows 接管 mousedown
+          // （DOM 收不到事件 → 点击全被吞、按住却拖走窗口）。现在一律保持 no-drag，
+          // 拖动由标题栏中部的 win-drag-* 通道负责。
           bar.style.setProperty('-webkit-app-region', 'no-drag');
-          void bar.offsetHeight; // 强制同步 reflow，确保 no-drag 先生效
-          bar.style.setProperty('-webkit-app-region', 'drag');
         }
       } catch (_) {}
     }
@@ -1295,7 +1297,11 @@ module.exports = function injectTitleBar(ctx) {
           // box-sizing:border-box 使内容盒仍为 35px，标题栏按钮/菜单垂直位置与 v2.15.73 完全一致。
           // v2.15.80: the 1px border-bottom was painted rgb(3,6,16), the same colour as the gradient tail, so it never read as a border but did form a hard 1px band where the bar meets the content - the dark line under the titlebar. Transparent keeps the box geometry identical (border-box, content box still 35px, buttons unmoved) while letting the bar gradient show through that 1px, so the edge is continuous and the seam is still covered.
           'border-bottom:none',
-          '-webkit-app-region:drag',
+          // v4.0.4（用户工单「点最上排图标点不了，但按住能拖窗口」）——
+          // 标题栏不再注册系统级 -webkit-app-region:drag：drag 区会把 mousedown 交给 Windows
+          // 的移动循环，DOM 收不到任何事件（连日志都没有），表现为「点不动、但按住就把窗口拖走」。
+          // 现在整条标题栏都是 no-drag，拖动只走自己的 win-drag-* 通道（中点条 + 顶部 6px 热区）。
+          '-webkit-app-region:no-drag',
           'user-select:none',
           'transition:transform .16s ease,opacity .16s ease',
           // v2.17.15: every window type now cancels page zoom on the bar, so its
@@ -1399,7 +1405,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
         const left = document.createElement('div');
-        __setCss(left, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;');
+        __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;');
         const menuBtn = document.createElement('button');
         menuBtn.id = 'fnos-tb-menu';
         menuBtn.title = '菜单（文件/下载/视图/工具/设置/帮助）';
@@ -1424,7 +1430,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // 右侧：最小化/最大化/关闭——实心 Windows 风格，按钮可点击区域充足
         const btns = document.createElement('div');
-        __setCss(btns, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;overflow:hidden;');
+        __setCss(btns, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;overflow:hidden;');
 
         const mkBtn = (id, svg, hoverBg) => {
           const b = document.createElement('button');
@@ -1636,6 +1642,40 @@ module.exports = function injectTitleBar(ctx) {
             // 都把上一次残留的按下状态清掉（内容区的点击永远只是点击）。
             document.addEventListener('mousedown', function (e) {
               try {
+                // v4.0.4：顶部命中诊断 —— 「点不动」时靠这条日志直接看出是谁在上面挡着。
+                // 只在窗口顶部 150px 内记录，不刷屏。
+                try {
+                  const cy = (typeof e.clientY === 'number') ? e.clientY : -1;
+                  if (cy >= 0 && cy <= 150 && typeof ipcRenderer.send === 'function') {
+                    const el = (e.target && e.target.nodeType === 1) ? e.target : null;
+                    const chain = [];
+                    let n = el;
+                    for (let i = 0; n && i < 4; i++) {
+                      let cls = '';
+                      try { if (typeof n.className === 'string' && n.className.trim()) cls = '.' + n.className.trim().split(/\s+/).slice(0, 3).join('.'); } catch (_) {}
+                      chain.push((n.tagName || '?').toLowerCase() + (n.id ? '#' + n.id : '') + cls);
+                      n = n.parentElement;
+                    }
+                    const bEl = document.getElementById('fnos-titlebar');
+                    const bR = bEl ? bEl.getBoundingClientRect() : null;
+                    const hEl = document.getElementById('fnos-titlebar-hotzone');
+                    const hR = hEl ? hEl.getBoundingClientRect() : null;
+                    const sEl = document.getElementById('fnos-tb-dragstrip');
+                    const sR = sEl ? sEl.getBoundingClientRect() : null;
+                    ipcRenderer.send('tb-hit', {
+                      cx: Math.round(e.clientX || 0), cy: Math.round(cy),
+                      chain: chain.join(' < '),
+                      barH: bR ? Math.round(bR.height) : -1,
+                      barBottom: bR ? Math.round(bR.bottom) : -1,
+                      hotH: hR ? Math.round(hR.height) : -1,
+                      stripH: sR ? Math.round(sR.height) : -1,
+                      bodyPadTop: (function () { try { return getComputedStyle(document.body).paddingTop; } catch (_) { return '?'; } })(),
+                      bodyTransform: (function () { try { return getComputedStyle(document.body).transform; } catch (_) { return '?'; } })(),
+                      htmlPadTop: (function () { try { return getComputedStyle(document.documentElement).paddingTop; } catch (_) { return '?'; } })(),
+                      dpr: window.devicePixelRatio || 1,
+                    });
+                  }
+                } catch (_) {}
                 if (W.__fnosDsDrag || !W.__fnosDsDown) return;
                 const t = e.target;
                 if (t && t.closest && t.closest('#fnos-tb-dragstrip, #fnos-titlebar, #fnos-titlebar-hotzone')) return;
@@ -2023,10 +2063,10 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:drag;user-select:none;');
+        __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:no-drag;user-select:none;');
         // 左：应用 logo + 标题
         const left = document.createElement('div');
-        __setCss(left, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;');
+        __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;');
         const logo = document.createElement('img');
         logo.id = 'fnos-embed-logo';
         __setCss(logo, 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;');
@@ -2037,7 +2077,7 @@ module.exports = function injectTitleBar(ctx) {
         left.appendChild(titleEl);
         // 右：↻ — □ ✕ 四钮（r15 硬规则移除 ↗ 跳出：内嵌窗绝不剥离 fnOS 框架转独立跳出窗）
         const btns = document.createElement('div');
-        __setCss(btns, '-webkit-app-region:drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;');
+        __setCss(btns, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:stretch;height:34px;margin-right:8px;');
         const mkBtn = (id, titleTxt, svg, hoverBg) => {
           const b = document.createElement('button');
           b.id = id;
@@ -2212,6 +2252,40 @@ module.exports = function injectTitleBar(ctx) {
             // 都把上一次残留的按下状态清掉（内容区的点击永远只是点击）。
             document.addEventListener('mousedown', function (e) {
               try {
+                // v4.0.4：顶部命中诊断 —— 「点不动」时靠这条日志直接看出是谁在上面挡着。
+                // 只在窗口顶部 150px 内记录，不刷屏。
+                try {
+                  const cy = (typeof e.clientY === 'number') ? e.clientY : -1;
+                  if (cy >= 0 && cy <= 150 && typeof ipcRenderer.send === 'function') {
+                    const el = (e.target && e.target.nodeType === 1) ? e.target : null;
+                    const chain = [];
+                    let n = el;
+                    for (let i = 0; n && i < 4; i++) {
+                      let cls = '';
+                      try { if (typeof n.className === 'string' && n.className.trim()) cls = '.' + n.className.trim().split(/\s+/).slice(0, 3).join('.'); } catch (_) {}
+                      chain.push((n.tagName || '?').toLowerCase() + (n.id ? '#' + n.id : '') + cls);
+                      n = n.parentElement;
+                    }
+                    const bEl = document.getElementById('fnos-titlebar');
+                    const bR = bEl ? bEl.getBoundingClientRect() : null;
+                    const hEl = document.getElementById('fnos-titlebar-hotzone');
+                    const hR = hEl ? hEl.getBoundingClientRect() : null;
+                    const sEl = document.getElementById('fnos-tb-dragstrip');
+                    const sR = sEl ? sEl.getBoundingClientRect() : null;
+                    ipcRenderer.send('tb-hit', {
+                      cx: Math.round(e.clientX || 0), cy: Math.round(cy),
+                      chain: chain.join(' < '),
+                      barH: bR ? Math.round(bR.height) : -1,
+                      barBottom: bR ? Math.round(bR.bottom) : -1,
+                      hotH: hR ? Math.round(hR.height) : -1,
+                      stripH: sR ? Math.round(sR.height) : -1,
+                      bodyPadTop: (function () { try { return getComputedStyle(document.body).paddingTop; } catch (_) { return '?'; } })(),
+                      bodyTransform: (function () { try { return getComputedStyle(document.body).transform; } catch (_) { return '?'; } })(),
+                      htmlPadTop: (function () { try { return getComputedStyle(document.documentElement).paddingTop; } catch (_) { return '?'; } })(),
+                      dpr: window.devicePixelRatio || 1,
+                    });
+                  }
+                } catch (_) {}
                 if (W.__fnosDsDrag || !W.__fnosDsDown) return;
                 const t = e.target;
                 if (t && t.closest && t.closest('#fnos-tb-dragstrip, #fnos-titlebar, #fnos-titlebar-hotzone')) return;

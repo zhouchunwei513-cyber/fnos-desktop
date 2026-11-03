@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.3';
+const APP_VERSION = '4.0.4';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3268,12 +3268,17 @@ ipcMain.on('window-minimize', (e) => {
 ipcMain.on('window-maximize', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
+    try { fnosLog('info', 'window', 'ctl.maximize win=' + (w ? w.id : -1)); } catch (_) {}
     if (!w || w.isDestroyed()) return;
     __toggleMaxWin(w);
   } catch (_) {}
 });
 ipcMain.on('window-close', (e) => {
-  try { const w = hostWindowFromSender(e && e.sender); if (w && !w.isDestroyed()) w.close(); } catch (_) {}
+  try {
+    const w = hostWindowFromSender(e && e.sender);
+    try { fnosLog('info', 'window', 'ctl.close win=' + (w ? w.id : -1)); } catch (_) {}
+    if (w && !w.isDestroyed()) w.close();
+  } catch (_) {}
 });
 // v1.62.0：无边框标题栏原生拖拽兜底 —— 历史遗留，w.startDrag() 从来不是 BrowserWindow 的方法
 // （Electron 只有 webContents.startDrag({file,icon})，那是拖文件），调用必抛 TypeError 被 catch 吞掉。
@@ -3662,10 +3667,20 @@ ipcMain.on('win-drag-end', (e) => {
   } catch (_) {}
 });
 // 旧通道保留（drag region 区域的兜底调用点仍在），实现同 win-drag-*
+// v4.0.4：标题栏顶部命中诊断（渲染层在窗口顶部 150px 内按下时上报）
+ipcMain.on('tb-hit', (e, p) => {
+  try {
+    const w = hostWindowFromSender(e && e.sender);
+    if (!w || w.isDestroyed()) return;
+    fnosLog('info', 'titlebar', 'tb.hit win=' + w.id + ' ' + JSON.stringify(p || {}));
+  } catch (_) {}
+});
+
 ipcMain.on('window-drag', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
     if (!w || w.isDestroyed()) return;
+    try { fnosLog('info', 'window', 'drag.legacy win=' + w.id); } catch (_) {}
     const cp = screen.getCursorScreenPoint();
     const st = __winDragBegin(w, cp && cp.x, cp && cp.y);
     if (st) __winDragState = st;

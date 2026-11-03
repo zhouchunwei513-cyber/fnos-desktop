@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.0';
+const APP_VERSION = '4.0.1';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3877,13 +3877,16 @@ function showCustomAppMenu(hostWin, anchor) {
     const __mp = __uiAlphaPct(loadSettings());
     if (__mp <= 3) theme = 'dark';
     __menuAlpha = __uiAlphaCss(__mp);
-  } catch (_) {}
+    // v4.0.1：菜单浮层不跟随「透明界面」降到过低 alpha，否则桌面图标会透过面板
+    if (!isFinite(__menuAlpha) || __menuAlpha < 0.9) __menuAlpha = 0.9;
+  } catch (_) { __menuAlpha = 0.92; }
 
   __menuRegistry = registry;
   __menuCtxWin = (hostWin && !hostWin.isDestroyed()) ? hostWin : null;
   __menuAnchor = __menuAnchorFrom(hostWin, anchor);
   __menuShownAt = 0;
   __menuReadyAt = 0;
+  __menuRemeasureLeft = 3;   // v4.0.1：本次打开最多重测 3 次，防可疑尺寸来回拉扯
   __mpvMenuOpening = true;
   try { _applyMpvLayer(true, 'app-menu-open'); } catch (_) {}
 
@@ -3923,17 +3926,57 @@ function showCustomAppMenu(hostWin, anchor) {
   return true;
 }
 
+// v4.0.1：菜单尺寸上报。渲染层若在「窗口还没布局好 / 被视口夹住」时测量，会得到接近 0 的值，
+// 旧版直接 setBounds 就把菜单压成 150×260，并且窗口变小又反过来夹住下一次测量（自锁）。
+// 现在对可疑值兜底：先用最近一次可信尺寸显示，再回推 fnmenu:remeasure 让渲染层在稳定窗口里重测。
+function __menuSizeTrusted(w, h) {
+  return isFinite(w) && isFinite(h) && w > 200 && h > 120;
+}
+
 ipcMain.on('fnmenu:ready', (e, size) => {
   try {
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win || win !== __menuPopupWin || win.isDestroyed()) return;
-    const w = Math.max(140, Math.min(820, Math.round((size && size.w) || 320)));
-    const h = Math.max(80, Math.min(920, Math.round((size && size.h) || 320)));
+    const rawW = Math.round(Number(size && size.w) || 0);
+    const rawH = Math.round(Number(size && size.h) || 0);
+
+    if (!__menuSizeTrusted(rawW, rawH)) {
+      try {
+        dlog('warn', 'menu.custom.size.suspect', {
+          w: rawW, h: rawH, good: __menuGoodSize, left: __menuRemeasureLeft,
+        });
+      } catch (_) {}
+      const g = __menuGoodSize;
+      try { win.setBounds(__menuPlace(g.w, g.h)); } catch (_) {}
+      if (!win.isVisible()) {
+        try { win.show(); } catch (_) {}
+        try { win.focus(); } catch (_) {}
+      }
+      if (__menuRemeasureLeft > 0) {
+        __menuRemeasureLeft--;
+        try { win.webContents.send('fnmenu:remeasure'); } catch (_) {}
+      }
+      return;
+    }
+
+    const w = Math.max(200, Math.min(820, rawW));
+    const h = Math.max(120, Math.min(920, rawH));
     __menuReadyAt = Date.now();
     __menuLastSize = { w: w, h: h };
+    __menuGoodSize = { w: w, h: h };
     win.setBounds(__menuPlace(w, h));
     if (!win.isVisible()) { win.show(); win.focus(); }
     try { dlog('info', 'menu.custom.ready', { w: w, h: h }); } catch (_) {}
+  } catch (_) {}
+});
+
+// v4.0.1：渲染层自证日志（菜单测量指标），落进常规日志便于定位
+ipcMain.on('fnmenu:diag', (e, payload) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win || win !== __menuPopupWin) return;
+    const tag = String((payload && payload.tag) || 'menu.custom.diag');
+    dlog('info', tag, (payload && payload.data) || {});
   } catch (_) {}
 });
 

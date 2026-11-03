@@ -19,6 +19,10 @@
   .panel {
     position: absolute;
     left: 0; top: 0;
+    /* v4.0.1：宽度只由内容决定。旧版没有显式宽度，绝对定位元素 shrink-to-fit 会被
+       #root（=窗口宽）夹住，在 320px 的预建隐藏窗里量出来≈0，导致菜单被压成 150×260。 */
+    width: max-content;
+    max-width: 780px;
     min-width: 92px;
     padding: 6px;
     box-sizing: border-box;
@@ -29,8 +33,9 @@
     overflow: hidden;
   }
   body.glass .panel {
-    /* v3.0.81：跟随「透明界面」滑块（--fnos-ui-a 由 menu-popup.js 写入） */
-    background: rgba(5, 6, 10, var(--fnos-ui-a, .38));
+    /* v4.0.1：菜单是瞬时浮层，--fnos-ui-a 由 menu-popup.js 写入且下限 0.9，
+       不再跟随「透明界面」滑块一路降到 0.38（那会让桌面图标透过面板）。 */
+    background: rgba(5, 6, 10, var(--fnos-ui-a, .92));
     border-color: rgba(255, 255, 255, .12);
     box-shadow: 0 14px 36px rgba(0, 0, 0, .52), 0 2px 10px rgba(0, 0, 0, .38);
   }

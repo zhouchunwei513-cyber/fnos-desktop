@@ -2,7 +2,7 @@
 
 > Windows 桌面客户端 for [fnOS 飞牛私有云](https://fnos.net/) — 独立窗口运行、多服务器登录态保持、内置 MPV 播放内核、系统托盘、启动密码、一键锁定 / 隐藏、玻璃质感界面。
 
-![version](https://img.shields.io/badge/version-4.0.0-blue)
+![version](https://img.shields.io/badge/version-4.0.1-blue)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-success)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 ![electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
@@ -34,9 +34,9 @@
 
 ## 📦 下载
 
-最新版本 **v4.0.0**（[发布页](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases/latest)）：
+最新版本 **v4.0.1**（[发布页](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases/latest)）：
 
-- **安装版**（推荐）：`FNOS-4.0.0-setup.exe`（约 140 MB，Win10 1809+ / Win11 x64，含内置 MPV）
+- **安装版**（推荐）：`FNOS-4.0.1-setup.exe`（约 140 MB，Win10 1809+ / Win11 x64，含内置 MPV）
 
 > 安装到当前用户目录，**无需管理员权限**，默认创建桌面和开始菜单快捷方式。
 
@@ -97,8 +97,8 @@
 ### 云端构建（推荐）
 
 ```bash
-git tag v4.0.0
-git push origin v4.0.0
+git tag v4.0.1
+git push origin v4.0.1
 ```
 
 `.github/workflows/build.yml` 流程：`npm ci` → JS 语法自检 → 下载 `mpv-runtime` 运行时 → `electron-builder` 打 NSIS →
@@ -124,7 +124,7 @@ npm start
 npm run dist
 ```
 
-产物位于 `dist/FNOS-4.0.0-setup.exe`。
+产物位于 `dist/FNOS-4.0.1-setup.exe`。
 
 > `compression` 保持 `normal`：`maximum` 压缩大体积 MPV 时会导致 NSIS 7z 归档失败。
 
@@ -168,7 +168,15 @@ npm run dist
 
 见 [CHANGELOG.md](./CHANGELOG.md)。完整历史见 [Releases](../../releases)。
 
-### v4.0.0（当前）
+### v4.0.1（当前）
+
+- **修复菜单错乱**：点 ☰ 后面板被压成 150×260、菜单项文字溢出、桌面图标透过面板
+  - 面板宽度改由内容决定（`width: max-content`），测量不再读会被视口夹住的 `offsetWidth`
+  - 布局与字体稳定后补量一次，主进程对可疑尺寸回退到上次正确尺寸并要求重测
+  - 菜单背景不透明度下限锁 0.9，不再跟随「透明界面」滑块降到 0.38
+- 新增菜单测量自证日志（`menu.custom.measure` / `menu.custom.size.suspect`）
+
+### v4.0.0
 
 - 版本号全线统一到 `4.0.0`（主进程 / package.json / lock）
 - 仓库大扫除：移除 100+ 个本地临时脚本与调试文本，历史公告归档到 `docs/forum/`

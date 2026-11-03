@@ -3,6 +3,36 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.22
+
+> 用户工单（NAS 192.168.50.91 / 4.0.x）：桌面快捷方式双击启动应用，窗口里装的是**飞牛 NAS 桌面**
+> （主页面），不是对应应用界面。相册 / 影视 / 音乐 三个快捷方式 10 次启动 10 次复现。
+
+### 根因（日志实证：创建链算出 `…/appview?anchor=trim.xxx`，启动链却加载 `…:5666/`）
+1. `__rootUrlFallback()` 只有 app-center 一级兜底：FPK 缓存给系统应用返回站点根 `http://nas/`，
+   启动链走到这里就原样返回，缺创建链那条「`/appview?anchor=`」兜底。
+2. 探针把「站点根 200」当「地址有效」：`launch.probe ok:true` → `__appviewFallbackUrl` 永不触发。
+3. `__liveOriginFixUrl()` 用 `host`（含端口）比较：`nas` vs `nas:5666` 判为不同主机 → 端口不补。
+4. 创建时算对的 URL 只写进日志，`.lnk` 只带 appId，启动时只能重新猜。
+
+### 修复
+1. 新增 `__isRootishUrl()`（根路径判定，不看端口）+ `__isNasDesktopUrl()`（**是不是 NAS 桌面**：
+   根路径且与当前 NAS 同 host、端口为空或同端口）。后者才用于决定改写——`http://nas:34600/`
+   这类同机异端口是应用自己的根地址（OpenList / XTE / biliLive-tools），绝不能被当桌面改掉。
+2. 重写 `__rootUrlFallback(u, name, appId)`：三级兜底 app-center → manifest/behavior → `trim.*`
+   的 `/appview?anchor=`，每级落 `launch.rooturl.fallback {tier}`。
+3. `__resolveLaunchUrl` 四个返回点全部传入 appId；FPK 分支补 `launch.resolve.step {step,isRootish}`。
+4. 探针后加**根地址保险丝**：最终 URL 仍是站点根就强制改 `appview?anchor=`，落 `launch.rooturl.guard`。
+5. `__liveOriginFixUrl`：同主机名、仅端口缺失且是站点根 → 归位到当前 origin（不动 `:3000` 这类应用端口）。
+6. 快捷方式创建成功后把 `launchUrl` 写 `userData/shortcut-urls.json`；`__resolveLaunchUrl` 第 0 步
+   优先用它（主机一致 + 非站点根才用，换 NAS 自动失效），落 `launch.url.from-shortcut`。
+7. `appwin.load.done` 增加自检：窗内 URL 是站点根就记 `appwin.url.mismatch`（error）。
+
+### 验证
+- `electron --check main.js` 通过；`__isRootishUrl` 1 处定义 / 11 处调用。
+- 端到端：loopback `/launch?app=trim.music` → 日志出现 `launch.resolve.step` 与最终 `launch.entry-final`，
+  URL 为 `…/appview?anchor=trim.music`（非站点根）。
+
 ## v4.0.21
 
 > 用户纠正 v4.0.20：飞牛应用窗口分三类 —— ① 内嵌窗（标题栏无 ↻/↗）② 内嵌窗（标题栏有 ↻/↗）

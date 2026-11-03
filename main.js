@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.21';
+const APP_VERSION = '4.0.22';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -6682,6 +6682,13 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
         try {
           const __ms = win.__fnLoadT0 ? (Date.now() - win.__fnLoadT0) : -1;
           require('./logger.js').log('info', 'appwin', 'appwin.load.done', { params: { winId: win.id, ms: __ms, url: String(win.webContents.getURL() || '').slice(0, 140), appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE);
+          // v4.0.22：开窗自检——「窗标题是应用、内容是 NAS 桌面」这种错位以前只能人眼看截图
+          try {
+            const __u22m = String(win.webContents.getURL() || '');
+            if (win.__fnAppId && __isNasDesktopUrl(__u22m)) {
+              require('./logger.js').log('error', 'appwin', 'appwin.url.mismatch', { params: { winId: win.id, appId: String(win.__fnAppId).slice(0, 100), finalUrl: __u22m.slice(0, 140), expected: '/appview?anchor=' + String(win.__fnAppId) } }, __RUN_MODE);
+            }
+          } catch (_) {}
           // v3.0.58：换路成功 → 记住这条地址，下次直接用它
           try {
             if ((win.__fnFailSwitched58 || 0) > 0) {
@@ -14388,13 +14395,8 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
           // 而非真实应用入口。根地址型 url 做二次解析：manifest 真实 URL → 系统应用
           // 构造 /appview?anchor=name → fntb 自身用 FPK 服务地址（host:18080）。
           try {
-            const __isRootUrl = (function (u) {
-              try {
-                const __pu = new URL(u);
-                const __pp = String(__pu.pathname || '').replace(/\/+$/, '');
-                return (__pp === '' || __pp === '/') && !__pu.port;
-              } catch (_) { return false; }
-            })(launchUrl);
+            // v4.0.22：与启动链共用同一判定（不看端口，http://nas:5666/ 也算站点根）
+            const __isRootUrl = __isRootishUrl(launchUrl);
             if (__isRootUrl) {
               let __fixedUrl = '';
               // v2.5.4 r20：app-center 官方启动地址最优先（trim.docs 等真实入口）
@@ -14406,9 +14408,7 @@ ipcMain.handle('create-desktop-shortcut', async (_e, payload) => {
               try {
                 const __mf2 = readManifest();
                 const __me2 = (__mf2 && Array.isArray(__mf2.apps)) ? __mf2.apps.find((a) => a && (a.appId === __entry.name || a.name === __entry.name || a.url === launchUrl)) : null;
-                if (__me2 && __me2.url && /^https?:/i.test(__me2.url) && !(function (u) {
-                  try { const __p2 = new URL(u); const __pp2 = String(__p2.pathname || '').replace(/\/+$/, ''); return (__pp2 === '' || __pp2 === '/') && !__p2.port; } catch (_) { return true; }
-                })(__me2.url)) {
+                if (__me2 && __me2.url && /^https?:/i.test(__me2.url) && !__isNasDesktopUrl(__me2.url)) {
                   __fixedUrl = __me2.url;
                 }
               } catch (_) {}
@@ -14673,6 +14673,19 @@ $sc.Save()
     }
 
     if (__shortcutOk) {
+      // v4.0.22：创建时算好的入口落盘——启动链不必再从 FPK 缓存猜
+      // （FPK 对系统应用只返回站点根，正是「快捷方式打开成 NAS 桌面」的源头）。
+      try {
+        const __p22s = path.join(app.getPath('userData'), 'shortcut-urls.json');
+        let __m22s = {};
+        try { __m22s = JSON.parse(fs.readFileSync(__p22s, 'utf8')) || {}; } catch (_) { __m22s = {}; }
+        const __k22s = String(__launchName || appId || '');
+        if (__k22s && launchUrl && /^https?:\/\//i.test(String(launchUrl))) {
+          __m22s[__k22s] = { url: String(launchUrl).slice(0, 400), at: Date.now() };
+          fs.writeFileSync(__p22s, JSON.stringify(__m22s, null, 2), 'utf8');
+          fnosLog('info', 'shortcut.persist', 'shortcut.url.saved', { appId: __k22s.slice(0, 80), launchUrl: String(launchUrl).slice(0, 140) });
+        }
+      } catch (_) {}
       fnosLog('info', 'ipc', '快捷方式创建成功', { lnkPath, icoPath, launchUrl, appId, appName });
       // 需求 2.1 结果反馈弹窗：成功提示"桌面快捷方式已生成"
       return { success: true, msg: '桌面快捷方式已生成', data: { path: lnkPath } };
@@ -14860,6 +14873,20 @@ function __startLaunchServer() {
                 u = __av;
               }
             }
+            // v4.0.22 根地址保险丝：NAS 桌面（站点根）永远 200，探针通过不代表地址对。
+            // 应用窗绝不允许停在站点根，最后一道强制改走同源 appview?anchor。
+            try {
+              if (__isNasDesktopUrl(u)) {
+                // appId 可能是旧快捷方式里的完整 URL，先反查应用名再拼 appview
+                let __gid = String(appId || '');
+                if (/^https?:\/\//i.test(__gid)) { try { __gid = fpkAppNameFromUrl(__gid) || __gid; } catch (_) {} }
+                const __av2 = __appviewFallbackUrl(__gid);
+                if (__av2 && __av2 !== u) {
+                  try { require('./logger.js').log('warn', 'launch', 'launch.rooturl.guard', { params: { appId: String(appId || '').slice(0, 60), rootUrl: String(u).slice(0, 130), appviewUrl: String(__av2).slice(0, 130), replaced: true } }, __RUN_MODE); } catch (_) {}
+                  u = __av2;
+                }
+              }
+            } catch (_) {}
           } catch (_) {}
             // v3.0.30（问题4）：FPK embed 型应用的入口本质是「NAS 桌面 iframe 的 src」，
             // 独立窗口直连会因缺宿主上下文（父窗 postMessage / 桌面样式 / 宿主 cookie 路径）而白屏，
@@ -15636,20 +15663,72 @@ function __fpkLookupSync(name) {
     return pick(__loadFpkAppsCache());
   } catch (_) { return null; }
 }
-// v2.5.4 r20：根地址型 URL 修正——命中 app-center 官方启动地址则替换，否则原样返回
-function __rootUrlFallback(u, name) {
+// ===== v4.0.22：根地址（站点首页）统一判定 + 统一兜底 =====
+// 工单（NAS 192.168.50.91 / 4.0.x）：创建快捷方式时算对了 `…/appview?anchor=trim.music`，
+// 但双击启动走 __resolveLaunchUrl → FPK 缓存给的是 `http://nas/`，而这里只做 app-center 一级
+// 兜底 → 原样返回根地址；探针打根地址又是 200 → 保险丝不触发 → 应用窗里装的是 NAS 桌面。
+// 两条链（创建 / 启动）判定标准不一致、兜底级数不一致，是本问题的全部来源。
+function __isRootishUrl(u) {
+  try {
+    const pu = new URL(String(u || ''));
+    const pp = String(pu.pathname || '').replace(/\/+$/, '');
+    if (pp !== '' && pp !== '/') return false;
+    if (pu.search || pu.hash) return false;
+    return true; // 不看端口：http://nas:5666/ 同样是站点根
+  } catch (_) { return false; }
+}
+// 「是不是 NAS 桌面本身」——只有「根路径 + 与当前 NAS 同 host、端口不带或同端口」才算。
+// 关键：http://nas:34600/ 这类同机异端口是应用自己的根地址（OpenList / XTE / biliLive-tools），
+// 绝不能被当成 NAS 桌面改写掉。
+function __isNasDesktopUrl(u) {
+  try {
+    if (!__isRootishUrl(u)) return false;
+    const pu = new URL(String(u || ''));
+    const live = __liveOriginBase();
+    if (!live) return !pu.port;
+    const lu = new URL(live);
+    if (String(pu.hostname || '').toLowerCase() !== String(lu.hostname || '').toLowerCase()) return false;
+    if (pu.port && lu.port && String(pu.port) !== String(lu.port)) return false;
+    return true;
+  } catch (_) { return false; }
+}
+// 三级兜底（与创建链对齐）：① app-center 官方启动地址 ② manifest/behavior 实测入口
+// ③ 飞牛系统应用（trim.*）→ 同源 /appview?anchor=<appId>
+function __rootUrlFallback(u, name, appId) {
   try {
     if (!u || !/^https?:/i.test(u)) return u;
-    const pu = new URL(u);
-    const pp = String(pu.pathname || '').replace(/\/+$/, '');
-    if ((pp === '' || pp === '/') && !pu.search && !pu.hash) {
+    if (!__isNasDesktopUrl(u)) return u;
+    const id = String(appId || name || '');
+    const __logTier = (tier, to) => {
+      try { fnosLog(tier === 'none' ? 'warn' : 'info', 'shortcut.url', 'launch.rooturl.fallback', { name: String(name || '').slice(0, 60), appId: String(id).slice(0, 60), from: String(u).slice(0, 120), tier, to: String(to || '').slice(0, 140) }); } catch (_) {}
+    };
+    // ① app-center 官方启动地址
+    try {
       const ac = __appCenterUrlCache.get(String(name || '')) || '';
       // v3.0.15 r147：同 __truthRewrite28——缓存可能是本站不可达的假端口，不拿来替换
-      if (ac && /^https?:/i.test(ac) && !__launchUrlSpaOnly146(ac)) {
-        fnosLog('info', 'shortcut.url', 'root-url fallback app-center', { name: String(name || '').slice(0, 60), to: ac.slice(0, 140) });
+      if (ac && /^https?:/i.test(ac) && !__launchUrlSpaOnly146(ac) && !__isNasDesktopUrl(ac)) {
+        __logTier('app-center', ac);
         return ac;
       }
-    }
+    } catch (_) {}
+    // ② manifest / behavior 实测到过的真实入口
+    try {
+      const eh = __windowTypeGetEntry(id) || __windowTypeGetEntry(String(name || ''));
+      if (eh && eh.url && /^https?:/i.test(eh.url) && !__isNasDesktopUrl(eh.url)) {
+        __logTier('manifest', eh.url);
+        return eh.url;
+      }
+    } catch (_) {}
+    // ③ 飞牛系统应用统一入口（★ 启动链此前完全缺失的一级）
+    try {
+      if (/^trim\./i.test(id)) {
+        const base = new URL(u).origin;
+        const out = String(base).replace(/\/+$/, '') + '/appview?anchor=' + encodeURIComponent(id);
+        __logTier('appview-anchor', out);
+        return out;
+      }
+    } catch (_) {}
+    __logTier('none', u);
   } catch (_) {}
   return u;
 }
@@ -15716,6 +15795,17 @@ function __liveOriginFixUrl(u) {
     try { oldHost = new URL(/^https?:/i.test(oldO) ? oldO : 'http://' + oldO).host; } catch (_) { return s; }
     const pu = new URL(s);
     if (String(pu.host || '') !== String(oldHost)) {
+      // v4.0.22：同一台机器、只是端口缺失（FPK 给 http://nas/ 而实际 :5666）也要归位。
+      // 只处理「站点根」，绝不改写同 host 的其它端口（:3000 /:18080 这类应用真地址）。
+      try {
+        const __lu22 = new URL(live);
+        if (String(pu.hostname || '').toLowerCase() === String(__lu22.hostname || '').toLowerCase()
+          && pu.host !== __lu22.host && __isNasDesktopUrl(s)) {
+          const __out22 = __lu22.protocol + '//' + __lu22.host + '/';
+          try { fnosLog('info', 'launch', 'url.origin-fix31', { from: s.slice(0, 120), to: __out22.slice(0, 140) }); } catch (_) {}
+          return __out22;
+        }
+      } catch (_) {}
       // v3.0.15 r147：不是"旧 settings.origin 同 host"，但可能是更早的服务器 → 归位当前
       try {
         const __ph147 = String(pu.hostname || '').toLowerCase();
@@ -16346,6 +16436,24 @@ function __resolveLaunchUrl(raw, nasAddr) {
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
   if (!appName) return '';
+  // 0) v4.0.22：创建快捷方式时算好的入口优先（同主机 + 非站点根才用；换 NAS 自动失效）
+  try {
+    const __p22r = path.join(app.getPath('userData'), 'shortcut-urls.json');
+    const __m22r = JSON.parse(fs.readFileSync(__p22r, 'utf8')) || {};
+    const __e22r = __m22r[appName];
+    if (__e22r && __e22r.url && /^https?:\/\//i.test(String(__e22r.url)) && !__isNasDesktopUrl(__e22r.url)) {
+      let __ok22r = false;
+      try {
+        const __lv22r = __liveOriginBase();
+        __ok22r = !!__lv22r && new URL(__e22r.url).hostname === new URL(__lv22r).hostname;
+      } catch (_) { __ok22r = false; }
+      if (__ok22r) {
+        fnosLog('info', 'launch', 'launch.url.from-shortcut', { appId: String(appName).slice(0, 80), url: String(__e22r.url).slice(0, 150) });
+        return String(__e22r.url);
+      }
+      fnosLog('warn', 'launch', 'launch.url.from-shortcut.stale', { appId: String(appName).slice(0, 80), url: String(__e22r.url).slice(0, 150) });
+    }
+  } catch (_) {}
   // 1) 已是完整 URL（旧快捷方式 --app=http://...），直接用
   // 1) 已是完整 URL（旧快捷方式 --app=http://...）；v2.3.6: 丢端口时按 settings.origin 补正
   if (/^https?:\/\//i.test(appName)) {
@@ -16381,8 +16489,10 @@ function __resolveLaunchUrl(raw, nasAddr) {
   try {
     const fe = __fpkLookupSync(appName);
     if (fe && fe.url && /^https?:\/\//i.test(fe.url)) {
-      const __ru2 = __rootUrlFallback(__liveOriginFixUrl(fe.url), appName);
+      const __ru2 = __rootUrlFallback(__liveOriginFixUrl(fe.url), appName, appName);
       try { dlog && dlog('info', 'shortcut.url.fpk-cache', { name: String(appName).slice(0, 80), url: String(__ru2).slice(0, 140) }); } catch (_) {}
+      // v4.0.22：把「走的哪一步、最终是不是站点根」记进主日志，排障不用再翻 diag
+      try { fnosLog('info', 'launch', 'launch.resolve.step', { appId: String(appName).slice(0, 80), step: 'fpk-cache', url: String(__ru2).slice(0, 140), isRootish: __isNasDesktopUrl(__ru2) }); } catch (_) {}
       return __ru2;
     }
   } catch (_) {}
@@ -16402,7 +16512,7 @@ function __resolveLaunchUrl(raw, nasAddr) {
   try {
     const mf = readManifest();
     const entry = mf && Array.isArray(mf.apps) ? mf.apps.find(a => a && (a.appId === appName || a.name === appName || a.url === appName)) : null;
-    if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return __rootUrlFallback(__liveOriginFixUrl(entry.url), appName);
+    if (entry && entry.url && /^https?:\/\//i.test(entry.url)) return __rootUrlFallback(__liveOriginFixUrl(entry.url), appName, appName);
   } catch (_) {}
   // 4) appname → appview?anchor（飞牛系统应用统一入口，服务端/客户端会补端口归一化）
   let base = String(nasAddr || '').trim().replace(/\/+$/, '');

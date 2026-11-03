@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAKENSIS="$HOME/.cache/electron-builder/nsis/nsis-3.0.4.1/linux/makensis"
 NSIS_DIR="$HOME/.cache/electron-builder/nsis/nsis-3.0.4.1"
 VERSION=$(node -p "require('$ROOT/package.json').version")
-OUT_NAME="FNOS-Setup-${VERSION}.exe"
+OUT_NAME="FNOS-${VERSION}-setup.exe"   # 与 package.json build.nsis.artifactName 保持一致
 OUT="$ROOT/dist/$OUT_NAME"
 
 if [ ! -x "$MAKENSIS" ]; then

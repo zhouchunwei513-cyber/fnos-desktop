@@ -1,7 +1,8 @@
 name: Build & Release
 
-# 推送 v* 标签（如 v1.27.1）时自动构建 Windows 便携版并发布到 Releases；
+# 推送 v* 标签（如 v4.0.0）时自动构建 Windows NSIS 安装包并发布到 Releases；
 # 也可在 Actions 页面手动触发（Run workflow，可填自定义 mpv 直链）。
+# v4.0.0 起：构建前做 JS 语法自检，构建后校验 mpv.exe 与安装包体积，任一不通过即不发布。
 on:
   push:
     tags:
@@ -33,6 +34,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: 语法自检（node --check）
+        shell: pwsh
+        run: |
+          $fail = 0
+          $files = Get-ChildItem -Path . -Filter *.js -File
+          foreach ($f in $files) {
+            node --check $f.FullName
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error file=$($f.Name)::JS 语法错误"; $fail = 1 }
+          }
+          if ($fail -ne 0) { throw "存在 JS 语法错误，终止构建" }
+          Write-Host "语法自检通过：$($files.Count) 个文件"
+
       - name: 下载内置 mpv 运行时（Windows x86_64，GPL）
         shell: pwsh
         env:
@@ -62,7 +75,7 @@ jobs:
           Get-ChildItem mpv | ForEach-Object { Write-Host "  mpv/$($_.Name) $([math]::Round($_.Length/1MB,1)) MB" }
 
       - name: Build Windows setup (nsis only)
-        run: npx electron-builder --x64 --publish never   # target 由 package.json win.target 驱动（portable+zip）
+        run: npx electron-builder --x64 --publish never   # target 由 package.json build.win.target 驱动（NSIS x64）
 
       - name: 校验内置 mpv 内核已打包（防止产出无内核安装包）
         shell: pwsh
@@ -77,6 +90,15 @@ jobs:
             $f = Get-Item $out
             Write-Host "mpv.exe 已打包: $out $([math]::Round($f.Length/1MB,1)) MB"
           }
+
+      - name: 校验安装包体积（拒绝空包 / 缺内核）
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter 'FNOS-*-setup.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $setup) { throw "未找到 NSIS 安装包 FNOS-*-setup.exe，拒绝发布" }
+          $mb = [math]::Round($setup.Length / 1MB, 1)
+          Write-Host "安装包：$($setup.Name) $mb MB"
+          if ($setup.Length -lt 60MB) { throw "安装包体积异常（$mb MB），疑似未打入 MPV 内核，拒绝发布" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -102,7 +124,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             $extra = @()
             if ($tag -match '(-rc|-beta)') { $extra += '--prerelease' }
-            gh release create $tag --generate-notes @extra 2>$null
+            gh release create $tag --title "FNOS $tag" --generate-notes @extra 2>$null
             if ($LASTEXITCODE -ne 0) {
               # 竞态幂等：并发 mac job 可能已创建 release，回查 view，已存在则继续上传
               gh release view $tag 2>$null | Out-Null

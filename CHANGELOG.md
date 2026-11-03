@@ -1,0 +1,55 @@
+# 更新日志
+
+本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
+完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
+
+## v4.0.0
+
+> 发行工程化版本：对外是新一轮大版本，运行时行为与 v3.0.82 保持一致（差异仅版本号），
+> 主要价值在版本体系归一、仓库整理与发布链路加固。
+
+### 版本体系
+- `package.json` → `4.0.0`，`main.js` 的 `APP_VERSION` 同步为 `4.0.0`
+- `package-lock.json` 根版本号同步，避免 `npm ci` 版本漂移
+- 安装包命名统一：`FNOS-4.0.0-setup.exe`
+- 平台收敛：仓库仅保留 Windows 端源码与构建流程（macOS 源码 / 工作流已于上一提交移除）
+
+### 仓库整理
+- 移除 100+ 个本地临时脚本、调试文本与 `_menutest/` 试验目录（`_*.py` / `_*.txt` / `_tsettings.html` 等），
+  这些文件属于本地打补丁过程的中间产物，从未参与运行
+- 删除写死 Linux 沙箱路径的废弃构建脚本 `run-build.sh`
+- 历史版本发布公告归档到 `docs/forum/`
+- `.gitignore` 增补 CI 临时产物（`mpv.7z`、`mvpmpt/`）与本地工具目录条目
+
+### 发布链路加固
+- Windows 构建新增 **语法自检**：构建前对根目录全部 JS 执行 `node --check`，语法错误直接失败，
+  不再产出半成品安装包
+- Windows 构建新增 **安装包体积校验**：NSIS 产物缺失或小于阈值（缺 MPV 内核的典型症状）即终止发布
+- 沿用并保留原有的 `mpv.exe` 打包校验、Release 资产上传 4 次重试与上传后回读自证
+- Release 标题统一为 `FNOS <tag>`，自动生成变更说明
+- 本地脚本 `build/build-installer.sh` 输出名对齐 `package.json` 的 `artifactName`
+
+### 文档
+- README 重写：4.0 功能全景、下载、云端构建流程、项目结构、技术栈
+- 新增 CHANGELOG（本文件）
+- `AGENTS.md` 版本号、Electron 版本与发布流程校正
+
+## v3.0.82
+
+- 最大化窗口拖拽还原：修复还原到「第 0 帧」导致的尺寸错乱（还原后二次校验实际 bounds）
+- 拖动「按下即武装」：按下标题栏立即登记起点并挂起磨砂采样，2px 阈值内不再吞掉位移
+- 标题栏菜单窗口常驻复用，连续开关不再重复创建窗口
+- 磨砂采样改为事件驱动 + debounce（缩略图 480 → 352），降低常驻轮询带来的回读开销
+
+## v3.0.81
+
+- 菜单背景透明度跟随「透明界面」滑块
+- 拖动起步阈值 4px → 2px，去掉「刚按下拖不动」的手感问题
+- 拖动首帧不再空等一个 16ms 定时器
+
+## v3.0.80
+
+- 磨砂模式下按住标题栏拖动严重不跟手：拖动期间挂起抓屏采样，改用同一张图本地平移取景框
+- 拖动期间由主进程按帧推送新窗口位置，不再重复抓屏
+
+更早版本（v1.x / v2.x）变更见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。

@@ -1,7 +1,7 @@
 # FNOS 桌面客户端
 
 ## 项目概览
-基于 Electron 的 Windows 桌面客户端，用于管理多台 NAS/飞牛影视服务、打开飞牛影视网页、内置直播播放器。当前版本 v1.27.1。
+基于 Electron 的 Windows 桌面客户端，用于管理多台 NAS/飞牛影视服务、打开飞牛影视网页、内置直播播放器。当前版本 v4.0.0。
 
 ## 网页内直播/视频「用 MPV 打开」取流链路（preload.js，v1.26.9）
 飞牛影视 SPA 在 `<webview>` guest 内运行，菜单点击 → window `fnos:mpv-embed` 事件 → `triggerEmbed` → `resolveDirectUrl()` 解析真实流 → IPC `mpv:embed` → main `embedMpvPlay()` 起 MPV。
@@ -14,7 +14,7 @@
 MPV 是无边框置顶(`--ontop=yes`)独立原生窗。设置页/玻璃对话框/更新检查窗打标记 `__isSettings/__isGlassDialog/__isCheckWin`，在 focus/show/hide/minimize/restore/closed 调 `refreshMpvLayer()`：有阻挡窗 → `setAllMpvOntop(false)`（MPV ontop=no）**且**阻挡窗 `setAlwaysOnTop(true,'screen-saver')`（高于 MPV 普通置顶）；无则恢复。`MpvController.setOntop(on)` 经 IPC `set_property ontop yes/no`。
 
 ## 技术栈
-- Electron 22.x（Chromium 108，兼容 Win7）/ Node.js
+- Electron 44.x（Windows 10 1809+ / 11）/ Node.js 20+
 - 原生 HTML/CSS/JavaScript（无构建步骤）
 - **兼容性播放器内核：MPV（v1.25.0 起，取代已移除的 libVLC 方案）**：内置 `mpv.exe`（自带 ffmpeg 全解码器，MKV/MP4/HEVC 10bit/4K、HLS/FLV/HTTP/RTSP 全支持），通过 `child_process.spawn` 启动独立播放窗口；Chromium 解不了的飞牛影视视频可一键用 MPV 打开（自动带飞牛登录 Cookie/UA/Referer）。参考实现：fntv-electron（node-mpv-2 外部进程 + 飞牛直链 `/v/api/v1/media/range/<guid>`）。
 - hls.js（内置直播网页播放器，保持不变）
@@ -43,7 +43,7 @@ MPV 是无边框置顶(`--ontop=yes`)独立原生窗。设置页/玻璃对话框
 
 ## 常用命令
 ```bash
-# 语法检查
+# 语法检查（CI 会对根目录全部 *.js 执行同样的检查）
 node --check main.js
 node --check mpv-player.js
 node --check settings.js
@@ -51,11 +51,19 @@ node --check preload.js
 node --check settings-preload.js
 node --check live-preload.js
 
-# 打包 portable（在 Linux 沙箱中可交叉生成 Windows 包）
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ pnpm run dist
+# 本地打包 NSIS 安装包（需先放好 mpv/mpv.exe）
+npm run dist
 ```
 
-产物：`dist/FNOS-1.24.3-portable.exe`（含内置 VLC 内核，约 95MB）。
+产物：`dist/FNOS-4.0.0-setup.exe`（含内置 MPV 内核，约 140MB）。
+
+## 发布流程（v4.0.0 起）
+1. 改版本号：`package.json` + `package-lock.json`（2 处）+ `main.js` 的 `APP_VERSION`。
+2. 更新 `CHANGELOG.md` 与 `README.md` 的版本相关段落。
+3. 提交后打 tag 并推送：`git tag v4.0.0 && git push origin v4.0.0`。
+4. `.github/workflows/build.yml` 触发，CI 内置语法自检、`mpv.exe` 打包校验、安装包体积校验，
+   任一失败即不发布；通过后 `gh release upload` 追加产物到 `FNOS v4.0.0` Release。
+5. 仓库自 v4.0.0 起只保留 Windows 端，macOS 源码 / 工作流已移除。
 
 ## 核心文件
 - `main.js`：主进程入口，窗口管理、IPC、直播源解析、会话拉取、生命周期清理。

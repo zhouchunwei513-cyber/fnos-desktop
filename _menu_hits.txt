@@ -1,8 +1,0 @@
-  3558  const __MENU_ROLE_ACC = { minimize: 'Ctrl+M', close: 'Ctrl+W', toggleDevTools: 'Ctrl+Shift+I', reload: 'Ctrl+R' };
-  3563  if (!a && it && it.role) a = __MENU_ROLE_ACC[it.role] || '';
-  3808  ipcMain.on('app-popup-menu', (e, anchor) => {
-  3813  // 标题栏「☰」按钮走的是 app-popup-menu（完整应用菜单），此前 v2.24.7 的降层逻辑
-  3814  // 误加在 shell:popup-menu（子窗口分菜单链路），主窗口标题栏菜单从未降层。
- 16008  // v2.24.7（用户反馈 7）：标题栏原生菜单弹出期间需要临时把 MPV 降层，见 shell:popup-menu。
- 16010  ipcMain.handle('shell:popup-menu', (_e, payload) => {
- 16052  } catch (e) { console.error('shell popup-menu error', e); }

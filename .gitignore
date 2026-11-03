@@ -47,3 +47,11 @@ _gitcred*.txt
 
 _mkgitcred.py
 
+
+# CI 临时产物（mpv 运行时下载 / 解压）
+/mpv.7z
+/mvpmpt/
+
+# 本地工具链与导出目录（不入库）
+/tools/
+/exports/

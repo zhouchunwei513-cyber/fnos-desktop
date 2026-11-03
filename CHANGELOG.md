@@ -3,6 +3,45 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.32
+
+> 用户反馈：DOCKER 应用的主题模式暗模式和亮模式反了，要求把两者对调。
+
+### 先把事实说清：方向没接反，但观感确实是反的
+
+4.0.30/4.0.31 的探针日志（`fnos-diag`）可以逐项对上：
+
+```json
+{"kind":"skip","reason":"third-party-page","href":"http://192.168.31.101:8080/",
+ "clientDark":false,"clientTheme":"light","mqDark":false,"pageColorScheme":"light",
+ "bodyBg":"rgb(5, 6, 10)"}
+```
+
+客户端选的是亮模式（`storeMode=10`），第三方页拿到的也是亮（`mqDark:false`、`pageColorScheme:light`）——**链路本身没有接反**。问题在于这类容器应用（Docker 映射端口出来的页面）自己有默认配色（实测页面底色 `rgb(5,6,10)`，本身就是深色 UI），它只是用 `prefers-color-scheme` 去切"亮色变体"，于是客户端选亮时页面反而亮得很奇怪、选暗时又变得不对。按你的要求，本版直接做**对调**。
+
+### 实现：只对第三方应用窗反转，壳层零波及
+
+不能直接对 `nativeTheme.themeSource` 取反——它是**全局**的，会把飞牛自家页面里依赖 `prefers-color-scheme` 的组件、Electron 原生控件（菜单/滚动条/弹窗）一起翻转，壳层会乱。
+
+改用 CDP 的 `Emulation.setEmulatedMedia`，对**单个 webContents** 强制 `prefers-color-scheme`：
+
+- 同时覆盖该页的 **CSS `@media`** 与 **JS `matchMedia`**，正是"只调换 Docker 应用"需要的粒度；
+- 只在 `--fnos-xapp` 旗标窗（`win.__fnosXApp45`）上 `debugger.attach`，主窗/设置页/影视直播窗不 attach，**表现与 4.0.31 逐像素一致**；
+- 注册时机与补偿：`did-start-loading` 就先 attach（emulation 在导航间保持，首帧即反相，不会"先正后反"闪一下），`did-finish-load` / `did-navigate-in-page` 再兜底重发；用户按 F12 开过开发者工具会顶掉 attach，`devtools-closed` 后自动补回；
+- 主题真值变化（`theme:mode` 上报、系统 `nativeTheme updated`、30s 轮询）时 `__broadcastXappTheme31()` 全量重刷，**不刷新页面**即反相跟随。
+
+新增日志 `xapp.theme-invert{why,winId,wcId,sees,clientSees,storeMode,url}`：`sees` 是页面实际拿到的值，`clientSees` 是客户端真值，两者应当**恒互反**。若哪天又"反回去"，一条日志就能定位是哪一层翻了。
+
+### 回滚 / 再对调
+
+- 开关常量：`main.js` 的 `__XAPP_INVERT_DEFAULT`（现为 `true`）；
+- 或直接在 `settings.json` 写 `"xappThemeInvert": false`，重启即恢复 4.0.31 行为，**不需要重装**；
+- 关掉开关时会主动 `features: []` 清覆写并 `detach`，不是留个半截状态。
+
+### 边界（说清楚免得白试）
+
+本版只覆盖**独立应用窗**（`--fnos-xapp` 旗标窗）。如果某个 Docker 应用是**嵌在飞牛桌面 iframe 里**显示的（和主窗同一个 webContents），对它做 emulation 会连壳层一起翻，所以刻意没碰；这类场景需要等飞牛前端自己提供主题参数，或用 webview 独立 guest 后再纳入。
+
 ## v4.0.31
 
 > 用户反馈 2 条：①磨砂/纯色下换皮肤要等很久才出来 ②账号悬浮球希望跟随标题栏的材质/颜色/浓度，也要能单独设置。

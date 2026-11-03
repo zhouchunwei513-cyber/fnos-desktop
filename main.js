@@ -7757,6 +7757,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   try { win.__fnosAppWin29 = true; } catch (_) {}
   // v3.0.46：第三方应用窗标记——帧脚本（主题归一/假窗控杀除）整体跳过，不改写第三方页面配色
   try { win.__fnosXApp45 = !!__xapp46; } catch (_) {}
+  // v4.0.32：第三方应用窗「主题对调」注册——CDP 按 webContents 反转 prefers-color-scheme
+  //（用户：Docker 应用暗/亮反了，要求调换；只作用于本类窗口，壳层零波及）
+  try { if (win.__fnosXApp45) __registerXappWin31(win); } catch (_) {}
 
   // v3.0.43：落位自校正对所有应用窗口生效（不只 in-app），基准统一取主窗内容区（__mainContentRect41）。
   // 覆盖三个源头：主窗在创建瞬间改变位置/大小、Windows 把新窗甩到层叠位、DWM/DPI 造成的实际 bounds
@@ -9803,6 +9806,116 @@ function __syncThemeFromMain() {
     if (__sig !== __lastThemeSig) {
       __lastThemeSig = __sig;
       try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: __appDark ? 'dark' : 'light', mode: (__themeStoreMode() === '10' ? 'light' : (__themeStoreMode() === '20' ? 'dark' : 'system')), storeMode: __themeStoreMode(), appDark: __appDark, sysUiDark: __sysUiDark, themeSource: String(nt.themeSource), thirdPartySees: __appDark ? 'dark' : 'light', fix: 'r29-store-truth' } }, __RUN_MODE); } catch (_) {}
+      // v4.0.32：主题真值变化 → 第三方应用窗立即反相跟随（不刷页、不等轮询）
+      try { __broadcastXappTheme31(); } catch (_) {}
+    }
+  } catch (_) {}
+}
+// ================= v4.0.32：第三方（Docker 等）应用窗主题【对调】 =================
+// 用户反馈："DOCKER 应用的主题模式好像暗模式和亮模式反的了，调换一下"。
+//
+// 现状链路（4.0.30/4.0.31 实测日志 fnos-diag 已确认，方向没接错）：
+//   - 客户端 light（storeMode=10）→ 第三方页 theme.normalize kind:skip（零注入）、
+//     mqDark:false / pageColorScheme:"light"，即客户端把"亮"如实地送给了页面；
+//     但这类容器应用自身默认 UI 就是深底（实测 bodyBg: rgb(5,6,10)），
+//     它读 prefers-color-scheme 只是切"浅色变体"分支 → 观感与客户端所选相反。
+//   - 因此这里按用户要求做【对调】：让第三方页看到与客户端真值相反的值。
+//
+// 为什么不用 nativeTheme.themeSource 取反：themeSource 是全局的，会把飞牛自家页面里
+//   依赖 prefers-color-scheme 的组件、Electron 原生控件（菜单/滚动条/弹窗）一起翻转，壳层会乱。
+// 采用 CDP webContents.debugger 的 Emulation.setEmulatedMedia：按【单个 webContents】强制
+//   prefers-color-scheme，同时覆盖该页的 CSS @media 与 JS matchMedia，且只在 --fnos-xapp
+//   窗口上 attach —— 壳层/设置页/影视直播窗完全不受影响。
+//
+// 回滚：把 __XAPP_INVERT_DEFAULT 改 false，或在 settings.json 写 "xappThemeInvert": false
+//   （不需重发版本，重启客户端即恢复 4.0.31 行为）。
+const __XAPP_INVERT_DEFAULT = true;
+const __xappWins31 = new Set();
+function __xappInvertOn() {
+  try {
+    if (typeof global.__FNOS_XAPP_INVERT31 !== 'boolean') {
+      let v = __XAPP_INVERT_DEFAULT;
+      try {
+        const s = loadSettings();
+        if (s && typeof s.xappThemeInvert === 'boolean') v = s.xappThemeInvert;
+      } catch (_) {}
+      global.__FNOS_XAPP_INVERT31 = !!v;
+    }
+    return !!global.__FNOS_XAPP_INVERT31;
+  } catch (_) { return __XAPP_INVERT_DEFAULT; }
+}
+function __xappSeesDark31() {
+  try {
+    const d = __resolveTheme29();
+    return __xappInvertOn() ? !d : d;
+  } catch (_) { return false; }
+}
+function __xappAttach31(win) {
+  try {
+    if (!win || win.isDestroyed() || !win.__fnosXApp45) return false;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed()) return false;
+    if (!wc.debugger.isAttached()) {
+      try { wc.debugger.attach('1.3'); } catch (_) { return false; }
+    }
+    return !!wc.debugger.isAttached();
+  } catch (_) { return false; }
+}
+function __applyXappThemeInvert31(win, why) {
+  try {
+    if (!win || win.isDestroyed() || !win.__fnosXApp45) return;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    if (!__xappAttach31(win)) return;
+    if (!__xappInvertOn()) {
+      // 关掉开关：清掉覆写并脱离，页面回到主题真值（4.0.31 行为）
+      try { const p0 = wc.debugger.sendCommand('Emulation.setEmulatedMedia', { media: '', features: [] }); if (p0 && p0.catch) p0.catch(() => {}); } catch (_) {}
+      try { wc.debugger.detach(); } catch (_) {}
+      return;
+    }
+    const sees = __xappSeesDark31() ? 'dark' : 'light';
+    try {
+      const p1 = wc.debugger.sendCommand('Emulation.setEmulatedMedia', {
+        media: '',
+        features: [{ name: 'prefers-color-scheme', value: sees }],
+      });
+      if (p1 && p1.catch) p1.catch(() => {});
+    } catch (_) {}
+    try {
+      require('./logger.js').log('info', 'window', 'xapp.theme-invert', {
+        params: {
+          why: why || '',
+          winId: win.id,
+          wcId: wc.id,
+          sees,
+          clientSees: __resolveTheme29() ? 'dark' : 'light',
+          storeMode: __themeStoreMode(),
+          url: String(wc.getURL() || '').slice(0, 120),
+        },
+      }, __RUN_MODE);
+    } catch (_) {}
+  } catch (_) {}
+}
+function __registerXappWin31(win) {
+  try {
+    if (!win || !win.__fnosXApp45) return;
+    __xappWins31.add(win);
+    const wc = win.webContents;
+    const kick = (why) => { try { __applyXappThemeInvert31(win, why); } catch (_) {} };
+    // start-loading 就先 attach：emulation 在导航间保持，首帧即为反相值，避免"先正后反"闪一下
+    try { wc.on('did-start-loading', () => kick('start-loading')); } catch (_) {}
+    try { wc.on('did-finish-load', () => kick('finish-load')); } catch (_) {}
+    try { wc.on('did-navigate-in-page', () => kick('in-page')); } catch (_) {}
+    // 用户按 F12 开过开发者工具会把我们的 debugger 顶掉，关掉后补回
+    try { wc.on('devtools-closed', () => kick('devtools-closed')); } catch (_) {}
+    try { win.on('closed', () => { try { __xappWins31.delete(win); } catch (_) {} }); } catch (_) {}
+    kick('register');
+  } catch (_) {}
+}
+function __broadcastXappTheme31() {
+  try {
+    for (const w of Array.from(__xappWins31)) {
+      try { __applyXappThemeInvert31(w, 'broadcast'); } catch (_) {}
     }
   } catch (_) {}
 }

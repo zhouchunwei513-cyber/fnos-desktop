@@ -175,8 +175,9 @@ process.on('unhandledRejection', (reason) => {
   } catch (_) {}
 });
 
-// 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.24';
+// 版本号：直接取 package.json 的 version（无论开发态还是 asar 打包态都读同一份），
+// 不再手写常量——历史上有过常量停在旧值、界面「关于」显示与 package.json 脱节的问题。
+const APP_VERSION = app.getVersion();
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时

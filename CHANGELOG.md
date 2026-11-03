@@ -3,6 +3,38 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.29
+
+> 二轮验证：QQ 录屏里已经不闪了，但 **UU 远程下只要拖动窗口，被控端窗口仍会「一会消失一会出现」**。录屏逐帧量化：一次拖动固定闪两下——松手瞬间一下、+2.0 秒再一下，每下 0.30~0.33 秒，与日志 `frost.capture.protectedMs`（median 317ms）完全吻合。
+
+### 根因
+
+`setContentProtection(true)` = `WDA_EXCLUDEFROMCAPTURE`，只影响采集管线。磨砂背景靠自采样，每采一次就要把自己从采集管线里摘掉约 310ms，远程/录屏端看到的就是窗口整块消失。4.0.26 已把频率压下来，但还留着四条「还会抓」的路径：
+
+1. **松手立即抓**（主因）：`setSuspend(win,false)` 里 `schedule(entry, 0)`，拖完只是平移，背后那张桌面图根本没变。
+2. **+2 秒补抓**：`ACTIVE_MS=2000` 的「应对连续轻推」对纯平移同样生效，于是每次拖动固定多闪一下。
+3. **arm 抖动**：远程输入 press/release 粒度粗，实测 30 组里 17 组存活 <300ms（最短 15ms），每次「松开」都走 `schedule(0)` 抓一张。
+4. **show / restore 各抓一张**：窗口显示/还原时背后桌面通常没变，白闪 310ms。
+
+### 改动（全部集中在 `titlebar-frost.js`，不动 `main.js`）
+
+- **P0-1 纯平移不抓图**：已有底图、且宽高与显示器都没变时，只把窗口新坐标推给渲染层（复用 `titlebar-frost-pos` 平移取景框），不重新抓屏。抓图成功后记下 `lastShotBounds` / `lastShotDisp` 作为比对基准。
+- **P0-2 松手不立即抓**：按住 <300ms 判为远端输入抖动，直接吞掉（`frost.suspend.flap`）；真拖动结束后只排一次 220ms debounce，且是否真抓交给 P0-1/P0-3 按几何判断。
+- **P0-3 补抓条件化**：`ACTIVE_MS` 那次补抓只在「宽高真的变了」（resize/分屏/缩放/换显示器）时执行，纯平移跳过。
+- **P0-4 show/restore 冷却**：15s 内已有底图就不再为「显示/还原」重抓。
+- **P1 未聚焦一律不抓**：原来「有底图才延后」收紧为「一律延后」，只放行开窗首次（`enable`/`show`/`refresh`）；首次补图交给 `focus` 钩子，避免磨砂层一直空着。
+- **埋点**：新增 `frost.reproject {dx,dy}`、`frost.suspend.flap {held}`、`frost.capture.skip {reason: unfocused|same-geom|cooldown}`、`frost.budget {captures, protectedMsSum, duty}`（每分钟一条，占空比是这件事唯一值得盯的数）。
+
+### 影响面
+
+- 拖动、松手、显示、还原：**零抓屏、零消失**；单纯移动不再刷新磨砂底图（背景最多陈旧 5 分钟，由 `IDLE_MS` 兜底）。
+- 缩放窗口、分屏、拖到另一块显示器：仍会重抓一张（宽高或显示器变了，旧图的取景框确实不够用）。
+- 切纯色模式：依旧零采样。
+
+### 验收口径
+
+连续拖动 5 次 + 静置 60s → 录屏消失段 **0**；日志侧 `frost.reproject` ≥ 5 条、`frost.capture` 0 次；缩放 3 次 → 消失段 ≤3 且每段 ≤0.35s；任意 10 分钟 `duty < 0.5%`（当前 3.6%）。
+
 ## v4.0.28
 
 > 用户要求：主程序内打开的所有应用（内嵌窗、独立跳出窗），标题栏一律删除「刷新」和「新标签打开」两个按钮。

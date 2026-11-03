@@ -19,6 +19,14 @@
  *  5. v4.0.26：每次采样都会让窗口在录屏/远程画面里短暂消失（见 ACTIVE_MS 段注释），
  *     所以采样必须"越少越好"——聚焦不再触发采样、未聚焦窗口不采样、静止兜底拉到 5min，
  *     并补 `frost.capture {trigger, ms, protectedMs}` 埋点，能直接量化占空比。
+ *  6. v4.0.29：把「还会抓」的四条残留路径逐个掐掉（对应二轮验证报告 R1~R4 / P0-1~P0-4）：
+ *     - P0-1 纯平移不抓图：已有底图且宽高/显示器没变时，只把窗口新坐标推给渲染层平移取景框
+ *       （titlebar-frost-pos），不再重抓 —— 松手、拖动全程零抓屏。
+ *     - P0-2 松开不立即抓：按住 <FLAP_MS(300ms) 的 press/release 判为远端输入抖动直接吞掉。
+ *     - P0-3 补抓条件化：ACTIVE_MS 那次补抓只在「宽高真的变了」（resize/分屏/缩放）时执行。
+ *     - P0-4 show/restore 冷却 15s，窗口显示/还原不再白闪。
+ *     - P1 未聚焦一律不抓（只放行开窗首次），首次补图交给 focus 钩子。
+ *     埋点新增 frost.reproject / frost.suspend.flap / frost.capture.skip / frost.budget。
  */
 
 const { desktopCapturer, screen } = require('electron');
@@ -36,6 +44,11 @@ const ACTIVE_MS = 2000;      // 移动结束后紧接着的那次补抓之后，
 const IDLE_MS = 300000;      // 静止兜底：5min 一次（壁纸变化 5 分钟刷新一次完全够用）
 const MIN_GAP = 1000;        // 两次抓取的最小间隔，防抖
 const KICK_DEBOUNCE = 220;  // 窗口动过之后多久才允许抓（拖动过程中不抓）
+// v4.0.29（P0-2）：按下→松开存活不足这么久的，判为远程输入抖动（UU/RDP 的 press/release
+// 粒度粗，实测 30 组里 17 组 <300ms，最短 15ms），「松开」不再触发抓图。
+const FLAP_MS = 300;
+// v4.0.29（P0-4）：show/restore 的采样冷却——窗口显示/还原时背后桌面通常没变。
+const SHOW_COOLDOWN_MS = 15000;
 
 const entryOf = new Map();  // win.id -> entry
 
@@ -44,6 +57,27 @@ function setLogger(fn) { __logger = (typeof fn === 'function') ? fn : null; }
 
 function logInfo(evt, obj) {
   try { if (__logger) __logger('info', 'titlebar', evt, obj); } catch (_) {}
+}
+
+// v4.0.29：占空比聚合——「窗口在采集画面里消失的时间占比」是这件事唯一值得盯的数。
+// 每分钟输出一条 frost.budget（captures 次数 / protectedMs 之和 / duty）。
+const __budget = { minute: -1, captures: 0, protectedMs: 0 };
+function __budgetTick(protectedMs) {
+  const m = Math.floor(Date.now() / 60000);
+  if (__budget.minute !== m) {
+    if (__budget.captures > 0) {
+      logInfo('frost.budget', {
+        captures: __budget.captures,
+        protectedMsSum: __budget.protectedMs,
+        duty: Math.round((__budget.protectedMs / 60000) * 10000) / 10000,
+      });
+    }
+    __budget.minute = m;
+    __budget.captures = 0;
+    __budget.protectedMs = 0;
+  }
+  __budget.captures += 1;
+  __budget.protectedMs += Math.max(0, Number(protectedMs) || 0);
 }
 
 function displayOf(win) {
@@ -129,6 +163,13 @@ async function capture(entry, trigger) {
       ok: !!shot,
       focused: __focused,
     });
+    __budgetTick(__protMs);
+  }
+  // v4.0.29（P0-1）：记下这张图对应的「窗口几何 + 显示器」。下次要采样时先比一次：
+  // 宽高与显示器都没变、只是位置平移了 → 直接把窗口新坐标推给渲染层平移取景框，不重抓。
+  if (shot) {
+    entry.lastShotBounds = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    entry.lastShotDisp = String(disp.id);
   }
   return shot;
 }
@@ -169,31 +210,87 @@ function cpReset(entry) {
   } catch (_) {}
 }
 
+function __safeBounds(win) {
+  try { return win && !win.isDestroyed() ? win.getBounds() : null; } catch (_) { return null; }
+}
+
 function runOnce(entry) {
   if (!entry || !entry.enabled) return;
   if (!entry.win || entry.win.isDestroyed()) return;
-  // 拖动中：不抓，稍后再看一眼（松手会主动 schedule(0) 补抓）
+  // 拖动中：不抓，稍后再看一眼（松手会主动 schedule 补抓）
   if (entry.suspend) { schedule(entry, 1200); return; }
   // v4.0.26：未聚焦窗口不采样。聚焦/静止都不会改变窗口背后的画面，而每采一次就要把自己
   // 从采集管线里摘掉 ~300ms（录屏/远程端看到的就是"消失"）。
-  // 例外：这个窗口还一张图都没抓过（否则磨砂层是空的）——首次仍抓，之后一律延后。
+  // v4.0.29（P1）：从"有底图才延后"收紧成"一律延后"，只给「一张底图都还没有」的开窗类事件
+  // 放行一次；其余首次补图交给 focus 钩子（__ensureFocusHook），避免未聚焦窗口被 move/resize
+  // 反复抓图。否则磨砂层可能一直空着。
   let __focused = true;
   try { __focused = !!entry.win.isFocused(); } catch (_) { __focused = true; }
-  if (!__focused && entry.shotAt) { entry.trigger = 'defer-unfocused'; schedule(entry, IDLE_MS); return; }
+  if (!__focused) {
+    const __tg = String(entry.trigger || 'timer');
+    const __firstAllowed = !entry.shotAt &&
+      (__tg === 'enable' || __tg === 'show' || __tg === 'focus-first' || __tg === 'refresh');
+    if (!__firstAllowed) {
+      logInfo('frost.capture.skip', { win: entry.win.id, reason: 'unfocused', trigger: __tg });
+      entry.trigger = 'defer-unfocused';
+      schedule(entry, IDLE_MS);
+      return;
+    }
+  }
   if (entry.busy) { schedule(entry, 200); return; }
   const gap = Date.now() - (entry.lastAt || 0);
   if (gap < MIN_GAP) { schedule(entry, MIN_GAP - gap); return; }
 
-  cpReset(entry);
-  entry.busy = true;
   const __trigger = String(entry.trigger || 'timer');
   entry.trigger = '';
+
+  // v4.0.29（P0-1）：纯平移不抓图。窗口只是在这张屏幕图上挪了取景框，背景根本没变，
+  // 但每抓一次都要把自己从采集管线里摘掉 ~310ms——录屏/远程端看到的就是"窗口闪没了"。
+  // 已有底图时，只要「宽高 + 显示器」没变、只是位置变了，就走 titlebar-frost-pos 平移，
+  // 不重新抓屏（该通道拖动期间本来就在用，语义是「窗口新的绝对坐标」）。
+  const __bounds = __safeBounds(entry.win);
+  const __last = entry.lastShotBounds;
+  const __disp = displayOf(entry.win);
+  const __dispId = __disp ? String(__disp.id) : '';
+  if (__last && __bounds && __trigger !== 'refresh' && __trigger !== 'enable' &&
+      __bounds.width === __last.width && __bounds.height === __last.height &&
+      (!__dispId || __dispId === entry.lastShotDisp) &&
+      (__bounds.x !== __last.x || __bounds.y !== __last.y)) {
+    try {
+      const wc = entry.win.webContents;
+      if (wc && !wc.isDestroyed()) wc.send('titlebar-frost-pos', { x: __bounds.x, y: __bounds.y });
+    } catch (_) {}
+    entry.lastShotBounds = { x: __bounds.x, y: __bounds.y, width: __bounds.width, height: __bounds.height };
+    entry.lastShotDisp = __dispId || entry.lastShotDisp;
+    entry.active = false;
+    logInfo('frost.reproject', { win: entry.win.id, dx: __bounds.x - __last.x, dy: __bounds.y - __last.y });
+    schedule(entry, IDLE_MS);
+    return;
+  }
+
+  cpReset(entry);
+  entry.busy = true;
   Promise.resolve()
     .then(() => capture(entry, __trigger))
     .then((shot) => { if (shot) send(entry, shot); })
     .catch(() => {})
     .then(() => {
       entry.busy = false;
+      // v4.0.29（P0-3）：补抓也条件化。ACTIVE_MS 那次补抓本来是为了「连续轻推」，
+      // 但对纯平移同样生效，于是每次拖动固定多闪一下（ACTIVE_MS=2s 后准时再来一次）。
+      // 这里先看几何：宽高没变、显示器没变 → 纯平移，交给 P0-1，不抓。
+      const __b2 = __safeBounds(entry.win);
+      const __o2 = entry.lastShotBounds;
+      const __d2 = displayOf(entry.win);
+      const __d2id = __d2 ? String(__d2.id) : '';
+      if (entry.active && __b2 && __o2 &&
+          __b2.width === __o2.width && __b2.height === __o2.height &&
+          (!__d2id || __d2id === entry.lastShotDisp)) {
+        entry.active = false;
+        logInfo('frost.capture.skip', { win: entry.win.id, reason: 'same-geom' });
+        schedule(entry, IDLE_MS);
+        return;
+      }
       // 兜底：静止后长时间无事件时仍按 IDLE_MS 更新一次（壁纸/桌面可能变了）
       schedule(entry, entry.active ? ACTIVE_MS : IDLE_MS);
     });
@@ -203,7 +300,17 @@ function runOnce(entry) {
 function kick(win, ms, trigger) {
   const entry = entryOf.get(win && win.id);
   if (!entry || !entry.enabled) return;
-  entry.trigger = String(trigger || 'kick');   // v4.0.26：埋点用（谁在踢采样）
+  const __tg = String(trigger || 'kick');
+  // v4.0.29（P0-4）：show/restore 加冷却。窗口显示/还原时背后的桌面通常没变，
+  // 为它白闪 310ms 不值得；已有底图时 15s 内不重复抓。
+  if (__tg === 'show' || __tg === 'restore') {
+    const __age = Date.now() - (entry.lastAt || 0);
+    if (entry.shotAt && __age < SHOW_COOLDOWN_MS) {
+      logInfo('frost.capture.skip', { win: win.id, reason: 'cooldown', trigger: __tg, ageMs: __age });
+      return;
+    }
+  }
+  entry.trigger = __tg;   // v4.0.26：埋点用（谁在踢采样）
   entry.active = true;
   if (entry.activeTimer) { try { clearTimeout(entry.activeTimer); } catch (_) {} }
   entry.activeTimer = setTimeout(() => {
@@ -223,14 +330,35 @@ function refresh(win) {
   schedule(entry, 0);
 }
 
+// v4.0.29（P1）：未聚焦窗口不再被 move/resize 拉去抓图，但磨砂层总得有一张底图。
+// 聚焦才是"用户真的在看它"的可靠信号——已有底图时无视（v4.0.26 起聚焦不重抓），
+// 一张都没有时补抓一次，避免开窗后磨砂层一直是空的。
+function __ensureFocusHook(entry) {
+  if (!entry || entry.focusHooked) return;
+  entry.focusHooked = true;
+  try {
+    entry.win.on('focus', () => {
+      if (!entry.enabled || entry.shotAt) return;
+      entry.trigger = 'focus-first';
+      entry.active = true;
+      schedule(entry, 0);
+    });
+  } catch (_) {}
+}
+
 /** 启用/停用某窗口的磨砂采样 */
 function setEnabled(win, on) {
   if (!win || win.isDestroyed()) return;
   let entry = entryOf.get(win.id);
   if (!entry) {
-    entry = { win, enabled: false, busy: false, lastAt: 0, shotAt: 0, trigger: '', active: true, timer: null, activeTimer: null, suspend: false };
+    entry = {
+      win, enabled: false, busy: false, lastAt: 0, shotAt: 0, trigger: '', active: true,
+      timer: null, activeTimer: null, suspend: false,
+      suspendAt: 0, lastShotBounds: null, lastShotDisp: '', focusHooked: false,
+    };
     entryOf.set(win.id, entry);
   }
+  __ensureFocusHook(entry);
   const want = !!on;
   if (entry.enabled === want) {
     // v4.0.26：状态没变就不要补抓。设置页拖动不透明度/模糊滑块时每 tick 都会走
@@ -270,12 +398,24 @@ function setSuspend(win, on) {
   entry.suspend = want;
   logInfo('frost.suspend', { win: win.id, on: want });
   if (!want) {
+    // v4.0.29（P0-2）：松开不再「立即抓」。先看这次按住持续了多久——远程输入的
+    // press/release 会成对抖动，存活 <FLAP_MS 的一律当抖动吞掉，不调度抓取；
+    // 真正的拖动结束后只排一次 KICK_DEBOUNCE(220ms)，且是否真抓由 P0-1/P0-3 按几何判断。
+    const held = Date.now() - (entry.suspendAt || 0);
+    entry.suspendAt = 0;
+    if (held < FLAP_MS) {
+      logInfo('frost.suspend.flap', { win: win.id, held: held });
+      return;
+    }
     entry.lastAt = 0;
     entry.active = true;
-    schedule(entry, 0);
-  } else if (entry.timer) {
-    try { clearTimeout(entry.timer); } catch (_) {}
-    entry.timer = null;
+    schedule(entry, KICK_DEBOUNCE);
+  } else {
+    entry.suspendAt = Date.now();
+    if (entry.timer) {
+      try { clearTimeout(entry.timer); } catch (_) {}
+      entry.timer = null;
+    }
   }
 }
 

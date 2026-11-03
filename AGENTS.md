@@ -41,6 +41,20 @@ MPV 是无边框置顶(`--ontop=yes`)独立原生窗。设置页/玻璃对话框
 - 直播播放页 `/v/live/<hex>`，直播库入口 `/v/library/<hex>`。
 `fnosMediaToWebPage()`：`/v/media/<guid>` → `/v/movie/<guid>`；`/v/live/<hex>` 保持；`/fnplay/<guid>` 第三方网关回退 `/v/movie/<guid>`。
 
+## 发布规则（硬性，每个版本都要做）
+每完成一个版本，必须同时完成「本地部署」与「GitHub 发布」，不允许只在本地改完就结束：
+
+1. 升版本：`package.json.version` 与 `main.js` 的 `APP_VERSION` 必须一致；
+2. 写 `CHANGELOG.md`（含判断依据 / 根因 / 修复 / 日志增强）；
+3. 提交 + 打标签 + 推送：`tools\release.ps1 -Version 4.0.x -MsgFile tools\commit-msg-4.0.x.txt`
+   （推送 `v*` 标签即触发 `.github/workflows/build.yml`：语法自检 → 下载 mpv 运行时 →
+   打包 NSIS → 校验 mpv/体积 → 建 Release 并上传安装包）；
+4. 本地部署：重打包 `app.asar` 并替换到安装目录（`tools\deploy.ps1`）。
+
+推送说明：内网直连 GitHub 会被 RST，脚本自动探测 `127.0.0.1:7890` 代理；
+认证复用 Windows 凭据库里 gh 存的 token（`tools\gh-askpass.cmd`，不落盘、不打印）。
+`main` 与标签都必须推，只推 main 不会触发构建。
+
 ## 常用命令
 ```bash
 # 语法检查（CI 会对根目录全部 *.js 执行同样的检查）

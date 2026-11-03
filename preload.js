@@ -89,6 +89,70 @@ function __fnosFindIconNode(anchor, labels) {
   } catch (_) {}
   return null;
 }
+// v4.0.19（用户工单「内嵌窗请用飞牛自带标题栏，↗ 新标签我自己点」）
+// 旧逻辑：桌面图标点开 → 飞牛在 SPA 里渲染内嵌窗（.trim-ui__app-layout--window，44px 标题栏，
+// 只有 — □ ✕）→ preload 检测到新 iframe 就 window.open(..., 'fnos-embed-style,...') 强转独立窗口，
+// 并删除主窗内嵌原件。结果：飞牛自带标题栏连同 maximise/close 一起消失，被 Electron 自绘栏取代，
+// 用户也就失去了「新标签打开变成独立窗」的入口。
+// 新逻辑：内嵌窗原样保留（飞牛标题栏不动），只在标题栏按钮组最左侧注入一个 ↗，
+// 外观与飞牛 — □ ✕ 完全同款（w-base + 46x44 + hover），点它才走原来的 window.open 通道转独立窗。
+function __fnosEmbedPopoutBtn(f, anchor, box) {
+  try {
+    if (!f || !box || !box.querySelector) return;
+    if (box.querySelector('.fnos-embed-popout')) return;
+    const closeBtn = box.querySelector('.app-layout-header-close');
+    const group = closeBtn ? closeBtn.parentElement : null;
+    if (!group) return;
+    const b = document.createElement('div');
+    b.className = 'fnos-embed-popout flex h-full w-base shrink-0 cursor-pointer items-center px-[15px] text-[var(--semi-color-text-0)] hover:bg-[var(--semi-color-fill-0)] active:bg-[var(--semi-color-fill-0)]';
+    b.title = '在新标签打开（变成独立窗口）';
+    b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 3H13v3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L7.5 8.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11.5 9.8V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    b.addEventListener('click', function (ev) {
+      try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+      try { window.open(String(f.src), '_blank', 'fnos-embed-style,fnos-anchor=' + encodeURIComponent(anchor)); } catch (_) {}
+      try { if (box.parentNode) box.parentNode.removeChild(box); } catch (_) {}
+      try { __rl.log('info', 'launch', 'embed-popout-clicked', { params: { src: String(f.src).slice(0, 140) } }); } catch (_) {}
+    });
+    group.insertBefore(b, group.firstChild);
+  } catch (_) {}
+}
+
+// v4.0.19：内嵌窗 ↗ 兜底注入——不依赖「快捷方式启动」链路。主窗内任何时刻出现
+// .trim-ui__app-layout--window（搜索、开始菜单、桌面图标都算）都补一个 ↗，
+// 保证「内嵌窗用飞牛标题栏 + 随时能变独立窗」两条同时成立。
+(function __fnosEmbedPopoutWatch() {
+  try {
+    const argv = process.argv || [];
+    const isMain = argv.indexOf('--fnos-shell') >= 0 && argv.indexOf('--fnos-app-window') < 0;
+    if (!isMain) return;
+    if (window.top !== window) return;
+    let timer = 0;
+    const scan = () => {
+      timer = 0;
+      try {
+        document.querySelectorAll('.trim-ui__app-layout--window').forEach((box) => {
+          try {
+            if (box.querySelector('.fnos-embed-popout')) return;
+            const f = box.querySelector('iframe');
+            if (!f || !f.src) return;
+            __fnosEmbedPopoutBtn(f, '', box);
+          } catch (_) {}
+        });
+      } catch (_) {}
+    };
+    const kick = () => { if (timer) return; timer = setTimeout(scan, 300); };
+    const start = () => {
+      try {
+        const mo = new MutationObserver(kick);
+        mo.observe(document.documentElement, { childList: true, subtree: true });
+      } catch (_) {}
+      setTimeout(scan, 1200);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+    else start();
+  } catch (_) {}
+})();
+
 function __fnosLaunchByClick(appId, url, labels) {
   try {
     const anchor = String(appId || '').split(/[?#]/)[0].replace(/\/+$/, '');
@@ -132,30 +196,21 @@ function __fnosLaunchByClick(appId, url, labels) {
           const news = [];
           document.querySelectorAll('iframe').forEach(f => { if (base && !base.has(f) && f && f.src) news.push(f); });
           if (news.length) {
+            // v4.0.19：内嵌窗保留（飞牛自带标题栏不动），只补一个 ↗ 按钮，点它才转独立窗口
             for (const f of news) {
-          // v2.4.9（用户反馈 8 两种窗口模式自动适配）：内嵌窗型不再转普通跳出窗，window.open
-          // 带 fnos-embed-style 标记让主进程以内嵌窗形态开宿主窗（↻↗ 内嵌窗样式标题栏）。
-          // 清理无条件执行（宿主窗由 handler 保证创建）——v2.4.8 按 window.open 返回值判断，
-          // deny 时恒为 null 永不清理（embed-removed 埋点从未出现=死代码），本版修正。
-          try { window.open(String(f.src), '_blank', 'fnos-embed-style,fnos-anchor=' + encodeURIComponent(anchor)); } catch (_) {}
-          { // 清理主窗内嵌原件（沿用容器识别）
-                try {
-                  let box = null;
-                  let n = f.parentElement;
-                  for (let up = 0; up < 6 && n; up++) {
-                    try {
-                      const btns = n.querySelectorAll ? n.querySelectorAll('button, [class*="close"], [class*="titlebar"], [class*="title-bar"], [class*="win-ctrl"]').length : 0;
-                      if (btns >= 2) { box = n; break; }
-                    } catch (_) {}
-                    n = n.parentElement;
-                  }
-                  const victim = box || f;
-                  if (victim && victim.parentNode) victim.parentNode.removeChild(victim);
-                  try { __rl.log('info', 'launch', 'embed-removed', { params: { container: !!box } }); } catch (_) {}
-                } catch (_) {}
-              }
+              let box = null;
+              try {
+                let n = f.parentElement;
+                for (let up = 0; up < 8 && n; up++) {
+                  try {
+                    if (n.querySelector && n.querySelector('.app-layout-header-close')) { box = n; break; }
+                  } catch (_) {}
+                  n = n.parentElement;
+                }
+              } catch (_) {}
+              __fnosEmbedPopoutBtn(f, anchor, box || f.parentElement);
             }
-            try { __rl.log('info', 'launch', 'embed-to-popup', { params: { count: news.length, src: String(news[0].src).slice(0, 140) } }); } catch (_) {}
+            try { __rl.log('info', 'launch', 'embed-kept', { params: { count: news.length, src: String(news[0].src).slice(0, 140) } }); } catch (_) {}
             return;
           }
         } catch (_) {}

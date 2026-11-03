@@ -3,6 +3,37 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.19
+
+> 用户工单：内嵌窗被强制转成独立窗口，飞牛自带的 44px 标题栏（— □ ✕）连同「新标签打开」的入口
+> 一起消失。要求：内嵌窗一律用飞牛自带标题栏，同时保留「新标签打开 → 变成独立窗口
+> （可以拖到主程序窗口外面最大化）」。
+
+### 逆向结论（在 192.168.31.101:5666 实测）
+- 飞牛「内嵌窗」= 桌面 SPA 里的绝对定位窗口 `.trim-ui__app-layout--window`
+  （默认 1100×640，最大化后 1418×835），标题栏 `.trim-ui__app-layout--header` 固定 44px，
+  按钮只有 `app-layout-header-minimize / maximize / close`；应用内容在 iframe 里
+  （第三方应用直连 `:3000` 等端口）。
+- 前端 bundle `/assets/index-D1auxRov.js` 里标题栏 children 固定为
+  `[标题, minimize?, maximize?, close]`，**不渲染任何「刷新 / 新标签」按钮**，最大化前后都一样。
+- 由此确认：「↻ ↗」只能由客户端提供，而且必须挂在内嵌窗自己的标题栏上，用户才够得到。
+
+### 修复
+1. `preload.js`：删除「内嵌窗自动转独立窗口」逻辑（原来 `window.open(..., 'fnos-embed-style,...')`
+   之后直接 `removeChild` 内嵌窗容器），改为保留飞牛内嵌窗原样显示。
+2. 新增 `__fnosEmbedPopoutBtn()`：在飞牛标题栏按钮组最左侧注入一个 ↗
+   （class 复用飞牛的 `w-base` + `px-[15px]` + hover 样式，46×44 与 — □ ✕ 同尺寸，
+   `title="在新标签打开（变成独立窗口）"`），点击才走原来的
+   `window.open(..., 'fnos-embed-style,fnos-anchor=...')` → 独立窗口，可拖出主程序。
+3. 新增全局观察器 `__fnosEmbedPopoutWatch()`：主窗内任何时刻出现
+   `.trim-ui__app-layout--window` 都补 ↗（不依赖「快捷方式启动」链路那 3.2s 轮询）。
+
+### 验证
+- 真实 `preload.js` 以主窗身份（`--fnos-shell`）加载飞牛并点开 biliLive-tools：
+  标题栏按钮 = `↗(popout) + minimize + maximize + close`，popout 46×44 位于按钮组最左，
+  内嵌窗顶边 y=36 正好在主窗标题栏（36px）之下，无重叠、无遮挡；
+- 语法检查全部通过。
+
 ## v4.0.18
 
 > 用户工单：内嵌窗应用的标题栏被改成了自绘栏，fnOS 默认标题栏上的「新标签打开」没了 ——

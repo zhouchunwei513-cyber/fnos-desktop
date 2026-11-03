@@ -3,6 +3,27 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.16
+
+> 用户工单：内嵌窗打开的界面正常，新标签打开的窗口整窗透明——桌面和后面的文档透了出来。
+
+### 根因
+- 独立弹窗（新标签窗）是 `transparent: true` 的 BrowserWindow，而 xapp 分支 CSS 只给
+  `html` 设了 `background: transparent`（让标题栏透出桌面），**body 没设背景色** → 整窗透明。
+- 内嵌窗（webview）有主窗口的不透明底垫着，所以完全看不出问题。
+
+### 修复（titlebar-inject.js）
+1. 新增 `__applyXappBodyBg()`：给 body 补不透明底色。优先取页面自身背景色（body → 根容器），
+   取不到按深浅色主题兜底；注入时 + 500ms + 1800ms 三次探测（SPA 首帧后才挂根容器背景）。
+   `html` 仍保持透明，标题栏区域（y=0~barH）的透桌面/磨砂不受影响。
+2. 磨砂抓屏失败时的兜底底色从 35% 提到 80%——`frost.capture-fail` 是异常态，
+   浅色桌面下 35% 的 frostColor 叠上去几乎发白，标题栏看起来"没生效"。
+3. 新增诊断 `titlebar.xapp-bg`（实际填充的底色）。
+
+### 验证
+- `titlebar-inject.js` 语法检查通过；
+- 待实机回归：新标签窗不再透出桌面、内容区底色与页面一致、标题栏可辨识。
+
 ## v4.0.15
 
 > 用户工单：标题栏不压内容区了（v4.0.14 修好了），但内容区页面加载不全（被截断）。

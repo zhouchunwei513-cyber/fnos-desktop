@@ -1141,9 +1141,11 @@ module.exports = function injectTitleBar(ctx) {
               __ensureFrostLayer(bar);
               // v4.0.11：磨砂抓屏失败（frost.capture-fail）时 __frostGeom 为 null，磨砂层空白，
               // 标题栏只剩 frostAlpha(10%) 的极淡染色 → 几乎透明，透出页面自身顶栏，用户看到
-              // "另一套标题栏"。抓屏未就绪时用 35% 不透明底色兜底，保证标题栏始终可辨识；
+              // "另一套标题栏"。抓屏未就绪时用不透明底色兜底，保证标题栏始终可辨识；
               // 抓屏成功后 __paintFrost 会叠加磨砂层，视觉恢复。
-              const __faFallback = __frostGeom ? __fa : Math.max(__fa, 0.35);
+              // v4.0.16：兜底从 0.35 提到 0.80——桌面上是浅色文档时，35% 的 frostColor 叠上去
+              // 几乎是白的，标题栏看起来"没生效"。抓屏失败属于异常态，宁可接近实色也要可辨识。
+              const __faFallback = __frostGeom ? __fa : Math.max(__fa, 0.80);
               bar.style.background = hexToRgba(TB.frostColor || '#ffffff', __faFallback);
               bar.style.backdropFilter = 'none';
               bar.style.webkitBackdropFilter = 'none';
@@ -1486,6 +1488,50 @@ module.exports = function injectTitleBar(ctx) {
             });
           } catch (_) {}
         }
+      } catch (_) {}
+    };
+
+    // ================= v4.0.16：xapp 内容区不透明底色 =================
+    // 背景（用户工单：新标签窗口整窗透明、桌面和后面的文档透出来）：
+    // 独立弹窗是 transparent:true 的 BrowserWindow，而 xapp 分支的 CSS 只给 html 设了
+    // background:transparent（为了让标题栏透出桌面），body 没设背景 → 整窗透明。
+    // 内嵌窗（webview）有主窗的不透明底垫着，所以看不出问题。
+    // 做法：给 body 补一个不透明底色（优先取页面自身背景色，取不到按深浅色主题兜底），
+    // 标题栏区域（html，y=0~barH）仍保持透明，磨砂/透桌面不受影响。
+    const __xappBodyBg = () => {
+      try {
+        const b = document.body;
+        if (!b) return '';
+        const c = getComputedStyle(b).backgroundColor;
+        if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') return c;
+        // 页面把底色画在根容器上（Vue/React 常见）：扫有限个可见大块元素
+        const kids = b.querySelectorAll('*');
+        const n = Math.min(kids.length, 40);
+        for (let i = 0; i < n; i++) {
+          const el = kids[i];
+          if (!el || el.nodeType !== 1) continue;
+          let r = null;
+          try { r = el.getBoundingClientRect(); } catch (_) { continue; }
+          if (!r || r.width < 100 || r.height < 100) continue;
+          const cc = getComputedStyle(el).backgroundColor;
+          if (cc && cc !== 'transparent' && cc !== 'rgba(0, 0, 0, 0)') return cc;
+        }
+      } catch (_) {}
+      try { return matchMedia('(prefers-color-scheme: dark)').matches ? '#141414' : '#ffffff'; } catch (_) {}
+      return '#ffffff';
+    };
+
+    const __applyXappBodyBg = () => {
+      try {
+        const body = document.body;
+        if (!body) return;
+        const bg = __xappBodyBg();
+        if (!bg) return;
+        if (body.style.getPropertyValue('background-color') === bg) return;
+        body.style.setProperty('background-color', bg, 'important');
+        try {
+          ipcRenderer.send('fnos:media-log', { stage: 'titlebar.xapp-bg', bg: bg });
+        } catch (_) {}
       } catch (_) {}
     };
 
@@ -2088,6 +2134,11 @@ module.exports = function injectTitleBar(ctx) {
         // 这里补一遍「贴顶 fixed 元素整体下移标题栏高度」，只动 top 落在标题栏带内的元素，
         // 原值记在元素上以便还原，窗口缩放/标题栏高度变化可重算。
         try { __watchFixedTop(); } catch (_) {}
+        // v4.0.16：给 body 补不透明底色，修新标签窗整窗透明透出桌面。
+        // SPA 首帧后根容器才挂上背景色，多试几次以便取到页面真实底色。
+        try { __applyXappBodyBg(); } catch (_) {}
+        try { setTimeout(__applyXappBodyBg, 500); } catch (_) {}
+        try { setTimeout(__applyXappBodyBg, 1800); } catch (_) {}
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [

@@ -2272,7 +2272,15 @@ try {
 // 不画 —□✕（最小化/最大化/关闭交给原生红绿灯）；Windows 保持自绘 —□✕。
 try {
   var __tbInject = true;
-  try { __tbInject = (process.argv && (process.argv.indexOf('--fnos-shell') >= 0 || process.argv.indexOf('--fnos-app-window') >= 0)) || !/^https?:/i.test(String(location.href || '')); } catch(_){}
+  try {
+    var __argv = (process.argv || []);
+    // v4.0.9（用户工单「内嵌窗你搞出 2 个标题栏干嘛」）：
+    // 内嵌窗（--fnos-embed-style）的页面本身就画了一套 fnOS 内嵌窗标题栏
+    // （logo + 标题 + ↻ ↗ — □ ✕），我们再注入一条就变成两条叠在一起。
+    // 按用户口径「内嵌窗标题栏采用默认的」——内嵌窗不再注入我们的标题栏，只留页面自带那套。
+    var __isEmbedWin = __argv.indexOf('--fnos-embed-style') >= 0;
+    __tbInject = !__isEmbedWin && ((__argv.indexOf('--fnos-shell') >= 0 || __argv.indexOf('--fnos-app-window') >= 0) || !/^https?:/i.test(String(location.href || '')));
+  } catch(_){}
   try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.guard', inject: __tbInject, href: String(location.href||'').slice(0,80), hasShell: (typeof process!=='undefined'&&process.argv)?process.argv.indexOf('--fnos-shell')>=0:'?' }); } catch(_){}
   if (__tbInject) {
     require('./titlebar-inject')({ ipcRenderer });

@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.8';
+const APP_VERSION = '4.0.9';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -18271,9 +18271,25 @@ try {
             if (/^(devtools|chrome-extension:|chrome:)/i.test(u)) {
               return { action: 'allow' };
             }
+            // v4.0.9（用户工单「应用内跳转窗口的标题栏压住内容、样式偏好设置里没有」）：
+            // 这类窗口此前不带任何 --fnos-* 旗标，preload 的注入守卫判定「http(s) + 无旗标」→
+            // 直接跳过注入，于是它们根本没有客户端标题栏，只剩页面自己画的老式假窗控；
+            // 而且没有内容让位，看起来就是「一条不认识的标题栏压在内容上」。
+            // 这里按目标地址补旗标：统一 --fnos-app-window；跨站（第三方应用）再加 --fnos-xapp，
+            // 让它们走与应用窗完全相同的「偏好设置驱动的标题栏 + 内容让位」。
+            const __popupFlags = (target) => {
+              const args = ['--fnos-app-window'];
+              try {
+                const t = new URL(String(target || ''));
+                let __baseOrigin = '';
+                try { __baseOrigin = new URL(String(__liveOriginBase() || '')).origin; } catch (_) {}
+                if (__baseOrigin && t.origin !== __baseOrigin) args.push('--fnos-xapp');
+              } catch (_) {}
+              return args;
+            };
             // 统一的无边框 + preload 开窗覆盖项（所有由网页 window.open 弹出的窗口都走这个，
             // 彻底杜绝 Electron 默认带系统原生标题栏的窗口）
-            const frameLessOverride = () => ({
+            const frameLessOverride = (target) => ({
               frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
               backgroundColor: '#0b0d12',
               autoHideMenuBar: true,
@@ -18292,16 +18308,17 @@ try {
                 backgroundThrottling: false,
                 spellcheck: false,
                 enableBlinkFeatures: 'CSSBackdropFilter',
+                additionalArguments: __popupFlags(target),
               },
             });
             // 空 URL / about:blank / javascript：由自身脚本跳转，直接无边框放行（保留 opener）
             if (!u || /^(about:blank|javascript:)/i.test(u)) {
               dlog('info', 'appwin.open.aboutblank-frameless', { frameName: String(frameName || '').slice(0, 40) });
-              return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride() };
+              return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride(u) };
             }
             // 直播/电视直播流链接走原有直播唤起流程，放行（仍无边框）
             if (isIptvStreamUrl(u)) {
-              return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride() };
+              return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride(u) };
             }
             // v2.2.3：FNID 生态域识别——*.fnos.net（FN Connect 隧道域，如 dashuaibi888.fnos.net）
             // 与 fnos.net 检测页同属飞牛生态，点击后应在主窗口内导航（保持登录态），
@@ -18344,8 +18361,8 @@ try {
               return { action: 'deny' };
             }
             // 其它一律无边框放行（兜底，避免出现系统原生标题栏）
-            dlog('info', 'appwin.open.fallback-frameless', { url: u.slice(0, 80) });
-            return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride() };
+            dlog('info', 'appwin.open.fallback-frameless', { url: u.slice(0, 80), flags: __popupFlags(u) });
+            return { action: 'allow', overrideBrowserWindowOptions: frameLessOverride(u) };
           } catch (_) {
             return { action: 'deny' };
           }

@@ -3,6 +3,24 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.8
+
+> 标题栏排障日志增强（不改外观行为）：为「应用窗 / 跳转窗 / 新标签窗标题栏与主程序不一致」补观测，
+> 复现一次即可从日志定位根因，不再靠录屏逐帧猜。
+
+### 主进程（main.js）
+- `app.on('browser-window-created')` 记录每个窗口的 `window.create`：
+  `winId` + `bounds{x,y,w,h}` + `flags{shell/app/embed/xapp/live}` + `menuPopup`；
+  首个 `did-finish-load` 再补一条 `window.url`（该窗口实际加载的地址）。
+  —— 用来判断「跳出来的窗口/新标签窗口」到底带了哪些参数、窗口几何给了多少。
+
+### 渲染层（titlebar-inject.js）
+- 每个窗口注入完成后上报一次 `mpv.preload.titlebar.injected`（去重，一窗一次）：
+  `style`（standard/embed）、`mode`（main/app/xapp/settings/embed）、
+  `barH`、`barRect{x,y,w,h}`、`win{w,h}`、以及 `settings{material/opacity/autoHide/
+  barCorner/winCorner/frostColor/frostAlpha/solidColor/solidAlpha/divider}`。
+  —— 用来判断「偏好设置里标题栏相关设置」在这个窗口到底生效成什么、标题栏实际画在哪条带。
+
 ## v4.0.7
 
 > 撤回 v4.0.6 三处误改，并按用户口径重做：内嵌窗标题栏保持默认，磨砂（透壁纸）不动，

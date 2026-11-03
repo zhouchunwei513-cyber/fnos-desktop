@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.7';
+const APP_VERSION = '4.0.8';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -13228,7 +13228,41 @@ function __syncFrostAll(forceOn) {
   } catch (_) {}
 }
 
-try { app.on('browser-window-created', (_e, win) => { try { __wireFrost(win); } catch (_) {} }); } catch (_) {}
+// v4.0.8（用户工单排障）：开窗元数据。每个 BrowserWindow 创建即记 flags / bounds，
+// 与渲染层的 mpv.preload.titlebar.injected（style/mode/barH/settings）对上，
+// 就能看出「应用窗/跳转窗/新标签窗标题栏与主程序不一致」到底是 flags 没传对、bounds 给错、
+// 还是设置没生效——不再靠录屏逐帧猜。
+try {
+  app.on('browser-window-created', (_e, win) => {
+    try { __wireFrost(win); } catch (_) {}
+    try {
+      let addl = [];
+      try {
+        const wp = win.webContents && win.webContents.getLastWebPreferences && win.webContents.getLastWebPreferences();
+        if (wp && Array.isArray(wp.additionalArguments)) addl = wp.additionalArguments;
+      } catch (_) {}
+      const __f = (v) => addl.indexOf(v) >= 0;
+      let __b = null;
+      try { const bb = win.getBounds(); __b = { x: bb.x, y: bb.y, w: bb.width, h: bb.height }; } catch (_) {}
+      let __wcId = 0;
+      try { __wcId = win.webContents && win.webContents.id || 0; } catch (_) {}
+      dlog('info', 'window.create', {
+        winId: win.id,
+        wcId: __wcId,
+        bounds: __b,
+        flags: {
+          shell: __f('--fnos-shell'), app: __f('--fnos-app-window'),
+          embed: __f('--fnos-embed-style'), xapp: __f('--fnos-xapp'),
+          live: __f('--fnos-live-window'),
+        },
+        menuPopup: !!win.__isMenuPopup,
+      });
+      let __urled = false;
+      const __logUrl = () => { if (__urled) return; __urled = true; try { dlog('info', 'window.url', { winId: win.id, url: String(win.webContents.getURL() || '').slice(0, 160) }); } catch (_) {} };
+      try { win.webContents.on('did-finish-load', __logUrl); } catch (_) {}
+    } catch (_) {}
+  });
+} catch (_) {}
 
 function __titlebarPayload() {
   let s = {};

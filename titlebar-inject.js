@@ -904,6 +904,39 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
+    // v4.0.8（用户工单排障）：标题栏诊断——每个窗口注入完成后上报一次「这套标题栏是什么、
+    // 用了哪套设置、实际画在哪」。配合主进程 window.create（flags/bounds），可以对齐
+    // 「应用窗 / 跳转窗 / 新标签窗的标题栏为什么和主程序不一致」到底是 flags 没传对、
+    // 还是设置没生效、还是 bounds 给错，不再靠猜。
+    function __tbDiag(style) {
+      try {
+        if (window.__fnosTbDiagSent) return;
+        window.__fnosTbDiagSent = true;
+        const argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        const __mode = (argv.indexOf('--fnos-shell') >= 0 && argv.indexOf('--fnos-app-window') < 0) ? 'main'
+          : (argv.indexOf('--fnos-embed-style') >= 0 ? 'embed'
+            : (argv.indexOf('--fnos-xapp') >= 0 ? 'xapp'
+              : (argv.indexOf('--fnos-app-window') >= 0 || argv.indexOf('--fnos-live-window') >= 0 ? 'app' : 'settings')));
+        const __bar = document.getElementById('fnos-titlebar');
+        let __r = null;
+        try { const b = __bar.getBoundingClientRect(); __r = { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; } catch (_) {}
+        ipcRenderer.send('fnos:media-log', {
+          stage: 'titlebar.injected',
+          style: style || 'standard',
+          mode: __mode,
+          barH: __barHeight(),
+          barRect: __r,
+          win: { w: (window.innerWidth | 0), h: (window.innerHeight | 0) },
+          settings: {
+            material: TB.material, opacity: TB.opacity, autoHide: TB.autoHide,
+            barCorner: TB.barCorner, winCorner: TB.winCorner,
+            frostColor: TB.frostColor, frostAlpha: TB.frostAlpha,
+            solidColor: TB.solidColor, solidAlpha: TB.solidAlpha, divider: TB.divider,
+          },
+        });
+      } catch (_) {}
+    }
+
     const root = () => document.documentElement || document.body || document;
     // v2.17.11: titlebar actual height (CSS px). Offset and push-down both use it,
     // so a page that grows the bar cannot leave content still covered.
@@ -2033,6 +2066,7 @@ module.exports = function injectTitleBar(ctx) {
         // 初始状态：先应用材质/颜色样式，再按自动隐藏决定显隐
         applyStyle(bar);
         __skinReloadSoon(); // v3.0.24：冷启动补应用（视频首帧/图片解码未就绪时首轮会失败）
+        __tbDiag('standard');
         if (AUTO_HIDE) hide(bar); else show(bar);
 
         // ---- 防 SPA 重渲染清除：v2.10.0 r30（问题1 次因）全件检查+整件重建+解除防重入死锁 ----
@@ -2327,6 +2361,7 @@ module.exports = function injectTitleBar(ctx) {
         // 原来从未调用 applyStyle，皮肤/牛角/图标配色永远套不上，这里补上。
         try { applyStyle(bar); } catch (_) {}
         try { __skinReloadSoon(); } catch (_) {}
+        __tbDiag('embed');
         // 原生拖拽兜底（与普通标题栏同款）
         // v2.17.45：双击标题栏最大化/还原（drag region 上 dblclick 不触发，改用 mousedown
         // 时间/位置间隔自判双击）。

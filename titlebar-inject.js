@@ -923,12 +923,11 @@ module.exports = function injectTitleBar(ctx) {
 
     // v2.4.9（反馈 8 两种窗口模式自动适配）：内嵌窗形态宿主窗标记（主进程 additionalArguments
     // 传入），命中时渲染 fnOS 内嵌窗样式标题栏（logo+标题+↻↗—□✕），而非跳出窗的 ☰+系统钮样式。
-    // v4.0.6（用户工单：应用窗 / 应用内跳转窗的标题栏和主程序不一致）：
-    //   「logo+标题+↻↗—□✕」这套内嵌窗标题栏一律停用——所有窗口统一走 build()，
-    //   即与主程序完全相同的 ☰ + — □ ✕。EMBED 保留变量以免散落的判断改动，恒为 false。
-    //   主进程仍会传 --fnos-embed-style，这里只忽略它，不影响开窗/落址。
+    // v4.0.7（用户纠正 v4.0.6 的误改）：内嵌窗标题栏保持「默认」——仍按 --fnos-embed-style 渲染
+    // 「logo+标题+↻↗—□✕」。要统一的是「内嵌窗跳出来的窗口 / 新标签打开的窗口」，
+    // 那些窗口没有这个参数，走 build()（☰ + — □ ✕，与主程序一致）。
     let EMBED = false;
-    try { EMBED = false; } catch (_) {}
+    try { EMBED = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv.indexOf('--fnos-embed-style') >= 0 : false; } catch (_) {}
 
     // 把 #RRGGBB + 不透明度(0~100) 转成 rgba()
     function hexToRgba(hex, a) {
@@ -1108,6 +1107,15 @@ module.exports = function injectTitleBar(ctx) {
             bar.style.borderBottom = TB.divider === false ? 'none' : '1px solid rgba(0,0,0,0.06)';
           }
         }
+        // v4.0.7（用户工单：偏好设置里「标题栏四角 / 窗口四角」要对所有应用窗口生效）——
+        // 之前 barCorner 只在「皮肤」模式里被 __applySkinLayers 用上，非皮肤窗口的圆角是创建时
+        // 写死的 10px，设置里切「直角 / 半圆角」时应用窗、跳转窗、新标签窗完全没反应。
+        // 这里统一按 TB.barCorner 落值；窗口四角继续由 __applyWinCornerStyle()（#fnos-win-corner）负责。
+        try {
+          bar.style.borderRadius = (TB.barCorner === 'square')
+            ? '0px'
+            : ((TB.barCorner === 'half') ? '10px 10px 0 0' : '10px');
+        } catch (_) {}
         // 底色较深时图标用白，较浅时图标用深色——保证对比
         // v2.15.14：opacity=0 默认走深色渐变 → 也用白图标
         // v2.19.0：磨砂玻璃底色偏深（用户色+白高光+噪点），图标一律用白
@@ -1282,19 +1290,18 @@ module.exports = function injectTitleBar(ctx) {
         // （v1.57 原因：避免浅色应用顶部出现实色栏；设置窗口不透明背景本身即深色）。
         const __argvB = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
         const __isMainWin = __argvB.indexOf('--fnos-shell') >= 0 && __argvB.indexOf('--fnos-app-window') < 0;
-        // v4.0.6（用户工单）：应用窗 / 应用内跳转窗此前是 background:transparent，
-        // 标题栏那 34px 透出的是桌面壁纸（视频里那条半透明蓝带），与主程序的实色深色条
-        // 放在一起就是两套东西。现在所有窗口都用主程序同一条渐变，标题栏永远占据
-        // 内容区上方那一条独立色带，不再透出壁纸、也不再让应用自己的顶栏看着像标题栏。
-        const __barBg = 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)';
+        // v4.0.7（用户纠正）：透出壁纸是「磨砂」材质的正常表现，不能拿实色盖掉。
+        // 非主窗这里维持 transparent —— 真正的外观由 applyStyle() 按偏好设置决定：
+        // 纯色 → 实色 solidColor；磨砂 → 透明 + 主进程抓屏的磨砂层（titlebar-frost-bg）。
+        const __barBg = __isMainWin ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
         // v2.15.71：主窗口标题栏高度 34->35px，标题栏本体向下侵入内容区 1px 盖住接缝，
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
-        // v4.0.6：盖接缝的 2px 从「仅主窗」改为「所有窗口」——应用窗现在也是实色深色条，
-        // 若仍是 34px，条与内容之间那 1px 亚像素缝会透出桌面壁纸（高分 DPI 下是灰线）。
-        bar.__tbIsMain = true; // 皮肤高度联动：视觉高度 = 有效高度 + 2px 盖接缝
+        // v4.0.7（用户纠正）：盖接缝的 2px 只留给主窗。应用窗 / 跳转窗刻意保持
+        // 「标题栏高度 = 内容让位高度」，标题栏绝不压住内容区第一行。
+        bar.__tbIsMain = __isMainWin; // 皮肤高度联动：主窗视觉高度 = 有效高度 + 2px 盖接缝
         __setCss(bar, [
-          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + 2) + 'px',
+          'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + (__isMainWin ? 2 : 0)) + 'px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
           'pointer-events:auto',

@@ -3,6 +3,35 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.31
+
+> 用户反馈 2 条：①磨砂/纯色下换皮肤要等很久才出来 ②账号悬浮球希望跟随标题栏的材质/颜色/浓度，也要能单独设置。
+
+### 1. 换皮肤慢：四条放大链路逐一掐掉
+
+日志（`fnos-diag(14).log`，22:14:32~22:14:38）里 6 秒内点了 10 次皮肤，每次 `skin.asset` 100~1705ms，`skin.video.ok` 成对出现——这不是"读文件慢"，是下面四条放大链路叠在一起：
+
+| 链路 | 原行为 | 现在 |
+|---|---|---|
+| ① 广播双发 | 先给每个 `BrowserWindow` 发一遍 `settings:titlebar-changed`，再用 `getAllWebContents()` 发一遍 → 每个窗口的渲染进程收到 2 次，皮肤视频解码 2 次、blob 建 2 次 | 只保留 `getAllWebContents()` 一轮（它已含全部窗口与 webview guest），日志新增 `titlebar.push{targets,wins}` 可直接核对 |
+| ② 后台窗口也解视频 | 50+ 个窗口（含最小化/被遮住的）同时解一段背景 mp4，主线程+GPU+磁盘一起排队 | 新增 `__skinCanDecodeVideo()`：`document.hidden`/`visibilityState!=='visible'` 时只铺底色占位，窗口重新可见或获得焦点再补视频（`skin.video.resume`）；`skin.video.defer` 记录被延后的窗口 |
+| ③ 磨砂反复抓屏 | 每拖一次滑块/点一次皮肤都走 `__syncFrostAll` → 每个窗口 `setEnabled` 重建采样器（每次保护 300ms） | `__syncFrostAll` 增加"开关+窗口集合"指纹，没变化直接跳过（`frost.sync.skip`）；皮肤接管整条标题栏时 `__frostWanted()` 直接返回 false，不再抓屏 |
+| ④ 设置高频重放 | 拖滑块每 40ms 一条广播，渲染端每次都重建皮肤层 | 渲染端对 `settings:titlebar-changed` 做 payload 指纹去重，同一份配置不再重放 |
+
+另外：切皮肤时把「不属于当前皮肤目录」的 blob URL 全部 revoke（`skin.asset.prune`），此前只增不减；新增 `skin.applied{hasBg,kind,deferred,hasShape}` 回执，下次再慢能直接看出是哪个窗口、哪一步、是否被降级。
+
+### 2. 悬浮球外观可跟随标题栏，也可单独设置
+
+设置 → 界面 → 「悬浮球外观」：
+
+- **跟随标题栏**（默认）：球直接吃标题栏当前材质与配色——标题栏切磨砂/纯色、改颜色、拖浓度，球同步变（`follow` 模式下球体 = 标题栏的镜像，不再是一块固定白玻璃）。
+- **单独设置**：球用自己的材质（纯色/磨砂）、颜色、浓度，标题栏怎么改都不影响球。
+- 球只有 40px，磨砂浓度按标题栏的 2%~35% 会糊成一坨，这里收敛到 55% 上限；纯色浓度下限 40%（再低深色壁纸上图标就看不清）；浅色底+足够不透明时图标自动转深色。
+
+数据链：`settings.json` 六个字段（`ballAppearanceMode/ballMaterial/ballSolidColor/ballSolidAlpha/ballFrostColor/ballFrostAlpha`）→ `set-ui-options` / `preview-titlebar` 白名单 → `__ballPayload()` 统一派生 → 渲染端 `__applyBallLook()` 写 CSS 变量 → `#fnos-acct-trigger` 读取。改完即时预览，点「保存界面设置」长期生效。
+
+（白名单六字段逐个放行，避免重演 v3.0.70 四角、v3.0.23 悬浮球开关那种"保存后静默回弹"。）
+
 ## v4.0.30
 
 > 用户反馈 5 条：①亮/暗模式下 Docker 应用大多不跟随 ②部分应用启动后跳到飞牛主页 ③日志能否覆盖这些情况 ④客户端与浏览器都打不开是否与客户端无关 ⑤「无操作自动锁定」下拉菜单被下方卡片遮住。

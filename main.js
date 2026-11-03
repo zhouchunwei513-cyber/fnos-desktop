@@ -13307,6 +13307,19 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
       // 预览也立即同步采样开关（切到磨砂当场出效果）
       __frost: (function () { try { __syncFrostAll(opts?.titleBarMaterial === 'frosted'); } catch (_) {} return 1; })(),
     };
+    // v4.0.31：悬浮球外观也进预览通道 —— 设置页拖球的颜色/浓度时，球当场变
+    try {
+      const __bp = __ballPayload(opts, cachedSettings || {}, {
+        material: tbPayload.material, solidColor: tbPayload.solidColor, solidAlpha: tbPayload.solidAlpha,
+        frostColor: tbPayload.frostColor, frostAlpha: tbPayload.frostAlpha,
+      });
+      tbPayload.ballAppearanceMode = __bp.ballAppearanceMode;
+      tbPayload.ballMaterial = __bp.ballMaterial;
+      tbPayload.ballSolidColor = __bp.ballSolidColor;
+      tbPayload.ballSolidAlpha = __bp.ballSolidAlpha;
+      tbPayload.ballFrostColor = __bp.ballFrostColor;
+      tbPayload.ballFrostAlpha = __bp.ballFrostAlpha;
+    } catch (_) {}
     // v3.0.71：四角实时预览透传。v3.0.70 的预览消息体没有这两个字段，
     // 渲染层收到后无值可改，于是「点直角不即时生效」；这里按需带上（不带时保持现状不动）。
     // v3.0.74：四角新增 half（半圆角）——上两角圆、下两角直角
@@ -13389,6 +13402,14 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     const hideBall = (opts && typeof opts.hideAccountBall === 'boolean')
       ? opts.hideAccountBall
       : (__fileCfg && __fileCfg.hideAccountBall === true);
+    // v4.0.31（用户需求 2）：悬浮球外观——follow 跟随标题栏 / custom 单独设置
+    const ballCfg = __ballPayload(opts, __fileCfg || {}, {
+      material: tbMaterial,
+      solidColor: tbSolidColor,
+      solidAlpha: tbSolidAlpha,
+      frostColor: tbFrostColor,
+      frostAlpha: tbFrostAlpha,
+    });
     // v3.0.62：可选「透明界面」（设置 / 帮助 / 检查更新（关于）页面半透明）
     // v3.0.76：透明界面存透明度百分比；旧字段 uiTransparent 继续写（= pct>0）便于回退
     const uiTransparentAlpha = (opts && opts.uiTransparentAlpha != null && Number.isFinite(Number(opts.uiTransparentAlpha)))
@@ -13426,6 +13447,12 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       themeColor: accent,
       activeSkin: activeSkin,
       hideAccountBall: hideBall,
+      ballAppearanceMode: ballCfg.ballAppearanceMode,
+      ballMaterial: ballCfg.ballMaterial,
+      ballSolidColor: ballCfg.ballSolidColor,
+      ballSolidAlpha: ballCfg.ballSolidAlpha,
+      ballFrostColor: ballCfg.ballFrostColor,
+      ballFrostAlpha: ballCfg.ballFrostAlpha,
       uiTransparent,
       uiTransparentAlpha,
       barCorner,
@@ -13447,6 +13474,12 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.themeColor = accent;
     cachedSettings.activeSkin = activeSkin;
     cachedSettings.hideAccountBall = hideBall;
+    cachedSettings.ballAppearanceMode = ballCfg.ballAppearanceMode;
+    cachedSettings.ballMaterial = ballCfg.ballMaterial;
+    cachedSettings.ballSolidColor = ballCfg.ballSolidColor;
+    cachedSettings.ballSolidAlpha = ballCfg.ballSolidAlpha;
+    cachedSettings.ballFrostColor = ballCfg.ballFrostColor;
+    cachedSettings.ballFrostAlpha = ballCfg.ballFrostAlpha;
     cachedSettings.uiTransparent = uiTransparent;
     cachedSettings.uiTransparentAlpha = uiTransparentAlpha;
     cachedSettings.barCorner = barCorner;
@@ -13471,19 +13504,34 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     // 注意：必须是对象；历史上发裸布尔值会被 titlebar-inject 的对象守卫丢弃导致开关不生效
     const __skinCfg = resolveSkinConfig();
     const tbPayload = { autoHide: tbAutoHide, opacity: tbOpacity, color: tbColor, material: tbMaterial, blur: tbBlur, highlight: tbHighlight, skinDir: __skinCfg.skinDir, skin: __skinCfg.skin, hideAccountBall: hideBall, uiTransparent, uiTransparentAlpha, barCorner, winCorner };
+    tbPayload.ballAppearanceMode = ballCfg.ballAppearanceMode;
+    tbPayload.ballMaterial = ballCfg.ballMaterial;
+    tbPayload.ballSolidColor = ballCfg.ballSolidColor;
+    tbPayload.ballSolidAlpha = ballCfg.ballSolidAlpha;
+    tbPayload.ballFrostColor = ballCfg.ballFrostColor;
+    tbPayload.ballFrostAlpha = ballCfg.ballFrostAlpha;
     for (const w of BrowserWindow.getAllWindows()) {
       try {
         w.setAutoHideMenuBar(autoHide);
         w.setMenuBarVisibility(!autoHide);
-        try { w.webContents.send('settings:titlebar-changed', tbPayload); } catch (_) {}
       } catch (_) {}
     }
-    // 同步到所有渲染进程（含 webview guest：飞牛桌面/FNDESK 内的应用窗）
+    // v4.0.31（皮肤包加载慢，修复⑤）：原来这里还有个 "先给每个 BrowserWindow 发一遍、再给
+    // getAllWebContents 发一遍" 的双循环 —— 每个窗口的渲染进程都会收到两次 settings:titlebar-changed，
+    // 于是皮肤视频被解码两遍、blob 被建两遍（日志里 skin.video.ok 成对出现就是这么来的）。
+    // getAllWebContents 已经包含所有窗口（含 webview guest），只留这一轮。
+    let __tbTargets = 0;
     try {
       for (const wc of require('electron').webContents.getAllWebContents()) {
-        try { if (wc && !wc.isDestroyed()) wc.send('settings:titlebar-changed', tbPayload); } catch (_) {}
+        try {
+          if (wc && !wc.isDestroyed()) { wc.send('settings:titlebar-changed', tbPayload); __tbTargets++; }
+        } catch (_) {}
       }
     } catch (_) {}
+    dlog('info', 'titlebar', 'push', {
+      evt: 'set-ui-options', targets: __tbTargets, wins: BrowserWindow.getAllWindows().length,
+      skin: (__skinCfg && __skinCfg.skin) ? String((__skinCfg.skin && __skinCfg.skin.name) || 'skin') : '', material: tbMaterial,
+    });
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('shell:theme', { themeColor: accent });
@@ -13625,7 +13673,11 @@ try {
 function __frostWanted() {
   try {
     const s = loadSettings() || {};
-    return s.titleBarMaterial === 'frosted';
+    if (s.titleBarMaterial !== 'frosted') return false;
+    // v4.0.31（皮肤包加载慢，修复④）：皮肤接管整条标题栏时，磨砂层被完全盖住 —— 此时仍在
+    // 每窗每次变更都抓一遍屏（每次 300ms 摘除采集管线），纯粹白烧 GPU 并让窗口在录屏里闪。
+    try { const sk = resolveSkinConfig(); if (sk && sk.skin) return false; } catch (_) {}
+    return true;
   } catch (_) { return false; }
 }
 
@@ -13649,18 +13701,59 @@ function __wireFrost(win) {
   try { titlebarFrost.setEnabled(win, __frostWanted()); } catch (_) {}
 }
 
+// v4.0.31（皮肤包加载慢，修复④）：setEnabled(w,on) 在状态真变时才会重建采样器，但设置页每拖
+// 一下滑块、每点一次皮肤都会走到这里，窗口一多就是 N 次无意义重建。加一层"开关 + 窗口集合"
+// 指纹：没变化直接返回，只在真正需要时下发。
+let __frostSyncKey = '';
 function __syncFrostAll(forceOn) {
   try {
     const on = (typeof forceOn === 'boolean') ? forceOn : __frostWanted();
-    const wins = BrowserWindow.getAllWindows();
+    const wins = BrowserWindow.getAllWindows().filter((w) => w && !w.isDestroyed() && !w.__isMenuPopup);
+    const key = (on ? '1' : '0') + '|' + wins.map((w) => w.id).sort((a, b) => a - b).join(',');
+    if (key === __frostSyncKey) {
+      dlog('info', 'titlebar', 'frost.sync.skip', { on: on, wins: wins.length, reason: 'unchanged' });
+      return;
+    }
+    __frostSyncKey = key;
     for (const w of wins) {
-      if (!w || w.isDestroyed()) continue;
-      if (w && w.__isMenuPopup) continue; // 菜单弹窗不参与磨砂
       try { __wireFrost(w); } catch (_) {}
       try { titlebarFrost.setEnabled(w, on); } catch (_) {}
     }
     dlog('info', 'titlebar', 'frost.sync', { on: on, wins: wins.length });
   } catch (_) {}
+}
+
+// v4.0.31（用户需求 2）：账号悬浮球外观。
+// follow = 直接吃标题栏当前材质/颜色/浓度（切标题栏球跟着变，不再是一块固定白玻璃）；
+// custom = 用户单独给球设材质/颜色/浓度，标题栏怎么改都不影响球。
+// 下发到渲染端后由 titlebar-inject 用 CSS 变量套到 #fnos-acct-trigger 上。
+function __ballPayload(opts, base, tb) {
+  const o = opts || {};
+  const b = base || {};
+  const t = tb || {};
+  const mode = (o.ballAppearanceMode === 'custom' || o.ballAppearanceMode === 'follow')
+    ? o.ballAppearanceMode
+    : (b.ballAppearanceMode === 'custom' ? 'custom' : 'follow');
+  const pickMat = (v, fb) => ((v === 'frosted' || v === 'solid') ? v : (fb === 'frosted' ? 'frosted' : 'solid'));
+  const tbMat = (t.material === 'frosted') ? 'frosted' : 'solid';
+  const num = (v, fb) => (v != null && Number.isFinite(Number(v))) ? Number(v) : fb;
+  const ballMaterial = (mode === 'custom') ? pickMat(o.ballMaterial, b.ballMaterial) : tbMat;
+  const ballSolidColor = (mode === 'custom')
+    ? String(o.ballSolidColor || b.ballSolidColor || t.solidColor || '#101426')
+    : String(t.solidColor || '#101426');
+  const ballSolidAlpha = clampInt(num(o.ballSolidAlpha, num(b.ballSolidAlpha, 100)), 40, 100, 100);
+  const ballFrostColor = (mode === 'custom')
+    ? String(o.ballFrostColor || b.ballFrostColor || '#FFFFFF')
+    : String(t.frostColor || '#FFFFFF');
+  const ballFrostAlpha = clampInt(num(o.ballFrostAlpha, num(b.ballFrostAlpha, 14)), 2, 60, 14);
+  return {
+    ballAppearanceMode: mode,
+    ballMaterial: ballMaterial,
+    ballSolidColor: ballSolidColor,
+    ballSolidAlpha: (mode === 'custom') ? ballSolidAlpha : clampInt(num(t.solidAlpha, ballSolidAlpha), 40, 100, 100),
+    ballFrostColor: ballFrostColor,
+    ballFrostAlpha: (mode === 'custom') ? ballFrostAlpha : clampInt(num(t.frostAlpha, ballFrostAlpha), 2, 60, 14),
+  };
 }
 
 // v4.0.8（用户工单排障）：开窗元数据。每个 BrowserWindow 创建即记 flags / bounds，
@@ -13818,9 +13911,17 @@ ipcMain.on('settings:get-titlebar', (e) => {
       // v3.0.70：标题栏 / 窗口四角（round 圆角默认 / square 直角）
       barCorner: (s.barCorner === 'square' || s.barCorner === 'half') ? s.barCorner : 'round',
       winCorner: (s.winCorner === 'square' || s.winCorner === 'half') ? s.winCorner : 'round',
+      // v4.0.31：悬浮球外观（必须在同一次字面量里给全，理由见上方 v3.0.28 说明）
+      ...__ballPayload(null, s, {
+        material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
+        solidColor: String(s.titleBarSolidColor || s.titleBarColor || '#101426'),
+        solidAlpha: clampInt(s.titleBarSolidAlpha, 90, 100, 100),
+        frostColor: String(s.titleBarFrostColor || '#ffffff'),
+        frostAlpha: clampInt(s.titleBarFrostAlpha, 2, 35, 10),
+      }),
     };
   } catch (__e2) {
-    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round', winCorner: 'round' };
+    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round', winCorner: 'round', ballAppearanceMode: 'follow', ballMaterial: 'solid', ballSolidColor: '#101426', ballSolidAlpha: 100, ballFrostColor: '#FFFFFF', ballFrostAlpha: 14 };
     try { fnosLog('error', 'titlebar', 'get.fail', { err: String((__e2 && __e2.message) || __e2).slice(0, 140) }); } catch (_) {}
   }
   try { e.returnValue = __tb; } catch (__e3) {

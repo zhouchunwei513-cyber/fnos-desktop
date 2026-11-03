@@ -628,6 +628,26 @@ module.exports = function injectTitleBar(ctx) {
 
     // 读皮肤素材文件 -> blob URL（避开 file:// 受 webSecurity 限制）
     const __skinAssetCache = new Map();
+    // v4.0.31（用户问题 1）：切皮肤后旧皮肤的 blob URL 从不释放，缓存 Map 只增不减。
+    // 每换一次皮肤、每开一个窗口都会新建 blob，旧的既占内存又占着视频解码资源。
+    // 换皮肤时把「不属于当前皮肤目录」的条目全部 revoke 掉（当前皮肤正在用的不动，避免黑屏）。
+    let __skinPrunedFor = '';
+    function __pruneSkinAssets() {
+      try {
+        const dir = String((__skinState && __skinState.skinDir) || '');
+        if (dir === __skinPrunedFor) return;
+        __skinPrunedFor = dir;
+        let n = 0;
+        __skinAssetCache.forEach(function (u, k) {
+          if (String(k).indexOf(dir + '|') !== 0) {
+            try { URL.revokeObjectURL(u); } catch (_) {}
+            __skinAssetCache.delete(k);
+            n++;
+          }
+        });
+        if (n) __tbLog('skin.asset.prune', { n: n, keep: dir.slice(-24) });
+      } catch (_) {}
+    }
     function __loadSkinAsset(skinDir, src) {
       // v3.0.28（问题1 日志加强）：皮肤素材读取链路此前没有任何记录，
       // 无法区分「没配置 / 文件不存在 / blob 失败 / 解码失败」，部分应用标题栏空条时无从排查。
@@ -767,9 +787,37 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
+    // v4.0.31（用户问题 1）：只有「窗口真的可见」才值得解码视频皮肤。
+    // visibilityState 在窗口最小化 / 被系统隐藏时会变 hidden；再来一次 focus / visibilitychange
+    // 就把占位底色升级成视频。这样一次换肤不再让 50+ 个窗口一起解视频。
+    let __skinLastBar = null;
+    function __skinCanDecodeVideo() {
+      try {
+        if (document.hidden) return false;
+        if (String(document.visibilityState || '') === 'hidden') return false;
+        return true;
+      } catch (_) { return true; }
+    }
+    function __skinResumeVideo(why) {
+      try {
+        if (!__skinCanDecodeVideo() || !__skinLastBar) return;
+        const b = __skinLastBar;
+        if (!b.__skinDeferredVideo) return;
+        try { b.__skinSig = ''; } catch (_) {}   // 清签名 → 强制重建为真正的 <video>
+        setTimeout(function () { try { __applySkinLayers(b); } catch (_) {} }, 260);
+        __tbLog('skin.video.resume', { by: String(why || '') });
+      } catch (_) {}
+    }
+    try {
+      document.addEventListener('visibilitychange', function () { __skinResumeVideo('visibility'); });
+      window.addEventListener('focus', function () { __skinResumeVideo('focus'); });
+    } catch (_) {}
+
     function __applySkinLayers(bar) {
       try {
         if (!bar) return false;
+        __skinLastBar = bar;
+        __pruneSkinAssets();
         // v3.0.38（用户反馈：加载皮肤后标题栏四角变直角）—— bgLayer/shapeLayer 的
         // border-radius:inherit 在 CSP 页面走 CSSOM setProperty 时偶发不继承（computed 成 0），
         // 皮肤背景/视频以直角铺满、盖住 bar 的 10px 小 R 角。这里每次应用都显式同步 bar 的圆角。
@@ -832,6 +880,20 @@ module.exports = function injectTitleBar(ctx) {
           if (bg.type === 'video' && bg.src) {
             const url = __loadSkinAsset(__skinState.skinDir, bg.src);
             if (url && bgLayer) {
+              // v4.0.31（用户问题 1：磨砂/纯色下换皮肤要等很久）：视频皮肤此前不分窗口状态一律解码。
+              // 一次换肤会在 50+ 个窗口（最小化 / 被遮住 / 后台）同时解一段背景视频，主线程、GPU、
+              // 磁盘一起排队，正是「点完要等好几秒」的来源。现在后台窗口只铺一个底色占位，
+              // 等窗口真正可见再补视频（下方 visibilitychange / focus 会触发重建）。
+              if (!__skinCanDecodeVideo()) {
+                try {
+                  bgLayer.style.backgroundColor = 'rgba(12,16,30,.94)';
+                  bgLayer.style.display = 'block';
+                } catch (_) {}
+                bar.__skinDeferredVideo = true;
+                hasBg = true;
+                __tbLog('skin.video.defer', { src: String(bg.src).slice(-28), vis: String(document.visibilityState || ''), hidden: !!document.hidden });
+              } else {
+              bar.__skinDeferredVideo = false;
               const v = document.createElement('video');
               v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
               // v3.0.24：显式补齐属性 + preload，冷启动时首个 play() 常因文档未显示被挂起，
@@ -868,6 +930,7 @@ module.exports = function injectTitleBar(ctx) {
                 __tryPlay();
               } catch (_) {}
               hasBg = true;
+              } // v4.0.31：闭合 __skinCanDecodeVideo() 的 else
             }
           } else if ((bg.type === 'image' || bg.type === 'gif') && bg.src) {
             const url = __loadSkinAsset(__skinState.skinDir, bg.src);
@@ -947,6 +1010,14 @@ module.exports = function injectTitleBar(ctx) {
         }
         bar.__skinSig = __sig;
         bar.__skinHasBg = hasBg;
+        // v4.0.31（用户问题 1）：补一条「应用完成」回执 —— 此前只有 asset / video.ok 等碎片，
+        // 看不出一个窗口从收到新皮肤到真正画出来用了多久、是否被降级成占位色。
+        try {
+          __tbLog('skin.applied', {
+            hasBg: hasBg, kind: String((bg && bg.type) || ''), deferred: !!bar.__skinDeferredVideo,
+            hasShape: !!shape, dir: String(__skinState.skinDir || '').slice(-24),
+          });
+        } catch (_) {}
         // v3.0.24：把「这个窗口有没有套上皮肤」落进诊断日志，便于按窗口/页面排查
         try {
           ipcRenderer.send('fnos:media-log', {
@@ -974,7 +1045,10 @@ module.exports = function injectTitleBar(ctx) {
     // v3.0.70：barCorner = 标题栏四角（round 10px 默认 / square 直角），winCorner = 窗口四角（round 20px 默认 / square 直角）
     const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false, barCorner: 'round', winCorner: 'round',
       // v3.0.78：磨砂/纯色两套视觉参数各自独立（互不共用），见用户方案第五节
-      frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true };
+      frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true,
+      // v4.0.31（用户需求 2）：账号悬浮球外观 —— follow 跟随标题栏，custom 单独设置
+      ballAppearanceMode: 'follow', ballMaterial: 'solid', ballSolidColor: '#101426', ballSolidAlpha: 100,
+      ballFrostColor: '#FFFFFF', ballFrostAlpha: 14 };
     try {
       const r = ipcRenderer.sendSync('settings:get-titlebar');
       if (r && typeof r === 'object') {
@@ -1002,9 +1076,18 @@ module.exports = function injectTitleBar(ctx) {
         // v3.0.74：round 圆角 / half 半圆角 / square 直角（缺字段回落圆角）
         TB.barCorner = (r.barCorner === 'square' || r.barCorner === 'half') ? r.barCorner : 'round';
         TB.winCorner = (r.winCorner === 'square' || r.winCorner === 'half') ? r.winCorner : 'round';
+        // v4.0.31（用户需求 2）：悬浮球外观（跟随标题栏 / 单独设置）
+        if (r.ballAppearanceMode === 'custom' || r.ballAppearanceMode === 'follow') TB.ballAppearanceMode = r.ballAppearanceMode;
+        if (r.ballMaterial === 'frosted' || r.ballMaterial === 'solid') TB.ballMaterial = r.ballMaterial;
+        if (r.ballSolidColor) TB.ballSolidColor = String(r.ballSolidColor);
+        if (r.ballSolidAlpha != null) TB.ballSolidAlpha = Math.max(40, Math.min(100, Number(r.ballSolidAlpha) || 100));
+        if (r.ballFrostColor) TB.ballFrostColor = String(r.ballFrostColor);
+        if (r.ballFrostAlpha != null) TB.ballFrostAlpha = Math.max(2, Math.min(60, Number(r.ballFrostAlpha) || 14));
       }
     } catch (_) {}
     __applyTitlebarHeight();
+    // v4.0.31（用户需求 2）：首屏就把球的外观变量算好（球是延迟创建的，变量先到位不会闪一下默认色）
+    __applyBallLook();
     let AUTO_HIDE = TB.autoHide;
 
     // v3.0.70（用户要求：直角 / 圆角二选一，标题栏与窗口分别设置）——
@@ -1115,6 +1198,50 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) { return `rgba(0,0,0,${a})`; }
     }
 
+    // ================= v4.0.31（用户需求 2）：账号悬浮球外观 =================
+    // follow（默认）= 直接吃标题栏当前材质 + 颜色 + 浓度，切换标题栏时球同步变；
+    // custom = 用球自己的材质 / 颜色 / 浓度，标题栏怎么改都不影响球。
+    // 结果写进 CSS 变量，由 #fnos-acct-trigger 的样式读取（球还没创建时也生效，创建后自动继承）。
+    function __applyBallLook() {
+      try {
+        const follow = (TB.ballAppearanceMode !== 'custom');
+        const mat = follow
+          ? ((TB.material === 'frosted') ? 'frosted' : 'solid')
+          : ((TB.ballMaterial === 'frosted') ? 'frosted' : 'solid');
+        let color = '#101426';
+        let alpha = 100;
+        if (mat === 'frosted') {
+          color = String(follow ? (TB.frostColor || '#ffffff') : (TB.ballFrostColor || '#FFFFFF'));
+          alpha = Number(follow ? (TB.frostAlpha == null ? 10 : TB.frostAlpha) : (TB.ballFrostAlpha == null ? 14 : TB.ballFrostAlpha));
+        } else {
+          color = String(follow ? (TB.solidColor || TB.color || '#101426') : (TB.ballSolidColor || '#101426'));
+          alpha = Number(follow ? (TB.solidAlpha == null ? 100 : TB.solidAlpha) : (TB.ballSolidAlpha == null ? 100 : TB.ballSolidAlpha));
+        }
+        if (!isFinite(alpha)) alpha = mat === 'frosted' ? 10 : 100;
+        // 球只有 40px：磨砂沿用标题栏的浓透明度（>=35%）会糊成一坨，收敛到 0.55 上限
+        let a = Math.max(0.02, Math.min(1, alpha / 100));
+        if (mat === 'frosted') a = Math.min(a, 0.55);
+        // 浅色底 + 足够不透明时图标转深色，避免白图标压白底看不见
+        const ch = (function (hex) {
+          let h = String(hex || '').replace('#', '').trim();
+          if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+          const n = parseInt(h, 16);
+          if (!isFinite(n) || h.length !== 6) return { r: 16, g: 20, b: 38 };
+          return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+        })(color);
+        const lum = (0.2126 * ch.r + 0.7152 * ch.g + 0.0722 * ch.b) / 255;
+        const light = (lum > 0.6 && a > 0.35);
+        const root = document.documentElement;
+        if (!root || !root.style) return;
+        root.style.setProperty('--fn-ball-bg', hexToRgba(color, a));
+        root.style.setProperty('--fn-ball-bg-hover', hexToRgba(color, Math.min(1, a + 0.08)));
+        root.style.setProperty('--fn-ball-blur', mat === 'frosted' ? '18px' : '0px');
+        root.style.setProperty('--fn-ball-border', light ? 'rgba(17,24,39,0.18)' : 'rgba(255,255,255,0.14)');
+        root.style.setProperty('--fn-ball-fg', light ? 'rgba(17,24,39,0.82)' : 'rgba(255,255,255,0.72)');
+        root.style.setProperty('--fn-ball-fg-hover', light ? '#111827' : '#fff');
+      } catch (_) {}
+    }
+
 
 
     // 根据设置计算标题栏背景/模糊并应用；同时调整图标配色
@@ -1223,6 +1350,8 @@ module.exports = function injectTitleBar(ctx) {
     function applyStyle(bar) {
       try {
         if (!bar) return;
+        // v4.0.31：标题栏外观每次变化都顺手重算球的外观（follow 模式下球就是标题栏的镜像）
+        try { __applyBallLook(); } catch (_) {}
         if (__applySkinLayers(bar)) {
           bar.style.setProperty('-webkit-app-region', 'no-drag');
           bar.__skinNoDrag = true;
@@ -1344,10 +1473,18 @@ module.exports = function injectTitleBar(ctx) {
     } catch (_) {}
 
     // 监听设置变化（设置页切换后实时生效，无需重启）。payload 为完整样式对象
+    let __lastTbFp = '';
     try {
       ipcRenderer.on('settings:titlebar-changed', (_e, val) => {
         try {
           if (val && typeof val === 'object') {
+            // v4.0.31（用户问题 1）：设置页拖滑块 / 连点皮肤会高频广播，同一份 payload 再应用一次
+            // 毫无收益，却会重建皮肤层、重启视频解码（越点越慢的放大器之一）。这里做指纹去重。
+            try {
+              const __fp = JSON.stringify(val);
+              if (__fp === __lastTbFp) return;
+              __lastTbFp = __fp;
+            } catch (_) {}
             if (typeof val.autoHide === 'boolean') { TB.autoHide = val.autoHide; AUTO_HIDE = val.autoHide; }
             if (val.opacity != null) TB.opacity = Math.max(0, Math.min(100, Number(val.opacity) || 0));
             if (val.color) TB.color = String(val.color);
@@ -1361,6 +1498,15 @@ module.exports = function injectTitleBar(ctx) {
             if (val.solidColor) TB.solidColor = String(val.solidColor);
             if (val.solidAlpha != null) TB.solidAlpha = Math.max(90, Math.min(100, Number(val.solidAlpha) || 100));
             if (typeof val.divider === 'boolean') TB.divider = val.divider;
+            // v4.0.31（用户需求 2）：悬浮球外观实时刷新
+            let __ballChanged = false;
+            if (val.ballAppearanceMode === 'custom' || val.ballAppearanceMode === 'follow') { __ballChanged = __ballChanged || TB.ballAppearanceMode !== val.ballAppearanceMode; TB.ballAppearanceMode = val.ballAppearanceMode; }
+            if (val.ballMaterial === 'frosted' || val.ballMaterial === 'solid') { __ballChanged = __ballChanged || TB.ballMaterial !== val.ballMaterial; TB.ballMaterial = val.ballMaterial; }
+            if (val.ballSolidColor) { __ballChanged = __ballChanged || TB.ballSolidColor !== String(val.ballSolidColor); TB.ballSolidColor = String(val.ballSolidColor); }
+            if (val.ballSolidAlpha != null) TB.ballSolidAlpha = Math.max(40, Math.min(100, Number(val.ballSolidAlpha) || 100));
+            if (val.ballFrostColor) { __ballChanged = __ballChanged || TB.ballFrostColor !== String(val.ballFrostColor); TB.ballFrostColor = String(val.ballFrostColor); }
+            if (val.ballFrostAlpha != null) TB.ballFrostAlpha = Math.max(2, Math.min(60, Number(val.ballFrostAlpha) || 14));
+            try { __applyBallLook(); } catch (_) {}
             const __skBefore = String(__skinState.skinDir || '');
             if (val.skinDir != null) __skinState.skinDir = String(val.skinDir);
             // v3.0.36：切回默认皮肤时主进程下发 skin:null；旧写法 `val.skin != null` 为 false 会
@@ -3075,17 +3221,19 @@ module.exports = function injectTitleBar(ctx) {
           }
           #fnos-acct-trigger {
             width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
-            background: rgba(255,255,255,0.10);
-            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(255,255,255,0.14);
+            /* v4.0.31（用户需求 2）：外观改为变量驱动 —— 跟随标题栏材质/颜色/浓度，或用户单独设置 */
+            background: var(--fn-ball-bg, rgba(255,255,255,0.10));
+            backdrop-filter: blur(var(--fn-ball-blur, 20px)); -webkit-backdrop-filter: blur(var(--fn-ball-blur, 20px));
+            border: 1px solid var(--fn-ball-border, rgba(255,255,255,0.14));
             border-radius: 50%;
-            color: rgba(255,255,255,0.72); cursor: pointer;
+            color: var(--fn-ball-fg, rgba(255,255,255,0.72)); cursor: pointer;
             box-shadow: 0 4px 16px rgba(0,0,0,0.25);
             user-select: none;
             transition: background 0.25s, color 0.25s, box-shadow 0.25s, transform 0.25s;
           }
           #fnos-acct-trigger:hover {
-            background: rgba(255,255,255,0.18); color: #fff;
+            background: var(--fn-ball-bg-hover, rgba(255,255,255,0.18));
+            color: var(--fn-ball-fg-hover, #fff);
             transform: scale(1.06);
             box-shadow: 0 6px 20px rgba(0,0,0,0.35);
           }

@@ -459,6 +459,13 @@
           winCorner: tbCorner.win,
           // v3.0.76：透明度滑块拖动即时预览（不落盘）
           uiTransparentAlpha: uiAlphaPct,
+          // v4.0.31（用户需求 2）：悬浮球外观也走预览通道（跟随/单独设置 + 材质/颜色/浓度）
+          ballAppearanceMode: ballState.mode,
+          ballMaterial: ballState.material,
+          ballSolidColor: ballState.solidColor,
+          ballSolidAlpha: ballState.solidAlpha,
+          ballFrostColor: ballState.frostColor,
+          ballFrostAlpha: ballState.frostAlpha,
         });
       } catch (_) {}
     }, 40);
@@ -576,6 +583,88 @@
     });
   }
 
+  // ===== v4.0.31（用户需求 2）：悬浮球外观 —— 跟随标题栏 / 单独设置 =====
+  const ballState = { mode: 'follow', material: 'solid', solidColor: '#101426', solidAlpha: 100, frostColor: '#FFFFFF', frostAlpha: 14 };
+  const ballModeGroup = document.querySelector('[data-ball-mode]');
+  const ballMatGroup = document.querySelector('[data-ball-mat]');
+  const ballCustomPanel = document.getElementById('ball-custom-panel');
+  const ballSolidRow = document.getElementById('ball-solid-row');
+  const ballSolidAlphaRow = document.getElementById('ball-solid-alpha-row');
+  const ballFrostRow = document.getElementById('ball-frost-row');
+  const ballFrostAlphaRow = document.getElementById('ball-frost-alpha-row');
+  const ballSolidColorEl = document.getElementById('ball-solid-color');
+  const ballSolidHexEl = document.getElementById('ball-solid-hex');
+  const ballSolidAlphaEl = document.getElementById('ball-solid-alpha');
+  const ballSolidAlphaValEl = document.getElementById('ball-solid-alpha-val');
+  const ballFrostColorEl = document.getElementById('ball-frost-color');
+  const ballFrostHexEl = document.getElementById('ball-frost-hex');
+  const ballFrostAlphaEl = document.getElementById('ball-frost-alpha');
+  const ballFrostAlphaValEl = document.getElementById('ball-frost-alpha-val');
+
+  const syncBallUI = () => {
+    const custom = ballState.mode === 'custom';
+    if (ballCustomPanel) ballCustomPanel.style.display = custom ? '' : 'none';
+    if (ballModeGroup) ballModeGroup.querySelectorAll('.tb-mat-btn').forEach((b) => b.classList.toggle('active', b.getAttribute('data-ballmode') === ballState.mode));
+    if (ballMatGroup) ballMatGroup.querySelectorAll('.tb-mat-btn').forEach((b) => b.classList.toggle('active', b.getAttribute('data-ballmat') === ballState.material));
+    const frosted = ballState.material === 'frosted';
+    if (ballSolidRow) ballSolidRow.style.display = frosted ? 'none' : '';
+    if (ballSolidAlphaRow) ballSolidAlphaRow.style.display = frosted ? 'none' : '';
+    if (ballFrostRow) ballFrostRow.style.display = frosted ? '' : 'none';
+    if (ballFrostAlphaRow) ballFrostAlphaRow.style.display = frosted ? '' : 'none';
+    if (ballSolidColorEl) ballSolidColorEl.value = ballState.solidColor;
+    if (ballSolidHexEl && document.activeElement !== ballSolidHexEl) ballSolidHexEl.value = ballState.solidColor;
+    if (ballSolidAlphaEl) ballSolidAlphaEl.value = String(ballState.solidAlpha);
+    if (ballSolidAlphaValEl) ballSolidAlphaValEl.textContent = ballState.solidAlpha + '%';
+    if (ballFrostColorEl) ballFrostColorEl.value = ballState.frostColor;
+    if (ballFrostHexEl && document.activeElement !== ballFrostHexEl) ballFrostHexEl.value = ballState.frostColor;
+    if (ballFrostAlphaEl) ballFrostAlphaEl.value = String(ballState.frostAlpha);
+    if (ballFrostAlphaValEl) ballFrostAlphaValEl.textContent = ballState.frostAlpha + '%';
+  };
+
+  if (ballModeGroup) {
+    ballModeGroup.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tb-mat-btn');
+      if (!btn) return;
+      ballState.mode = (btn.getAttribute('data-ballmode') === 'custom') ? 'custom' : 'follow';
+      syncBallUI();
+      tbPreview();
+    });
+  }
+  if (ballMatGroup) {
+    ballMatGroup.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tb-mat-btn');
+      if (!btn) return;
+      ballState.material = (btn.getAttribute('data-ballmat') === 'frosted') ? 'frosted' : 'solid';
+      syncBallUI();
+      tbPreview();
+    });
+  }
+  if (ballSolidColorEl) ballSolidColorEl.addEventListener('input', () => {
+    const h = hexNorm6(ballSolidColorEl.value);
+    if (h) { ballState.solidColor = h; syncBallUI(); tbPreview(); }
+  });
+  if (ballSolidHexEl) ballSolidHexEl.addEventListener('change', () => {
+    const h = hexNorm6(ballSolidHexEl.value);
+    if (h) { ballState.solidColor = h; syncBallUI(); tbPreview(); } else { syncBallUI(); }
+  });
+  if (ballSolidAlphaEl) ballSolidAlphaEl.addEventListener('input', () => {
+    ballState.solidAlpha = clampInt(ballSolidAlphaEl.value, 40, 100, 100);
+    syncBallUI(); tbPreview();
+  });
+  if (ballFrostColorEl) ballFrostColorEl.addEventListener('input', () => {
+    const h = hexNorm6(ballFrostColorEl.value);
+    if (h) { ballState.frostColor = h; syncBallUI(); tbPreview(); }
+  });
+  if (ballFrostHexEl) ballFrostHexEl.addEventListener('change', () => {
+    const h = hexNorm6(ballFrostHexEl.value);
+    if (h) { ballState.frostColor = h; syncBallUI(); tbPreview(); } else { syncBallUI(); }
+  });
+  if (ballFrostAlphaEl) ballFrostAlphaEl.addEventListener('input', () => {
+    ballState.frostAlpha = clampInt(ballFrostAlphaEl.value, 2, 60, 14);
+    syncBallUI(); tbPreview();
+  });
+  syncBallUI();
+
   // 载入当前设置填充界面
   fnosSettings.getSettings().then((info) => {
     try {
@@ -608,6 +697,14 @@
       tbState.highlight = clampInt(info.titleBarHighlight, 0, 100, 55);
       if (tbHl) tbHl.value = String(tbState.highlight);
       syncTbMaterialBtns(); syncTbSliders(); syncTbColor();
+      // v4.0.31（用户需求 2）：悬浮球外观回填
+      ballState.mode = info.ballAppearanceMode === 'custom' ? 'custom' : 'follow';
+      ballState.material = info.ballMaterial === 'frosted' ? 'frosted' : 'solid';
+      ballState.solidColor = hexNorm6(info.ballSolidColor) || '#101426';
+      ballState.solidAlpha = clampInt(info.ballSolidAlpha, 40, 100, 100);
+      ballState.frostColor = hexNorm6(info.ballFrostColor) || '#FFFFFF';
+      ballState.frostAlpha = clampInt(info.ballFrostAlpha, 2, 60, 14);
+      syncBallUI();
     } catch (_) {}
   }).catch(() => {});
   const optSave = document.getElementById('opt-save');
@@ -629,6 +726,13 @@
           titleBarSolidAlpha: tbState.solidAlpha,
           titleBarDivider: !!tbState.divider,
           hideAccountBall: !!(optHideBall && optHideBall.checked),
+          // v4.0.31（用户需求 2）：悬浮球外观落盘
+          ballAppearanceMode: ballState.mode,
+          ballMaterial: ballState.material,
+          ballSolidColor: ballState.solidColor,
+          ballSolidAlpha: ballState.solidAlpha,
+          ballFrostColor: ballState.frostColor,
+          ballFrostAlpha: ballState.frostAlpha,
           // v3.0.76：透明界面以百分比落盘（0 = 深色实底）
           uiTransparentAlpha: uiAlphaPct,
           barCorner: tbCorner.bar,

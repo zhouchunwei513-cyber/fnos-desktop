@@ -51,6 +51,14 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       // v3.0.27：悬浮球隐藏开关 —— v3.0.23 引入该开关时本白名单漏加此字段，
       // 导致设置页勾选"隐藏"后主进程永远拿不到真值、回落 false（关不掉、也不落盘）。
       hideAccountBall: typeof opts?.hideAccountBall === 'boolean' ? opts.hideAccountBall : undefined,
+      // v4.0.31（用户需求 2）：悬浮球外观。和 v3.0.70 四角、v3.0.23 悬浮球开关同款坑 ——
+      // 白名单漏一个字段，设置页保存后静默回弹，所以六个字段必须逐个放行。
+      ballAppearanceMode: (opts?.ballAppearanceMode === 'custom' || opts?.ballAppearanceMode === 'follow') ? opts.ballAppearanceMode : undefined,
+      ballMaterial: (opts?.ballMaterial === 'frosted' || opts?.ballMaterial === 'solid') ? opts.ballMaterial : undefined,
+      ballSolidColor: opts?.ballSolidColor ? String(opts.ballSolidColor) : undefined,
+      ballSolidAlpha: (opts?.ballSolidAlpha != null && Number.isFinite(Number(opts.ballSolidAlpha))) ? Number(opts.ballSolidAlpha) : undefined,
+      ballFrostColor: opts?.ballFrostColor ? String(opts.ballFrostColor) : undefined,
+      ballFrostAlpha: (opts?.ballFrostAlpha != null && Number.isFinite(Number(opts.ballFrostAlpha))) ? Number(opts.ballFrostAlpha) : undefined,
       // v3.0.62：可选「透明界面」（设置 / 帮助 / 关于 页面半透明）
       uiTransparent: typeof opts?.uiTransparent === 'boolean' ? opts.uiTransparent : undefined,
       // v3.0.76：透明度百分比 0~100（0 = 深色实底，100 = 完全透明）。漏加会重演 v3.0.70 四角问题：
@@ -85,6 +93,13 @@ contextBridge.exposeInMainWorld('fnosSettings', {
       // v3.0.71：四角实时预览（只广播、不落盘）
       barCorner: (opts?.barCorner === 'round' || opts?.barCorner === 'square' || opts?.barCorner === 'half') ? opts.barCorner : undefined,
       winCorner: (opts?.winCorner === 'round' || opts?.winCorner === 'square' || opts?.winCorner === 'half') ? opts.winCorner : undefined,
+      // v4.0.31（用户需求 2）：悬浮球外观实时预览
+      ballAppearanceMode: (opts?.ballAppearanceMode === 'custom' || opts?.ballAppearanceMode === 'follow') ? opts.ballAppearanceMode : undefined,
+      ballMaterial: (opts?.ballMaterial === 'frosted' || opts?.ballMaterial === 'solid') ? opts.ballMaterial : undefined,
+      ballSolidColor: opts?.ballSolidColor ? String(opts.ballSolidColor) : undefined,
+      ballSolidAlpha: (opts?.ballSolidAlpha != null && Number.isFinite(Number(opts.ballSolidAlpha))) ? Number(opts.ballSolidAlpha) : undefined,
+      ballFrostColor: opts?.ballFrostColor ? String(opts.ballFrostColor) : undefined,
+      ballFrostAlpha: (opts?.ballFrostAlpha != null && Number.isFinite(Number(opts.ballFrostAlpha))) ? Number(opts.ballFrostAlpha) : undefined,
     }),
   setAccentColor: (color) =>
     ipcRenderer.invoke('settings:set-accent-color', String(color || '#5865F2')),

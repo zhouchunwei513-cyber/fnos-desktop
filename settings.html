@@ -270,6 +270,58 @@
         </label>
       </div>
 
+      <!-- v4.0.31（用户需求 2）：悬浮球外观 —— 跟随标题栏 / 单独设置 -->
+      <div id="ball-appearance-row" style="padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px">
+          <div>
+            <div class="hotkey-title">悬浮球外观</div>
+            <div class="hotkey-sub">跟随标题栏：标题栏切磨砂/纯色、改颜色与浓度时，悬浮球同步跟着变；单独设置：球用自己的材质与配色，标题栏怎么改都不影响它。</div>
+          </div>
+          <div class="tb-material-group" data-ball-mode>
+            <button type="button" class="tb-mat-btn" data-ballmode="follow">跟随标题栏</button>
+            <button type="button" class="tb-mat-btn" data-ballmode="custom">单独设置</button>
+          </div>
+        </div>
+        <div id="ball-custom-panel" style="display:none;margin-top:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.05)">
+            <div class="hotkey-sub" style="margin:0">球体材质</div>
+            <div class="tb-material-group" data-ball-mat>
+              <button type="button" class="tb-mat-btn" data-ballmat="solid">纯色</button>
+              <button type="button" class="tb-mat-btn" data-ballmat="frosted">磨砂</button>
+            </div>
+          </div>
+          <div id="ball-solid-row" style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:10px">
+            <div class="hotkey-sub" style="margin:0">纯色颜色</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="color" id="ball-solid-color" value="#101426" style="width:38px;height:30px;padding:0;border:1px solid rgba(255,255,255,0.16);border-radius:8px;background:transparent;cursor:pointer" />
+              <input type="text" id="ball-solid-hex" class="hotkey-input tb-hex-input" value="#101426" maxlength="9" placeholder="#RRGGBB" spellcheck="false" />
+            </div>
+          </div>
+          <div id="ball-solid-alpha-row" style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:10px">
+            <div class="hotkey-sub" style="margin:0">纯色浓度</div>
+            <div style="flex:0 0 220px;display:flex;align-items:center;gap:10px">
+              <input type="range" id="ball-solid-alpha" min="40" max="100" step="1" value="100" class="tb-range" style="flex:1" />
+              <span id="ball-solid-alpha-val" class="tb-range-val">100%</span>
+            </div>
+          </div>
+          <div id="ball-frost-row" style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:10px">
+            <div class="hotkey-sub" style="margin:0">磨砂染色</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="color" id="ball-frost-color" value="#ffffff" style="width:38px;height:30px;padding:0;border:1px solid rgba(255,255,255,0.16);border-radius:8px;background:transparent;cursor:pointer" />
+              <input type="text" id="ball-frost-hex" class="hotkey-input tb-hex-input" value="#FFFFFF" maxlength="9" placeholder="#RRGGBB" spellcheck="false" />
+            </div>
+          </div>
+          <div id="ball-frost-alpha-row" style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:10px">
+            <div class="hotkey-sub" style="margin:0">磨砂浓度</div>
+            <div style="flex:0 0 220px;display:flex;align-items:center;gap:10px">
+              <input type="range" id="ball-frost-alpha" min="2" max="60" step="1" value="14" class="tb-range" style="flex:1" />
+              <span id="ball-frost-alpha-val" class="tb-range-val">14%</span>
+            </div>
+          </div>
+          <div class="hotkey-sub" style="margin-top:8px;color:#8b93a7">改完即时预览；点下方「保存界面设置」后长期生效。浓度低于 40% 的纯色球在深色壁纸上会看不清图标，已做下限保护。</div>
+        </div>
+      </div>
+
         <!-- v3.0.76（用户要求：删除深色模式，改为调透明度）：开关 -> 百分比滑块，拖动即时预览 -->
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
           <div>

@@ -3,6 +3,30 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.21
+
+> 用户纠正 v4.0.20：飞牛应用窗口分三类 —— ① 内嵌窗（标题栏无 ↻/↗）② 内嵌窗（标题栏有 ↻/↗）
+> ③ 独立跳出窗（标题栏无 ↻/↗）。v4.0.20 把「内嵌窗不加按钮」一刀切套到了 ③ 上，
+> 导致独立跳出窗没有刷新 / 新标签打开。
+
+### 逆向结论（`/assets/index-D1auxRov.js` 全文核过）
+- 内嵌窗标题栏 `trim-ui__app-layout--header` children 固定为
+  `[标题, 自定义槽, minimize, maximize, close]`，`刷新`/`新标签`/`newTab`/`openInNew` 全 0 命中
+  → **内嵌窗标题栏本身永不画 ↻/↗**，类型 ② 的那两钮来自窗内加载的飞牛自有页面。
+- 独立跳出窗由 `createAppWindow` 打开应用真实入口（`/app/<id>/`、`:3000`、`/cgi/ThirdParty/...`），
+  页面不带飞牛应用头 → 只有自绘标题栏能给 ↻/↗。
+
+### 修复
+1. `titlebar-inject.js`：恢复 v4.0.18 的「↻ 刷新」「↗ 新标签打开」（仅非主窗），
+   `__need` 自愈清单同步带上 `fnos-tb-reload` / `fnos-tb-newtab`；注释改写为三类型判定说明。
+2. 类型 ①/②（内嵌窗）继续保持 v4.0.20 的零注入，不转独立窗。
+3. 新增 `WINDOW-TYPES.md`：三类定义、判定依据、本机 25 个已分类应用的清单
+   （类型 1 = 13 个第三方 FPK 页；类型 2 = 5 个飞牛自有页；类型 3 = 7 个跳出窗）。
+
+### 验证
+- `electron --check`：`main.js` / `preload.js` / `titlebar-inject.js` 全部通过；`read_lints` 无告警。
+- 版本号同步 `package.json` / `main.js` = 4.0.21。
+
 ## v4.0.20
 
 > 用户纠正 v4.0.19：内嵌窗标题栏不要加任何按钮。飞牛的「↻ 刷新 / ↗ 新标签」是**由应用自身

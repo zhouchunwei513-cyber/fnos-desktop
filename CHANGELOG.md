@@ -3,6 +3,31 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.23
+
+> 用户反馈：推了 4.0.22 之后点「检查更新」只看得到 4.0.20。
+
+### 根因（GitHub Releases 语义 + 并行构建）
+- 客户端走 `https://api.github.com/repos/.../releases/latest`，而 GitHub 的「latest」是
+  **按 Release 创建时间**挑的，不是按版本号。
+- v4.0.20 / v4.0.21 两个标签是一次 push 推上去的，Actions 并行跑：v4.0.21 的 release
+  16:45:58Z 创建，v4.0.20 的 16:46:23Z 创建（晚 25 秒）→ `latest` = **v4.0.20**。
+- 用户点检查更新时 v4.0.22 的构建还没跑完（17:13:36Z 才发布），所以只看到 4.0.20。
+- 另两条通道（`/releases/latest` 的 302、`releases.atom`）拿的也是同一个「latest」，
+  同样会被这个顺序问题坑到。
+
+### 修复
+1. `main.js`：新增 `RELEASES_LIST`，`__viaApi()` 改为拉 `releases?per_page=20`，
+   过滤 draft / prerelease 后**按版本号取最大**；列表通道异常才退回 `/releases/latest`。
+2. `main.js`：竞速胜出者若不是 api 通道，再用列表通道复核一次，取更高版本，
+   落 `update/check.prefer-higher`。
+3. `.github/workflows/build.yml`：加 `concurrency: build-release`（`cancel-in-progress: false`），
+   一次推多个 tag 时构建串行，杜绝「旧版本 release 后创建」。
+
+### 验证
+- `GET /releases/latest` 与 `releases.atom` 现在都指向 v4.0.22（推送后已自然正确）。
+- 新版检查更新逻辑对「latest 指向旧版本」的场景免疫（取列表最大版本）。
+
 ## v4.0.22
 
 > 用户工单（NAS 192.168.50.91 / 4.0.x）：桌面快捷方式双击启动应用，窗口里装的是**飞牛 NAS 桌面**

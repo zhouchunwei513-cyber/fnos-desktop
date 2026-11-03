@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.22';
+const APP_VERSION = '4.0.23';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -815,6 +815,10 @@ const LIVE_ICON_PNG = path.join(__dirname, 'live-icon.png');
 const DEFAULT_SHORTCUTS = { lockApp: 'Ctrl+Alt+L', hideAll: 'Ctrl+Alt+H' };
 const GITHUB_REPO = 'zhouchunwei513-cyber/fnos-desktop';
 const RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+// v4.0.23：/releases/latest 是「按 Release 创建时间」挑的，不是按版本号。
+// 一次推多个 tag 时构建并行，旧版本 job 后完成 → latest 反而指向旧版本，
+// 客户端就会出现「明明推了 4.0.22，检查更新只看到 4.0.20」。改拉列表自己挑最大版本。
+const RELEASES_LIST = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20`;
 const RELEASES_PAGE = `https://github.com/${GITHUB_REPO}/releases/latest`;
 const RELEASES_ATOM = `https://github.com/${GITHUB_REPO}/releases.atom`;
 
@@ -947,10 +951,26 @@ async function checkGitLatestTag() {
   };
 
   async function __viaApi(timeoutMs) {
-    const { code, body } = await __req(RELEASES_API, timeoutMs, 'application/vnd.github+json');
-    if (code < 200 || code >= 300) throw new Error(`api.github.com 返回 HTTP ${code}`);
+    // v4.0.23：优先用列表通道并挑「版本号最大」的那条；列表挂掉才退回 /releases/latest。
     let data = null;
-    try { data = JSON.parse(body); } catch (_) { throw new Error('api.github.com 返回内容无法解析'); }
+    try {
+      const r1 = await __req(RELEASES_LIST, timeoutMs, 'application/vnd.github+json');
+      if (r1.code >= 200 && r1.code < 300) {
+        const list = JSON.parse(r1.body);
+        if (Array.isArray(list)) {
+          const cands = list.filter((x) => x && x.tag_name && !x.draft && !x.prerelease);
+          if (cands.length) {
+            cands.sort((a, b) => compareVersions(String(b.tag_name).replace(/^v/i, ''), String(a.tag_name).replace(/^v/i, '')));
+            data = cands[0];
+          }
+        }
+      }
+    } catch (_) {}
+    if (!data) {
+      const { code, body } = await __req(RELEASES_API, timeoutMs, 'application/vnd.github+json');
+      if (code < 200 || code >= 300) throw new Error(`api.github.com 返回 HTTP ${code}`);
+      try { data = JSON.parse(body); } catch (_) { throw new Error('api.github.com 返回内容无法解析'); }
+    }
     if (!data || !data.tag_name) throw new Error('api.github.com 返回中没有版本号');
     // v2.18.5：顺带取 Windows 安装包直链（assets 里 *setup.exe），
     // 供「关于」页内直接下载，不再一律甩到浏览器。
@@ -1006,7 +1026,19 @@ async function checkGitLatestTag() {
 
   const __ms = 9000;
   try {
-    return await Promise.any([__viaApi(__ms), __viaAtom(__ms), __viaHtml(__ms)]);
+    const __first = await Promise.any([__viaApi(__ms), __viaAtom(__ms), __viaHtml(__ms)]);
+    // v4.0.23：302 跳转 / atom 两条通道拿到的仍是 GitHub 眼里的「latest」，
+    // 一样会被 Release 创建时间坑成旧版本；用列表通道复核一次，取版本更高的那个。
+    if (__first && __first.via !== 'api') {
+      try {
+        const __api2 = await __viaApi(4500);
+        if (__api2 && compareVersions(String(__api2.tag), String(__first.tag)) > 0) {
+          try { require('./logger.js').log('info', 'update', 'check.prefer-higher', { params: { raced: String(__first.tag), api: String(__api2.tag), via: String(__first.via) } }); } catch (_) {}
+          return __api2;
+        }
+      } catch (_) {}
+    }
+    return __first;
   } catch (agg) {
     const errs = (agg && agg.errors) ? agg.errors : [agg];
     const brief = errs.map((e) => (e && e.message) ? String(e.message) : 'unknown').join('；');

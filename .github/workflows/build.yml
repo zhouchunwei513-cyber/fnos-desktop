@@ -17,6 +17,13 @@ on:
 permissions:
   contents: write
 
+# v4.0.23：一次推多个 tag 时禁止并行构建。
+# 并行时旧版本的 job 可能后完成，GitHub 的「latest release」是按 Release 创建时间
+# （不是版本号）挑的，于是 /releases/latest 会指向旧版本，客户端检查更新就"看不到新版"。
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
 jobs:
   build-windows:
     runs-on: windows-latest

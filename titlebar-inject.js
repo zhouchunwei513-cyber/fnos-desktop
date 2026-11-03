@@ -894,13 +894,19 @@ module.exports = function injectTitleBar(ctx) {
         // 半径仍走 calc(20px / var(--fnos-f,1)) 保持 DPI 缩放跟随，数值本身不变。
         // 四值顺序：左上 右上 右下 左下 -> 0 0 R R = 上直下圆
         const __wr = '0 0 calc(20px / var(--fnos-f, 1)) calc(20px / var(--fnos-f, 1))';
+        // v4.0.11（用户工单：半圆角对 xapp 窗口不生效）——
+        // xapp 分支把 clip-path 写在 html 上，原来 half 只覆盖 html:root>body，
+        // html 的 20px 全圆角压过来 → xapp 窗永远全圆角。现在 half/round 都同时命中 html:root。
         el.textContent = (TB.winCorner === 'square')
           ? 'html:root,html:root>body{clip-path:none !important;-webkit-clip-path:none !important;border-radius:0 !important;}'
           : ((TB.winCorner === 'half')
-            ? ('html:root>body{clip-path:inset(0 round ' + __wr + ') !important;'
+            ? ('html:root,html:root>body{clip-path:inset(0 round ' + __wr + ') !important;'
               + '-webkit-clip-path:inset(0 round ' + __wr + ') !important;'
               + 'border-radius:0 !important;}')
-            : '');
+            : ((TB.winCorner === 'round')
+              ? ('html:root,html:root>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;'
+                + '-webkit-clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}')
+              : ''));
       } catch (_) {}
     }
 
@@ -1052,7 +1058,14 @@ module.exports = function injectTitleBar(ctx) {
           if (!d || !d.url) return;
           __frostGeom = d;
           const bar0 = document.getElementById('fnos-titlebar');
-          if (bar0 && TB.material === 'frosted') __paintFrost(bar0);
+          if (bar0 && TB.material === 'frosted') {
+            // v4.0.11：抓屏成功后把兜底底色降回正常 frostAlpha，由磨砂层接管视觉
+            try {
+              const __fa = Math.max(0.02, Math.min(0.35, (TB.frostAlpha == null ? 10 : Number(TB.frostAlpha)) / 100));
+              bar0.style.background = hexToRgba(TB.frostColor || '#ffffff', __fa);
+            } catch (_) {}
+            __paintFrost(bar0);
+          }
         } catch (_) {}
       });
     } catch (_) {}
@@ -1122,7 +1135,12 @@ module.exports = function injectTitleBar(ctx) {
               bar.style.borderBottom = '1px solid rgba(255,255,255,0.10)';
             } else {
               __ensureFrostLayer(bar);
-              bar.style.background = hexToRgba(TB.frostColor || '#ffffff', __fa);
+              // v4.0.11：磨砂抓屏失败（frost.capture-fail）时 __frostGeom 为 null，磨砂层空白，
+              // 标题栏只剩 frostAlpha(10%) 的极淡染色 → 几乎透明，透出页面自身顶栏，用户看到
+              // "另一套标题栏"。抓屏未就绪时用 35% 不透明底色兜底，保证标题栏始终可辨识；
+              // 抓屏成功后 __paintFrost 会叠加磨砂层，视觉恢复。
+              const __faFallback = __frostGeom ? __fa : Math.max(__fa, 0.35);
+              bar.style.background = hexToRgba(TB.frostColor || '#ffffff', __faFallback);
               bar.style.backdropFilter = 'none';
               bar.style.webkitBackdropFilter = 'none';
               bar.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.06)';
@@ -1345,16 +1363,22 @@ module.exports = function injectTitleBar(ctx) {
           if (!os) {
             let cs = null;
             try { cs = getComputedStyle(el); } catch (_) {}
-            if (!cs || cs.position !== 'fixed') continue;
+            if (!cs) continue;
+            // v4.0.11：position:sticky;top:0 的顶栏/标签栏同样被标题栏压住，一并接管
+            const __pos = cs.position;
+            if (__pos !== 'fixed' && __pos !== 'sticky') continue;
             const raw = String(cs.top || '').trim();
             // auto / 百分比 / calc 的 top 不是「贴顶」语义，一律不动
             if (!raw || raw.indexOf('%') >= 0 || raw.indexOf('calc') >= 0) continue;
             const v = parseFloat(raw);
             if (!isFinite(v) || v < -2 || v > 2) continue;
-            // 只有真的画在视口顶边的才接管（父级带 transform 时 fixed 会相对父级定位，别误伤）
-            let rt = 0;
-            try { rt = el.getBoundingClientRect().top; } catch (_) { rt = 0; }
-            if (!(rt <= barPx + 2 && rt > -barPx)) continue;
+            // fixed：只接管真的画在视口顶边的（父级带 transform 时 fixed 会相对父级定位，别误伤）
+            // sticky：top:0 就会在滚动后贴顶，不管当前 rect 在哪，一律接管
+            if (__pos === 'fixed') {
+              let rt = 0;
+              try { rt = el.getBoundingClientRect().top; } catch (_) { rt = 0; }
+              if (!(rt <= barPx + 2 && rt > -barPx)) continue;
+            }
             os = el.__fnosTopShift = {
               v: v,
               inline: String((el.style && el.style.getPropertyValue('top')) || ''),
@@ -1404,7 +1428,13 @@ module.exports = function injectTitleBar(ctx) {
           let __t = 0, __last = 0;
           const __run = () => {
             const now = Date.now();
-            if (now - __last < 700) return;
+            // v4.0.11：原来 700ms 内直接 return 不补跑 → SPA 首帧/路由插入的 fixed 顶栏被永久跳过。
+            // 改为延迟补跑，保证每次 bump 最终都会执行一次。
+            if (now - __last < 700) {
+              if (__t) clearTimeout(__t);
+              __t = setTimeout(() => { __t = 0; __run(); }, 700 - (now - __last));
+              return;
+            }
             __last = now;
             try { __shiftFixedTop(Math.round(__barHeight())); } catch (_) {}
           };
@@ -1414,8 +1444,10 @@ module.exports = function injectTitleBar(ctx) {
           };
           try { window.addEventListener('resize', __bump, { passive: true }); } catch (_) {}
           try {
+            // v4.0.11：补 attributes 监听——SPA 组件重渲染只改 class/style 不增删节点时
+            // 原 childList-only 观察器完全收不到通知，fixed 顶栏漏接管。
             const mo = new MutationObserver(__bump);
-            mo.observe(document.body, { childList: true, subtree: true });
+            mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
           } catch (_) {}
           try {
             const mo2 = new MutationObserver(__bump);
@@ -1453,10 +1485,16 @@ module.exports = function injectTitleBar(ctx) {
         // （v1.57 原因：避免浅色应用顶部出现实色栏；设置窗口不透明背景本身即深色）。
         const __argvB = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
         const __isMainWin = __argvB.indexOf('--fnos-shell') >= 0 && __argvB.indexOf('--fnos-app-window') < 0;
-        // v4.0.7（用户纠正）：透出壁纸是「磨砂」材质的正常表现，不能拿实色盖掉。
-        // 非主窗这里维持 transparent —— 真正的外观由 applyStyle() 按偏好设置决定：
-        // 纯色 → 实色 solidColor；磨砂 → 透明 + 主进程抓屏的磨砂层（titlebar-frost-bg）。
-        const __barBg = __isMainWin ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)' : 'transparent';
+        // v4.0.11（用户工单：非主窗标题栏"形式和偏好设置里不一样"）——
+        // 原来非主窗 __barBg 恒 transparent，等 applyStyle() 才落值；但磨砂抓屏失败时
+        // applyStyle 也只给 10% 淡染色，标题栏几乎透明 → 透出页面自身顶栏，看起来是
+        // "另一套标题栏"。现在 __barBg 直接按偏好设值：
+        // 磨砂 → frostColor 35% 底（applyStyle 可再调）；纯色 → solidColor 90%+ 底。
+        const __barBg = __isMainWin
+          ? 'linear-gradient(180deg, rgb(6,9,21) 0%, rgb(3,6,16) 100%)'
+          : (TB.material === 'frosted'
+            ? hexToRgba(TB.frostColor || '#ffffff', Math.max(TB.frostAlpha == null ? 10 : TB.frostAlpha, 35) / 100)
+            : hexToRgba(TB.solidColor || TB.color || '#101426', Math.max(TB.solidAlpha == null ? 100 : TB.solidAlpha, 90) / 100));
         // v2.15.71：主窗口标题栏高度 34->35px，标题栏本体向下侵入内容区 1px 盖住接缝，
         // 取代 v2.15.70 伪元素方案（伪元素在 Windows 高分 DPI 下仍会透细线）。
         // 仅主窗口生效，设置窗/应用窗保持 34px 不变。
@@ -1928,7 +1966,9 @@ module.exports = function injectTitleBar(ctx) {
           'html>body .h-screen,html>body .h-dvh{height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
+          'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky 贴顶类名，JS 接管前先让位
+          'html>body .fixed.top-0,html>body .sticky.top-0,html>body [class*="fixed"][class*="top-0"],html>body [class*="sticky"][class*="top-0"]{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
         // v4.0.10（用户工单「标题栏压住内容区第一行」的直接原因）：
         // v3.0.46 为了修好第三方应用「底栏压内容」把让位方式换成了 html{padding-top:34px}，

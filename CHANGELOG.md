@@ -3,6 +3,39 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.11
+
+> 用户工单：v4.0.10 的 fixed 顶栏让位修复无效，"标题栏压住内容区"问题照旧；
+> 非主窗标题栏"形式和偏好设置里不一样"；半圆角对 xapp 窗口不生效。
+> 本版从日志实锤出发，修 5 个根因。
+
+### 根因 A/B（压住内容区）：__shiftFixedTop 节流丢任务 + sticky 未覆盖
+- **节流 bug**：v4.0.10 的 `__run` 在 700ms 内直接 `return` **不补跑**，SPA 首帧/路由动态插入的
+  `position:fixed;top:0` 顶栏被永久跳过（日志实锤：wcId=7 `count:0`，wcId=6 只命中 1 个无关元素）。
+  改为延迟补跑，保证每次 bump 最终都会执行。
+- **sticky 漏检**：`position:sticky;top:0` 的顶栏/标签栏（Tailwind / Naive UI 常见）同样被标题栏
+  压住，原来只认 `position:fixed`。现在 fixed + sticky 都接管。
+- **MutationObserver 盲区**：原来只监听 `childList`，SPA 组件重渲染只改 class/style 不增删节点时
+  完全收不到通知。补 `attributes` + `attributeFilter: ['style','class']`。
+- **CSS 兜底**：`.fixed.top-0` / `.sticky.top-0` / `[class*="fixed"][class*="top-0"]` 等常见组件库
+  类名先用 CSS 让位，JS 接管前不压内容。
+
+### 根因 C/D（"标题栏形式不一样"）：非主窗标题栏恒透明 → 透出页面顶栏
+- **初始背景**：非主窗 `__barBg` 原来恒 `transparent`，现在按偏好设值——
+  磨砂 → frostColor 35% 底；纯色 → solidColor 90%+ 底。
+- **磨砂抓屏失败降级**：`frost.capture-fail`（日志实锤）时 `__frostGeom` 为 null，
+  磨砂层空白、标题栏只剩 10% 淡染色 → 几乎透明 → 透出页面自身顶栏，看起来是"另一套标题栏"。
+  抓屏未就绪时用 35% 不透明底色兜底；抓屏成功后 `titlebar-frost-bg` 处理器自动降回正常 frostAlpha。
+
+### 根因 E（半圆角不生效）：winCorner 选择器不覆盖 html
+- xapp 分支把 `clip-path` 写在 `html` 上，`__applyWinCornerStyle` 的 "half" 只覆盖 `html:root>body`
+  → html 的 20px 全圆角压过来，xapp 窗永远全圆角。现在 half/round 都同时命中 `html:root`。
+
+### 验证
+- `titlebar-inject.js` / `main.js` 语法检查通过；
+- 待实机回归：biliLive-tools 顶栏/录制任务标签栏不被压、磨砂/纯色切换即时生效、
+  半圆角对 xapp 窗口生效、jump/new-tab 窗标题栏与主窗一致。
+
 ## v4.0.10
 
 > 用户工单「标题栏压住内容区第一行」的根因修复（第三方应用窗，如 biliLive-tools 顶栏 / 录制任务标签栏）。

@@ -3,6 +3,27 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.18
+
+> 用户工单：内嵌窗应用的标题栏被改成了自绘栏，fnOS 默认标题栏上的「新标签打开」没了 ——
+> 那是高频功能，必须保留。
+
+### 修复
+1. `titlebar-inject.js`：应用窗/跳转窗的自绘标题栏补回「↻ 刷新」「↗ 新标签打开」
+   （SPA 自愈重建检查一并纳入；主窗不加——刷新会把 fnOS 桌面整页重载）。
+   点「↗」走 `window.open(当前URL, '_blank')` → 主进程 `setWindowOpenHandler` →
+   `createAppWindow`，等价「在新标签打开当前页面」，不新增 IPC。
+2. `main.js`：`createAppWindow` 新增 `__embedAuto` —— `/appview` 容器页自动使用
+   `--fnos-embed-style`（embed 形态不注入），把 fnOS 前端自绘的默认标题栏
+   （logo + 标题 + ↻ ↗ — □ ✕）让出来，避免双标题栏。
+   `/app/<id>/` 应用页暂不放开：本地无法验证这类页面是否自带默认标题栏（需要 fnOS token），
+   误判会让窗口变成无边框且没有任何按钮；这类窗口继续用自绘栏 + 新增的两个按钮。
+
+### 验证
+- 真实 preload 复现截图：biliLive-tools 应用窗标题栏为 ☰ + ↻ + ↗ + — □ ✕，侧边栏 12 项完整；
+- 语法检查全部通过。
+- `/app/Cloudflare-QT/` 直接抓取返回 `invalid token`，无法离线判定默认标题栏是否存在，故按保守策略处理。
+
 ## v4.0.17
 
 > 用户工单：新标签打开应用，侧边栏少了 4 项（直播录制/看板/视频处理/工具）、内容区显示不全；

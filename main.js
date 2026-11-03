@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.17';
+const APP_VERSION = '4.0.18';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -7460,6 +7460,28 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     } catch (_) { return false; }
   })();
 
+  // v4.0.18（用户工单「内嵌窗应用请用默认标题栏，我很需要那个新标签打开按钮」）：
+  // fnOS 自家应用页（/app/<id>/、/appview、/v/、/music/ 等）页面本身自带默认标题栏
+  // （logo + 标题 + ↻ 刷新 + ↗ 新标签打开 + — □ ✕）。此前 createAppWindow 只认
+  // opts.embedStyle，调用方（__openAppByWindowType / window.open 兜底）又都没传，
+  // 于是这些窗口被无条件塞进 --fnos-app-window 强注入自绘标题栏，默认标题栏被顶掉，
+  // 「新标签打开」按钮随之消失。这里按 URL 自动判定：fnOS 自家页面走 embed 形态
+  // （不注入，保留默认标题栏）；第三方端口（biliLive-tools :3000 之类）页面没有默认
+  // 标题栏，继续注入自绘栏，否则窗口无边框无法操作。
+  const __embedAuto = (function () {
+    try {
+      if (opts && typeof opts.embedStyle === 'boolean') return opts.embedStyle;
+      const o = new URL(String(url || ''));
+      const p = String(o.pathname || '');
+      // 只认 /appview 容器页——fnOS 前端在那里自绘了默认标题栏（logo+标题+↻↗—□✕）。
+      // /app/<id>/ 这类应用页是否自带默认标题栏本地无法验证（需要 fnOS token），
+      // 误判会让窗口变成无边框且没有任何按钮，故不放开；这类窗口继续注入自绘栏，
+      // 自绘栏已在 v4.0.18 补上 ↻ 刷新 / ↗ 新标签打开，功能不丢。
+      if (/^\/appview(\/|$)/i.test(p)) return true;
+    } catch (_) {}
+    return false;
+  })();
+
   const win = new BrowserWindow({
     x: __geo36 ? __geo36.x : undefined,
     y: __geo36 ? __geo36.y : undefined,
@@ -7518,7 +7540,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // v2.10.0 r30（问题1 根修）：--fnos-app-window 旗标——三套假窗控清扫（preload instantHide26 /
       // titlebar-inject chromeFix / 主进程帧脚本25/26）只在应用窗内生效；主窗整棵 frame 树（web 桌面
       // 内嵌窗的真 —□✕ 与拖动手柄）全豁免，杜绝把真实窗控当假窗控聚组杀除（反馈问题1）。
-      additionalArguments: ['--fnos-shell', ...(opts.embedStyle ? ['--fnos-embed-style'] : []), '--fnos-app-window', ...(__xapp46 ? ['--fnos-xapp'] : [])],
+      additionalArguments: ['--fnos-shell', ...(__embedAuto ? ['--fnos-embed-style'] : []), '--fnos-app-window', ...(__xapp46 ? ['--fnos-xapp'] : [])],
       enableBlinkFeatures: 'CSSBackdropFilter',
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
       // v1.76.0：应用窗口禁用硬件加速（软件渲染）。修复部分 Docker 应用

@@ -1296,6 +1296,136 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
+    // ================= v4.0.10：贴顶 fixed 元素让位 =================
+    // 背景（用户工单「标题栏压住内容区第一行」）：第三方应用窗（--fnos-xapp）的内容让位由
+    // v3.0.46 的 html{padding-top:34px} 负责，几何与浏览器一致、底栏不再压内容。但
+    // position:fixed 元素不参与 html 的 padding 布局——biliLive-tools 的顶栏、录制任务标签栏
+    // 都是 fixed;top:0，仍停在视口 y=0，正好被 34px 标题栏盖住第一行。
+    // 做法：只接管「自己贴视口顶边（top≈0）」的 fixed 元素，把它下移一个标题栏高度；
+    // 原 top 只记一次（元素上 __fnosTopShift），标题栏高度 / 页面缩放(--fnos-f) / 全屏态变化时
+    // 都按原值重算，不会叠加偏移；标题栏收起（全屏）时还原成作者原值。
+    const __fixedZoom = () => {
+      try {
+        const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--fnos-f'));
+        return (isFinite(v) && v > 0.2 && v < 8) ? v : 1;
+      } catch (_) { return 1; }
+    };
+
+    // 诊断用：只在「接管结果变化」时上报一次（v4.0.8 起的排障口径），避免刷日志
+    let __shiftLogKey = '';
+
+    const __shiftFixedTop = (h) => {
+      try {
+        const body = document.body;
+        if (!body) return;
+        const barPx = (typeof h === 'number' && isFinite(h) && h >= 0) ? h : __barHeight();
+        const __fsOn = (function () { try { return document.documentElement.getAttribute('data-fnos-fs') === '1'; } catch (_) { return false; } })();
+        // 标题栏占的是「设备 px」，fixed 的 top 是页面 CSS px，按缩放因子换算
+        const shift = __fsOn ? 0 : Math.round((barPx / __fixedZoom()) * 100) / 100;
+        const bar = document.getElementById('fnos-titlebar');
+        const els = body.querySelectorAll('*');
+        const n = Math.min(els.length, 4000);
+        const __hit = [];
+        for (let i = 0; i < n; i++) {
+          const el = els[i];
+          if (!el || el.nodeType !== 1) continue;
+          if (bar && (el === bar || bar.contains(el))) continue;
+          // 自己注入的节点（标题栏、顶部热区、resize 遮罩、磨砂层…）一律不动：热区必须留在窗口顶边
+          const id = String(el.id || '');
+          if (id.indexOf('fnos-') === 0) continue;
+          try { if (el.hasAttribute && el.hasAttribute('data-fnos-tb')) continue; } catch (_) {}
+          // 父级已在接管名单里就不再重复位移（fixed 后代跟着父级走，否则会叠加成双倍偏移）
+          let __anc = el.parentElement, __nested = false;
+          while (__anc && __anc !== body) {
+            if (__anc.__fnosTopShift) { __nested = true; break; }
+            __anc = __anc.parentElement;
+          }
+          if (__nested) continue;
+          let os = el.__fnosTopShift;
+          if (!os) {
+            let cs = null;
+            try { cs = getComputedStyle(el); } catch (_) {}
+            if (!cs || cs.position !== 'fixed') continue;
+            const raw = String(cs.top || '').trim();
+            // auto / 百分比 / calc 的 top 不是「贴顶」语义，一律不动
+            if (!raw || raw.indexOf('%') >= 0 || raw.indexOf('calc') >= 0) continue;
+            const v = parseFloat(raw);
+            if (!isFinite(v) || v < -2 || v > 2) continue;
+            // 只有真的画在视口顶边的才接管（父级带 transform 时 fixed 会相对父级定位，别误伤）
+            let rt = 0;
+            try { rt = el.getBoundingClientRect().top; } catch (_) { rt = 0; }
+            if (!(rt <= barPx + 2 && rt > -barPx)) continue;
+            os = el.__fnosTopShift = {
+              v: v,
+              inline: String((el.style && el.style.getPropertyValue('top')) || ''),
+              pri: String((el.style && el.style.getPropertyPriority('top')) || ''),
+            };
+          }
+          if (!el.style) continue;
+          // 相对原值位移：原 top=0 → 34px，原 top=-1 → 33px，缩放/高度变化只重算绝对值
+          const want = (shift > 0.25) ? (Math.round((os.v + shift) * 100) / 100 + 'px') : '';
+          const cur = String(el.style.getPropertyValue('top') || '');
+          const curPri = String(el.style.getPropertyPriority('top') || '');
+          if (want) {
+            // 值未变不写，避免触发 MutationObserver 自激
+            if (cur !== want || curPri !== 'important') el.style.setProperty('top', want, 'important');
+            if (__hit.length < 4) {
+              let cls = '';
+              try { cls = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 32); } catch (_) {}
+              __hit.push(String(el.tagName || '').toLowerCase() + (id ? '#' + id.slice(0, 24) : '') + (cls ? '.' + cls : ''));
+            }
+          } else if (cur !== os.inline || curPri !== os.pri) {
+            if (os.inline) el.style.setProperty('top', os.inline, os.pri || '');
+            else el.style.removeProperty('top');
+          }
+        }
+        const __key = shift + '#' + __hit.length + '#' + __hit.join(',');
+        if (__key !== __shiftLogKey) {
+          __shiftLogKey = __key;
+          try {
+            ipcRenderer.send('fnos:media-log', {
+              stage: 'titlebar.fixed-top',
+              shift: shift,
+              barH: barPx,
+              count: __hit.length,
+              sample: __hit,
+            });
+          } catch (_) {}
+        }
+      } catch (_) {}
+    };
+
+    // 装上「一次性」重算链路：窗口缩放、DOM 增删（SPA 首帧/路由）、html 上的 --fnos-f /
+    // --fnos-bar-h / 全屏属性变化都会触发，节流到 350ms 防抖 + 700ms 最小间隔。
+    const __watchFixedTop = () => {
+      try {
+        if (!window.__fnosShiftWatch) {
+          window.__fnosShiftWatch = true;
+          let __t = 0, __last = 0;
+          const __run = () => {
+            const now = Date.now();
+            if (now - __last < 700) return;
+            __last = now;
+            try { __shiftFixedTop(Math.round(__barHeight())); } catch (_) {}
+          };
+          const __bump = () => {
+            if (__t) clearTimeout(__t);
+            __t = setTimeout(() => { __t = 0; __run(); }, 350);
+          };
+          try { window.addEventListener('resize', __bump, { passive: true }); } catch (_) {}
+          try {
+            const mo = new MutationObserver(__bump);
+            mo.observe(document.body, { childList: true, subtree: true });
+          } catch (_) {}
+          try {
+            const mo2 = new MutationObserver(__bump);
+            mo2.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-fnos-fs'] });
+          } catch (_) {}
+        }
+        __shiftFixedTop(Math.round(__barHeight()));
+      } catch (_) {}
+    };
+
     function build() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
@@ -1800,6 +1930,13 @@ module.exports = function injectTitleBar(ctx) {
           'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
+        // v4.0.10（用户工单「标题栏压住内容区第一行」的直接原因）：
+        // v3.0.46 为了修好第三方应用「底栏压内容」把让位方式换成了 html{padding-top:34px}，
+        // 但 position:fixed 元素不参与 html 的 padding 布局——biliLive-tools 的顶栏、
+        // 录制任务标签栏都是 fixed;top:0，仍停在视口 y=0，正好被 34px 的标题栏盖住。
+        // 这里补一遍「贴顶 fixed 元素整体下移标题栏高度」，只动 top 落在标题栏带内的元素，
+        // 原值记在元素上以便还原，窗口缩放/标题栏高度变化可重算。
+        try { __watchFixedTop(); } catch (_) {}
       } else if (__isAppWin) {
         // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
         __padStyle.textContent = [

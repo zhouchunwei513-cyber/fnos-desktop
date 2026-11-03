@@ -3,6 +3,38 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.10
+
+> 用户工单「标题栏压住内容区第一行」的根因修复（第三方应用窗，如 biliLive-tools 顶栏 / 录制任务标签栏）。
+
+### 根因
+v3.0.46 为修好「第三方应用底栏压住面板字段」，把 `--fnos-xapp` 窗的让位方式从
+`body transform` 换成了 `html{padding-top:34px}`（fixed 继续相对 viewport，几何与浏览器一致）。
+但 **`position:fixed` 元素不参与 html 的 padding 布局**：顶栏、标签栏这类 `fixed;top:0`
+仍然停在视口 y=0，正好被 34px 的标题栏盖住第一行；底栏（`bottom:0`）不受影响，
+正是「上面压、下面好」的现象。
+
+### 修复（titlebar-inject.js）
+- 新增 `__shiftFixedTop()`：只接管「`position:fixed` 且自身 `top≈0`、实际画在视口顶边」的元素，
+  把 `top` 相对原值下移一个标题栏高度（`--fnos-bar-h / --fnos-f`，跟随标题栏高度与页面缩放）。
+- 幂等 / 可还原：原 `top` 只在首次接管时记在元素上（`__fnosTopShift`），窗口缩放、
+  改标题栏高度、页面缩放、全屏切换都按原值重算，不会叠加偏移；全屏（`data-fnos-fs=1`）时还原。
+- 不误伤：标题栏自身与全部注入节点（`id^="fnos-"`、`[data-fnos-tb]`）、顶部拖动热区、
+  已接管元素的 fixed 后代（避免双倍位移）、`top` 为 `auto/百分比/calc`、负值离屏元素一律跳过。
+- 重算链路：`resize` + body 子节点 MutationObserver + html `style`/`data-fnos-fs` 变化，
+  350ms 防抖 + 700ms 最小间隔（大页面不全文档高频扫描）。
+- 日志增强：接管结果变化时上报 `mpv.preload` / `titlebar.fixed-top`
+  （`shift` / `barH` / `count` / `sample`），复现一次即可确认是否命中。
+
+### 说明
+- 标题栏材质（磨砂/纯色）与窗口四角（圆角/直角/半圆角）此前已由偏好设置驱动
+  （v3.0.70/3.0.71 实时预览、v4.0.7 对应用窗/跳转窗/新标签窗生效），本版未改动其行为。
+
+### 验证
+- `titlebar-inject.js` 语法检查通过（`electron --check`）；
+- 待实机回归：biliLive-tools 顶栏 / 录制任务标签栏不再与标题栏重叠；
+  窗口缩放、全屏进出、改标题栏高度后偏移量与标题栏高度一致。
+
 ## v4.0.9
 
 > 两个实锤问题（日志 `titlebar.skipped` / `titlebar.injected` 对照）：内嵌窗出现两条标题栏；

@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.1';
+const APP_VERSION = '4.0.2';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3386,6 +3386,13 @@ function __doMaxRestore(d, curX, curY) {
 // 现在 pointerdown 先发一条 win-drag-arm（不动窗口、不还原，只登记按下点 + 挂起磨砂采样），
 // 越过阈值后的 win-drag-start 直接沿用 arm 的起点，位移从按下那一瞬算起，起步零死区。
 let __winDragArm = null;
+// v4.0.2（用户工单「第一次拖动肯定失败，非得再按一次标题栏」）——
+// 日志实锤：30 次成功拖动全部有位移，失败那几次连一条 drag.start 都没有，说明整次拖动在
+// 渲染层就被作废 / 或在 IPC 里丢了，主进程从头到尾不知情。旧版 arm 只是「登记 + 挂起磨砂」，
+// 真正启动完全依赖渲染层的 win-drag-start。这里做两件事：
+//   1) arm 留完整日志（drag.arm / drag.arm-end），下次出问题能看出是哪一步断的；
+//   2) win-drag-move 允许「自愈启动」：只要收到带 buttons=1 的 move，说明左键确实按着，
+//      即便 start 丢了也按 arm 的起点补建拖动（不靠猜，不会被松手后的滑动误触发）。
 ipcMain.on('win-drag-arm', (e, p) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
@@ -3404,11 +3411,16 @@ ipcMain.on('win-drag-arm', (e, p) => {
     try { if (arm.timer.unref) arm.timer.unref(); } catch (_) {}
     __winDragArm = arm;
     __frostDragStart(w); // 磨砂采样在「按下」就挂起，不等 win-drag-start 排队
+    try { fnosLog('info', 'window', 'drag.arm win=' + w.id + ' p=' + arm.sx + ',' + arm.sy); } catch (_) {}
   } catch (_) {}
 });
 ipcMain.on('win-drag-arm-end', () => {
   try {
-    if (__winDragArm) { try { clearTimeout(__winDragArm.timer); } catch (_) {} __winDragArm = null; }
+    if (__winDragArm) {
+      try { clearTimeout(__winDragArm.timer); } catch (_) {}
+      try { fnosLog('info', 'window', 'drag.arm-end win=' + __winDragArm.win.id + ' dragged=' + (__winDragState ? 1 : 0)); } catch (_) {}
+      __winDragArm = null;
+    }
     if (!__winDragState) { try { __frostDragEnd(); } catch (_) {} }
   } catch (_) {}
 });
@@ -3518,6 +3530,12 @@ ipcMain.on('win-drag-start', (e, p) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
     if (!w || w.isDestroyed() || !p) return;
+    // v4.0.2：重复的 start（同一次按下发了两次）不能按新坐标重建基准，否则窗口会跳一下
+    if (__winDragState && __winDragState.win === w) {
+      try { if (__winDragArm && __winDragArm.win === w) { clearTimeout(__winDragArm.timer); __winDragArm = null; } } catch (_) {}
+      try { fnosLog('info', 'window', 'drag.start.dup win=' + w.id + ' ignored'); } catch (_) {}
+      return;
+    }
     const arm = (__winDragArm && __winDragArm.win === w) ? __winDragArm : null;
     const st = arm ? __winDragBegin(w, arm.sx, arm.sy) : __winDragBegin(w, p.sx, p.sy);
     if (!st) return;
@@ -3596,6 +3614,11 @@ ipcMain.on('win-drag-end', (e) => {
   try {
     const d = __winDragState;
     __winDragState = null;
+    // v4.0.2：拖动结束顺手收掉残留的 arm 登记（正常路径 start 时已收，这里是兜底）
+    if (__winDragArm) {
+      try { clearTimeout(__winDragArm.timer); } catch (_) {}
+      __winDragArm = null;
+    }
     try { __dragPollStop(); } catch (_) {}
     __winDragEndAt = Date.now(); // v3.0.23：供主窗比例锁压掉拖动尾巴上的伪 resized
     if (d && d.win && !d.win.isDestroyed()) {

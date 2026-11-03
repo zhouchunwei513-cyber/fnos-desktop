@@ -1536,6 +1536,9 @@ module.exports = function injectTitleBar(ctx) {
             try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
           };
           const __endDrag = function () {
+            // v4.0.2：刚按下就到的 blur / pointerup（激活窗口的噪声、系统补发帧）不算数，
+            // 否则这次按下还没开始就被复位，用户表现为「第一次拖必定失败、再按一次才行」。
+            if (!W.__fnosDsDrag && W.__fnosDsDownAt && Date.now() - W.__fnosDsDownAt < 120) return;
             try {
               if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end');
               else ipcRenderer.send('win-drag-arm-end');
@@ -1554,6 +1557,9 @@ module.exports = function injectTitleBar(ctx) {
             if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
+            // v4.0.2：记下按下时刻。窗口从「未激活」被点激活时，头几帧的 buttons 可能是 0，
+            // 旧逻辑据此把整次拖动直接作废（用户工单：第一次拖动肯定失败，再按一次才行）。
+            W.__fnosDsDownAt = Date.now();
             // v3.0.82：按下就通知主进程「准备拖」（只登记起点 + 挂起磨砂采样，不动窗口、
             // 不还原最大化）。越过阈值时 win-drag-start 直接沿用这个起点，起步没有死区。
             try { ipcRenderer.send('win-drag-arm', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
@@ -1571,7 +1577,13 @@ module.exports = function injectTitleBar(ctx) {
             const __fwd = function (e) {
               if (!W.__fnosDsDown) return;
               // v3.0.66：左键已经松开（pointerup 被吞过）——立刻复位，绝不继续拖动
-              if (e.buttons === 0) { __endDrag(); return; }
+              if (e.buttons === 0) {
+                // v4.0.2：按下后 200ms 内不信 buttons —— 激活窗口的噪声帧是 0，
+                // 旧逻辑在这里就把整次拖动作废，「第一次拖不动」就是这条打出来的。
+                if (!W.__fnosDsDrag && Date.now() - (W.__fnosDsDownAt || 0) < 200) return;
+                __endDrag();
+                return;
+              }
               try {
                 if (!W.__fnosDsDrag) {
                   // v3.0.81：阈值 4px -> 2px。4px 死区偏大，用户感受到的是「刚按下那一下拖不动」；
@@ -2081,6 +2093,9 @@ module.exports = function injectTitleBar(ctx) {
             try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
           };
           const __endDrag = function () {
+            // v4.0.2：刚按下就到的 blur / pointerup（激活窗口的噪声、系统补发帧）不算数，
+            // 否则这次按下还没开始就被复位，用户表现为「第一次拖必定失败、再按一次才行」。
+            if (!W.__fnosDsDrag && W.__fnosDsDownAt && Date.now() - W.__fnosDsDownAt < 120) return;
             try {
               if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end');
               else ipcRenderer.send('win-drag-arm-end');
@@ -2099,6 +2114,9 @@ module.exports = function injectTitleBar(ctx) {
             if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
+            // v4.0.2：记下按下时刻。窗口从「未激活」被点激活时，头几帧的 buttons 可能是 0，
+            // 旧逻辑据此把整次拖动直接作废（用户工单：第一次拖动肯定失败，再按一次才行）。
+            W.__fnosDsDownAt = Date.now();
             // v3.0.82：按下就通知主进程「准备拖」（只登记起点 + 挂起磨砂采样，不动窗口、
             // 不还原最大化）。越过阈值时 win-drag-start 直接沿用这个起点，起步没有死区。
             try { ipcRenderer.send('win-drag-arm', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
@@ -2116,7 +2134,13 @@ module.exports = function injectTitleBar(ctx) {
             const __fwd = function (e) {
               if (!W.__fnosDsDown) return;
               // v3.0.66：左键已经松开（pointerup 被吞过）——立刻复位，绝不继续拖动
-              if (e.buttons === 0) { __endDrag(); return; }
+              if (e.buttons === 0) {
+                // v4.0.2：按下后 200ms 内不信 buttons —— 激活窗口的噪声帧是 0，
+                // 旧逻辑在这里就把整次拖动作废，「第一次拖不动」就是这条打出来的。
+                if (!W.__fnosDsDrag && Date.now() - (W.__fnosDsDownAt || 0) < 200) return;
+                __endDrag();
+                return;
+              }
               try {
                 if (!W.__fnosDsDrag) {
                   // v3.0.81：阈值 4px -> 2px。4px 死区偏大，用户感受到的是「刚按下那一下拖不动」；

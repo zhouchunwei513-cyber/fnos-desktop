@@ -542,11 +542,15 @@ module.exports = function injectTitleBar(ctx) {
         const s = __skinState.skin;
         const h = s && s.titlebar ? Number(s.titlebar.height) : NaN;
         __skinHeight = (isFinite(h) && h >= 20 && h <= 80) ? Math.round(h) : 34;
-        const el = document.documentElement;
-        if (el && el.style) el.style.setProperty('--fnos-bar-h', __skinHeight + 'px');
-        // 同步 bar inline 高度（主窗 +2px 盖接缝，其余不变），保持 __barHeight() 的 parseFloat 可读
         const bar = document.getElementById('fnos-titlebar');
-        if (bar) bar.style.height = (__skinHeight + (bar.__tbIsMain ? 2 : 0)) + 'px';
+        // v4.0.13（用户工单：tb.hit 实锤 barH=37 但 bodyTransform=35.3 → 内容顶部 1.7px 被压）——
+        // --fnos-bar-h 必须等于 bar 实际 inline 高度（含主窗 +2px 盖接缝），不能只用 __skinHeight。
+        // body transform / html padding-top 都用 calc(var(--fnos-bar-h) / var(--fnos-f))，
+        // 值偏小导致让位不足，标题栏底边 > 内容区上边沿。
+        const actualH = __skinHeight + (bar && bar.__tbIsMain ? 2 : 0);
+        const el = document.documentElement;
+        if (el && el.style) el.style.setProperty('--fnos-bar-h', actualH + 'px');
+        if (bar) bar.style.height = actualH + 'px';
       } catch (_) {}
     }
 
@@ -1427,6 +1431,35 @@ module.exports = function injectTitleBar(ctx) {
         const __key = shift + '#' + __hit.length + '#' + __hit.join(',');
         if (__key !== __shiftLogKey) {
           __shiftLogKey = __key;
+          // v4.0.13：额外扫描「视觉上在标题栏带内但未被接管」的元素，定位压内容根因
+          const __band = [];
+          try {
+            const __all2 = els;
+            for (let i = 0; i < Math.min(__all2.length, 4000); i++) {
+              const el = __all2[i];
+              if (!el || el.nodeType !== 1) continue;
+              if (bar && (el === bar || bar.contains(el))) continue;
+              const id2 = String(el.id || '');
+              if (id2.indexOf('fnos-') === 0) continue;
+              let rt2 = 0;
+              try { rt2 = el.getBoundingClientRect().top; } catch (_) { continue; }
+              if (rt2 < -2 || rt2 > barPx) continue;
+              let cs2 = null;
+              try { cs2 = getComputedStyle(el); } catch (_) { continue; }
+              if (cs2.display === 'none' || cs2.visibility === 'hidden') continue;
+              let cls2 = '';
+              try { cls2 = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 48); } catch (_) {}
+              __band.push({
+                tag: String(el.tagName || '').toLowerCase(),
+                id: id2.slice(0, 32),
+                cls: cls2,
+                pos: cs2.position,
+                top: String(cs2.top || '').slice(0, 16),
+                rectTop: Math.round(rt2),
+              });
+              if (__band.length >= 8) break;
+            }
+          } catch (_) {}
           try {
             ipcRenderer.send('fnos:media-log', {
               stage: 'titlebar.fixed-top',
@@ -1434,6 +1467,7 @@ module.exports = function injectTitleBar(ctx) {
               barH: barPx,
               count: __hit.length,
               sample: __hit,
+              band: __band,
             });
           } catch (_) {}
         }

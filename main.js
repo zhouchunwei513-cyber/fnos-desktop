@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.12';
+const APP_VERSION = '4.0.13';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -19070,6 +19070,23 @@ function __guardMainHidden(reason) {
   } catch (_) {}
 }
 function __handleSecondInstance(_e, commandLine) {
+  // v4.0.13（用户工单：安装程序弹「FNOS 无法关闭，请手动关闭它」死循环）——
+  // 根因：点 × = 隐藏到托盘（产品设计），进程不退出；安装程序发 WM_CLOSE 后等进程退出必然超时。
+  // 修复：新增协作退出通道 --quit。安装程序执行 FNOS.exe --quit，已有实例收到 second-instance
+  // 后立即退出（先 destroy 再 quit，防渲染进程卡住），退出码 0。
+  {
+    const __qa = (commandLine || []).map((x) => String(x || ''));
+    if (__qa.some((a) => a === '--quit' || a.startsWith('--quit='))) {
+      try { require('./logger.js').log('info', 'quit', 'quit.request', { params: { source: 'argv' } }, __RUN_MODE); } catch (_) {}
+      app.isQuitting = true;
+      // 先 destroy 主窗（跳过渲染端协商），防 docker/视频页渲染进程不响应导致 app.quit() 永久等待
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy(); } catch (_) {}
+      try { app.quit(); } catch (_) {}
+      // 硬兜底：800ms 后强制退出
+      setTimeout(() => { try { app.exit(0); } catch (_) {} }, 800);
+      return;
+    }
+  }
   // v2.3.5：标记握手完成（写 pid），告知新实例主进程已响应，避免误报"进程异常"。
   try { __markHandshakeDone(); } catch (_) {}
   try {
@@ -19207,6 +19224,27 @@ function __handleSecondInstance(_e, commandLine) {
 // v2.0.0: 命令行参数启动时跳过主界面
 const subAppLaunched = launchSubAppFromArgs();
 app.whenReady().then(() => {
+  // v4.0.13（用户工单：安装程序弹「FNOS 无法关闭」死循环）——
+  // 退出信标文件：安装程序写 %APPDATA%\fnos-client\quit.request 后轮询进程，
+  // 本进程监听到即协作退出。给"无法直接起子进程"的场景兜底（UAC 提权切断父子关系）。
+  try {
+    const __QF = path.join(app.getPath('userData'), 'quit.request');
+    // 清历史残留
+    try { if (fs.existsSync(__QF)) fs.unlinkSync(__QF); } catch (_) {}
+    fs.watch(app.getPath('userData'), (_evt, file) => {
+      if (String(file) !== 'quit.request') return;
+      try {
+        const __req = JSON.parse(fs.readFileSync(__QF, 'utf-8'));
+        try { require('./logger.js').log('info', 'quit', 'quit.request', { params: { source: 'file', from: __req && __req.from } }, __RUN_MODE); } catch (_) {}
+        app.isQuitting = true;
+        try { fs.unlinkSync(__QF); } catch (_) {}
+        try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy(); } catch (_) {}
+        try { app.quit(); } catch (_) {}
+        setTimeout(() => { try { app.exit(0); } catch (_) {} }, 800);
+      } catch (_) {}
+    });
+    try { require('./logger.js').log('info', 'quit', 'quit.beacon_ready', { params: { path: __QF } }, __RUN_MODE); } catch (_) {}
+  } catch (_) {}
   // v2.24.1：预热 MPV 圆角 helper（C# 首次要编译、之后载入 DLL，都是秒级）。
   // 放在这里与主窗口创建并行，等用户真正开始播放时圆角已就绪，首帧不会再先看到直角。
   try { if (MpvPlayerMod && typeof MpvPlayerMod.prewarmCorners === 'function') MpvPlayerMod.prewarmCorners(); } catch (_) {}
@@ -19483,6 +19521,8 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => {
+  // v4.0.13：退出日志增强——记录退出来源和耗时
+  try { require('./logger.js').log('info', 'quit', 'quit.begin', { params: { ts: Date.now() } }, __RUN_MODE); } catch (_) {}
   app.isQuitting = true;
   try { globalShortcut.unregisterAll(); } catch (_) {}
   persistAllSessions();
@@ -19524,6 +19564,8 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
+  // v4.0.13：退出日志增强
+  try { require('./logger.js').log('info', 'quit', 'quit.exit', { params: { ts: Date.now() } }, __RUN_MODE); } catch (_) {}
   try { globalShortcut.unregisterAll(); } catch (_) {}
   persistAllSessions();
 });

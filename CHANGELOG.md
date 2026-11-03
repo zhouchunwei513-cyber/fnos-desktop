@@ -3,6 +3,36 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.13
+
+> 用户工单 1：标题栏仍压住内容区（v4.0.12 已让位但仍不够）。
+> 用户工单 2：安装程序弹「FNOS 无法关闭，请手动关闭它」死循环。
+> 用户工单 3：tb.hit 实锤 barH=37 但 bodyTransform=35.3 → 内容顶部 1.7px 被压。
+
+### 修复 1：标题栏高度与 body 偏移不一致（tb.hit 硬数据）
+- 根因：`--fnos-bar-h` 设为 `__skinHeight`（34），但 bar 实际 inline 高度是 `__skinHeight + 2`（36，主窗盖接缝），
+  body transform 用 `calc(var(--fnos-bar-h) / var(--fnos-f))` 计算 → 值偏小 → 让位不足。
+- 修复：`__applyTitlebarHeight` 将 `--fnos-bar-h` 设为实际 inline 高度（含 +2px），
+  与 `__barHeight()` 统一，消除 1.7px 偏差。
+
+### 修复 2：安装程序「FNOS 无法关闭」死循环
+- 根因：点 × = 隐藏到托盘（产品设计），进程不退出；安装程序发 WM_CLOSE 后等进程退出必然超时。
+  弹窗文案引导用户点 × → 又是隐藏 → 死循环。
+- **P0-1 协作退出**：`FNOS.exe --quit` → 已有实例收到 `second-instance` 后立即退出
+  （先 `destroy` 主窗再 `quit`，防渲染进程卡住；800ms 硬兜底 `app.exit(0)`）。
+- **P0-2 退出信标**：安装程序写 `%APPDATA%\fnos-client\quit.request` 后轮询进程，
+  本进程 `fs.watch` 监听到即协作退出（给 UAC 提权切断父子关系的场景兜底）。
+- **P1 日志增强**：`quit.request` / `quit.begin` / `quit.exit` / `quit.beacon_ready`。
+
+### 修复 3：标题栏让位诊断增强
+- `titlebar.fixed-top` 增加 `band` 字段：输出标题栏带内未被接管的元素（tag/id/cls/pos/top/rectTop），
+  精确定位「内容被压」的根因元素。
+
+### 验证
+- `titlebar-inject.js` / `main.js` 语法检查通过；
+- 待实机回归：安装程序不再弹「FNOS 无法关闭」、tb.hit 中 barBottom === bodyTransform Y 值、
+  titlebar.fixed-top 的 band 字段定位到压内容的元素。
+
 ## v4.0.12
 
 > 用户工单：v4.0.11 标题栏形式已正确（跟随偏好设置），但标题栏仍然压住内容区。

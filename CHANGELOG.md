@@ -3,6 +3,37 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.30
+
+> 用户反馈 5 条：①亮/暗模式下 Docker 应用大多不跟随 ②部分应用启动后跳到飞牛主页 ③日志能否覆盖这些情况 ④客户端与浏览器都打不开是否与客户端无关 ⑤「无操作自动锁定」下拉菜单被下方卡片遮住。
+
+### 1. 下拉菜单被卡片遮挡（设置页，纯 CSS）
+
+`settings.css` 里每张 `.settings-section` 都带 `backdrop-filter`（非 none 即创建层叠上下文），同级卡片按 DOM 顺序绘制，后面的十几张卡片整体压住前面卡片里的菜单。原来只在 `.hotkey-row` / `.form-field` 上加 `z-index:200`，那是在**同一张卡片内部**比较，出了卡片必然输给后面的卡片。
+
+修复：新增一条 `.settings-card > .settings-section:has(.glass-select.open){position:relative;z-index:300}` —— 打开下拉的那张卡片整体浮到其余卡片之上，菜单随卡片一起显示在最前面。透明度、磨砂、配色一律未动，其余 7 个下拉（隐藏模式 / FPK 线路 / VLC 系列）同时生效。
+
+### 2. 应用打不开时不再静默跳飞牛主页
+
+`main.js` 的 `did-fail-load` 里，连接类失败（-102/-324 等）会把窗口改跳到 `fail-cand` 候选列表第一项——就是 NAS 主页 `:5666/`。于是「容器没起 / 端口没监听」被伪装成「应用跳回了飞牛主页」，用户看不到任何真实错误（日志实证：`:4500`、`:8768` 均是 `code=-102` → `fail-cand.try → :5666/`）。
+
+修复：新增 `__fnIsAppEntryUrl30()`，判据是 **http(s) 且端口与 NAS 主站不同**（同机 Docker 应用正是异端口；NAS 登录页 / FN Connect 中继换域名但端口相同，仍走原兜底，不会打断登录流程）。命中即**不进 fail-cand**，直接调用既有错误页 `appwin.error-page`，保留原始 URL + 错误码 + 重试按钮；`:4500` 会明确显示「应用服务没有运行 / 服务只在 127.0.0.1 监听 / 端口已变 / 防火墙拦截」四条原因。
+
+### 3. 日志增强（4 类）
+
+- `popout.load` 补 `appId`（此前 114/114 条为空）、`appEntry`（发起前所在页面）、`opener`；appId 为空时从 `/appview?anchor=`、`fndesk_<id>` 反推。
+- `fail-cand.final {from, to, shown: error-page|chromium-native|none, reason}` —— 补终态，此前只有 build/try/exhausted，看不出「最后用户看到的是什么」。
+- `theme.sync` 补 `mode`（light/dark/system 可读）与 `thirdPartySees`（第三方页实际会拿到的 mq 值）。
+- 第三方页 `theme.normalize{kind:skip}` 补 `clientDark / clientTheme / mqMatch`，并在 3s 后复查一条（`when:"after-3s"`）：`mqMatch:true` = 页面层已拿到客户端主题，观感仍不对则是应用自身主题开关；`mqMatch:false` = 客户端 `themeSource` 未生效。
+
+### 4. 主题不跟随：定位结论
+
+日志（`fnos-diag(13).log`）里 39 条第三方页 `kind:"skip"` 与 46 条 `kind:"apply"` 的拆分是干净的：apply 只落在 `:5666`、`file://…settings.html/about.html`、`chrome-error`，**第三方页没有被注入壳色**，`mqDark` 也随 `theme.sync`（`storeMode:10→light / 20→dark`）变化。也就是说客户端在「页面能拿到什么主题」这一层已经跟随；剩下不跟随的应用是**自身主题开关**（qBittorrent「使用深色主题」这类），需要在应用内设置或由部署侧统一关掉其内置主题。新增的 `mqMatch` 就是用来一眼区分这两类情况的。
+
+### 5. 客户端与浏览器都打不开 → 容器侧
+
+`CONNECTION_REFUSED(-102)` / `EMPTY_RESPONSE(-324)` 是传输层事实，客户端和浏览器看到的一致。`:4500`、`:8768` 需要容器在跑、端口已映射、服务监听 `0.0.0.0`；`:6881` 是 BitTorrent 的 peer 端口（qBittorrent 的 WebUI 在 `:8080`），入口指错了，改端口或删掉该图标即可。这部分交给部署侧（DeepSeek Harness）。
+
 ## v4.0.29
 
 > 二轮验证：QQ 录屏里已经不闪了，但 **UU 远程下只要拖动窗口，被控端窗口仍会「一会消失一会出现」**。录屏逐帧量化：一次拖动固定闪两下——松手瞬间一下、+2.0 秒再一下，每下 0.30~0.33 秒，与日志 `frost.capture.protectedMs`（median 317ms）完全吻合。

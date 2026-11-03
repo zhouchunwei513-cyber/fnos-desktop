@@ -6748,7 +6748,24 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
     }
   } catch (_) {}
   try { win.__fnLoadT0 = Date.now(); } catch (_) {}
-  try { require('./logger.js').log('info', 'appwin', 'popout.load', { params: { url: String(url || '').slice(0, 140), wasEmbed: !!embedStyle, appId: String(((loadOpts && loadOpts.appId) || (win && win.__fnAppId)) || '').slice(0, 100), source: String(((loadOpts && loadOpts.source) || (win && win.__fnSource)) || '') } }, __RUN_MODE); } catch (_) {}
+  // v4.0.30（Q3）：appId 此前 114/114 条为空（窗口是从 NAS 桌面点击的，主进程拿不到应用标识）。
+  // 现在补齐：显式传入 → 窗口标记 → 从 URL 反推（/appview?anchor=、fndesk_<id>）。
+  // 同时补 opener（发起方：self=主窗自己 / main=由主窗打开 / 传入值）与 appEntry（发起前所在页面）。
+  try {
+    const __appId30 = String(((loadOpts && loadOpts.appId) || (win && win.__fnAppId)) || '') || __appEntryFromUrl30(url);
+    let __prev30 = '';
+    try { __prev30 = String((win && win.webContents && !win.webContents.isDestroyed()) ? win.webContents.getURL() : ''); } catch (_) {}
+    require('./logger.js').log('info', 'appwin', 'popout.load', {
+      params: {
+        url: String(url || '').slice(0, 140),
+        wasEmbed: !!embedStyle,
+        appId: String(__appId30 || '').slice(0, 100),
+        appEntry: __appEntryFromUrl30(__prev30).slice(0, 100),
+        opener: String((loadOpts && loadOpts.opener) || (win && win.__fnOpener) || (win === mainWindow ? 'self' : 'main')).slice(0, 60),
+        source: String(((loadOpts && loadOpts.source) || (win && win.__fnSource)) || ''),
+      },
+    }, __RUN_MODE);
+  } catch (_) {}
   // v3.0.3 r135：加载结果留证（配合 popout.load 的 __fnLoadT0 算 totalMs）——
   // 下次「快捷方式打不开」可直接判定是没加载完 / 被中止 / 真失败。
   try {
@@ -6784,13 +6801,44 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
           if (String(vurl || '').indexOf('data:') === 0 || String(vurl || '').indexOf('file:') === 0) return;
           const __codeN58 = Number(code);
           if ([-102, -105, -106, -7, -118, -324, -137, -21].indexOf(__codeN58) < 0) return;
+          // v4.0.30（Q2）：应用入口（Docker 等，NAS 主站以外的端口）加载失败，绝不进 fail-cand
+          // —— 候选第一项就是 NAS 主页，于是「容器没起 / 端口没监听」被伪装成「应用跳回飞牛主页」，
+          // 用户看不到任何真实错误（日志实证 :4500/:8768 均 code=-102 后直接 try :5666）。
+          // 改为显示错误页：保留原始 URL + 错误码 + 重试按钮，页面级文案说明"请检查该应用是否已启动"。
+          if (__fnIsAppEntryUrl30(vurl)) {
+            const __shown30 = __fnShowErrPage(win, {
+              app: String(win.__fnAppId || '') || __appEntryFromUrl30(vurl) || String(vurl || ''),
+              url: String(vurl || ''),
+              retryUrl: String(vurl || ''),
+              code: __codeN58,
+              desc: String(desc || ''),
+              kind: 'network',
+            });
+            try {
+              fnosLog('warn', 'appwin', 'fail-cand.final', {
+                winId: win.id, code: __codeN58, from: String(vurl || '').slice(0, 140),
+                to: '', shown: __shown30 ? 'error-page' : 'none', reason: 'external-app-entry',
+                origin: (() => { try { return new URL(String(vurl || '')).origin; } catch (_) { return ''; } })(),
+                nasOrigin: __fnNasOrigin30(),
+              });
+            } catch (_) {}
+            return;
+          }
           if (!win.__fnCand58) {
             win.__fnCand58 = __failCands58(String(vurl || ''));
             win.__fnCandIdx58 = 0;
             try { fnosLog('info', 'appwin', 'fail-cand.build', { winId: win.id, cur: String(vurl || '').slice(0, 120), n: win.__fnCand58.length, list: win.__fnCand58.map((x) => String(x).slice(0, 90)) }); } catch (_) {}
           }
-          if (win.__fnCandIdx58 >= win.__fnCand58.length) { try { fnosLog('warn', 'appwin', 'fail-cand.exhausted', { winId: win.id, n: win.__fnCand58.length }); } catch (_) {} return; }
-          if ((win.__fnFailSwitched58 || 0) >= 6) return;
+          if (win.__fnCandIdx58 >= win.__fnCand58.length) {
+            try { fnosLog('warn', 'appwin', 'fail-cand.exhausted', { winId: win.id, n: win.__fnCand58.length }); } catch (_) {}
+            // v4.0.30（Q3）：补终态——此前只有 build/try/exhausted，无法判断"最后用户看到的是什么"。
+            try { fnosLog('warn', 'appwin', 'fail-cand.final', { winId: win.id, code: __codeN58, from: String(vurl || '').slice(0, 140), to: '', shown: 'chromium-native', reason: 'exhausted', n: win.__fnCand58.length }); } catch (_) {}
+            return;
+          }
+          if ((win.__fnFailSwitched58 || 0) >= 6) {
+            try { fnosLog('warn', 'appwin', 'fail-cand.final', { winId: win.id, code: __codeN58, from: String(vurl || '').slice(0, 140), to: '', shown: 'chromium-native', reason: 'max-switch', n: win.__fnFailSwitched58 }); } catch (_) {}
+            return;
+          }
           const __nx58 = String(win.__fnCand58[win.__fnCandIdx58++] || '');
           if (!__nx58) return;
           win.__fnFailSwitch58 = Date.now();
@@ -9754,7 +9802,7 @@ function __syncThemeFromMain() {
     const __sig = (__appDark ? 'dark' : 'light') + ':' + (__sysUiDark ? 'sysDark' : 'sysLight');
     if (__sig !== __lastThemeSig) {
       __lastThemeSig = __sig;
-      try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: __appDark ? 'dark' : 'light', storeMode: __themeStoreMode(), appDark: __appDark, sysUiDark: __sysUiDark, themeSource: String(nt.themeSource), fix: 'r29-store-truth' } }, __RUN_MODE); } catch (_) {}
+      try { require('./logger.js').log('info', 'window', 'theme.sync', { params: { theme: __appDark ? 'dark' : 'light', mode: (__themeStoreMode() === '10' ? 'light' : (__themeStoreMode() === '20' ? 'dark' : 'system')), storeMode: __themeStoreMode(), appDark: __appDark, sysUiDark: __sysUiDark, themeSource: String(nt.themeSource), thirdPartySees: __appDark ? 'dark' : 'light', fix: 'r29-store-truth' } }, __RUN_MODE); } catch (_) {}
     }
   } catch (_) {}
 }
@@ -16459,6 +16507,51 @@ function __knownLanHosts58() {
   });
   return mine.concat(other);
 }
+// v4.0.30（Q2）：NAS 主站 origin（登录站点），用于判断"这次失败是不是应用入口"。
+function __fnNasOrigin30() {
+  try {
+    const o = String(currentOrigin || (loadSettings() && loadSettings().origin) || '');
+    if (o) return o;
+  } catch (_) {}
+  try {
+    const s = loadSettings() || {};
+    const h = String(s.server || s.host || '');
+    if (h) return /^https?:\/\//i.test(h) ? h : ('http://' + h);
+  } catch (_) {}
+  return '';
+}
+// 判据：http(s) 且「端口与 NAS 主站不同」→ 应用入口（Docker 容器/第三方 WebUI）。
+// 只看端口、不看域名：同一 NAS 上的 Docker 应用就是异端口；而 NAS 登录页/FN Connect 中继
+// 跳转虽然可能换域名，但端口相同，仍走原 fail-cand 兜底，不会把登录流程打断。
+function __fnIsAppEntryUrl30(u) {
+  try {
+    const s = String(u || '');
+    if (!/^https?:/i.test(s)) return false;
+    const nas = __fnNasOrigin30();
+    if (!nas) return false;
+    const ou = new URL(s);
+    const on = new URL(nas);
+    if (ou.origin === on.origin) return false;
+    const portOf = (x) => String(x.port || (x.protocol === 'https:' ? '443' : '80'));
+    return portOf(ou) !== portOf(on);
+  } catch (_) { return false; }
+}
+// v4.0.30（Q3）：从 URL 反推应用标识——NAS 桌面入口有 /appview?anchor=<id> 与
+// cgi/ThirdParty/fndesk_<id>/index.cgi 两种形态，popout.load 的 appId 此前恒为 ""（114/114 条），
+// 导致「哪个图标点了这个应用」在主日志里查不出来。
+function __appEntryFromUrl30(u) {
+  try {
+    const s = String(u || '');
+    const m = s.match(/[?&](?:anchor|appId|app_id|appid)=([^&#]{1,80})/i);
+    if (m) { try { return decodeURIComponent(m[1]); } catch (_) { return m[1]; } }
+    const m2 = s.match(/fndesk_([A-Za-z0-9_\-]{1,60})/i);
+    if (m2) return m2[1];
+    const m3 = s.match(/\/appview\/([A-Za-z0-9_\-\.]{1,60})/i);
+    if (m3) return m3[1];
+  } catch (_) {}
+  return '';
+}
+
 function __failCands58(cur) {
   const list = [];
   const push = (v) => {

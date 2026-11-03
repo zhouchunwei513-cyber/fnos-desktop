@@ -359,6 +359,15 @@ select:disabled {
   position: relative;
   z-index: 200;
 }
+/* v4.0.30：上面这条只在「同一张卡片内部」有效。每张 .settings-section 都带 backdrop-filter
+   （非 none 即创建层叠上下文），同级卡片按 DOM 顺序绘制 —— 后面十几张卡片会整体压住前面卡片里
+   打开的下拉菜单（「无操作自动锁定」的 3分钟~1小时 越往下越淡）。把「打开下拉的那张卡片」整体
+   抬到 300 层，其余卡片仍是 auto(0)，无论 DOM 前后都画不过它，菜单随卡片一起浮到最上层。
+   仅层级变化，透明度/磨砂/配色一律不动。 */
+.settings-card > .settings-section:has(.glass-select.open) {
+  position: relative;
+  z-index: 300;
+}
 .glass-select-value {
   flex: 1;
   white-space: nowrap;

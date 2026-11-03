@@ -357,17 +357,29 @@ module.exports = function injectTitleBar(ctx) {
       // 不写 html colorScheme、不写/删 body[theme-dark|theme-light]、不重写 iframe 主题参数。
       // 只留一条"我们没动"的日志 + 页面原始底色探针（回归时用日志就能证明壳没碰它）。
       if (__fnIsThirdParty25) {
-        try {
-          const __b25 = document.body;
-          __log({
-            kind: 'skip', reason: 'third-party-page',
-            href: String(location.href || '').slice(0, 140),
-            htmlBg: (() => { try { return getComputedStyle(document.documentElement).backgroundColor; } catch (_) { return ''; } })(),
-            bodyBg: __b25 ? (() => { try { return getComputedStyle(__b25).backgroundColor; } catch (_) { return ''; } })() : '',
-            pageColorScheme: String((document.documentElement && document.documentElement.style.colorScheme) || ''),
-            mqDark: (() => { try { return !!(__origMQ && __origMQ('(prefers-color-scheme: dark)').matches); } catch (_) { return null; } })(),
-          });
-        } catch (_) {}
+        // v4.0.30（Q1/Q3）：第三方页不再只记一条"我没动"。这里补「客户端真值 vs 页面实际看到的 mq」
+        // 的对照，并在 3s 后复查一次——以后「应用没跟随亮/暗」不用再靠肉眼判断：
+        //   mqMatch:true   → 页面层拿到主题 = 客户端选择，若观感仍不对，是该应用自己的主题开关（非客户端问题）
+        //   mqMatch:false  → 客户端 themeSource 未生效，客户端侧继续查
+        const __probeThirdParty30 = (when) => {
+          try {
+            const __b25 = document.body;
+            const __mqDark = (() => { try { return !!(__origMQ && __origMQ('(prefers-color-scheme: dark)').matches); } catch (_) { return null; } })();
+            __log({
+              kind: 'skip', reason: 'third-party-page', when: when,
+              href: String(location.href || '').slice(0, 140),
+              clientDark: __sysDark,
+              clientTheme: __sysDark ? 'dark' : 'light',
+              mqDark: __mqDark,
+              mqMatch: __mqDark === null ? null : (__mqDark === __sysDark),
+              htmlBg: (() => { try { return getComputedStyle(document.documentElement).backgroundColor; } catch (_) { return ''; } })(),
+              bodyBg: __b25 ? (() => { try { return getComputedStyle(__b25).backgroundColor; } catch (_) { return ''; } })() : '',
+              pageColorScheme: String((document.documentElement && document.documentElement.style.colorScheme) || ''),
+            });
+          } catch (_) {}
+        };
+        __probeThirdParty30('load');
+        try { setTimeout(() => __probeThirdParty30('after-3s'), 3000); } catch (_) {}
         return;
       }
       try {

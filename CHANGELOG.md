@@ -3,6 +3,35 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.24
+
+> 用户工单（含录屏）：程序内打开内嵌窗应用（Docker 等），点 ✕ 关不掉，点下去窗口会"躲避"一下。
+> 同机 Chrome 打开同一 NAS 网页，一次点击即关闭 → 问题在客户端注入层，不在飞牛前端。
+
+### 根因（两条独立的注入层问题，都指向标题栏那条带）
+1. **整条标题栏图层吃掉了点击**：`#fnos-titlebar` 是 `pointer-events:auto` + `z-index:2147483647`、
+   高 34~36px、fixed 覆盖窗口顶部。飞牛桌面内嵌窗的标题栏常常就压在这条带的边缘，
+   点 ✕ 时 mousedown 落在我们的 bar 上，页面根本没收到。
+2. **bar/hot 的 mousedown 是"按下即拖"**：`startNativeDrag` 里直接
+   `ipcRenderer.send('window-drag')`，没有位移阈值。于是按下瞬间原生窗口开始跟手移动
+   （视觉上就是"躲避"），mouseup 时鼠标已经不在原来的 ✕ 上 → `click` 不触发 → 关不掉。
+   （`dragStrip` 早在 v2.17.46 就改成了 3px 阈值，bar/hot 一直漏改。）
+
+### 修复（`titlebar-inject.js`）
+1. 两处标题栏（主标题栏 `build()` / 内嵌窗标题栏 `buildEmbed()`）的 bar 由
+   `pointer-events:auto` 改为 **`pointer-events:none`**；只有 `☰`(left)、`— □ ✕`(btns)、
+   中段拖拽条(dragStrip) 各自 `pointer-events:auto`。其余区域点击直接穿透到页面，
+   被 bar 盖住的飞牛 ✕ 也能一次点中。
+2. bar / hot 的拖拽统一改为**阈值拖拽**：按下只记坐标，`mousemove` 累计超过 4px 才
+   `send('window-drag')`；没动就是纯点击，绝不移动原生窗口。双击（<450ms 且 <8px）仍是最大化/还原。
+3. 新增埋点：`tb.drag.start / tb.drag.end {trigger,dx,dy,moved,durMs}`、`tb.drag.dblclick`，
+   走 `fnos:media-log` → diag 日志，下次复现能直接看到 `moved:false` 还是 `moved:true`。
+
+### 验证
+- `electron --check titlebar-inject.js` 通过。
+- 仍保留：标题栏拖动（中段 dragStrip、顶部热区）、双击最大化、☰ 菜单、— □ ✕ 点击。
+  由于 bar 不再吃事件，拖动窗口请用中段空白区（宽度自适应，足够用）。
+
 ## v4.0.23
 
 > 用户反馈：推了 4.0.22 之后点「检查更新」只看得到 4.0.20。

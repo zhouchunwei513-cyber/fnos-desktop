@@ -462,6 +462,32 @@ module.exports = function injectTitleBar(ctx) {
   // 之后逐属性走 CSSOM setProperty（CSSOM 不受 style-src 限制），首次命中记日志。
   let __cspBlocked28 = false;
   let __cspLogged28 = false;
+  // ===== v4.0.24：点击穿透探测（工单：内嵌窗点 ✕ 关不掉） =====
+  // 标题栏那条 40px 带（#fnos-titlebar / 顶部热区 / 中段拖拽条）盖在页面顶部，
+  // 飞牛桌面内嵌窗的 ✕ 常常正好在带子边缘下面。这里把本层临时设为不吃事件，
+  // 用 elementFromPoint 看「如果没有我，点到的是谁」；命中的是可交互控件就返回它，
+  // 调用方在 mouseup（且整次没有发生拖动）时把这一次点击还给页面。
+  function __tbPickUnderCtl(x, y) {
+    try {
+      const els = document.querySelectorAll('#fnos-titlebar, #fnos-titlebar-hotzone, #fnos-tb-dragstrip');
+      const saved = [];
+      for (let i = 0; i < els.length; i++) { saved.push(els[i].style.pointerEvents); els[i].style.pointerEvents = 'none'; }
+      let el = null;
+      try { el = document.elementFromPoint(x, y); } catch (_) { el = null; }
+      for (let i = 0; i < els.length; i++) { els[i].style.pointerEvents = saved[i]; }
+      if (!el) return null;
+      if (el.tagName === 'IFRAME') {
+        try {
+          const r = el.getBoundingClientRect();
+          const d = el.contentDocument;
+          const inner = d && d.elementFromPoint(x - r.left, y - r.top);
+          if (inner) el = inner;
+        } catch (_) {}
+      }
+      return (el.closest && el.closest('button, [role="button"], a, [class*="close"], [id*="close"]')) || null;
+    } catch (_) { return null; }
+  }
+
   function __setCss(el, css) {
     try {
       if (!el || !css) return false;
@@ -1290,7 +1316,10 @@ module.exports = function injectTitleBar(ctx) {
         if (bar.__hideTimer) { clearTimeout(bar.__hideTimer); bar.__hideTimer = null; }
         bar.style.transform = 'translateY(0)';
         bar.style.opacity = '1';
-        bar.style.pointerEvents = 'auto';
+        // v4.0.24：这里原来写 'auto'，把 CSS 里刚改好的 none 又覆盖回去了（实测 computed=auto）。
+        // bar 自身不吃事件，只有 ☰ / — □ ✕ / 中段拖拽条 pointer-events:auto，
+        // 保证被标题栏盖住的飞牛内嵌窗 ✕ 能一次点中。
+        bar.style.pointerEvents = 'none';
         if (window.__fnosFsOn) return;
         // v2.15.43: 自动隐藏调出后 -webkit-app-region:drag 的拖拽区域可能因 transform 过渡失效，
         // 强制 no-drag→drag 重注册拖拽区域，恢复可拖动
@@ -1627,7 +1656,12 @@ module.exports = function injectTitleBar(ctx) {
           'position:fixed', 'top:0', 'left:0', 'width:calc(100vw * var(--fnos-f, 1))', 'height:' + (__skinHeight + (__isMainWin ? 2 : 0)) + 'px',
           'z-index:2147483647', 'display:flex', 'align-items:center',
           'justify-content:space-between', 'box-sizing:border-box',
-          'pointer-events:auto',
+          // v4.0.24（工单：程序内内嵌窗点 ✕ 关不掉、点下去窗口会躲避）：
+          // 整条标题栏不再吃事件，只有 ☰ / — □ ✕ / 中段拖拽条各自 pointer-events:auto。
+          // 之前这里是 auto，标题栏 34px 高的图层盖在页面顶部，飞牛桌面内嵌窗的 ✕ 常常正好
+          // 落在这条带的边缘 → mousedown 被本层吃掉 → 立刻 send('window-drag') 拖动整个原生窗
+          // → 窗口位移、mouseup 不在 ✕ 上 → click 丢失。改成 none 后这类点击直接穿透到页面。
+          'pointer-events:none',
           // v3.0.37（用户明确要求）：标题栏四角统一为 10px 小 R 角，即 v2.15.99 的原样设计。
           // v3.0.36 曾私自改成「上两角 20px + 下两角 0」，已按用户要求撤回。
           'border-radius:10px',
@@ -1828,22 +1862,67 @@ module.exports = function injectTitleBar(ctx) {
         // 按下的时间/位置间隔自判双击：双击→window-maximize（__toggleMaxWin 已支持还原到
         // 最大化前的 bounds）；单击→window-drag（拖拽）。
         let __lastTbDown = 0, __lastTbDownX = 0, __lastTbDownY = 0;
+        const __tbLog = (stage, o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage }, o)); } catch (_) {} };
+        // v4.0.24（工单：内嵌窗点 ✕ 关不掉、点下去窗口会躲避）：
+        // bar/hot 以前是「mousedown 立刻 send('window-drag')」——只要按下落在标题栏那条带上，
+        // 原生窗口立刻跟手位移，mouseup 时鼠标已不在原按钮上，click 直接丢失。
+        // 现在与 dragStrip 一样走「移动超过 4px 才拖」，纯点击不移动窗口。
         const startNativeDrag = (ev) => {
           try {
             if (ev.button !== 0) return;
             const t = ev.target;
             if (t && t.closest && t.closest('#fnos-tb-dragstrip, button, .fnos-tb-no-drag, #fnos-tb-min, #fnos-tb-max, #fnos-tb-close, #fnos-tb-menu')) return;
+            // v4.0.24：这条带下面若是页面控件（内嵌窗 ✕ 等），按下不拖动，松手把点击还给它
+            try {
+              const __c0 = __tbPickUnderCtl(ev.clientX, ev.clientY);
+              if (__c0) {
+                const __up0 = () => {
+                  try { window.removeEventListener('mouseup', __up0, true); } catch (_) {}
+                  try {
+                    __c0.click();
+                    ipcRenderer.send('fnos:media-log', { stage: 'tb.passthrough.click', tag: __c0.tagName, cls: String(__c0.className || '').slice(0, 60) });
+                  } catch (_) {}
+                };
+                window.addEventListener('mouseup', __up0, true);
+                return;
+              }
+            } catch (_) {}
             const __now = Date.now();
             const __sx = ev.screenX || 0, __sy = ev.screenY || 0;
+            const __trigger = (ev.currentTarget === hot) ? 'hot' : 'bar';
             if (__now - __lastTbDown < 450 && Math.abs(__sx - __lastTbDownX) < 8 && Math.abs(__sy - __lastTbDownY) < 8) {
               __lastTbDown = 0;
+              __tbLog('tb.drag.dblclick', { trigger: __trigger, x: __sx, y: __sy });
               try { ipcRenderer.send('window-maximize'); } catch (_) {}
               return;
             }
             __lastTbDown = __now;
             __lastTbDownX = __sx;
             __lastTbDownY = __sy;
-            ipcRenderer.send('window-drag');
+            let __started = false, __dx = 0, __dy = 0;
+            const __t0 = __now;
+            const __cleanup = () => {
+              try { window.removeEventListener('mousemove', __onMove, true); window.removeEventListener('mouseup', __onUp, true); } catch (_) {}
+            };
+            const __onMove = (m) => {
+              try {
+                __dx = (m.screenX || 0) - __sx;
+                __dy = (m.screenY || 0) - __sy;
+                if (__started) return;
+                if (Math.abs(__dx) >= 4 || Math.abs(__dy) >= 4) {
+                  __started = true;
+                  __tbLog('tb.drag.start', { trigger: __trigger, x: __sx, y: __sy, dx: __dx, dy: __dy });
+                  ipcRenderer.send('window-drag');
+                  __cleanup();
+                }
+              } catch (_) {}
+            };
+            const __onUp = () => {
+              __tbLog('tb.drag.end', { trigger: __trigger, dx: __dx, dy: __dy, moved: __started, durMs: Date.now() - __t0 });
+              __cleanup();
+            };
+            window.addEventListener('mousemove', __onMove, true);
+            window.addEventListener('mouseup', __onUp, true);
           } catch (_) {}
         };
         hot.addEventListener('mousedown', startNativeDrag);
@@ -1923,9 +2002,23 @@ module.exports = function injectTitleBar(ctx) {
             // v3.0.66：此处不再捕获指针——预捕获会把按钮的 click 抢走（工单⑤ setPointerCapture）
             try { if (e.pointerId != null) W.__fnosDsPid = e.pointerId; } catch (_) {}
           });
+          // v4.0.24：松手时若这次按下落在页面控件上（没发生拖动），把点击还给页面
+          dragStrip.addEventListener('mouseup', function () {
+            const __c = W.__fnosDsCtl; W.__fnosDsCtl = null;
+            if (__c && !W.__fnosDsDrag) {
+              try { __c.click(); ipcRenderer.send('fnos:media-log', { stage: 'tb.passthrough.click', tag: __c.tagName, cls: String(__c.className || '').slice(0, 60) }); } catch (_) {}
+            }
+          });
           dragStrip.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
             if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
+            try {
+              const __c0 = __tbPickUnderCtl(e.clientX, e.clientY);
+              try { ipcRenderer.send('fnos:media-log', { stage: 'tb.pick', hit: !!__c0, tag: __c0 && __c0.tagName, cx: e.clientX, cy: e.clientY }); } catch (_) {}
+              if (__c0) { W.__fnosDsCtl = __c0; W.__fnosDsDrag = false; return; }
+            } catch (err) {
+              try { ipcRenderer.send('fnos:media-log', { stage: 'tb.pick.err', err: String((err && err.message) || err) }); } catch (_) {}
+            }
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
             // v4.0.2：记下按下时刻。窗口从「未激活」被点激活时，头几帧的 buttons 可能是 0，
@@ -2492,7 +2585,9 @@ module.exports = function injectTitleBar(ctx) {
         const bar = document.createElement('div');
         bar.id = 'fnos-titlebar'; // 注意：id 必须是 fnos-titlebar（自愈全件检查与 build 防重入检测依赖）；r18 的 fnos-tb-bar 双赋值被覆盖=死代码，v2.10.0 r30 清理
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
-        __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:auto;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:no-drag;user-select:none;');
+        // v4.0.24：同主标题栏——整条 bar 不吃事件，只有子元素（logo/标题/四钮）auto，
+        // 避免盖住内嵌窗自己的 ✕ 把点击吃掉。
+        __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:none;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:no-drag;user-select:none;');
         // 左：应用 logo + 标题
         const left = document.createElement('div');
         __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;');
@@ -2601,9 +2696,23 @@ module.exports = function injectTitleBar(ctx) {
             // v3.0.66：此处不再捕获指针——预捕获会把按钮的 click 抢走（工单⑤ setPointerCapture）
             try { if (e.pointerId != null) W.__fnosDsPid = e.pointerId; } catch (_) {}
           });
+          // v4.0.24：松手时若这次按下落在页面控件上（没发生拖动），把点击还给页面
+          dragStrip.addEventListener('mouseup', function () {
+            const __c = W.__fnosDsCtl; W.__fnosDsCtl = null;
+            if (__c && !W.__fnosDsDrag) {
+              try { __c.click(); ipcRenderer.send('fnos:media-log', { stage: 'tb.passthrough.click', tag: __c.tagName, cls: String(__c.className || '').slice(0, 60) }); } catch (_) {}
+            }
+          });
           dragStrip.addEventListener('mousedown', function (e) {
             if (e.button !== 0) return;
             if (__isCtl(e.target)) return; // 工单①：点在按钮/控件上不启动拖动
+            try {
+              const __c0 = __tbPickUnderCtl(e.clientX, e.clientY);
+              try { ipcRenderer.send('fnos:media-log', { stage: 'tb.pick', hit: !!__c0, tag: __c0 && __c0.tagName, cx: e.clientX, cy: e.clientY }); } catch (_) {}
+              if (__c0) { W.__fnosDsCtl = __c0; W.__fnosDsDrag = false; return; }
+            } catch (err) {
+              try { ipcRenderer.send('fnos:media-log', { stage: 'tb.pick.err', err: String((err && err.message) || err) }); } catch (_) {}
+            }
             W.__fnosDsDown = { x: (e.screenX || 0), y: (e.screenY || 0) };
             W.__fnosDsDrag = false;
             // v4.0.2：记下按下时刻。窗口从「未激活」被点激活时，头几帧的 buttons 可能是 0，
@@ -2744,22 +2853,64 @@ module.exports = function injectTitleBar(ctx) {
         // v2.17.45：双击标题栏最大化/还原（drag region 上 dblclick 不触发，改用 mousedown
         // 时间/位置间隔自判双击）。
         let __lastTbDown2 = 0, __lastTbDownX2 = 0, __lastTbDownY2 = 0;
+        // v4.0.24：内嵌窗标题栏同样改成阈值拖拽（按下不动不移动窗口），见普通标题栏同款注释。
+        const __tbLog2 = (stage, o) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage }, o)); } catch (_) {} };
         const startNativeDrag = (ev) => {
           try {
             if (ev.button !== 0) return;
             const t = ev.target;
-            if (t && t.closest && t.closest('#fnos-tb-dragstrip, button')) return;
+            if (t && t.closest && t.closest('#fnos-tb-dragstrip, button, .fnos-tb-no-drag, #fnos-tb-min, #fnos-tb-max, #fnos-tb-close, #fnos-tb-menu')) return;
+            // v4.0.24：这条带下面若是页面控件（内嵌窗 ✕ 等），按下不拖动，松手把点击还给它
+            try {
+              const __c0 = __tbPickUnderCtl(ev.clientX, ev.clientY);
+              if (__c0) {
+                const __up0 = () => {
+                  try { window.removeEventListener('mouseup', __up0, true); } catch (_) {}
+                  try {
+                    __c0.click();
+                    ipcRenderer.send('fnos:media-log', { stage: 'tb.passthrough.click', tag: __c0.tagName, cls: String(__c0.className || '').slice(0, 60) });
+                  } catch (_) {}
+                };
+                window.addEventListener('mouseup', __up0, true);
+                return;
+              }
+            } catch (_) {}
             const __now = Date.now();
             const __sx = ev.screenX || 0, __sy = ev.screenY || 0;
+            const __trigger = (ev.currentTarget === hot) ? 'hot' : 'bar';
             if (__now - __lastTbDown2 < 450 && Math.abs(__sx - __lastTbDownX2) < 8 && Math.abs(__sy - __lastTbDownY2) < 8) {
               __lastTbDown2 = 0;
+              __tbLog2('tb.drag.dblclick', { trigger: __trigger, x: __sx, y: __sy });
               try { ipcRenderer.send('window-maximize'); } catch (_) {}
               return;
             }
             __lastTbDown2 = __now;
             __lastTbDownX2 = __sx;
             __lastTbDownY2 = __sy;
-            ipcRenderer.send('window-drag');
+            let __started = false, __dx = 0, __dy = 0;
+            const __t0 = __now;
+            const __cleanup = () => {
+              try { window.removeEventListener('mousemove', __onMove, true); window.removeEventListener('mouseup', __onUp, true); } catch (_) {}
+            };
+            const __onMove = (m) => {
+              try {
+                __dx = (m.screenX || 0) - __sx;
+                __dy = (m.screenY || 0) - __sy;
+                if (__started) return;
+                if (Math.abs(__dx) >= 4 || Math.abs(__dy) >= 4) {
+                  __started = true;
+                  __tbLog2('tb.drag.start', { trigger: __trigger, x: __sx, y: __sy, dx: __dx, dy: __dy });
+                  ipcRenderer.send('window-drag');
+                  __cleanup();
+                }
+              } catch (_) {}
+            };
+            const __onUp = () => {
+              __tbLog2('tb.drag.end', { trigger: __trigger, dx: __dx, dy: __dy, moved: __started, durMs: Date.now() - __t0 });
+              __cleanup();
+            };
+            window.addEventListener('mousemove', __onMove, true);
+            window.addEventListener('mouseup', __onUp, true);
           } catch (_) {}
         };
         hot.addEventListener('mousedown', startNativeDrag);

@@ -3,6 +3,32 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.5
+
+> 修复「程序内打开应用不是应用主页面」「直播录制中切不同直播间仍是同一间」——同一个根因：入口学习缓存把别的地址写进了本应用的键。
+
+### 判断依据（真机日志 2026-11-03）
+- 打开 biliLive-tools：`appwin.create.entry {"url":"http://192.168.31.101:3000/"}` →
+  `appwin.entry-cache.hit {"key":"path:192.168.31.101:3000|/","url":"http://192.168.31.101:5666/"}`，
+  实际加载成了 NAS 桌面（不是应用主页），且每次打开都会 `entry-cache.confirm` 把 5666 再写回去（10 次自污染）。
+- 切直播间：`appwin.create.entry` 带的是 `liveId=B`，命中缓存后 `dom-ready` 的 URL 变成上一次的 `liveId=A`。
+
+### 根因
+1. `path:` 键只含 `host|pathname`，SPA 的 hash 路由（`#/liveVideoPlayer?liveId=…`、`#/compress`）全被折叠进同一键；
+2. `entry-cache.confirm` 用「请求 URL 的键」存「窗口最终落地的 URL」，一旦首跳被改写/中转，就把 A 的地址永久写进 B 的键。
+
+### 修复
+- 新增同一性闸门 `__entryCacheApplicable`：命中要求端口/路径/查询/哈希一致，深链请求（应用内具体页面）一律不许被覆盖；
+- 落盘 `__entryCacheSave(key, url, reqUrl)` 增加同一性校验，深链与 `#/` 路由永不入库；
+- 启动时清理已污染条目（值与键不同端口/不同路径，或值本身是深链），旧版本留下的脏数据自动消失；
+- `windowTypeUrl`（下次开窗的兜底 realUrl）与换路记忆 `ok-url.json` 只记裸入口，不再记直播间深链。
+
+### 日志增强
+- `nav.navigate` / `nav.in-page` / `nav.fail`：所有 webContents（主窗/应用窗/webview guest/弹窗）的整页导航、SPA 路由跳转、主框架失败；
+- `appwin.open.request`：谁（wcId/类型/来源 URL）发起的 `window.open`、目标 URL、是否深链；
+- `appwin.entry-cache.skip` / `entry-cache.purge405` / `cache.save.skip`：缓存被拦下/清理的原因；
+- `appwin.console-warn`：应用自身 warning 级日志（20s/窗 节流），补齐只有 error 时的前因。
+
 ## v4.0.4
 
 > 修复「窗口最上排图标点不了，但按住能把窗口拖走」。

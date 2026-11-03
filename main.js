@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.4';
+const APP_VERSION = '4.0.5';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -6642,6 +6642,8 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
     if (__m58) {
       let __dh58 = true;
       try { __dh58 = (new URL(__m58).host !== new URL(String(url)).host); } catch (_) { __dh58 = true; }
+      // v4.0.5：目标是应用内具体页面（直播间/子页）时，历史记忆不得顶替它
+      if (__dh58 && __isDeepLinkUrl(url) && String(__m58) !== String(url)) __dh58 = false;
       if (__dh58) {
         try { require('./logger.js').log('info', 'appwin', 'fail-memo.hit', { params: { winId: (win && win.id) || 0, from: String(url).slice(0, 120), to: __m58.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
         url = __m58;
@@ -6848,6 +6850,26 @@ function __entryCacheLoad() {
       });
       if (__dirty32) { try { fs.writeFileSync(ENTRY_CACHE_FILE, JSON.stringify(__entryCacheMem)); } catch (_) {} }
     } catch (_) {}
+    // v4.0.5：清掉已被污染的 path: 条目——值与键不同端口/不同路径，或值本身就是应用内深链。
+    // （真机实证：path:…:3000|/ → 5666 桌面、path:…:10305|/ → 某个直播间，命中后把正常入口顶掉）
+    try {
+      let __dirty405 = 0;
+      Object.keys(__entryCacheMem.items || {}).forEach((k) => {
+        const it = __entryCacheMem.items[k];
+        if (!it || !it.url) return;
+        const kq = __entryKeyIdent(k);
+        if (!kq) return;
+        const cu = __entryIdentOfUrl(it.url);
+        const kp = String(kq.path || '/').replace(/\/+$/, '') || '/';
+        const bad = !cu || __isDeepLinkUrl(it.url) || (kq.port && cu.port !== kq.port) || cu.path !== kp;
+        if (bad) {
+          delete __entryCacheMem.items[k];
+          __dirty405++;
+          try { fnosLog('warn', 'entry', 'cache.purge405', { key: String(k).slice(0, 60), url: String(it.url).slice(0, 120) }); } catch (_) {}
+        }
+      });
+      if (__dirty405) { try { fs.writeFileSync(ENTRY_CACHE_FILE, JSON.stringify(__entryCacheMem)); } catch (_) {} }
+    } catch (_) {}
   } catch (_) { __entryCacheMem = { ver: 1, items: {} }; }
   return __entryCacheMem;
 }
@@ -6872,7 +6894,7 @@ function __entryCacheGet(key) {
   } catch (_) { return null; }
 }
 
-function __entryCacheSave(key, url) {
+function __entryCacheSave(key, url, reqUrl) {
   try {
     if (!key || !url) return;
     const u = String(url);
@@ -6880,6 +6902,21 @@ function __entryCacheSave(key, url) {
     if (/\/login(\?|$|\/)/i.test(u)) return;          // 登录页不是正确入口
     if (/\/appview(\?|$)/i.test(u)) return;           // appview 外壳不是真入口，学它没意义
     if (/\/app\/[^/?#]+\/login\.html/i.test(u)) return;
+    // v4.0.5（自污染根修）：应用内 SPA 路由（#/xxx）永远不是应用入口，绝不入库；
+    // path: 键还额外拒绝带查询参数的页面（?liveId=… 之类），它只该记裸服务地址。
+    // 且落盘地址必须与「发起请求的那个入口」同端口/同路径/同查询/同哈希，
+    // 否则就是把 A 的地址写进 B 的键（真机实证：3000 的键被写进 5666 桌面）。
+    if (__hasHashRoute(u) || (/^path:/.test(String(key)) && String(new URL(u).search || '').length > 1)) {
+      try { fnosLog('warn', 'entry', 'cache.save.skip', { key: String(key).slice(0, 60), why: 'deep-link', url: u.slice(0, 120) }); } catch (_) {}
+      return;
+    }
+    if (reqUrl) {
+      const __ok405 = __entryCacheApplicable(key, u, reqUrl);
+      if (!__ok405.ok) {
+        try { fnosLog('warn', 'entry', 'cache.save.skip', { key: String(key).slice(0, 60), why: __ok405.reason, req: String(reqUrl).slice(0, 120), url: u.slice(0, 120) }); } catch (_) {}
+        return;
+      }
+    }
     const c = __entryCacheLoad();
     const prev = c.items[key] || {};
     c.items[key] = {
@@ -6921,6 +6958,88 @@ function __entryKeyOf(url, opts) {
     try { const p = new URL(u); return 'path:' + String(p.host || '').slice(0, 48) + '|' + String(p.pathname || '/').slice(0, 80); } catch (_) {}
   } catch (_) {}
   return 'raw:' + String(url || '').slice(0, 80);
+}
+
+// ===== v4.0.5（问题1/2 根修）：入口缓存「同一性」闸门 =====
+// 真机日志实证（2026-11-03 05:33~05:41）：
+//   appwin.create.entry {"url":"http://192.168.31.101:3000/"}            ← 要打开 biliLive-tools
+//   appwin.entry-cache.hit {"key":"path:192.168.31.101:3000|/","url":"http://192.168.31.101:5666/"}
+//   → 实际加载 NAS 桌面：打开应用落到「不是应用主页面」
+//   appwin.create.entry {"url":"…:10305/#/liveVideoPlayer?liveId=B"}     ← 要打开直播间 B
+//   appwin.entry-cache.hit {"key":"path:…:10305|/","url":"…liveId=A"}    ← 被换成直播间 A
+// 根因两处：① 键只含 host|pathname，SPA 的 hash 路由/查询参数全被折叠进同一键；
+//          ② 确认落盘时用「请求 URL 的键」存「最终加载的 URL」，一旦首跳被改写/中转，
+//             就把 A 应用的地址永久写进 B 应用的键里，此后每次命中都把好地址改坏（自污染循环）。
+// 修法：写入与命中都过同一性校验——端口/路径/查询/哈希必须一致，且「应用内具体页面」（深链）
+//       永不当入口，也永不被入口覆盖。
+function __hasHashRoute(u) {
+  try {
+    const h = String(new URL(String(u || '')).hash || '');
+    return !!h && !/^#\/?$/.test(h); // #/compress、#/liveVideoPlayer?liveId=… 这类 SPA 内部路由
+  } catch (_) { return false; }
+}
+function __isDeepLinkUrl(u) {
+  try {
+    const s = String(u || '');
+    if (!/^https?:/i.test(s)) return false;
+    if (/\/appview(\?|\/|$)/i.test(s)) return false; // appview 中转页是入口壳，缓存存在的意义就是换掉它
+    if (__hasHashRoute(s)) return true;
+    if (String(new URL(s).search || '').length > 1) return true; // ?liveId=…&url=… 等页面参数
+  } catch (_) {}
+  return false;
+}
+// 只有一个 scheme://host[:port] 或 scheme://host[:port]/path 的「裸入口」地址（剥掉 hash/query）
+function __entryBareUrl(u) {
+  try {
+    const p = new URL(String(u || ''));
+    return p.origin + String(p.pathname || '/');
+  } catch (_) { return ''; }
+}
+function __entryIdentOfUrl(u) {
+  try {
+    const p = new URL(String(u || ''));
+    const port = p.port || (p.protocol === 'https:' ? '443' : '80');
+    let path = String(p.pathname || '/');
+    if (path.length > 1) path = path.replace(/\/+$/, '');
+    let hash = String(p.hash || '');
+    if (/^#\/?$/.test(hash)) hash = '';
+    return { port: String(port), path, hash, search: String(p.search || '') };
+  } catch (_) { return null; }
+}
+function __entryKeyIdent(key) {
+  try {
+    const s = String(key || '');
+    if (s.indexOf('path:') !== 0) return null;
+    const rest = s.slice(5);
+    const i = rest.indexOf('|');
+    if (i < 0) return null;
+    const host = rest.slice(0, i);
+    const path = rest.slice(i + 1) || '/';
+    const ci = host.lastIndexOf(':');
+    return { host, port: ci > 0 ? String(host.slice(ci + 1)) : '', path };
+  } catch (_) { return null; }
+}
+// 命中前判定：这条缓存能不能用来顶替请求 URL
+function __entryCacheApplicable(key, cachedUrl, reqUrl) {
+  // 请求的就是「应用内某个具体页面」（直播间 B、压缩页）→ 入口缓存一律不许改写它。
+  // 这是「切不同直播间还是同一间」的直接原因（日志实锤 liveId=B 被换成 liveId=A）。
+  if (__isDeepLinkUrl(reqUrl)) return { ok: false, reason: 'deep-link' };
+  const kq = __entryKeyIdent(key);
+  if (!kq) return { ok: true }; // anchor:/route:/app: 键按应用维度，保持原行为（含 ?ver= 这类合法入口参数）
+  if (__hasHashRoute(cachedUrl)) return { ok: false, reason: 'cached-hash-route' };
+  const cu = __entryIdentOfUrl(cachedUrl);
+  if (!cu) return { ok: false, reason: 'cached-bad-url' };
+  const kp = String(kq.path || '/').replace(/\/+$/, '') || '/';
+  if (kq.port && cu.port !== kq.port) return { ok: false, reason: 'port-mismatch' };
+  if (cu.path !== kp) return { ok: false, reason: 'path-mismatch' };
+  const rq = __entryIdentOfUrl(reqUrl);
+  if (rq) {
+    if (kq.port && rq.port !== kq.port) return { ok: false, reason: 'req-port-mismatch' };
+    if (rq.path !== kp) return { ok: false, reason: 'req-path-mismatch' };
+    if (rq.hash !== cu.hash) return { ok: false, reason: 'hash-mismatch' };
+    if (rq.search !== cu.search) return { ok: false, reason: 'search-mismatch' };
+  }
+  return { ok: true };
 }
 
 // 缓存存的是完整 URL；换过 host（内网/公网/换账号）时把 host 换成当前生效的，端口保持不变
@@ -7120,19 +7239,36 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // 没命中时保持原逻辑（真入口注册表 → FPK 真入口 → appview → 猜测候选）。
   let __entryKey29 = '';
   let __cacheUsed29 = false;
+  let __reqUrl29 = String(url || '');
   try {
     __entryKey29 = __entryKeyOf(url, opts);
     const __hit29 = __entryCacheGet(__entryKey29);
     if (__hit29 && __hit29.url) {
       const __fix29 = __entryCacheHostFix(__hit29.url);
-      if (/^https?:/i.test(__fix29) && !/\/appview(\?|$)/i.test(__fix29)) {
+      // v4.0.5：命中也要过同一性闸门——深链请求（直播间 B/压缩页）不允许被缓存里的
+      // 旧页面顶掉；path: 键还要求端口/路径/查询/哈希一致（跨端口=别的应用）。
+      const __gate29 = __entryCacheApplicable(__entryKey29, __fix29, __reqUrl29);
+      if (/^https?:/i.test(__fix29) && !/\/appview(\?|$)/i.test(__fix29) && __gate29.ok) {
         url = __fix29;
         __cacheUsed29 = true;
         dlog && dlog('info', 'appwin.entry-cache.hit', {
           key: String(__entryKey29).slice(0, 60),
           url: String(__fix29).slice(0, 120),
+          req: __reqUrl29.slice(0, 120),
           hits: Number(__hit29.hits) || 0,
         });
+      } else {
+        dlog && dlog('warn', 'appwin.entry-cache.skip', {
+          key: String(__entryKey29).slice(0, 60),
+          reason: __gate29.ok ? 'appview-shell' : __gate29.reason,
+          req: __reqUrl29.slice(0, 120),
+          cached: String(__fix29).slice(0, 120),
+          hits: Number(__hit29.hits) || 0,
+        });
+        // 缓存值本身是深链（或键值明显不同源）= 污染条目，直接删，避免每次开窗重复判断
+        if (/^path:/.test(String(__entryKey29)) && (!__gate29.ok)) {
+          try { __entryCacheDrop(__entryKey29, 'guard-' + __gate29.reason); } catch (_) {}
+        }
       }
     } else {
       dlog && dlog('info', 'appwin.entry-cache.miss', { key: String(__entryKey29).slice(0, 60), cand: __urlCandidates.length });
@@ -7707,9 +7843,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                       try {
                         const __okUrl29 = String(win.webContents.getURL() || '');
                         const __was29 = __cacheUsed29 && __entryKey29;
-                        __entryCacheSave(__entryKey29, __okUrl29);
+                        // v4.0.5：落盘必须带「发起请求的入口」做同一性校验，
+                        // 否则窗口实际跳到别处（NAS 桌面/别的直播间）时会把这个地址写进本应用的键。
+                        __entryCacheSave(__entryKey29, __okUrl29, __reqUrl29);
                         if (__was29) {
-                          dlog && dlog('info', 'appwin.entry-cache.confirm', { app: __appLabel, winId: win.id, key: String(__entryKey29).slice(0, 60), url: __okUrl29.slice(0, 120) });
+                          dlog && dlog('info', 'appwin.entry-cache.confirm', { app: __appLabel, winId: win.id, key: String(__entryKey29).slice(0, 60), req: __reqUrl29.slice(0, 120), url: __okUrl29.slice(0, 120) });
                         }
                       } catch (_) {}
                       return;
@@ -8134,6 +8272,19 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     try {
       win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
         try {
+          // v4.0.5（问题3）：warning 级也落盘——应用自身的告警通常早于报错出现，
+          // 只有 error 时经常只剩一句 "Script error."，看不出前因。20s/窗 节流控噪声。
+          if (level === 2) {
+            const __nowW405 = Date.now();
+            if (!win.__appConsoleWarnTs || __nowW405 - win.__appConsoleWarnTs > 20000) {
+              win.__appConsoleWarnTs = __nowW405;
+              dlog && dlog('info', 'appwin.console-warn', {
+                app: __appLabel, winId: win.id,
+                msg: String(message || '').slice(0, 120),
+                src: String(sourceId || '').slice(0, 80),
+              });
+            }
+          }
           if (level >= 3) {
             // v2.9.0 r29（问题④）：脚本语法错误自愈——NAS 网络抖动（5666 ECONNREFUSED 实锤）
             // 截断懒加载 chunk 致页面 SyntaxError 瘫痪转圈（iSCSI LUN 实锤）；首次捕获后延时
@@ -15010,7 +15161,11 @@ function __windowTypeCache(appName, type, src, realUrl) {
     for (const e of hits) {
       if (e.windowType !== type) { e.windowType = type; changedAny = true; }
       if (e.windowTypeSrc !== src) { e.windowTypeSrc = src; changedAny = true; }
-      const ru = String(realUrl || '').slice(0, 400);
+      // v4.0.5：只记「裸入口」。windowTypeUrl 会被当作下次开窗的兜底 realUrl，
+      // 若把 #/liveVideoPlayer?liveId=… 这类深链记下来，之后从桌面图标打开应用就会
+      // 直接落到那一间直播间（=「切不同直播页还是同一间」的另一条路径）。
+      const __ruRaw405 = String(realUrl || '');
+      const ru = (__isDeepLinkUrl(__ruRaw405) ? __entryBareUrl(__ruRaw405) : __ruRaw405).slice(0, 400);
       if (ru && e.windowTypeUrl !== ru) { e.windowTypeUrl = ru; changedAny = true; }
     }
     if (changedAny) {
@@ -15730,11 +15885,14 @@ function __okUrlGet58(key) {
 function __okUrlSet58(key, url) {
   try {
     if (!key || !url) return;
-    const u = String(url);
+    let u = String(url);
     if (!/^https?:\/\//i.test(u)) return;
     if (/\/login(\?|$|\/)/i.test(u)) return;
     if (/\/appview(\?|$)/i.test(u)) return;
     if (u.indexOf('data:') === 0 || u.indexOf('file:') === 0) return;
+    // v4.0.5：换路记忆只记「应用入口」——曾经把 #/liveVideoPlayer?liveId=… 记下来，
+    // 下次跨 host 打开时它会顶掉目标地址，导致无论点哪间直播间都回到那一间。深链一律剥成裸入口。
+    if (__isDeepLinkUrl(u)) { const __b405 = __entryBareUrl(u); if (__b405) u = __b405; }
     const c = __okUrlLoad58();
     const prev = c.items[String(key)] || {};
     if (String(prev.url || '') === u) { c.items[String(key)].at = Date.now(); return; }
@@ -18016,6 +18174,34 @@ try {
         contents.on('did-navigate-in-page', (_ev, url) => rememberGuest(contents, url));
         contents.on('destroyed', () => { try { fnosGuests.delete(contents.id); } catch (_) {} });
       }
+      // v4.0.5（问题3：链路日志补全）——所有 webContents（主窗 / 应用窗 / webview guest / 弹窗）
+      // 统一记录「页面跳转链」：整页导航 / SPA 路由内跳转 / 主框架失败。
+      // 此前只记 did-finish-load（appwin.load.done），应用内路由切换（直播间换房、应用切页）
+      // 在日志里完全不可见，出问题只能靠猜。同一 wc 的 URL 未变化 / 600ms 内重复一律不落盘，压住噪声。
+      try {
+        if (!contents.__fnNavTrace) {
+          contents.__fnNavTrace = true;
+          const __wcId = (() => { try { return contents.id; } catch (_) { return 0; } })();
+          const __wtype = (() => { try { return contents.getType(); } catch (_) { return ''; } })();
+          const __logNav = (kind, u, extra) => {
+            try {
+              const s = String(u || '');
+              const now = Date.now();
+              if (s && s === contents.__fnNavLastUrl && now - (contents.__fnNavLastAt || 0) < 600) return;
+              contents.__fnNavLastUrl = s;
+              contents.__fnNavLastAt = now;
+              dlog(kind === 'nav.fail' ? 'warn' : 'info', kind, Object.assign({ wc: __wcId, wtype: __wtype, url: s.slice(0, 200) }, extra || {}));
+            } catch (_) {}
+          };
+          contents.on('did-navigate', (_e, u, code) => __logNav('nav.navigate', u, { code: code }));
+          contents.on('did-navigate-in-page', (_e, u, isMainFrame) => { if (isMainFrame !== false) __logNav('nav.in-page', u, {}); });
+          contents.on('did-fail-load', (_e, code, desc, u, isMainFrame) => {
+            if (isMainFrame === false) return;
+            if (code === -3) return; // ABORTED：我们自己 cancel/改写的导航
+            __logNav('nav.fail', u, { code: code, desc: String(desc || '').slice(0, 60) });
+          });
+        }
+      } catch (_) {}
       // v1.54.0：【全局开窗兜底】对所有 webContents（webview guest、飞牛官方应用、
       // FNDESK 内置应用等）统一安装 setWindowOpenHandler。此前只拦了部分路径，导致
       // 文件管理等飞牛官方应用仍用 Electron 默认方式开窗（带系统原生标题栏、无注入）。
@@ -18030,6 +18216,23 @@ try {
             let __anchorIn = '';
             try { const __mIn = /fnos-anchor=([^,]+)/.exec(String(features || '')); if (__mIn) { try { __anchorIn = decodeURIComponent(__mIn[1]); } catch (_) { __anchorIn = __mIn[1]; } } } catch (_) {}
             const __embedIn = /fnos-embed-style/.test(String(features || ''));
+            // v4.0.5（问题3）：开窗链路起点——记录是哪个 webContents（主窗/应用窗/webview guest）
+            // 发起的 window.open、目标地址、frame 名与带过来的 app 标记。配合后续
+            // create.entry / entry-cache.* / nav.* / load.* 可拼出「点击 → 开窗 → 落地」全链路。
+            const __fromWc = (() => { try { return contents.id; } catch (_) { return 0; } })();
+            const __fromType = (() => { try { return contents.getType(); } catch (_) { return ''; } })();
+            let __fromUrl = '';
+            try { __fromUrl = String(contents.getURL() || '').slice(0, 160); } catch (_) {}
+            try {
+              dlog('info', 'appwin.open.request', {
+                fromWc: __fromWc, fromType: __fromType, fromUrl: __fromUrl,
+                url: u.slice(0, 200),
+                anchor: String(__anchorIn || '').slice(0, 80),
+                embed: !!__embedIn,
+                frame: String(frameName || '').slice(0, 40),
+                deep: __isDeepLinkUrl(u),
+              });
+            } catch (_) {}
             // DevTools / chrome 内部页交给默认处理
             if (/^(devtools|chrome-extension:|chrome:)/i.test(u)) {
               return { action: 'allow' };
@@ -18098,7 +18301,7 @@ try {
               setImmediate(() => {
                 try { createAppWindow(u, { partition: SHARED_PARTITION, title: APP_NAME, appId: __appIdIn, source: 'in-app' }); } catch (_) {}
               });
-              dlog('info', 'appwin.open.catchall', { url: u.slice(0, 120), appId: __appIdIn, windowType: __embedIn ? 'embed' : 'popout', source: 'in-app' });
+              dlog('info', 'appwin.open.catchall', { url: u.slice(0, 200), appId: __appIdIn, windowType: __embedIn ? 'embed' : 'popout', source: 'in-app', fromWc: __fromWc, deep: __isDeepLinkUrl(u), decision: 'create-app-window' });
               return { action: 'deny' };
             }
             // mailto/tel/sms 等外部协议交给系统

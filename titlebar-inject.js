@@ -1341,8 +1341,24 @@ module.exports = function injectTitleBar(ctx) {
         // 标题栏占的是「设备 px」，fixed 的 top 是页面 CSS px，按缩放因子换算
         const shift = __fsOn ? 0 : Math.round((barPx / __fixedZoom()) * 100) / 100;
         const bar = document.getElementById('fnos-titlebar');
-        const els = body.querySelectorAll('*');
-        const n = Math.min(els.length, 4000);
+        // v4.0.11：收集元素时穿透 shadow DOM（组件库常见），querySelectorAll 不进 shadow root
+        const __collect = (root, out, depth) => {
+          try {
+            const els = root.querySelectorAll('*');
+            const n = Math.min(els.length, 4000);
+            for (let i = 0; i < n; i++) {
+              const el = els[i];
+              if (!el || el.nodeType !== 1) continue;
+              out.push(el);
+              // 递归进 shadow root（最多 3 层，避免极端嵌套卡死）
+              if (depth < 3 && el.shadowRoot) __collect(el.shadowRoot, out, depth + 1);
+            }
+          } catch (_) {}
+        };
+        const __all = [];
+        __collect(body, __all, 0);
+        const els = __all;
+        const n = els.length;
         const __hit = [];
         for (let i = 0; i < n; i++) {
           const el = els[i];
@@ -1364,20 +1380,25 @@ module.exports = function injectTitleBar(ctx) {
             let cs = null;
             try { cs = getComputedStyle(el); } catch (_) {}
             if (!cs) continue;
-            // v4.0.11：position:sticky;top:0 的顶栏/标签栏同样被标题栏压住，一并接管
             const __pos = cs.position;
             if (__pos !== 'fixed' && __pos !== 'sticky') continue;
             const raw = String(cs.top || '').trim();
             // auto / 百分比 / calc 的 top 不是「贴顶」语义，一律不动
             if (!raw || raw.indexOf('%') >= 0 || raw.indexOf('calc') >= 0) continue;
             const v = parseFloat(raw);
-            if (!isFinite(v) || v < -2 || v > 2) continue;
-            // fixed：只接管真的画在视口顶边的（父级带 transform 时 fixed 会相对父级定位，别误伤）
+            if (!isFinite(v)) continue;
+            // fixed：以 rect.top 为主要判据（视觉上在标题栏带内就接管），top 值仅做辅助过滤
             // sticky：top:0 就会在滚动后贴顶，不管当前 rect 在哪，一律接管
             if (__pos === 'fixed') {
+              // 只接管 top 在 [-barPx, barPx] 范围内的（避免误伤页面中间的 fixed 元素）
+              if (v < -barPx || v > barPx) continue;
               let rt = 0;
               try { rt = el.getBoundingClientRect().top; } catch (_) { rt = 0; }
+              // 视觉上在标题栏带内（允许 ±barPx 误差，覆盖 transform 父级导致的偏移）
               if (!(rt <= barPx + 2 && rt > -barPx)) continue;
+            } else {
+              // sticky：只接管 top≈0 的
+              if (v < -2 || v > 2) continue;
             }
             os = el.__fnosTopShift = {
               v: v,
@@ -1970,6 +1991,46 @@ module.exports = function injectTitleBar(ctx) {
           // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky 贴顶类名，JS 接管前先让位
           'html>body .fixed.top-0,html>body .sticky.top-0,html>body [class*="fixed"][class*="top-0"],html>body [class*="sticky"][class*="top-0"]{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
+        // v4.0.11：页面自身 CSS 的 !important 规则可能覆盖 <style> 里的 html{padding-top}。
+        // 用 inline style !important 兜底（inline !important > stylesheet !important），保证让位一定生效。
+        try {
+          const __htmlEl = document.documentElement;
+          const __padVal = 'calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))';
+          if (__htmlEl && __htmlEl.style.getPropertyValue('padding-top') !== __padVal) {
+            __htmlEl.style.setProperty('padding-top', __padVal, 'important');
+          }
+        } catch (_) {}
+        // 诊断 + 兜底：检查 html 实际 paddingTop，若被页面 CSS 压成 0 则改用 body transform 让位
+        try {
+          setTimeout(() => {
+            try {
+              const __pt = getComputedStyle(document.documentElement).paddingTop;
+              const __bt = document.body ? getComputedStyle(document.body).marginTop : 'n/a';
+              ipcRenderer.send('fnos:media-log', {
+                stage: 'titlebar.padding-check',
+                htmlPadTop: __pt,
+                bodyMarginTop: __bt,
+                barH: __barHeight(),
+              });
+              // 兜底：html padding-top 被页面 CSS 压成 0 → 改用 body transform 让位
+              // （v3.0.46 从 transform 改成 padding 是为了修底栏压内容，但若 padding 根本没生效，
+              //   transform 是唯一能保证让位的手段；fixed 元素随 transform 一起下移，正好不压内容）
+              if (__pt === '0px' && document.body && !document.body.__fnosTransformFallback) {
+                document.body.__fnosTransformFallback = true;
+                const __barH2 = __barHeight();
+                document.body.style.setProperty('transform', 'translateY(calc(' + __barH2 + 'px / var(--fnos-f, 1)))', 'important');
+                document.body.style.setProperty('height', 'calc(100vh - ' + __barH2 + 'px / var(--fnos-f, 1))', 'important');
+                document.body.style.setProperty('max-height', 'calc(100vh - ' + __barH2 + 'px / var(--fnos-f, 1))', 'important');
+                document.body.style.setProperty('min-height', '0', 'important');
+                ipcRenderer.send('fnos:media-log', {
+                  stage: 'titlebar.transform-fallback',
+                  reason: 'html-padding-zero',
+                  barH: __barH2,
+                });
+              }
+            } catch (_) {}
+          }, 200);
+        } catch (_) {}
         // v4.0.10（用户工单「标题栏压住内容区第一行」的直接原因）：
         // v3.0.46 为了修好第三方应用「底栏压内容」把让位方式换成了 html{padding-top:34px}，
         // 但 position:fixed 元素不参与 html 的 padding 布局——biliLive-tools 的顶栏、

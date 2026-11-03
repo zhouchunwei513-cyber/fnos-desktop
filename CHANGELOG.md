@@ -3,6 +3,32 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.12
+
+> 用户工单：v4.0.11 标题栏形式已正确（跟随偏好设置），但标题栏仍然压住内容区。
+> 日志实锤：`titlebar.fixed-top count:0`，`__shiftFixedTop` 找不到贴顶元素；
+> `html{padding-top}` 可能被页面自身 CSS 的 `!important` 规则覆盖。
+
+### 修复（titlebar-inject.js）
+1. **inline style 兜底 html padding-top**：页面 CSS 的 `!important` 可能覆盖 `<style>` 里的
+   `html{padding-top}`。用 `html.style.setProperty('padding-top', ..., 'important')` 兜底
+   （inline !important > stylesheet !important），保证让位一定生效。
+2. **穿透 shadow DOM**：`__shiftFixedTop` 原来用 `querySelectorAll('*')` 不进 shadow root，
+   组件库（Vuetify/Naive UI）封装的贴顶元素漏检。现在递归收集 shadow DOM（最多 3 层）。
+3. **放宽 fixed 元素检测**：原来要求 computed `top≈0` 且 `rect.top` 在标题栏带内，
+   对 `top` 值非标准写法（`inset:0`、CSS 变量等）漏检。现在以 `rect.top` 为主要判据，
+   `top` 值仅做辅助过滤（范围放宽到 `[-barPx, barPx]`）。
+4. **body transform 兜底**：注入后 200ms 检查 `html` 实际 `padding-top`，若被压成 0
+   则改用 `body{transform:translateY(34px)}` 让位（v3.0.46 的原始方案），
+   并上报 `titlebar.transform-fallback` 诊断日志。
+5. **诊断增强**：上报 `titlebar.padding-check`（htmlPadTop / bodyMarginTop / barH），
+   复现一次即可确认让位是否生效。
+
+### 验证
+- `titlebar-inject.js` 语法检查通过；
+- 待实机回归：biliLive-tools 顶栏/录制任务标签栏不被压、
+  `titlebar.padding-check` 显示 `htmlPadTop: 34px`（或 `transform-fallback` 触发）。
+
 ## v4.0.11
 
 > 用户工单：v4.0.10 的 fixed 顶栏让位修复无效，"标题栏压住内容区"问题照旧；

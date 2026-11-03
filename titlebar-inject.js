@@ -2085,7 +2085,14 @@ module.exports = function injectTitleBar(ctx) {
           'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky/absolute 贴顶类名，JS 接管前先让位
           // v4.0.14：补充 .absolute.top-0 / [class*="absolute-positioned"]（Naive UI n-layout--absolute-positioned）
-          'html>body .fixed.top-0,html>body .sticky.top-0,html>body .absolute.top-0,html>body [class*="fixed"][class*="top-0"],html>body [class*="sticky"][class*="top-0"],html>body [class*="absolute-positioned"]{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
+          // v4.0.17（用户工单「新标签窗侧边栏少 4 项、直播观看页信息不全」根修）：
+          //   v4.0.14 的 [class*="absolute-positioned"] 子串匹配把 Naive UI 的
+          //   .n-layout-footer--absolute-positioned / .n-layout-sider--absolute-positioned /
+          //   .n-layout-header--absolute-positioned 一并命中，给「底部」footer 强塞 top:34px，
+          //   footer 的 bottom:0 失效 → 底部菜单（登出/日志/关于/设置）被顶到侧栏顶部，
+          //   正好盖住主菜单的 直播录制/看板/视频处理/工具 四项（截图实锤：压制下面直接是登出）。
+          //   改成 [class~="n-layout--absolute-positioned"] 精确 token 匹配，只动布局根节点本身。
+          'html>body .fixed.top-0,html>body .sticky.top-0,html>body .absolute.top-0,html>body [class*="fixed"][class*="top-0"],html>body [class*="sticky"][class*="top-0"],html>body [class~="n-layout--absolute-positioned"]{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
         // v4.0.11：页面自身 CSS 的 !important 规则可能覆盖 <style> 里的 html{padding-top}。
         // 用 inline style !important 兜底（inline !important > stylesheet !important），保证让位一定生效。

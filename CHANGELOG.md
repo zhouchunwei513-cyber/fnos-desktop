@@ -3,6 +3,32 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.17
+
+> 用户工单：新标签打开应用，侧边栏少了 4 项（直播录制/看板/视频处理/工具）、内容区显示不全；
+> 直播观看页面信息也不全。
+
+### 根因
+- v4.0.14 为了让 Naive UI `n-layout--absolute-positioned` 让出标题栏高度，加了一条子串选择器
+  `[class*="absolute-positioned"]{top:34px !important}`。
+- 该子串同时命中 `n-layout-footer--absolute-positioned` / `n-layout-sider--absolute-positioned` /
+  `n-layout-header--absolute-positioned` 等子组件：底部菜单（登出/日志/关于/设置）的 `bottom:0`
+  被强塞进来的 `top:34px` 顶掉，footer 从侧栏**底部跳到顶部**，正好盖住主菜单的
+  直播录制/看板/视频处理/工具 四项 —— 看起来就是"菜单少了 4 项、页面加载不全"。
+- 实测（真实 preload + `--fnos-app-window --fnos-xapp` 复现）：修复前 footer 菜单
+  y=74~218（顶部），修复后 y=563~749（底部），与浏览器内布局一致。
+
+### 修复
+1. `titlebar-inject.js`：选择器收窄为 `[class~="n-layout--absolute-positioned"]`（精确 token 匹配），
+   只动布局根节点本身，不再波及 footer / sider / header。
+2. `main.js`：诊断 `window.create` 的 flags 恒 false —— `browser-window-created` 触发瞬间
+   `getLastWebPreferences()` 还没带上 `additionalArguments`。改为 `setImmediate` 后读取，
+   仍为空则在 `did-finish-load` 补记 `window.create.late`，并附 `addl` 原始参数便于对账。
+
+### 验证
+- 真实 preload 复现：压制页、直播观看页侧边栏均恢复完整 12 项，footer 回到底部，标题栏不压内容；
+- `main.js` / `titlebar-inject.js` 语法检查通过。
+
 ## v4.0.16
 
 > 用户工单：内嵌窗打开的界面正常，新标签打开的窗口整窗透明——桌面和后面的文档透了出来。

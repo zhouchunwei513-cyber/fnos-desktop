@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.16';
+const APP_VERSION = '4.0.17';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -13235,28 +13235,43 @@ function __syncFrostAll(forceOn) {
 try {
   app.on('browser-window-created', (_e, win) => {
     try { __wireFrost(win); } catch (_) {}
-    try {
-      let addl = [];
+    // v4.0.17（用户工单「窗口类型没法定位」）：
+    // browser-window-created 触发瞬间 win.webContents.getLastWebPreferences() 还没带上创建参数，
+    // 诊断日志里 flags 一直全 false（实际窗口明明带了 --fnos-xapp），按文档排障会被误导。
+    // 改为 setImmediate 后再读，仍为空则到 did-finish-load 补一条 window.create.late。
+    const __logCreate = (tag) => {
       try {
-        const wp = win.webContents && win.webContents.getLastWebPreferences && win.webContents.getLastWebPreferences();
-        if (wp && Array.isArray(wp.additionalArguments)) addl = wp.additionalArguments;
-      } catch (_) {}
-      const __f = (v) => addl.indexOf(v) >= 0;
-      let __b = null;
-      try { const bb = win.getBounds(); __b = { x: bb.x, y: bb.y, w: bb.width, h: bb.height }; } catch (_) {}
-      let __wcId = 0;
-      try { __wcId = win.webContents && win.webContents.id || 0; } catch (_) {}
-      dlog('info', 'window.create', {
-        winId: win.id,
-        wcId: __wcId,
-        bounds: __b,
-        flags: {
-          shell: __f('--fnos-shell'), app: __f('--fnos-app-window'),
-          embed: __f('--fnos-embed-style'), xapp: __f('--fnos-xapp'),
-          live: __f('--fnos-live-window'),
-        },
-        menuPopup: !!win.__isMenuPopup,
+        let addl = [];
+        try {
+          const wp = win.webContents && win.webContents.getLastWebPreferences && win.webContents.getLastWebPreferences();
+          if (wp && Array.isArray(wp.additionalArguments)) addl = wp.additionalArguments;
+        } catch (_) {}
+        const __f = (v) => addl.indexOf(v) >= 0;
+        let __b = null;
+        try { const bb = win.getBounds(); __b = { x: bb.x, y: bb.y, w: bb.width, h: bb.height }; } catch (_) {}
+        let __wcId = 0;
+        try { __wcId = win.webContents && win.webContents.id || 0; } catch (_) {}
+        dlog('info', tag || 'window.create', {
+          winId: win.id,
+          wcId: __wcId,
+          bounds: __b,
+          flags: {
+            shell: __f('--fnos-shell'), app: __f('--fnos-app-window'),
+            embed: __f('--fnos-embed-style'), xapp: __f('--fnos-xapp'),
+            live: __f('--fnos-live-window'),
+          },
+          addl: addl.slice(0, 8),
+          menuPopup: !!win.__isMenuPopup,
+        });
+        return addl.length > 0;
+      } catch (_) { return false; }
+    };
+    try {
+      setImmediate(() => {
+        try { if (!__logCreate('window.create')) { try { win.webContents.once('did-finish-load', () => { try { __logCreate('window.create.late'); } catch (_) {} }); } catch (_) {} } } catch (_) {}
       });
+    } catch (_) { try { __logCreate('window.create'); } catch (_) {} }
+    try {
       let __urled = false;
       const __logUrl = () => { if (__urled) return; __urled = true; try { dlog('info', 'window.url', { winId: win.id, url: String(win.webContents.getURL() || '').slice(0, 160) }); } catch (_) {} };
       try { win.webContents.on('did-finish-load', __logUrl); } catch (_) {}

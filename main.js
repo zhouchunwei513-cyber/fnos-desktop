@@ -9827,9 +9827,11 @@ function __syncThemeFromMain() {
 //   prefers-color-scheme，同时覆盖该页的 CSS @media 与 JS matchMedia，且只在 --fnos-xapp
 //   窗口上 attach —— 壳层/设置页/影视直播窗完全不受影响。
 //
-// 回滚：把 __XAPP_INVERT_DEFAULT 改 false，或在 settings.json 写 "xappThemeInvert": false
-//   （不需重发版本，重启客户端即恢复 4.0.31 行为）。
-const __XAPP_INVERT_DEFAULT = true;
+// 4.0.33：用户实测后要求「再调回来」——默认关闭对调，第三方页恢复 4.0.31 行为
+//   （即拿到与客户端一致的 prefers-color-scheme）。要重新打开：settings.json 写
+//   "xappThemeInvert": true 后重启（不必重发版本），或把 __XAPP_INVERT_DEFAULT 改 true。
+//   关闭态下不 attach debugger、不注册监听，第三方窗与 4.0.31 逐字节一致。
+const __XAPP_INVERT_DEFAULT = false;
 const __xappWins31 = new Set();
 function __xappInvertOn() {
   try {
@@ -9866,13 +9868,18 @@ function __applyXappThemeInvert31(win, why) {
     if (!win || win.isDestroyed() || !win.__fnosXApp45) return;
     const wc = win.webContents;
     if (!wc || wc.isDestroyed()) return;
-    if (!__xappAttach31(win)) return;
     if (!__xappInvertOn()) {
-      // 关掉开关：清掉覆写并脱离，页面回到主题真值（4.0.31 行为）
-      try { const p0 = wc.debugger.sendCommand('Emulation.setEmulatedMedia', { media: '', features: [] }); if (p0 && p0.catch) p0.catch(() => {}); } catch (_) {}
-      try { wc.debugger.detach(); } catch (_) {}
+      // 关闭态（4.0.33 默认）：只在「之前 attach 过」的窗口上清覆写并脱离，绝不新 attach
+      try {
+        if (wc.debugger.isAttached()) {
+          const p0 = wc.debugger.sendCommand('Emulation.setEmulatedMedia', { media: '', features: [] });
+          if (p0 && p0.catch) p0.catch(() => {});
+          wc.debugger.detach();
+        }
+      } catch (_) {}
       return;
     }
+    if (!__xappAttach31(win)) return;
     const sees = __xappSeesDark31() ? 'dark' : 'light';
     try {
       const p1 = wc.debugger.sendCommand('Emulation.setEmulatedMedia', {
@@ -9899,6 +9906,8 @@ function __applyXappThemeInvert31(win, why) {
 function __registerXappWin31(win) {
   try {
     if (!win || !win.__fnosXApp45) return;
+    // 关闭态：不挂监听、不 attach、不入集合 —— 第三方窗与 4.0.31 完全一致
+    if (!__xappInvertOn()) return;
     __xappWins31.add(win);
     const wc = win.webContents;
     const kick = (why) => { try { __applyXappThemeInvert31(win, why); } catch (_) {} };

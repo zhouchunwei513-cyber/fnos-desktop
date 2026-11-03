@@ -3,6 +3,31 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.33
+
+> 用户反馈：v4.0.32 把 Docker 应用主题对调后，要求「再调回来」。
+
+### 做了什么
+
+把 v4.0.32 的「第三方应用窗主题对调」**默认关闭**，第三方页恢复 4.0.31 行为（拿到与客户端一致的 `prefers-color-scheme`）。
+
+不是简单删代码，关闭路径做了三处收紧，确保等同 4.0.31：
+
+| 位置 | 4.0.32（开） | 4.0.33（关，默认） |
+|---|---|---|
+| `__XAPP_INVERT_DEFAULT` | `true` | `false` |
+| `__registerXappWin31()` | 注册 `did-start-loading`/`did-finish-load`/`did-navigate-in-page`/`devtools-closed` 四个监听并入集合 | 开关为关时**直接 return**：不挂监听、不进集合、不 attach |
+| `__applyXappThemeInvert31()` | 先 `debugger.attach` 再判断开关 | 开关判断提到 attach **之前**；仅在「此前已 attach 过」的窗口上清覆写并 detach，绝不新 attach |
+
+所以关闭态下的第三方应用窗：没有 debugger 附着、没有 `Emulation.setEmulatedMedia`、没有新增监听，行为与 4.0.31 一致。
+
+### 想再对调一次
+
+- 临时：`settings.json` 写 `"xappThemeInvert": true`，重启即生效（不用重装）；
+- 永久：把 `main.js` 的 `__XAPP_INVERT_DEFAULT` 改回 `true` 再发版。
+
+日志口径不变：只有开启对调时才打 `xapp.theme-invert{sees,clientSees}`；关闭态不会出现这条日志——如果还看到它，说明 `settings.json` 里残留了 `xappThemeInvert: true`。
+
 ## v4.0.32
 
 > 用户反馈：DOCKER 应用的主题模式暗模式和亮模式反了，要求把两者对调。

@@ -89,69 +89,11 @@ function __fnosFindIconNode(anchor, labels) {
   } catch (_) {}
   return null;
 }
-// v4.0.19（用户工单「内嵌窗请用飞牛自带标题栏，↗ 新标签我自己点」）
-// 旧逻辑：桌面图标点开 → 飞牛在 SPA 里渲染内嵌窗（.trim-ui__app-layout--window，44px 标题栏，
-// 只有 — □ ✕）→ preload 检测到新 iframe 就 window.open(..., 'fnos-embed-style,...') 强转独立窗口，
-// 并删除主窗内嵌原件。结果：飞牛自带标题栏连同 maximise/close 一起消失，被 Electron 自绘栏取代，
-// 用户也就失去了「新标签打开变成独立窗」的入口。
-// 新逻辑：内嵌窗原样保留（飞牛标题栏不动），只在标题栏按钮组最左侧注入一个 ↗，
-// 外观与飞牛 — □ ✕ 完全同款（w-base + 46x44 + hover），点它才走原来的 window.open 通道转独立窗。
-function __fnosEmbedPopoutBtn(f, anchor, box) {
-  try {
-    if (!f || !box || !box.querySelector) return;
-    if (box.querySelector('.fnos-embed-popout')) return;
-    const closeBtn = box.querySelector('.app-layout-header-close');
-    const group = closeBtn ? closeBtn.parentElement : null;
-    if (!group) return;
-    const b = document.createElement('div');
-    b.className = 'fnos-embed-popout flex h-full w-base shrink-0 cursor-pointer items-center px-[15px] text-[var(--semi-color-text-0)] hover:bg-[var(--semi-color-fill-0)] active:bg-[var(--semi-color-fill-0)]';
-    b.title = '在新标签打开（变成独立窗口）';
-    b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 3H13v3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L7.5 8.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11.5 9.8V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    b.addEventListener('click', function (ev) {
-      try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
-      try { window.open(String(f.src), '_blank', 'fnos-embed-style,fnos-anchor=' + encodeURIComponent(anchor)); } catch (_) {}
-      try { if (box.parentNode) box.parentNode.removeChild(box); } catch (_) {}
-      try { __rl.log('info', 'launch', 'embed-popout-clicked', { params: { src: String(f.src).slice(0, 140) } }); } catch (_) {}
-    });
-    group.insertBefore(b, group.firstChild);
-  } catch (_) {}
-}
-
-// v4.0.19：内嵌窗 ↗ 兜底注入——不依赖「快捷方式启动」链路。主窗内任何时刻出现
-// .trim-ui__app-layout--window（搜索、开始菜单、桌面图标都算）都补一个 ↗，
-// 保证「内嵌窗用飞牛标题栏 + 随时能变独立窗」两条同时成立。
-(function __fnosEmbedPopoutWatch() {
-  try {
-    const argv = process.argv || [];
-    const isMain = argv.indexOf('--fnos-shell') >= 0 && argv.indexOf('--fnos-app-window') < 0;
-    if (!isMain) return;
-    if (window.top !== window) return;
-    let timer = 0;
-    const scan = () => {
-      timer = 0;
-      try {
-        document.querySelectorAll('.trim-ui__app-layout--window').forEach((box) => {
-          try {
-            if (box.querySelector('.fnos-embed-popout')) return;
-            const f = box.querySelector('iframe');
-            if (!f || !f.src) return;
-            __fnosEmbedPopoutBtn(f, '', box);
-          } catch (_) {}
-        });
-      } catch (_) {}
-    };
-    const kick = () => { if (timer) return; timer = setTimeout(scan, 300); };
-    const start = () => {
-      try {
-        const mo = new MutationObserver(kick);
-        mo.observe(document.documentElement, { childList: true, subtree: true });
-      } catch (_) {}
-      setTimeout(scan, 1200);
-    };
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
-    else start();
-  } catch (_) {}
-})();
+// v4.0.20（用户纠正 v4.0.19）：内嵌窗标题栏不再注入任何按钮。
+// 飞牛的规则是「↻ 刷新 / ↗ 新标签」由应用自身决定有没有、而且是成对的；
+// 没有这两钮的内嵌窗本身就是正常形态。我们额外补 ↗ 等于多画一个按钮，
+// 所以移除 v4.0.19 的 __fnosEmbedPopoutBtn / __fnosEmbedPopoutWatch，
+// 内嵌窗完全交回飞牛自己渲染（v4.0.19 起「不再自动转独立窗口」这一点保留）。
 
 function __fnosLaunchByClick(appId, url, labels) {
   try {
@@ -196,20 +138,8 @@ function __fnosLaunchByClick(appId, url, labels) {
           const news = [];
           document.querySelectorAll('iframe').forEach(f => { if (base && !base.has(f) && f && f.src) news.push(f); });
           if (news.length) {
-            // v4.0.19：内嵌窗保留（飞牛自带标题栏不动），只补一个 ↗ 按钮，点它才转独立窗口
-            for (const f of news) {
-              let box = null;
-              try {
-                let n = f.parentElement;
-                for (let up = 0; up < 8 && n; up++) {
-                  try {
-                    if (n.querySelector && n.querySelector('.app-layout-header-close')) { box = n; break; }
-                  } catch (_) {}
-                  n = n.parentElement;
-                }
-              } catch (_) {}
-              __fnosEmbedPopoutBtn(f, anchor, box || f.parentElement);
-            }
+            // v4.0.20：内嵌窗保持飞牛原样，一个按钮都不加、也不转独立窗口。
+            // （v4.0.19 的 ↗ 注入已移除；旧版的强制转窗更早已移除。）
             try { __rl.log('info', 'launch', 'embed-kept', { params: { count: news.length, src: String(news[0].src).slice(0, 140) } }); } catch (_) {}
             return;
           }

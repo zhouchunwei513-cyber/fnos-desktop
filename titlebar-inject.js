@@ -1792,20 +1792,9 @@ module.exports = function injectTitleBar(ctx) {
           return b;
         };
 
-        // v4.0.18：应用窗/跳转窗补回「↻ 刷新」「↗ 新标签打开」。
-        // 之前这些窗口被强制注入自绘标题栏，自绘栏只有 ☰ + — □ ✕，fnOS 默认标题栏上的
-        // 「新标签打开」就此消失（用户工单：内嵌窗应用请用默认标题栏，我很需要那个功能）。
-        // 用 window.open(当前 URL, '_blank') 触发主进程 setWindowOpenHandler → createAppWindow，
-        // 等价于「在新标签打开当前页面」，不需要新增 IPC。主窗不加（刷新会把桌面整页重载）。
-        const reloadBtn = mkBtn('fnos-tb-reload',
-          '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/><path d="M13 2.6V5.1h-2.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-          'rgba(255,255,255,0.22)', '刷新');
-        const newtabBtn = mkBtn('fnos-tb-newtab',
-          '<svg width="13" height="13" viewBox="0 0 16 16"><path d="M9.5 3H13v3.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L7.5 8.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/><path d="M11.5 9.8V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2.2" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-          'rgba(255,255,255,0.22)', '在新标签打开');
-        reloadBtn.addEventListener('click', () => { try { location.reload(); } catch (_) {} });
-        newtabBtn.addEventListener('click', () => { try { window.open(String(location.href), '_blank'); } catch (_) {} });
-
+        // v4.0.20（用户纠正 v4.0.18）：独立跳出窗的标题栏「多了刷新和新标签打开」——
+        // 飞牛那边 ↻ / ↗ 是成对的、且属于内嵌窗标题栏的语义，跳到独立窗后不该再出现。
+        // 独立窗保持 ☰ + — □ ✕，和主程序一致；需要转独立窗请用内嵌窗标题栏上的 ↗（飞牛自带）。
         const minBtn = mkBtn('fnos-tb-min',
           '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>', 'rgba(255,255,255,0.22)');
         const maxBtn = mkBtn('fnos-tb-max',
@@ -1845,10 +1834,7 @@ module.exports = function injectTitleBar(ctx) {
         hot.addEventListener('mousedown', startNativeDrag);
         bar.addEventListener('mousedown', startNativeDrag);
 
-        if (!isMac) {
-          if (!__isMainWin) { btns.appendChild(reloadBtn); btns.appendChild(newtabBtn); }
-          btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn);
-        }
+        if (!isMac) { btns.appendChild(minBtn); btns.appendChild(maxBtn); btns.appendChild(closeBtn); }
         bar.appendChild(left);
         const dragStrip = document.createElement('div');
         dragStrip.id = 'fnos-tb-dragstrip';
@@ -2443,12 +2429,7 @@ module.exports = function injectTitleBar(ctx) {
         // disconnect+build() 撞 build() 防重入早退 → 拖动/按钮永久失效（自愈缺口实锤）。现全件
         // 检查（bar/hotzone/☰/—□✕），缺失即先清残留再整体重建——残留清掉后防重入早退不再拦。
         try {
-          // v4.0.18：应用窗/跳转窗多了 ↻ 刷新、↗ 新标签打开，自愈检查要一起带上，
-          // 否则 SPA 重渲染把按钮摘掉后不会被重建（主窗没有这两钮，不能加进 __need）。
-          const __need = isMac ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu']
-            : (__isMainWin
-              ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close']
-              : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-reload', 'fnos-tb-newtab', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close']);
+          const __need = isMac ? ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu'] : ['fnos-titlebar', 'fnos-titlebar-hotzone', 'fnos-tb-menu', 'fnos-tb-min', 'fnos-tb-max', 'fnos-tb-close'];
           const mo = new MutationObserver(() => {
             try {
               let __gone = false;

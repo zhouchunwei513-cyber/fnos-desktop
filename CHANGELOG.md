@@ -3,7 +3,29 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
-## v4.0.19
+## v4.0.20
+
+> 用户纠正 v4.0.19：内嵌窗标题栏不要加任何按钮。飞牛的「↻ 刷新 / ↗ 新标签」是**由应用自身
+> 决定有没有、而且成对出现**的；没有这两个按钮的内嵌窗本身就是正常形态，我们额外补一个 ↗
+> 属于「多画一个按钮」。
+
+### 修复
+1. `preload.js`：删除 `__fnosEmbedPopoutBtn()`（往飞牛标题栏注入 ↗）与
+   `__fnosEmbedPopoutWatch()`（MutationObserver 扫描 `.trim-ui__app-layout--window` 补按钮）。
+2. `preload.js`：`__fnosLaunchByClick()` 的 iframe 轮询分支改为「检测到新增内嵌窗即 return」，
+   只记一条 `launch/embed-kept` 日志，不再读取 `.app-layout-header-close` 上溯窗口盒子、不再注入。
+3. `titlebar-inject.js`：撤销 v4.0.18 给自绘标题栏加的「↻ 刷新」「↗ 新标签打开」。
+   独立跳出窗的标题栏恢复为 `☰ + — □ ✕`，与主窗口一致；`__need` 自愈清单同步还原，
+   不再为非主窗单独要求 `fnos-tb-reload` / `fnos-tb-newtab`。
+4. v4.0.19 的另一项修复保留：内嵌窗**不再**被自动转成独立窗口。
+   现在内嵌窗完全交回飞牛自己渲染 —— 一个按钮都不加、窗口形态也不改。
+
+### 验证
+- 全文检索 `__fnosEmbedPopoutBtn` / `__fnosEmbedPopoutWatch` / `.fnos-embed-popout`：
+  仅剩注释与历史 changelog，无任何可执行残留（不会 ReferenceError）。
+- `read_lints` 无告警；版本号已同步 `package.json` / `main.js`。
+
+## v4.0.19（第 2、3 条已于 v4.0.20 撤销）
 
 > 用户工单：内嵌窗被强制转成独立窗口，飞牛自带的 44px 标题栏（— □ ✕）连同「新标签打开」的入口
 > 一起消失。要求：内嵌窗一律用飞牛自带标题栏，同时保留「新标签打开 → 变成独立窗口

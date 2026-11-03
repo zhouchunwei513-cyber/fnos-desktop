@@ -176,7 +176,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // 版本号（与 package.json 保持一致）
-const APP_VERSION = '4.0.2';
+const APP_VERSION = '4.0.3';
 
 // v3.0.46（网友反馈：局域网 https 账号登录不上、直接跳"页面打不开 未知错误"）：
 // certificate-error 原来只放行 settings 里已存在的 origin。首次连接某个局域网 https 地址时
@@ -3564,7 +3564,31 @@ ipcMain.on('win-drag-start', (e, p) => {
 });
 ipcMain.on('win-drag-move', (e, p) => {
   try {
-    const d = __winDragState;
+    let d = __winDragState;
+    // v4.0.3：自愈启动（收到带 buttons 的移动但没有拖动状态时补建）必须以「标题栏 arm」为前提。
+    // arm 只由标题栏 mousedown 发出，内容区点击永远没有 arm —— 这是「拖动严格限制在标题栏内」
+    // 的主进程侧硬闸，也在 v4.0.2 丢掉起始帧的情况下保住「第一次就能拖」。
+    if (!d && p && typeof p.buttons === 'number' && p.buttons !== 0) {
+      const w0 = hostWindowFromSender(e && e.sender);
+      const arm = (w0 && __winDragArm && __winDragArm.win === w0
+        && (Date.now() - __winDragArm.at) < 1500) ? __winDragArm : null;
+      if (w0 && arm) {
+        const st = __winDragBegin(w0, arm.sx, arm.sy);
+        if (st) {
+          st.ox = arm.bx; st.oy = arm.by; st.lx = arm.bx; st.ly = arm.by;
+          st.sx = arm.sx; st.sy = arm.sy;
+          try { clearTimeout(arm.timer); } catch (_) {}
+          if (__winDragArm === arm) __winDragArm = null;
+          __winDragState = st;
+          __dragPollStart(st);
+          __frostDragStart(w0);
+          d = st;
+          try { fnosLog('info', 'window', 'drag.start.heal win=' + w0.id + ' o=' + st.ox + ',' + st.oy); } catch (_) {}
+        }
+      } else if (w0) {
+        try { fnosLog('info', 'window', 'drag.move.noarm win=' + w0.id + ' ignored'); } catch (_) {}
+      }
+    }
     if (!d || !p || !d.win || d.win.isDestroyed()) return;
     if (hostWindowFromSender(e && e.sender) !== d.win) return; // 多窗口时只认发起拖动的那个
     // v3.0.66（用户工单：拖动标题栏后点 × 点不中，窗口跟着鼠标一起平移）——

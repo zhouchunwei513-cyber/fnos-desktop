@@ -1535,15 +1535,19 @@ module.exports = function injectTitleBar(ctx) {
           const __isCtl = function (t) {
             try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
           };
-          const __endDrag = function () {
-            // v4.0.2：刚按下就到的 blur / pointerup（激活窗口的噪声、系统补发帧）不算数，
-            // 否则这次按下还没开始就被复位，用户表现为「第一次拖必定失败、再按一次才行」。
-            if (!W.__fnosDsDrag && W.__fnosDsDownAt && Date.now() - W.__fnosDsDownAt < 120) return;
+          const __endDrag = function (reason) {
+            // v4.0.3（用户工单「窗口区应用点不动，变成拖动区域」）——
+            // v4.0.2 对 mouseup 也给了 120ms 宽限，结果「快速点一下标题栏」后 __fnosDsDown 残留：
+            // 接着在内容区按下（没有新的 mousedown 重置它）再移动，就被当成上一次拖动的继续，
+            // 于是应用图标点不动、整个窗口像拖动区。现在只对「激活窗口的 blur 噪声」宽限，
+            // mouseup / pointerup / 其它来源一律立即生效。
+            if ((reason === 'blur' || reason === 'cancel') && !W.__fnosDsDrag
+              && W.__fnosDsDownAt && Date.now() - W.__fnosDsDownAt < 120) return;
             try {
               if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end');
               else ipcRenderer.send('win-drag-arm-end');
             } catch (_) {}
-            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null; W.__fnosDsSrc = null;
             try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
             W.__fnosDsPid = null;
             __unpinSize(); // v3.0.51：松手解锁页面尺寸
@@ -1560,6 +1564,8 @@ module.exports = function injectTitleBar(ctx) {
             // v4.0.2：记下按下时刻。窗口从「未激活」被点激活时，头几帧的 buttons 可能是 0，
             // 旧逻辑据此把整次拖动直接作废（用户工单：第一次拖动肯定失败，再按一次才行）。
             W.__fnosDsDownAt = Date.now();
+            // v4.0.3：标记这次按下来源于标题栏。__fwd 只认这个来源，内容区的按下永远不会变成拖动。
+            W.__fnosDsSrc = 'tb';
             // v3.0.82：按下就通知主进程「准备拖」（只登记起点 + 挂起磨砂采样，不动窗口、
             // 不还原最大化）。越过阈值时 win-drag-start 直接沿用这个起点，起步没有死区。
             try { ipcRenderer.send('win-drag-arm', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
@@ -1581,11 +1587,14 @@ module.exports = function injectTitleBar(ctx) {
                 // v4.0.2：按下后 200ms 内不信 buttons —— 激活窗口的噪声帧是 0，
                 // 旧逻辑在这里就把整次拖动作废，「第一次拖不动」就是这条打出来的。
                 if (!W.__fnosDsDrag && Date.now() - (W.__fnosDsDownAt || 0) < 200) return;
-                __endDrag();
+                __endDrag('nobutton');
                 return;
               }
               try {
                 if (!W.__fnosDsDrag) {
+                  // v4.0.3：只允许从标题栏发起拖动。没有标题栏按下标记（或已被内容区按下清掉）
+                  // 就直接收摊，绝不让内容区的按下"续上"成拖动。
+                  if (W.__fnosDsSrc !== 'tb') { __endDrag('notitlebar'); return; }
                   // v3.0.81：阈值 4px -> 2px。4px 死区偏大，用户感受到的是「刚按下那一下拖不动」；
                   // 2px 仍能区分单击（拖起来后立刻松开就是一次普通点击，不会误判）
                   if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 2 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 2) return;
@@ -1617,12 +1626,22 @@ module.exports = function injectTitleBar(ctx) {
             };
             W.addEventListener('mousemove', __fwd, true);
             W.addEventListener('pointermove', __fwd, true);
-            W.addEventListener('mouseup', __endDrag, true);
-            W.addEventListener('pointerup', __endDrag, true);
+            W.addEventListener('mouseup', function () { __endDrag('up'); }, true);
+            W.addEventListener('pointerup', function () { __endDrag('up'); }, true);
             // v3.0.66：失焦 / 页面隐藏也要复位（拖动中切窗、锁屏、任务视图都会丢 pointerup）
-            W.addEventListener('blur', __endDrag, true);
-            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
-            W.addEventListener('pointercancel', __endDrag, true);
+            W.addEventListener('blur', function () { __endDrag('blur'); }, true);
+            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag('hidden'); } catch (_) {} }, true);
+            W.addEventListener('pointercancel', function () { __endDrag('cancel'); }, true);
+            // v4.0.3：拖动严格限制在标题栏内 —— 任何在标题栏之外按下的 mousedown，
+            // 都把上一次残留的按下状态清掉（内容区的点击永远只是点击）。
+            document.addEventListener('mousedown', function (e) {
+              try {
+                if (W.__fnosDsDrag || !W.__fnosDsDown) return;
+                const t = e.target;
+                if (t && t.closest && t.closest('#fnos-tb-dragstrip, #fnos-titlebar, #fnos-titlebar-hotzone')) return;
+                __endDrag('other-area');
+              } catch (_) {}
+            }, true);
             // v3.0.77（电视直播窗拖不动）——鼠标落进 MPV 原生窗后松开，本层收不到 mouseup，
             // 主进程会按「光标连续静止」自行收尾并发这条消息；这里把拖动残留状态（尺寸钉死、
             // __fnosDs*）复位，否则下一次 resize 会带着旧的 clientWidth/Height 走。
@@ -2092,15 +2111,19 @@ module.exports = function injectTitleBar(ctx) {
           const __isCtl = function (t) {
             try { return !!(t && t.closest && t.closest('button,input,select,textarea,a[href],[data-fnos-no-drag]')); } catch (_) { return false; }
           };
-          const __endDrag = function () {
-            // v4.0.2：刚按下就到的 blur / pointerup（激活窗口的噪声、系统补发帧）不算数，
-            // 否则这次按下还没开始就被复位，用户表现为「第一次拖必定失败、再按一次才行」。
-            if (!W.__fnosDsDrag && W.__fnosDsDownAt && Date.now() - W.__fnosDsDownAt < 120) return;
+          const __endDrag = function (reason) {
+            // v4.0.3（用户工单「窗口区应用点不动，变成拖动区域」）——
+            // v4.0.2 对 mouseup 也给了 120ms 宽限，结果「快速点一下标题栏」后 __fnosDsDown 残留：
+            // 接着在内容区按下（没有新的 mousedown 重置它）再移动，就被当成上一次拖动的继续，
+            // 于是应用图标点不动、整个窗口像拖动区。现在只对「激活窗口的 blur 噪声」宽限，
+            // mouseup / pointerup / 其它来源一律立即生效。
+            if ((reason === 'blur' || reason === 'cancel') && !W.__fnosDsDrag
+              && W.__fnosDsDownAt && Date.now() - W.__fnosDsDownAt < 120) return;
             try {
               if (W.__fnosDsDrag) ipcRenderer.send('win-drag-end');
               else ipcRenderer.send('win-drag-arm-end');
             } catch (_) {}
-            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null;
+            W.__fnosDsDown = null; W.__fnosDsDrag = false; W.__fnosDsPend = null; W.__fnosDsSrc = null;
             try { if (W.__fnosDsPid != null && dragStrip.releasePointerCapture) dragStrip.releasePointerCapture(W.__fnosDsPid); } catch (_) {}
             W.__fnosDsPid = null;
             __unpinSize(); // v3.0.51：松手解锁页面尺寸
@@ -2117,6 +2140,8 @@ module.exports = function injectTitleBar(ctx) {
             // v4.0.2：记下按下时刻。窗口从「未激活」被点激活时，头几帧的 buttons 可能是 0，
             // 旧逻辑据此把整次拖动直接作废（用户工单：第一次拖动肯定失败，再按一次才行）。
             W.__fnosDsDownAt = Date.now();
+            // v4.0.3：标记这次按下来源于标题栏。__fwd 只认这个来源，内容区的按下永远不会变成拖动。
+            W.__fnosDsSrc = 'tb';
             // v3.0.82：按下就通知主进程「准备拖」（只登记起点 + 挂起磨砂采样，不动窗口、
             // 不还原最大化）。越过阈值时 win-drag-start 直接沿用这个起点，起步没有死区。
             try { ipcRenderer.send('win-drag-arm', { sx: (e.screenX || 0), sy: (e.screenY || 0) }); } catch (_) {}
@@ -2138,11 +2163,14 @@ module.exports = function injectTitleBar(ctx) {
                 // v4.0.2：按下后 200ms 内不信 buttons —— 激活窗口的噪声帧是 0，
                 // 旧逻辑在这里就把整次拖动作废，「第一次拖不动」就是这条打出来的。
                 if (!W.__fnosDsDrag && Date.now() - (W.__fnosDsDownAt || 0) < 200) return;
-                __endDrag();
+                __endDrag('nobutton');
                 return;
               }
               try {
                 if (!W.__fnosDsDrag) {
+                  // v4.0.3：只允许从标题栏发起拖动。没有标题栏按下标记（或已被内容区按下清掉）
+                  // 就直接收摊，绝不让内容区的按下"续上"成拖动。
+                  if (W.__fnosDsSrc !== 'tb') { __endDrag('notitlebar'); return; }
                   // v3.0.81：阈值 4px -> 2px。4px 死区偏大，用户感受到的是「刚按下那一下拖不动」；
                   // 2px 仍能区分单击（拖起来后立刻松开就是一次普通点击，不会误判）
                   if (Math.abs((e.screenX || 0) - W.__fnosDsDown.x) <= 2 && Math.abs((e.screenY || 0) - W.__fnosDsDown.y) <= 2) return;
@@ -2174,12 +2202,22 @@ module.exports = function injectTitleBar(ctx) {
             };
             W.addEventListener('mousemove', __fwd, true);
             W.addEventListener('pointermove', __fwd, true);
-            W.addEventListener('mouseup', __endDrag, true);
-            W.addEventListener('pointerup', __endDrag, true);
+            W.addEventListener('mouseup', function () { __endDrag('up'); }, true);
+            W.addEventListener('pointerup', function () { __endDrag('up'); }, true);
             // v3.0.66：失焦 / 页面隐藏也要复位（拖动中切窗、锁屏、任务视图都会丢 pointerup）
-            W.addEventListener('blur', __endDrag, true);
-            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag(); } catch (_) {} }, true);
-            W.addEventListener('pointercancel', __endDrag, true);
+            W.addEventListener('blur', function () { __endDrag('blur'); }, true);
+            document.addEventListener('visibilitychange', function () { try { if (document.hidden) __endDrag('hidden'); } catch (_) {} }, true);
+            W.addEventListener('pointercancel', function () { __endDrag('cancel'); }, true);
+            // v4.0.3：拖动严格限制在标题栏内 —— 任何在标题栏之外按下的 mousedown，
+            // 都把上一次残留的按下状态清掉（内容区的点击永远只是点击）。
+            document.addEventListener('mousedown', function (e) {
+              try {
+                if (W.__fnosDsDrag || !W.__fnosDsDown) return;
+                const t = e.target;
+                if (t && t.closest && t.closest('#fnos-tb-dragstrip, #fnos-titlebar, #fnos-titlebar-hotzone')) return;
+                __endDrag('other-area');
+              } catch (_) {}
+            }, true);
             // v3.0.77（电视直播窗拖不动）——鼠标落进 MPV 原生窗后松开，本层收不到 mouseup，
             // 主进程会按「光标连续静止」自行收尾并发这条消息；这里把拖动残留状态（尺寸钉死、
             // __fnosDs*）复位，否则下一次 resize 会带着旧的 clientWidth/Height 走。

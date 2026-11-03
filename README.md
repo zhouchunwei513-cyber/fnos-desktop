@@ -2,7 +2,7 @@
 
 > Windows 桌面客户端 for [fnOS 飞牛私有云](https://fnos.net/) — 独立窗口运行、多服务器登录态保持、内置 MPV 播放内核、系统托盘、启动密码、一键锁定 / 隐藏、玻璃质感界面。
 
-![version](https://img.shields.io/badge/version-4.0.2-blue)
+![version](https://img.shields.io/badge/version-4.0.3-blue)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-success)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 ![electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
@@ -34,9 +34,9 @@
 
 ## 📦 下载
 
-最新版本 **v4.0.2**（[发布页](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases/latest)）：
+最新版本 **v4.0.3**（[发布页](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases/latest)）：
 
-- **安装版**（推荐）：`FNOS-4.0.2-setup.exe`（约 140 MB，Win10 1809+ / Win11 x64，含内置 MPV）
+- **安装版**（推荐）：`FNOS-4.0.3-setup.exe`（约 140 MB，Win10 1809+ / Win11 x64，含内置 MPV）
 
 > 安装到当前用户目录，**无需管理员权限**，默认创建桌面和开始菜单快捷方式。
 
@@ -97,8 +97,8 @@
 ### 云端构建（推荐）
 
 ```bash
-git tag v4.0.2
-git push origin v4.0.2
+git tag v4.0.3
+git push origin v4.0.3
 ```
 
 `.github/workflows/build.yml` 流程：`npm ci` → JS 语法自检 → 下载 `mpv-runtime` 运行时 → `electron-builder` 打 NSIS →
@@ -124,7 +124,7 @@ npm start
 npm run dist
 ```
 
-产物位于 `dist/FNOS-4.0.2-setup.exe`。
+产物位于 `dist/FNOS-4.0.3-setup.exe`。
 
 > `compression` 保持 `normal`：`maximum` 压缩大体积 MPV 时会导致 NSIS 7z 归档失败。
 
@@ -168,7 +168,15 @@ npm run dist
 
 见 [CHANGELOG.md](./CHANGELOG.md)。完整历史见 [Releases](../../releases)。
 
-### v4.0.2（当前）
+### v4.0.3（当前）
+
+- **拖动严格限制在标题栏内**：修复 v4.0.2 回归 —— 内容区点击会变成拖动、应用图标点不动
+  - `mouseup` 不再享受宽限，按下状态不会被残留到下一次点击
+  - 只有标题栏来源的按下才会发起拖动；标题栏外按下会立即清掉残留状态
+  - 主进程自愈启动必须以标题栏 `arm` 为前提
+- 保留 v4.0.2 的「第一次就能拖」
+
+### v4.0.2
 
 - **修复第一次拖动失败**：点标题栏拖动时首帧 `buttons=0` 噪声把整次拖动作废，现已加按下宽限 + 主进程自愈启动
 - 新增拖动链路日志（`drag.arm` / `drag.start.heal` / `drag.start.dup`），便于定位

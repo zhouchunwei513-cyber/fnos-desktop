@@ -7675,6 +7675,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   const __embedAuto = (function () {
     try {
       if (opts && typeof opts.embedStyle === 'boolean') return opts.embedStyle;
+      // v4.0.35（用户反馈「快捷方式启动的内嵌窗应用没有标题栏」）：
+      // 快捷方式的目标是 /appview?anchor=…，但该路径下 fnOS 前端**不会**渲染它自己的
+      // 标题栏（实测窗口全裸：无 ☰、无 —□✕、也无法拖动）。此时必须走自绘标题栏，
+      // 否则窗口没法关也没法拖。仅对 source==='shortcut' 生效，程序内打开仍保持 embed 形态。
+      if (String((opts && opts.source) || '') === 'shortcut') return false;
       const o = new URL(String(url || ''));
       const p = String(o.pathname || '');
       // 只认 /appview 容器页——fnOS 前端在那里自绘了默认标题栏（logo+标题+↻↗—□✕）。

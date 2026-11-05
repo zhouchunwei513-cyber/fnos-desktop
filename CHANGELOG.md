@@ -3,6 +3,30 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.35
+
+> 用户反馈：**从桌面快捷方式启动的内嵌窗应用没有标题栏**——窗口既没有 ☰ 也没有 —□✕，还不能拖动。
+
+### 根因
+
+`createAppWindow` 里的 `__embedAuto` 只按 URL 判定：路径是 `/appview` 就认为 fnOS 前端会自绘
+默认标题栏（logo + 标题 + ↻↗—□✕），于是**跳过自绘标题栏注入**。
+
+但快捷方式的目标正是 `/appview?anchor=<appId>`，而该路径在快捷方式场景下 fnOS 前端并不渲染
+那套标题栏（实测窗口全裸）。程序内从应用中心点开时才有默认标题栏，所以只有"快捷方式启动"这一路出问题。
+
+### 修复
+
+`__embedAuto` 增加来源判定：`opts.source === 'shortcut'` 时**强制走自绘标题栏**（`return false`），
+其余路径保持原行为（程序内打开仍是 embed 形态，保留 fnOS 默认标题栏与「新标签打开」按钮）。
+
+### 验证
+
+- 用真实快捷方式链路复现：`wscript fnos-launcher.vbs "Docker" FNOS.exe <origin>`；
+- 修复前：`/appview?anchor=trim.docker` 窗口无任何标题栏；
+- 修复后：窗口左上出现 ☰、右上出现 —□✕，可拖动可关闭（截图比对通过）；
+- `node --check` 通过，热部署后进程正常、日志 0 ERROR。
+
 ## v4.0.34
 
 > 用户需求：把「强力卸载器」集成进客户端，菜单里直接调用。

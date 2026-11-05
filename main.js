@@ -4290,6 +4290,29 @@ function rewriteUrl(url) {
           return joinRewriteBase(replace, rewritten.slice(u.origin.length));
         }
       } catch (_) {}
+      // 6) v4.0.37（用户反馈「点容器链接打开的是 公网IP:8080，超时」）：
+      //    飞牛给 Docker 容器生成的地址常常是「NAS 当前主机 + 容器端口」
+      //    （如 http://121.40.186.165:8080/），与用户规则里的内网主机（192.168.31.101）
+      //    不一致，上面 5 条都匹配不上，规则形同虚设。这里放宽为：URL 主机属于
+      //    「当前 NAS 已知主机」（live origin / settings.origin / localhost），
+      //    且端口等于规则内网端口 → 按规则重写到外网地址。
+      try {
+        const __knownHosts37 = new Set(['127.0.0.1', 'localhost']);
+        try { const __lo37 = __liveOriginBase(); if (__lo37) __knownHosts37.add(new URL(__lo37).hostname.toLowerCase()); } catch (_) {}
+        try { const __so37 = (loadSettings() && loadSettings().origin) || ''; if (__so37) __knownHosts37.add(new URL(__so37).hostname.toLowerCase()); } catch (_) {}
+        let mPort37 = ''; let mHost37 = '';
+        if (/^\d+$/.test(match)) { mPort37 = match; }
+        else {
+          const __mu37 = /^https?:\/\//i.test(match) ? new URL(match) : new URL('http://' + match);
+          mPort37 = __mu37.port; mHost37 = __mu37.hostname;
+        }
+        if (mPort37 && u.port === mPort37 && __knownHosts37.has(u.hostname.toLowerCase()) &&
+            u.hostname.toLowerCase() !== String(mHost37 || '').toLowerCase()) {
+          const __to37 = joinRewriteBase(replace, rewritten.slice(u.origin.length));
+          try { require('./logger.js').log('info', 'net', 'url.rewrite.known-host37', { params: { from: String(rewritten).slice(0, 140), to: String(__to37).slice(0, 140), rule: match + ' → ' + replace } }, __RUN_MODE); } catch (_) {}
+          return __to37;
+        }
+      } catch (_) {}
     }
     return rewritten;
   } catch (_) { return url; }

@@ -3,6 +3,25 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.64
+
+> 多账号实测（第 2 个账号 `121.40.186.165:10300`）抓到的两个链路问题。
+
+### 1. 切账号后快捷方式仍按旧账号解析（实锤）
+
+- `fnos-launch-endpoint.txt` 第 4 行 `nasBase` 只在进程启动时写入；切换账号后不更新，
+  快捷方式 `/launch` 收到的仍是旧 origin。实测：切到 `121.40.186.165:10300` 后打开
+  `bililivetools`，被拼成 `http://121.40.186.165:5666/`（旧端口），必然超时。
+- 修法：① `switchAccount()` 切完立刻把 endpoint 第 4 行改成新 origin；
+  ② `__resolveLaunchUrl()` 一律以进程内实时 `__liveOriginBase()` 覆盖传入的 nasAddr。
+
+### 2. 失败分类新增 `port-not-exposed`
+
+- 公网/反代账号通常只映射 NAS 主端口（实测该账号只映射 10300），第三方自有端口
+  （`:18080`、`:3000`）从外部不可达，表现为 -118 超时。
+- `__failReason()` 识别「同主机、端口≠当前账号端口」→ `port-not-exposed`，
+  与 `network-timeout` 区分开，方便给用户"该应用端口未对外开放"的明确提示。
+
 ## v4.0.63
 
 > 实测矩阵跑出来抓到两个"权威数据其实是公网地址"的坑（v4.0.62 的 app-center 候选接进来后才暴露）。

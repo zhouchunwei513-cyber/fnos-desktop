@@ -6963,7 +6963,18 @@ function __failReason(code, u) {
     const otherAcct = host && __launchKnownAccountHosts().indexOf(host) >= 0;
     if (c === -3) return 'aborted';
     if (c === -102) return otherAcct ? 'account-offline' : 'port-closed';
-    if (c === -118 || c === -7 || c === -21 || c === -137) return otherAcct ? 'account-offline' : 'network-timeout';
+    // v4.0.64：第三方自有端口在「公网/反代账号」下大概率没对外开放（实测 121.40.186.165 只映射了 10300，
+    // 18080/3000 均超时）→ 单独分类，给出可操作的话术，不要笼统说"网络超时"。
+    let puPort = '';
+    try { puPort = String(new URL(String(u || '')).port || ''); } catch (_) {}
+    let livePort = '';
+    try { livePort = String(new URL(String(__liveOriginBase() || '')).port || ''); } catch (_) {}
+    const thirdPartyPort = puPort && livePort && puPort !== livePort && host === liveHost;
+    if (c === -118 || c === -7 || c === -21 || c === -137) {
+      if (otherAcct) return 'account-offline';
+      if (thirdPartyPort) return 'port-not-exposed';
+      return 'network-timeout';
+    }
     if (c === -105 || c === -106) return 'dns';
     return 'unknown';
   } catch (_) { return 'unknown'; }
@@ -13666,6 +13677,19 @@ function switchAccount(targetOrigin) {
     currentPartition = target.partition;
     currentOrigin = target.origin;
     lastConnectHref = target.href;
+    // v4.0.64（实测发现）：切换账号后快捷方式启动器读的 endpoint 文件里 nasBase 还是旧账号，
+    // 于是 `app` 解析会拿旧 origin 拼地址（实测 bililive 被拼成 121.40.186.165:5666）。
+    // 这里切完账号立刻把第 4 行改成新 origin，保证快捷方式与程序内一致。
+    try {
+      const __f = __LAUNCH_ENDPOINT_FILE();
+      if (fs.existsSync(__f)) {
+        const __lines = String(fs.readFileSync(__f, 'utf-8')).split(/\r?\n/);
+        while (__lines.length < 4) __lines.push('');
+        __lines[3] = String(target.origin || '');
+        fs.writeFileSync(__f, __lines.slice(0, 4).join('\r\n'), 'utf-8');
+        fnosLog('info', 'account', 'launch-endpoint.nasbase-updated', { origin: String(target.origin || '') });
+      }
+    } catch (_) {}
     createMainWindow(target.partition, { origin: target.origin, href: target.href });
     
     return { success: true, msg: '切换成功' };
@@ -18083,6 +18107,11 @@ function __appviewFallbackUrl(name) {
   } catch (_) { return ''; }
 }
 function __resolveLaunchUrl(raw, nasAddr) {
+  // v4.0.64：传入的 nasAddr 可能过期（切账号后 launcher 文件还没更新），以进程内实时 origin 为准
+  try {
+    const __live = String(__liveOriginBase() || '');
+    if (__live) nasAddr = __live;
+  } catch (_) {}
   let appName = '';
   try { appName = decodeURIComponent(String(raw || '')); } catch (_) { appName = String(raw || ''); }
   if (!appName) return '';

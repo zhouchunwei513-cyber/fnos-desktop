@@ -540,11 +540,24 @@ function prewarmCorners() { try { ensureCornerHelper(); } catch (_) {} }
 // v3.0.75（用户澄清）：
 //   点播 MPV 窗跟「窗口四角」三档 —— round=四角圆 / half=上直下圆 / square=四角直；
 //   电视直播 MPV 窗只看「标题栏四角」—— 圆角时保留右上角 R 角，直角与半圆角时四角全直。
-let __cornerStyle = 'round';     // 窗口四角（winCorner）
-let __barCornerStyle = 'round';  // 标题栏四角（barCorner），仅供电视直播窗判定
+// v4.0.39：圆角五档 round-small / round-large / half-small / half-large / square
+let __cornerStyle = 'round-large';     // 窗口四角（winCorner）
+let __barCornerStyle = 'round-large';  // 标题栏四角（barCorner）
+function __mpvCornerNorm(v) {
+  if (v === 'round-small' || v === 'round-large' || v === 'half-small' || v === 'half-large' || v === 'square') return v;
+  if (v === 'round') return 'round-large';
+  if (v === 'half') return 'half-large';
+  return 'round-large';
+}
+function __mpvCornerRadius(v) {
+  const n = __mpvCornerNorm(v);
+  if (n === 'square') return 0;
+  return n.indexOf('small') >= 0 ? 10 : 20;
+}
+function __mpvCornerIsHalf(v) { return __mpvCornerNorm(v).indexOf('half') === 0; }
 function setCornerStyle(v, barV) {
-  __cornerStyle = (v === 'square' || v === 'half') ? v : 'round';
-  if (barV !== undefined) __barCornerStyle = (barV === 'square' || barV === 'half') ? barV : 'round';
+  __cornerStyle = __mpvCornerNorm(v);
+  if (barV !== undefined) __barCornerStyle = __mpvCornerNorm(barV);
 }
 
 class MpvPlayer extends EventEmitter {
@@ -1570,27 +1583,23 @@ class MpvPlayer extends EventEmitter {
     // 圆角形态：点播（飞牛影视电影/剧集）四角圆角；直播仅右上角圆角（其余三角直角，露出右上角窗口控制按钮区）；
     // 独立播放器保持直角。
     let mode = 'none';
-    // fullscreen 铺满整屏时四角是屏幕四角（直角），退出后按点播/直播形态恢复圆角
+    // v4.0.39：半径由「窗口四角」档位决定（小=10px / 大=20px / 直角=0），两套窗口模式：
+    //   影视播放窗：四角跟窗口四角（half 档=上直下圆）
+    //   电视直播窗：只右上角出圆角，其余三角恒为直角（大档 20px / 小档 10px）
+    const __mpvR = __mpvCornerRadius(__cornerStyle);
+    const __mpvHalf = __mpvCornerIsHalf(__cornerStyle);
     if (this._fsOn) { mode = 'none'; }
-    else if (!this._standalone) {
+    else if (!this._standalone && __mpvR > 0) {
       if (this._isLive) {
-        // v3.0.75：电视直播窗只看「标题栏四角」——
-        //   圆角：仅右上角 R 角（其余三角直角，给窗口控制按钮让位）；
-        //   直角 / 半圆角：四角全直。
-        // 两条设置都必须是圆角，直播窗才留右上角 R 角；任一处是直角/半圆角则四角全直
-        // （这样「窗口直角时 MPV 也直角」的总则不会被单看标题栏破坏）
-        mode = (__barCornerStyle === 'round' && __cornerStyle === 'round') ? 'top-right' : 'none';
+        mode = 'top-right';
       } else {
-        // v3.0.74/75：点播窗跟「窗口四角」三档
-        //   half = 上边两角直角 + 下边两角 20px 圆角（helper mode=3）
-        mode = (__cornerStyle === 'half') ? 'half'
-          : ((__cornerStyle === 'square') ? 'none' : 'all');
+        mode = __mpvHalf ? 'half' : 'all';
       }
     }
     // 独立播放器（直播/独立窗口）恒为直角，从未裁过区域，无需再下 none 指令
     if (mode === 'none' && this._standalone) return;
     const scale = this._scaleFactor || 1;
-    const d = Math.max(2, Math.round(40 * scale)); // 圆角直径（物理像素）：20px 半径 DIP * 2 * scale
+    const d = Math.max(2, Math.round(__mpvR * 2 * scale)); // 圆角直径（物理像素）：半径 DIP * 2 * scale
     const halfD = Math.max(1, Math.round(d / 2)); // 圆角半径（物理像素），用于补直角的竖条/横条宽度
     // v2.24.4（用户反馈：MPV 圆角状态不稳定，运行中会变直角）——
     // 过渡期既不能“不下发”（SetWindowRgn 的区域不随窗口拉伸，放大后新露出的部分会被裁=画面被切），

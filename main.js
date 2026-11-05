@@ -3086,6 +3086,22 @@ function decryptString(token) {
   } catch (_) { return ''; }
 }
 
+// v4.0.39：圆角五档归一化（旧值 round/half 自动迁移到「大」档，保持原观感不变）
+function __cornerNorm(v) {
+  if (v === 'round-small' || v === 'round-large' || v === 'half-small' || v === 'half-large' || v === 'square') return v;
+  if (v === 'round') return 'round-large';
+  if (v === 'half') return 'half-large';
+  return 'round-large';
+}
+// 圆角半径（DIP 像素）：小档 10 / 大档 20 / 直角 0
+function __cornerRadius(v) {
+  const n = __cornerNorm(v);
+  if (n === 'square') return 0;
+  return n.indexOf('small') >= 0 ? 10 : 20;
+}
+// 是否为「半圆角」形态（标题栏：上圆下直；窗口：上直下圆）
+function __cornerIsHalf(v) { return __cornerNorm(v).indexOf('half') === 0; }
+
 function loadSettings() {
   if (cachedSettings) return cachedSettings;
   let raw = {};
@@ -13506,8 +13522,8 @@ ipcMain.handle('settings:get', async () => {
     // v3.0.70（用户要求：直角/圆角二选一，标题栏与窗口可分别设置）——
     // round = 现有圆角（标题栏 10px / 窗口 20px，数值与逻辑完全不变，默认）；square = 四角直角
     // v3.0.74：round / half / square 三档
-    barCorner: (s.barCorner === 'square' || s.barCorner === 'half') ? s.barCorner : 'round',
-    winCorner: (s.winCorner === 'square' || s.winCorner === 'half') ? s.winCorner : 'round',
+    barCorner: __cornerNorm(s.barCorner),
+    winCorner: __cornerNorm(s.winCorner),
     ballPos: (s.ballPos && Number.isFinite(Number(s.ballPos.fx)) && Number.isFinite(Number(s.ballPos.fy)))
       ? { fx: Number(s.ballPos.fx), fy: Number(s.ballPos.fy) } : null,
     // v1.16.1：无操作自动锁定（分钟），0 = 关闭；仅在已设置启动密码时生效
@@ -13659,6 +13675,14 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
       // 预览也立即同步采样开关（切到磨砂当场出效果）
       __frost: (function () { try { __syncFrostAll(opts?.titleBarMaterial === 'frosted'); } catch (_) {} return 1; })(),
     };
+    // v4.0.39：预览也要即时刷新 MPV 圆角（用户要求「切换下拉选项实时刷新窗口/标题栏/MPV」）
+    try {
+      if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') {
+        const __pw2 = __cornerNorm(opts && opts.winCorner);
+        const __pb2 = __cornerNorm(opts && opts.barCorner);
+        MpvPlayerMod.setCornerStyle(__pw2, __pb2);
+      }
+    } catch (_) {}
     // v4.0.31：悬浮球外观也进预览通道 —— 设置页拖球的颜色/浓度时，球当场变
     try {
       const __bp = __ballPayload(opts, cachedSettings || {}, {
@@ -13675,8 +13699,8 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
     // v3.0.71：四角实时预览透传。v3.0.70 的预览消息体没有这两个字段，
     // 渲染层收到后无值可改，于是「点直角不即时生效」；这里按需带上（不带时保持现状不动）。
     // v3.0.74：四角新增 half（半圆角）——上两角圆、下两角直角
-    if (opts && (opts.barCorner === 'round' || opts.barCorner === 'square' || opts.barCorner === 'half')) tbPayload.barCorner = opts.barCorner;
-    if (opts && (opts.winCorner === 'round' || opts.winCorner === 'square' || opts.winCorner === 'half')) tbPayload.winCorner = opts.winCorner;
+    if (opts && opts.barCorner) tbPayload.barCorner = __cornerNorm(opts.barCorner);
+    if (opts && opts.winCorner) tbPayload.winCorner = __cornerNorm(opts.winCorner);
     // v3.0.76：透明度滑块拖动即时预览（只广播、不落盘，点「保存界面设置」才持久化）
     if (opts && opts.uiTransparentAlpha != null && Number.isFinite(Number(opts.uiTransparentAlpha))) {
       tbPayload.uiTransparentAlpha = Math.max(0, Math.min(100, Math.round(Number(opts.uiTransparentAlpha))));
@@ -13769,8 +13793,8 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
       : __uiAlphaPct(__fileCfg);
     const uiTransparent = uiTransparentAlpha > 0;
     // v3.0.70：标题栏四角 / 窗口四角（round 圆角默认 / square 直角）——没传就保留文件里的值
-    const __cornerOk = (v) => (v === 'round' || v === 'square' || v === 'half');
-    const __cornerFrom = (v) => ((v === 'square' || v === 'half') ? v : 'round');
+    const __cornerOk = (v) => !!v && (v === 'square' || v === 'round-small' || v === 'round-large' || v === 'half-small' || v === 'half-large' || v === 'round' || v === 'half');
+    const __cornerFrom = (v) => __cornerNorm(v);
     const barCorner = (opts && __cornerOk(opts.barCorner))
       ? opts.barCorner
       : __cornerFrom(__fileCfg && __fileCfg.barCorner);
@@ -13837,7 +13861,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.barCorner = barCorner;
     cachedSettings.winCorner = winCorner;
     // v3.0.70/75：点播 MPV 圆角跟随「窗口四角」三档；电视直播窗另看「标题栏四角」
-    try { if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') MpvPlayerMod.setCornerStyle(winCorner, barCorner); } catch (_) {}
+    try { if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') MpvPlayerMod.setCornerStyle(__cornerNorm(winCorner), __cornerNorm(barCorner)); } catch (_) {}
     {
       const __oldStrip = __titlebarStrip;
       refreshTitlebarStrip();
@@ -14261,8 +14285,8 @@ ipcMain.on('settings:get-titlebar', (e) => {
       uiTransparent: __uiAlphaPct(s) > 0,
       uiTransparentAlpha: __uiAlphaPct(s),
       // v3.0.70：标题栏 / 窗口四角（round 圆角默认 / square 直角）
-      barCorner: (s.barCorner === 'square' || s.barCorner === 'half') ? s.barCorner : 'round',
-      winCorner: (s.winCorner === 'square' || s.winCorner === 'half') ? s.winCorner : 'round',
+      barCorner: __cornerNorm(s.barCorner),
+      winCorner: __cornerNorm(s.winCorner),
       // v4.0.31：悬浮球外观（必须在同一次字面量里给全，理由见上方 v3.0.28 说明）
       ...__ballPayload(null, s, {
         material: s.titleBarMaterial === 'frosted' ? 'frosted' : 'solid',
@@ -14273,7 +14297,7 @@ ipcMain.on('settings:get-titlebar', (e) => {
       }),
     };
   } catch (__e2) {
-    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round', winCorner: 'round', ballAppearanceMode: 'follow', ballMaterial: 'solid', ballSolidColor: '#101426', ballSolidAlpha: 100, ballFrostColor: '#FFFFFF', ballFrostAlpha: 14 };
+    __tb = { autoHide: false, opacity: 96, color: '#101426', material: 'solid', blur: 20, highlight: 55, frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true, skinDir: '', skin: null, hideAccountBall: false, uiTransparent: true, barCorner: 'round-large', winCorner: 'round-large', ballAppearanceMode: 'follow', ballMaterial: 'solid', ballSolidColor: '#101426', ballSolidAlpha: 100, ballFrostColor: '#FFFFFF', ballFrostAlpha: 14 };
     try { fnosLog('error', 'titlebar', 'get.fail', { err: String((__e2 && __e2.message) || __e2).slice(0, 140) }); } catch (_) {}
   }
   try { e.returnValue = __tb; } catch (__e3) {
@@ -20466,10 +20490,8 @@ app.whenReady().then(() => {
       // v3.0.74/75：窗口四角三档 + 标题栏四角（电视直播窗用后者判定）
       const __wcv = __cs && __cs.winCorner;
       const __bcv = __cs && __cs.barCorner;
-      MpvPlayerMod.setCornerStyle(
-        (__wcv === 'square' || __wcv === 'half') ? __wcv : 'round',
-        (__bcv === 'square' || __bcv === 'half') ? __bcv : 'round'
-      );
+      // v4.0.39：五档直接透传，MPV 内部按「小=10px / 大=20px」换算
+      MpvPlayerMod.setCornerStyle(__cornerNorm(__wcv), __cornerNorm(__bcv));
     }
   } catch (_) {}
   // v2.3.5（需求 2.6.4）：托盘图标丢失自动重建。

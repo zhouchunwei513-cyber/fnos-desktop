@@ -642,6 +642,9 @@ body::-webkit-scrollbar-thumb:hover {
 
 /* v2.19.0：标题栏材质切换（纯色 / 磨砂玻璃） */
 .tb-material-group { display: flex; gap: 8px; flex: 0 0 auto; }
+/* v4.0.39：圆角五档按钮较多，收窄内边距避免挤压说明文字 */
+[data-bar-corner] .tb-mat-btn, [data-win-corner] .tb-mat-btn { padding: 7px 10px; font-size: 12.5px; white-space: nowrap; }
+[data-bar-corner], [data-win-corner] { gap: 6px; }
 .tb-mat-btn {
   padding: 7px 16px;
   border-radius: 10px;

@@ -352,7 +352,14 @@
   // v3.0.70：标题栏四角 / 窗口四角（圆角 / 直角，可分别设置；保存时生效）
   const barCornerGroup = document.querySelector('[data-bar-corner]');
   const winCornerGroup = document.querySelector('[data-win-corner]');
-  const tbCorner = { bar: 'round', win: 'round' };
+  // v4.0.39：五档圆角（小/大圆角、小/大半圆角、直角）。旧值 round/half 迁移为「大」档，保持原观感。
+  const __cornerNorm = (v) => {
+    if (v === 'round-small' || v === 'round-large' || v === 'half-small' || v === 'half-large' || v === 'square') return v;
+    if (v === 'round') return 'round-large';
+    if (v === 'half') return 'half-large';
+    return 'round-large';
+  };
+  const tbCorner = { bar: 'round-large', win: 'round-large' };
   const syncCornerBtns = () => {
     if (barCornerGroup) {
       barCornerGroup.querySelectorAll('.tb-mat-btn').forEach((b) => {
@@ -371,7 +378,7 @@
       if (!btn) return;
       // v3.0.74：新增 half（半圆角）——上两角圆、下两角直角
       const __bcv = btn.getAttribute('data-corner');
-      tbCorner.bar = (__bcv === 'square' || __bcv === 'half') ? __bcv : 'round';
+      tbCorner.bar = __cornerNorm(__bcv);
       syncCornerBtns();
       tbPreview(); // v3.0.71：点选后立即广播预览，标题栏四角即时生效（不必等保存）
     });
@@ -381,7 +388,7 @@
       const btn = e.target && e.target.closest ? e.target.closest('.tb-mat-btn') : null;
       if (!btn) return;
       const __wcv = btn.getAttribute('data-corner');
-      tbCorner.win = (__wcv === 'square' || __wcv === 'half') ? __wcv : 'round';
+      tbCorner.win = __cornerNorm(__wcv);
       syncCornerBtns();
       tbPreview(); // v3.0.71：点选后立即广播预览，窗口四角即时生效（不必等保存）
     });
@@ -675,8 +682,8 @@
         ? Math.max(0, Math.min(100, Math.round(Number(info.uiTransparentAlpha))))
         : 62;
       if (optUiAlpha) { optUiAlpha.value = String(uiAlphaPct); syncUiAlphaLabel(); applyUiAlphaLocal(); }
-      tbCorner.bar = (info.barCorner === 'square' || info.barCorner === 'half') ? info.barCorner : 'round';
-      tbCorner.win = (info.winCorner === 'square' || info.winCorner === 'half') ? info.winCorner : 'round';
+      tbCorner.bar = __cornerNorm(info.barCorner);
+      tbCorner.win = __cornerNorm(info.winCorner);
       syncCornerBtns();
       tbState.opacity = clampInt(info.titleBarOpacity, 0, 100, 96);
       tbState.color = hexNorm6(info.titleBarColor) || '#101426';

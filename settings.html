@@ -338,11 +338,13 @@
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
           <div>
             <div class="hotkey-title">标题栏四角</div>
-            <div class="hotkey-sub">圆角：标题栏四个角为 10px 小圆角（默认，与原版一致）；半圆角：标题栏上方左右两角为 10px 圆角、下方左右两角为直角；直角：标题栏四个角为直角。与下方「窗口四角」相互独立，可任意组合。</div>
+            <div class="hotkey-sub">五档：小圆角=四角 10px；大圆角=四角 20px；小半圆角=上两角 10px、下两角直角；大半圆角=上两角 20px、下两角直角；直角=四角 0。与下方「窗口四角」<b>完全独立</b>，任意搭配互不影响。</div>
           </div>
           <div class="tb-material-group" data-bar-corner>
-            <button type="button" class="tb-mat-btn" data-corner="round">圆角</button>
-            <button type="button" class="tb-mat-btn" data-corner="half">半圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="round-small">小圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="round-large">大圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="half-small">小半圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="half-large">大半圆角</button>
             <button type="button" class="tb-mat-btn" data-corner="square">直角</button>
           </div>
         </div>
@@ -350,11 +352,13 @@
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
           <div>
             <div class="hotkey-title">窗口四角</div>
-            <div class="hotkey-sub">圆角：窗口四个角为 20px 圆角（默认，与原版一致）；半圆角：窗口上方左右两角为直角、下方左右两角为 20px 圆角；直角：窗口四个角为直角。MPV 播放器（点播）跟随本项三档：圆角=四角圆、半圆角=上直下圆、直角=四角直；电视直播窗口只在「本项圆角」且「标题栏四角也为圆角」时保留右上角圆角，其余情况四角全直。</div>
+            <div class="hotkey-sub">五档：小圆角=四角 10px；大圆角=四角 20px；小半圆角=上两角直角、下两角 10px；大半圆角=上两角直角、下两角 20px；直角=四角 0。MPV 影视窗完全跟随本项；电视直播窗仅右上角出圆角（大档 20px / 小档 10px），其余三角固定直角。</div>
           </div>
           <div class="tb-material-group" data-win-corner>
-            <button type="button" class="tb-mat-btn" data-corner="round">圆角</button>
-            <button type="button" class="tb-mat-btn" data-corner="half">半圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="round-small">小圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="round-large">大圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="half-small">小半圆角</button>
+            <button type="button" class="tb-mat-btn" data-corner="half-large">大半圆角</button>
             <button type="button" class="tb-mat-btn" data-corner="square">直角</button>
           </div>
         </div>

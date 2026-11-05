@@ -766,10 +766,11 @@ module.exports = function injectTitleBar(ctx) {
         // v3.0.70：标题栏四角直角 = 0px；圆角保持原 10px（数值不变）
         // v3.0.74：新增 half（半圆角）= 上方左右两角 10px 圆角 + 下方左右两角直角
         //   border-radius / inset() 的四值顺序统一是 左上 右上 右下 左下
-        const __R = (TB.barCorner === 'square') ? '0px'
-          : ((TB.barCorner === 'half') ? '10px 10px 0 0' : '10px');
-        const __C = (TB.barCorner === 'square') ? 'inset(0 round 0px)'
-          : ((TB.barCorner === 'half') ? 'inset(0 round 10px 10px 0 0)' : 'inset(0 round 10px)');
+        // v4.0.39：五档 —— 半径 10/20/0，half 档为上两角圆、下两角直角
+        const __sr = __tbCornerRadius(TB.barCorner);
+        const __sh = __tbCornerIsHalf(TB.barCorner);
+        const __R = __sh ? (__sr + 'px ' + __sr + 'px 0 0') : (__sr + 'px');
+        const __C = __sh ? ('inset(0 round ' + __sr + 'px ' + __sr + 'px 0 0)') : ('inset(0 round ' + __sr + 'px)');
         try { bar.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
         const bl = bar.__bgLayer;
         if (bl && bl.style) {
@@ -1042,8 +1043,23 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) { return false; }
     }
 
-    // v3.0.70：barCorner = 标题栏四角（round 10px 默认 / square 直角），winCorner = 窗口四角（round 20px 默认 / square 直角）
-    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false, barCorner: 'round', winCorner: 'round',
+    // v4.0.39：圆角五档 —— round-small(10) / round-large(20) / half-small(上10下0) /
+    // half-large(上20下0) / square(0)；窗口侧 half 语义为「上直角、下圆角」。
+    const __tbCornerNorm = (v) => {
+      if (v === 'round-small' || v === 'round-large' || v === 'half-small' || v === 'half-large' || v === 'square') return v;
+      if (v === 'round') return 'round-large';
+      if (v === 'half') return 'half-large';
+      return 'round-large';
+    };
+    const __tbCornerRadius = (v) => {
+      const n = __tbCornerNorm(v);
+      if (n === 'square') return 0;
+      return n.indexOf('small') >= 0 ? 10 : 20;
+    };
+    const __tbCornerIsHalf = (v) => __tbCornerNorm(v).indexOf('half') === 0;
+
+    // v3.0.70：barCorner = 标题栏四角，winCorner = 窗口四角
+    const TB = { autoHide: false, opacity: 0, color: '#3B82F6', material: 'solid', blur: 20, highlight: 55, hideAccountBall: false, barCorner: 'round-large', winCorner: 'round-large',
       // v3.0.78：磨砂/纯色两套视觉参数各自独立（互不共用），见用户方案第五节
       frostColor: '#ffffff', frostAlpha: 10, solidColor: '#101426', solidAlpha: 100, divider: true,
       // v4.0.31（用户需求 2）：账号悬浮球外观 —— follow 跟随标题栏，custom 单独设置
@@ -1074,8 +1090,8 @@ module.exports = function injectTitleBar(ctx) {
         __applyUiAlpha(r.uiTransparentAlpha != null ? r.uiTransparentAlpha : (r.uiTransparent === false ? 0 : 62));
         // v3.0.70：标题栏四角 / 窗口四角（缺字段回落圆角，行为与老版本完全一致）
         // v3.0.74：round 圆角 / half 半圆角 / square 直角（缺字段回落圆角）
-        TB.barCorner = (r.barCorner === 'square' || r.barCorner === 'half') ? r.barCorner : 'round';
-        TB.winCorner = (r.winCorner === 'square' || r.winCorner === 'half') ? r.winCorner : 'round';
+        TB.barCorner = __tbCornerNorm(r.barCorner);
+        TB.winCorner = __tbCornerNorm(r.winCorner);
         // v4.0.31（用户需求 2）：悬浮球外观（跟随标题栏 / 单独设置）
         if (r.ballAppearanceMode === 'custom' || r.ballAppearanceMode === 'follow') TB.ballAppearanceMode = r.ballAppearanceMode;
         if (r.ballMaterial === 'frosted' || r.ballMaterial === 'solid') TB.ballMaterial = r.ballMaterial;
@@ -1105,20 +1121,24 @@ module.exports = function injectTitleBar(ctx) {
         // v3.0.74：half（半圆角）= 窗口上方左右两角直角 + 下方（标题栏下方另一端）左右两角 20px 圆角。
         // 半径仍走 calc(20px / var(--fnos-f,1)) 保持 DPI 缩放跟随，数值本身不变。
         // 四值顺序：左上 右上 右下 左下 -> 0 0 R R = 上直下圆
-        const __wr = '0 0 calc(20px / var(--fnos-f, 1)) calc(20px / var(--fnos-f, 1))';
+        // v4.0.39（用户工单：窗口四角选圆角后，标题栏上两角被强制变成 20px）：
+        // 窗口裁剪的上两角改由【标题栏四角】决定（标题栏就是窗口最上沿），下两角由【窗口四角】决定。
+        // 两套设置因此完全独立：改窗口圆角不再篡改标题栏上角，反之亦然。
+        const __pw = (px) => 'calc(' + px + 'px / var(--fnos-f, 1))';
+        const __winR = __tbCornerRadius(TB.winCorner);
+        const __barR = __tbCornerRadius(TB.barCorner);
+        const __winHalf = __tbCornerIsHalf(TB.winCorner);
+        const __topR = __barR;                       // 上两角：标题栏说了算
+        const __botR = __winHalf ? __winR : __winR;  // 下两角：窗口说了算（half 与 round 下角都圆）
+        const __wr = __pw(__topR) + ' ' + __pw(__topR) + ' ' + __pw(__botR) + ' ' + __pw(__botR);
         // v4.0.11（用户工单：半圆角对 xapp 窗口不生效）——
         // xapp 分支把 clip-path 写在 html 上，原来 half 只覆盖 html:root>body，
         // html 的 20px 全圆角压过来 → xapp 窗永远全圆角。现在 half/round 都同时命中 html:root。
-        el.textContent = (TB.winCorner === 'square')
+        el.textContent = ((__topR === 0 && __botR === 0)
           ? 'html:root,html:root>body{clip-path:none !important;-webkit-clip-path:none !important;border-radius:0 !important;}'
-          : ((TB.winCorner === 'half')
-            ? ('html:root,html:root>body{clip-path:inset(0 round ' + __wr + ') !important;'
-              + '-webkit-clip-path:inset(0 round ' + __wr + ') !important;'
-              + 'border-radius:0 !important;}')
-            : ((TB.winCorner === 'round')
-              ? ('html:root,html:root>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;'
-                + '-webkit-clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;}')
-              : ''));
+          : ('html:root,html:root>body{clip-path:inset(0 round ' + __wr + ') !important;'
+             + '-webkit-clip-path:inset(0 round ' + __wr + ') !important;}'));
+        try { console.log('[fnos-corner]', JSON.stringify({ bar: TB.barCorner, win: TB.winCorner, topR: __topR, botR: __botR, clip: __wr })); } catch (_) {}
       } catch (_) {}
     }
 
@@ -1429,9 +1449,9 @@ module.exports = function injectTitleBar(ctx) {
         // 写死的 10px，设置里切「直角 / 半圆角」时应用窗、跳转窗、新标签窗完全没反应。
         // 这里统一按 TB.barCorner 落值；窗口四角继续由 __applyWinCornerStyle()（#fnos-win-corner）负责。
         try {
-          bar.style.borderRadius = (TB.barCorner === 'square')
-            ? '0px'
-            : ((TB.barCorner === 'half') ? '10px 10px 0 0' : '10px');
+          const __br = __tbCornerRadius(TB.barCorner);
+          const __bHalf = __tbCornerIsHalf(TB.barCorner);
+          bar.style.borderRadius = __bHalf ? (__br + 'px ' + __br + 'px 0 0') : (__br + 'px');
         } catch (_) {}
         // 底色较深时图标用白，较浅时图标用深色——保证对比
         // v2.15.14：opacity=0 默认走深色渐变 → 也用白图标
@@ -1533,8 +1553,8 @@ module.exports = function injectTitleBar(ctx) {
             }
             // v3.0.70：标题栏四角 / 窗口四角实时切换（无需重启）
             let __cornerChanged = false;
-            if (val.barCorner === 'round' || val.barCorner === 'square' || val.barCorner === 'half') { __cornerChanged = __cornerChanged || TB.barCorner !== val.barCorner; TB.barCorner = val.barCorner; }
-            if (val.winCorner === 'round' || val.winCorner === 'square' || val.winCorner === 'half') { __cornerChanged = __cornerChanged || TB.winCorner !== val.winCorner; TB.winCorner = val.winCorner; }
+            if (val.barCorner) { const __nv = __tbCornerNorm(val.barCorner); __cornerChanged = __cornerChanged || TB.barCorner !== __nv; TB.barCorner = __nv; }
+            if (val.winCorner) { const __nv = __tbCornerNorm(val.winCorner); __cornerChanged = __cornerChanged || TB.winCorner !== __nv; TB.winCorner = __nv; }
             if (__cornerChanged) {
               try { __applyWinCornerStyle(); } catch (_) {}
               try { const __b = document.getElementById('fnos-titlebar'); if (__b) __fixBarRadius(__b); } catch (_) {}

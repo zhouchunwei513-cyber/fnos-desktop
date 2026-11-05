@@ -11,14 +11,15 @@ namespace FnosUninstall
     public static class Scanner
     {
         // 固定数据/安装目录（%变量% 形式，运行时展开）
+        // 注意：%APPDATA%\fnos-client 不在这里 —— 它按用户数据保留策略（§6）单独处理
         private static readonly string[] KnownDirs = new string[]
         {
-            @"%APPDATA%\fnos-client",
             @"%APPDATA%\FNOS",
             @"%APPDATA%\fnos-probe",
             @"%LOCALAPPDATA%\fnos-client",
             @"%LOCALAPPDATA%\FNOS",
-            @"%LOCALAPPDATA%\fnos-updater",
+            @"%LOCALAPPDATA%\fnos-client-updater",
+            @"%LOCALAPPDATA%\fnos-desktop",
             @"%LOCALAPPDATA%\Programs\FNOS",
             @"%LOCALAPPDATA%\Programs\fnos-client",
             @"%PROGRAMFILES%\FNOS",
@@ -27,6 +28,22 @@ namespace FnosUninstall
             @"%PROGRAMDATA%\fnos-client",
             @"%USERPROFILE%\.fnos",
             @"%USERPROFILE%\fnos-client"
+        };
+
+        /// <summary>
+        /// 用户数据保留策略：
+        /// 0 = 保留我的数据（默认）：删缓存/日志，保留 settings.json、servers.json、skins 等配置
+        /// 1 = 删除所有数据：整目录删除（含配置）
+        /// 2 = 仅删除程序：用户数据目录全部保留
+        /// </summary>
+        public static int UserDataMode = 0;
+
+        /// <summary>「保留我的数据」时保留的顶层文件/目录名</summary>
+        private static readonly HashSet<string> KeepNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "settings.json", "servers.json", "apps-manifest.json", "play-progress.json",
+            "downloads.json", "zoom-state.json", "fnos-launcher.vbs",
+            "skins", "assets"
         };
 
         // 明确属于本客户端的注册表键（HKCU/HKLM × 64/32 各查一遍）
@@ -89,7 +106,7 @@ namespace FnosUninstall
             ScanKnownReg(items, seenKey, progress);
 
             Write(progress, "④ 检查快捷方式与开始菜单…");
-            ScanShortcuts(items);
+            ScanShortcuts(items, seenDir);
 
             Write(progress, "⑤ 检查计划任务…");
             ScanScheduledTasks(items, progress);
@@ -103,6 +120,9 @@ namespace FnosUninstall
 
             Write(progress, "⑦b 检查「最近使用」隐私痕迹（UserAssist / 搜索记录）…");
             ScanPrivacyTraces(items);
+
+            Write(progress, "⑦c 检查安装器/系统残留（Electron、WER、TEMP 孤儿副本）…");
+            ScanInstallerResidue(items, seenDir);
 
             if (deep)
             {
@@ -183,8 +203,7 @@ namespace FnosUninstall
                     if (!Util.FileExists(Path.Combine(dir, @"resources\app.asar")) &&
                         Util.IsPortableDataDir(Path.Combine(dir, "data")))
                     {
-                        AddDir(items, seenDir, Path.Combine(dir, "data"), "安装目录", "便携版数据目录",
-                            "便携包把设置/Cookie 放在 exe 同级 data 下；便携包本体 FNOS.exe 需手动删除", true);
+                        ScanUserDataDir(items, seenDir, Path.Combine(dir, "data"));
                         info.PortableDirs.Add(dir);
                         continue;
                     }
@@ -198,12 +217,45 @@ namespace FnosUninstall
                 }
             }
 
-            // 默认 userData 里如果仅剩 data 子目录（便携重定向痕迹）
+            // 默认 userData：%APPDATA%\fnos-client（按用户数据保留策略处理）
             string roaming = Util.Expand(@"%APPDATA%\fnos-client");
             if (Util.DirExists(roaming))
             {
-                AddDir(items, seenDir, roaming, "用户数据", "默认用户数据目录", "settings.json / logs / Cache / skins", true);
+                ScanUserDataDir(items, seenDir, roaming);
                 info.DataDirs.Add(roaming);
+            }
+        }
+
+        /// <summary>
+        /// 按用户数据保留策略生成清单：
+        /// 0 保留配置（默认）——只删缓存/日志/临时，保留 settings.json、servers.json、skins 等；
+        /// 1 全部删除；2 仅删程序（数据不动）。
+        /// </summary>
+        private static void ScanUserDataDir(List<TraceItem> items, HashSet<string> seenDir, string dir)
+        {
+            if (UserDataMode == 2) return;
+            if (!Util.DirExists(dir)) return;
+
+            if (UserDataMode == 1)
+            {
+                AddDir(items, seenDir, dir, "用户数据", "用户数据目录（整目录）",
+                    "含设置、Cookie、日志、皮肤、下载记录、播放进度", true);
+                return;
+            }
+
+            string[] all;
+            try { all = Directory.GetFileSystemEntries(dir); }
+            catch { all = new string[0]; }
+            foreach (string entry in all)
+            {
+                string leaf = Path.GetFileName(entry);
+                if (KeepNames.Contains(leaf)) continue;
+                if (Util.DirExists(entry))
+                    AddDir(items, seenDir, entry, "用户数据", "缓存目录：" + leaf,
+                        "清理缓存/日志/临时文件，保留配置与皮肤", true);
+                else
+                    AddFile(items, seenDir, entry, "用户数据", "运行残留：" + leaf,
+                        "日志或临时文件，配置类文件已保留");
             }
         }
 
@@ -370,7 +422,7 @@ namespace FnosUninstall
 
         // ---------------------------------------------------------------- 快捷方式
 
-        private static void ScanShortcuts(List<TraceItem> items)
+        private static void ScanShortcuts(List<TraceItem> items, HashSet<string> seenDir)
         {
             List<string> dirs = new List<string>();
             dirs.Add(Util.Expand(@"%USERPROFILE%\Desktop"));
@@ -382,6 +434,7 @@ namespace FnosUninstall
             dirs.Add(Util.Expand(@"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"));
             dirs.Add(Util.Expand(@"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\Startup"));
 
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string dir in dirs)
             {
                 if (!Util.DirExists(dir)) continue;
@@ -389,25 +442,85 @@ namespace FnosUninstall
                 {
                     foreach (string f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
                     {
-                        string leaf = Path.GetFileName(f);
-                        bool hit = Contains(leaf, "FNOS") || Contains(leaf, "fnos");
-                        if (!hit && leaf.EndsWith(".url", StringComparison.OrdinalIgnoreCase))
-                        {
-                            try { hit = Contains(File.ReadAllText(f), "fnos"); } catch { }
-                        }
-                        if (!hit) continue;
-
-                        TraceItem it = new TraceItem();
-                        it.Category = "快捷方式";
-                        it.Title = leaf;
-                        it.Detail = f;
-                        it.Kind = ItemKind.Shortcut;
-                        it.Path = f;
-                        items.Add(it);
+                        if (IsFnosShortcut(f)) AddShortcutItem(items, seen, f);
                     }
                 }
                 catch { }
             }
+
+            // Roaming 根下的 fnos-client.lnk（实测存在，位置不规范）
+            AddShortcutItem(items, seen, Util.Expand(@"%APPDATA%\fnos-client.lnk"));
+
+            // 开始菜单里的 FNOS 文件夹（可能是空壳，一并删）
+            AddDir(items, seenDir,
+                Util.Expand(@"%APPDATA%\Microsoft\Windows\Start Menu\Programs\FNOS"),
+                "快捷方式", "开始菜单 FNOS 文件夹", "空壳目录一并删除", true);
+            AddDir(items, seenDir,
+                Util.Expand(@"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\FNOS"),
+                "快捷方式", "开始菜单 FNOS 文件夹", "空壳目录一并删除", true);
+        }
+
+        /// <summary>
+        /// 判断快捷方式是否属于 FNOS。关键：子应用快捷方式名是「影视」「电视直播」这类应用名，
+        /// 目标是 wscript.exe，真正的身份在参数里的 fnos-launcher.vbs（见客户端 __lnkArgs）。
+        /// </summary>
+        private static bool IsFnosShortcut(string path)
+        {
+            try
+            {
+                string leaf = Path.GetFileName(path);
+                string ext = "";
+                try { ext = Path.GetExtension(path).ToLowerInvariant(); } catch { }
+
+                // 只认快捷方式类文件，绝不能把 .md/.txt 等普通文件当快捷方式删
+                bool isShortcut = ext == ".lnk" || ext == ".url" || ext == ".bat" ||
+                                  ext == ".cmd" || ext == ".vbs" || ext == ".ps1";
+                if (!isShortcut) return false;
+
+                if (ext == ".lnk")
+                {
+                    if (Contains(leaf, "fnos")) return true;
+                    string tgt, args;
+                    Util.ReadLnk(path, out tgt, out args);
+                    return MatchesFnos(tgt) || MatchesFnos(args);
+                }
+                if (ext == ".url")
+                {
+                    try { return MatchesFnos(File.ReadAllText(path)); } catch { return false; }
+                }
+                if (ext == ".bat" || ext == ".cmd" || ext == ".vbs" || ext == ".ps1")
+                {
+                    try { return MatchesFnos(File.ReadAllText(path)); } catch { return false; }
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        private static void AddShortcutItem(List<TraceItem> items, HashSet<string> seen, string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !Util.FileExists(path)) return;
+                if (!seen.Add(path)) return;
+
+                string leaf = Path.GetFileName(path);
+                string tgt, args;
+                Util.ReadLnk(path, out tgt, out args);
+                string note = "";
+                if (tgt.Length > 0) note = "目标：" + Trim(tgt, 60);
+                if (args.Length > 0) note += "  参数：" + Trim(args, 70);
+
+                TraceItem it = new TraceItem();
+                it.Category = "快捷方式";
+                it.Title = leaf;
+                it.Detail = path;
+                it.Kind = ItemKind.Shortcut;
+                it.Path = path;
+                it.Note = note;
+                items.Add(it);
+            }
+            catch { }
         }
 
         // ---------------------------------------------------------------- 计划任务 / 服务 / 防火墙
@@ -526,22 +639,7 @@ namespace FnosUninstall
                 catch { }
             }
 
-            // 临时目录里的 fnos 遗留
-            string tmp = Path.GetTempPath();
-            try
-            {
-                foreach (string f in Directory.EnumerateFileSystemEntries(tmp, "fnos*"))
-                {
-                    if (Util.DirExists(f)) AddDir(items, seen, f, "其它", "临时目录残留", "更新/安装过程中解出的临时文件", true);
-                    else AddFile(items, seen, f, "其它", "临时文件", "");
-                }
-                foreach (string f in Directory.EnumerateFileSystemEntries(tmp, "FNOS*"))
-                {
-                    if (Util.DirExists(f)) AddDir(items, seen, f, "其它", "临时目录残留", "更新/安装过程中解出的临时文件", true);
-                    else AddFile(items, seen, f, "其它", "临时文件", "");
-                }
-            }
-            catch { }
+            // TEMP 目录扫描已移至 ScanInstallerResidue（fnos_ 前缀 + FNOS.exe 孤儿），此处不再宽泛匹配
 
             // 跳转列表（任务栏右键「最近」里的记录）
             ScanJumpLists(items, seen);
@@ -575,6 +673,103 @@ namespace FnosUninstall
                 }
                 catch { }
             }
+        }
+
+        // ---------------------------------------------------------------- 安装器/系统残留
+
+        /// <summary>
+        /// 安装器解压残留、Windows 错误报告、Electron 共享目录里的 FNOS 专属项。
+        /// 注意：%APPDATA%\Electron 是共享目录，**只挑 fnos 专属文件**，绝不删整个目录。
+        /// </summary>
+        private static void ScanInstallerResidue(List<TraceItem> items, HashSet<string> seenDir)
+        {
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // 1) %APPDATA%\Electron —— 只挑 FNOS 专属项
+            string ele = Util.Expand(@"%APPDATA%\Electron");
+            if (Util.DirExists(ele))
+            {
+                try
+                {
+                    foreach (string f in Directory.EnumerateFiles(ele, "*"))
+                    {
+                        string leaf = Path.GetFileName(f);
+                        if (!Contains(leaf, "fnos")) continue;
+                        AddFile(items, seen, f, "其它", "Electron 运行残留", "共享目录内的 FNOS 专属文件");
+                    }
+                    string logs = Path.Combine(ele, "logs");
+                    if (Util.DirExists(logs))
+                    {
+                        foreach (string f in Directory.EnumerateFiles(logs, "fnos*"))
+                            AddFile(items, seen, f, "其它", "Electron 日志", @"logs\fnos-*.log");
+                    }
+                    string parts = Path.Combine(ele, "Partitions");
+                    if (Util.DirExists(parts))
+                    {
+                        foreach (string d in Directory.GetDirectories(parts))
+                        {
+                            if (!Contains(Path.GetFileName(d), "fnos")) continue;
+                            AddDir(items, seen, d, "其它", "Electron 分区缓存", @"Partitions\fnos-*", true);
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 2) Windows 错误报告（WER）里的 FNOS 崩溃存档
+            foreach (string sub in new string[] { "ReportArchive", "ReportQueue" })
+            {
+                string wer = Util.Expand(@"%PROGRAMDATA%\Microsoft\Windows\WER\" + sub);
+                if (!Util.DirExists(wer)) continue;
+                try
+                {
+                    foreach (string d in Directory.GetDirectories(wer))
+                    {
+                        if (!Contains(Path.GetFileName(d), "FNOS")) continue;
+                        AddDir(items, seen, d, "其它", "Windows 错误报告", sub + @"\*FNOS*", true);
+                    }
+                }
+                catch { }
+            }
+
+            // 3) %TEMP%：安装器解压后未清理的 FNOS.exe 孤儿副本、fnos_* 临时目录
+            //    注意：只匹配 fnos_ 前缀目录和含 FNOS.exe 的孤儿目录，不碰其它临时文件
+            string tmp = Path.GetTempPath();
+            try
+            {
+                foreach (string d in Directory.GetDirectories(tmp))
+                {
+                    string leaf = Path.GetFileName(d);
+                    bool orphan = Util.FileExists(Path.Combine(d, "FNOS.exe"));
+                    bool fnosTmp = leaf.StartsWith("fnos_", StringComparison.OrdinalIgnoreCase);
+                    if (!orphan && !fnosTmp) continue;
+                    AddDir(items, seen, d, "其它",
+                        orphan ? "安装器临时副本" : "临时目录残留",
+                        orphan ? "安装器解压后未清理的 FNOS.exe（约 246 MB/份）" : "以 fnos_ 开头的临时目录",
+                        true);
+                }
+            }
+            catch { }
+
+            // 3b) TEMP 根目录下的 fnos 日志/杂项（精确命名模式，见需求文档 §3.3）
+            try
+            {
+                foreach (string f in Directory.EnumerateFiles(tmp, "fnos-diag*"))
+                    AddFile(items, seen, f, "其它", "临时日志", "fnos-diag*");
+                foreach (string f in Directory.EnumerateFiles(tmp, "fnos-live*"))
+                    AddFile(items, seen, f, "其它", "临时日志", "fnos-live*");
+                foreach (string f in Directory.EnumerateFiles(tmp, "fnos-web*"))
+                    AddFile(items, seen, f, "其它", "临时日志", "fnos-web*");
+                foreach (string f in Directory.EnumerateFiles(tmp, "fnos-mpv*"))
+                    AddFile(items, seen, f, "其它", "临时日志", "fnos-mpv*");
+                foreach (string f in Directory.EnumerateFiles(tmp, "fnos-portable*"))
+                    AddFile(items, seen, f, "其它", "临时日志", "fnos-portable*");
+                foreach (string f in Directory.EnumerateFiles(tmp, "fnos-launch-endpoint*"))
+                    AddFile(items, seen, f, "其它", "启动端点记录", "fnos-launch-endpoint*");
+                foreach (string f in Directory.EnumerateFiles(tmp, "fnos-launcher*"))
+                    AddFile(items, seen, f, "其它", "启动脚本", "fnos-launcher*");
+            }
+            catch { }
         }
 
         // ---------------------------------------------------------------- 隐私痕迹（Win10 / Win11）

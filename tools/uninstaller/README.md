@@ -29,9 +29,13 @@
 1. 把 `FNOS-Uninstaller.exe` 放到**桌面**或任意**不在客户端安装目录内**的位置（工具会检测并阻止"自己删自己"）。
 2. 右键 →「以管理员身份运行」。
 3. 程序自动扫描（默认**深度扫描所有磁盘**，包含其它 Windows 用户目录），几秒到几十秒。
-4. **先核对清单**：
+4. **选择用户数据策略**（工具栏三选一）：
+   - **保留配置**（默认）：删缓存/日志/更新包，保留 `settings.json`、`servers.json`、皮肤；
+   - **全部删除**：含配置在内的所有用户数据，不可恢复；
+   - **仅删程序**：用户数据全部保留，只删安装目录与注册表。
+5. **核对清单**：
    - 顶部摘要显示总项数与勾选数、预计释放空间；
-   - 「安装目录 / 用户数据 / 注册表 / 自启」是必看项；
+   - 「安装目录 / 用户数据 / 注册表 / 自启 / 快捷方式」是必看项；
    - 「使用记录」是低价值的最近使用痕迹（灰显），数量可能很多，可用「隐藏使用记录」只看关键项（**隐藏不影响删除**）。
 5. 想留底就点「导出清单」，会在 exe 同目录生成 `uninstall-plan.txt`。
 6. 点「开始卸载」→ 二次确认 → 执行；完成后自动重新扫描一遍，并生成 `uninstall-report.txt`。
@@ -40,13 +44,18 @@
 
 | 参数 | 作用 |
 |---|---|
-| `/dry-run` | 只扫描并写出 `uninstall-plan.txt`，**不做任何修改** |
+| `/dry-run` 或 `/ListOnly` | 只扫描并写出 `uninstall-plan.txt`，**不做任何修改** |
 | `/dry-run /no-deep` | 同上，但跳过全盘扫描（几秒出结果） |
-| `/silent` | 无人值守：扫描 → 全选 → 删除 → 写报告（失败返回码 2） |
-| `/keep-data` | 保留「用户数据」类（设置/Cookie/日志） |
+| `/silent` 或 `/S` | 无人值守：扫描 → 全选 → 删除 → 写报告 |
+| `/Purge` | 静默 + **删除所有数据**（含配置，等价交互模式选「全部删除」） |
+| `/KeepData` | 静默 + **保留配置**（删缓存/日志/更新包，保留 `settings.json`/`servers.json`/皮肤，**默认**） |
+| `/KeepAllData` | 静默 + **仅删程序**（用户数据全部保留） |
+| `/no-deep` | 跳过全盘扫描（快速核对） |
 | `/report=<路径>` | 指定报告输出位置 |
 
-例：`FNOS-Uninstaller.exe /dry-run` 先看一眼要删什么。
+退出码：`0` = 全部成功；`1` = 部分失败（日志有明细）；`2` = 用户取消。
+
+例：`FNOS-Uninstaller.exe /dry-run` 先看一眼要删什么；`FNOS-Uninstaller.exe /S /Purge` 无人值守全删。
 
 ## 安全设计
 
@@ -100,7 +109,16 @@ powershell -ExecutionPolicy Bypass -File build-uninstaller.ps1
 
 ## 版本
 
-- **1.0.1**（当前）—— 针对「提示占用、登记了重启删除却删不掉」的修复
+- **1.1.0**（当前）—— 修复「程序创建的快捷方式没删掉」+ 用户数据三选一 + 精准命名模式清理
+  - **快捷方式识别重写**：FNOS 的子应用/容器快捷方式名是「影视」「电视直播」「Lucky」等应用名，目标是 `wscript.exe`，真正的身份在参数里的 `fnos-launcher.vbs`——现在通过 COM 读取 `.lnk` 的目标+参数精准识别，不再依赖文件名含 "fnos"。**桌面截图里的 10 个快捷方式全部正确命中**。
+  - **普通文件不再误删**：`.md`/`.txt` 等文件名含 fnos 的普通文件不再被当快捷方式，只认 `.lnk`/`.url`/`.bat`/`.cmd`/`.vbs`/`.ps1`。
+  - **新增残留路径**（对照需求文档 §3）：`%LOCALAPPDATA%\fnos-client-updater`（142 MB 更新缓存）、`%LOCALAPPDATA%\fnos-desktop`、`%APPDATA%\fnos-client.lnk`、`%APPDATA%\Microsoft\Windows\Start Menu\Programs\FNOS\`、`%APPDATA%\Electron` 内 FNOS 专属项（`fnos-*`、`Partitions\fnos-shared\`、`logs\fnos-*.log`）、WER `ReportArchive/ReportQueue\*FNOS*`、`%TEMP%\fnos_*` 与 `%TEMP%\*\FNOS.exe` 孤儿副本。
+  - **TEMP 扫描精确化**：只匹配 `fnos_` 前缀目录和含 `FNOS.exe` 的孤儿目录 + 精确命名模式日志（`fnos-diag*`、`fnos-live*`、`fnos-web*`、`fnos-mpv*`、`fnos-portable*`、`fnos-launch-endpoint*`、`fnos-launcher*`），不再宽泛匹配 `fnos*` 误抓开发/测试临时文件。
+  - **用户数据三选一**（UI 单选按钮 + 参数）：**保留配置**（默认，删缓存/日志/更新包，保留 `settings.json`/`servers.json`/`skins`）/ **全部删除**（含配置）/ **仅删程序**（数据全部保留）。
+  - **新参数**：`/Purge`（静默+全部删除）、`/KeepData`（静默+保留配置）、`/KeepAllData`（静默+仅删程序）、`/ListOnly`（干跑，等价 `/dry-run`）。
+  - **双日志**：同时写 `uninstall-log.txt`（exe 目录）和 `%TEMP%\FNOS-uninstall.log`，日志保留 30 天自动归档。
+  - **退出码**：0=全部成功，1=部分失败，2=用户取消。
+- 1.0.1 —— 修复「提示占用、登记了重启删除却删不掉」
   - 删除策略重写：整体删除失败 → 用 Windows **Restart Manager** 查出**占用进程名 + PID** 并结束 → 重试；仍失败则逐文件删除，**对每个失败文件单独定位占用者**并再试；权限不足时自动 `takeown` + `icacls`；最后才登记重启删除（只登记文件，空目录用 `MoveFileEx` 登记）。
   - 新增详细日志 `uninstall-log.txt`（exe 同目录，追加写，含完整异常与占用进程），工具栏新增「打开日志」。
   - 不再在完成后自动重新扫描（之前会自动再扫一遍，看起来像"反复扫描"），改为状态栏提示手动点「重新扫描」。

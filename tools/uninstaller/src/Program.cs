@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("FNOS 客户端强力卸载工具（Windows 10 / 11）")]
 [assembly: AssemblyProduct("FNOS 客户端强力卸载")]
 [assembly: AssemblyCompany("FNOS")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace FnosUninstall
 {
@@ -39,7 +39,7 @@ namespace FnosUninstall
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            bool dry = HasFlag("dry-run") || HasFlag("dryrun");
+            bool dry = HasFlag("dry-run") || HasFlag("dryrun") || HasFlag("listonly");
             bool silent = HasFlag("silent") || HasFlag("quiet") || HasFlag("y");
 
             if (dry || silent)
@@ -89,16 +89,18 @@ namespace FnosUninstall
             StringBuilder logBuf = new StringBuilder();
             Util.Log = delegate (string s) { logBuf.AppendLine(s); };
 
+            // 用户数据策略（需求文档 §6）：
+            //   /Purge      = 删除所有数据（含配置）
+            //   /KeepAllData= 仅删除程序，数据全部保留
+            //   默认、/KeepData = 保留配置（删缓存/日志/更新包）
+            if (HasFlag("purge")) Scanner.UserDataMode = 1;
+            else if (HasFlag("keepalldata")) Scanner.UserDataMode = 2;
+            else Scanner.UserDataMode = 0;
+
             InstallInfo info = new InstallInfo();
             // /no-deep：跳过全盘扫描，几秒出结果（适合快速核对，UI 里对应「深度扫描」不勾）
             bool deep = !HasFlag("no-deep");
             List<TraceItem> items = Scanner.Scan(deep, info, delegate (string s) { logBuf.AppendLine(s); });
-
-            if (HasFlag("keep-data"))
-            {
-                foreach (TraceItem it in items)
-                    if (it.Category == "用户数据") it.Checked = false;
-            }
 
             List<TraceItem> sel = new List<TraceItem>();
             foreach (TraceItem it in items) if (it.Checked) sel.Add(it);
@@ -113,8 +115,11 @@ namespace FnosUninstall
                 sb.AppendLine("管理员：" + (Util.IsAdmin() ? "是" : "否"));
                 sb.AppendLine(new string('-', 62));
                 foreach (TraceItem it in sel)
+                {
                     sb.AppendLine("[" + it.Category + "] " + it.Title + "  →  " + it.Detail
                         + (it.SizeBytes >= 0 ? "  (" + it.SizeText() + ")" : ""));
+                    if (!string.IsNullOrEmpty(it.Note)) sb.AppendLine("        备注：" + it.Note);
+                }
                 sb.AppendLine(new string('-', 62));
                 sb.AppendLine("合计 " + sel.Count + " 项");
                 try { File.WriteAllText(Path.Combine(outDir, "uninstall-plan.txt"), sb.ToString(), new UTF8Encoding(true)); }
@@ -129,7 +134,8 @@ namespace FnosUninstall
 
             int fail = 0;
             foreach (StepResult r in results) if (!r.Ok) fail++;
-            return fail > 0 ? 2 : 0;
+            // 退出码：0=全部成功；1=部分失败（日志有明细）；2=用户取消
+            return fail > 0 ? 1 : 0;
         }
     }
 
@@ -151,8 +157,10 @@ namespace FnosUninstall
         private Button btnRun;
         private Button btnClose;
         private CheckBox chkDeep;
-        private CheckBox chkKeepData;
         private CheckBox chkHideUsage;
+        private RadioButton rdKeepConfig;
+        private RadioButton rdPurge;
+        private RadioButton rdKeepAll;
         private InstallInfo info = new InstallInfo();
         private List<TraceItem> items = new List<TraceItem>();
         private bool busy = false;
@@ -190,7 +198,7 @@ namespace FnosUninstall
 
         private void BuildUi()
         {
-            Text = Program.AppTitle + "  v1.0.1";
+            Text = Program.AppTitle + "  v1.1.0";
             Font = new Font("Microsoft YaHei UI", 9F);
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);
@@ -261,11 +269,34 @@ namespace FnosUninstall
             chkDeep.ForeColor = darkTheme ? Color.Gainsboro : Color.Black;
             chkDeep.Margin = new Padding(12, 8, 6, 0);
 
-            chkKeepData = new CheckBox();
-            chkKeepData.Text = "保留用户数据";
-            chkKeepData.AutoSize = true;
-            chkKeepData.ForeColor = darkTheme ? Color.Gainsboro : Color.Black;
-            chkKeepData.Margin = new Padding(6, 8, 12, 0);
+            // 用户数据三选一（需求文档 §6）：保留配置（默认）/ 全部删除 / 仅删程序
+            Label lbData = new Label();
+            lbData.Text = "用户数据：";
+            lbData.AutoSize = true;
+            lbData.ForeColor = darkTheme ? Color.Gainsboro : Color.Black;
+            lbData.Margin = new Padding(10, 9, 2, 0);
+
+            rdKeepConfig = new RadioButton();
+            rdKeepConfig.Text = "保留配置";
+            rdKeepConfig.AutoSize = true;
+            rdKeepConfig.Checked = true;
+            rdKeepConfig.ForeColor = darkTheme ? Color.Gainsboro : Color.Black;
+            rdKeepConfig.Margin = new Padding(2, 8, 2, 0);
+            rdKeepConfig.CheckedChanged += delegate { ApplyUserDataMode(); };
+
+            rdPurge = new RadioButton();
+            rdPurge.Text = "全部删除";
+            rdPurge.AutoSize = true;
+            rdPurge.ForeColor = darkTheme ? Color.Gainsboro : Color.Black;
+            rdPurge.Margin = new Padding(2, 8, 2, 0);
+            rdPurge.CheckedChanged += delegate { ApplyUserDataMode(); };
+
+            rdKeepAll = new RadioButton();
+            rdKeepAll.Text = "仅删程序";
+            rdKeepAll.AutoSize = true;
+            rdKeepAll.ForeColor = darkTheme ? Color.Gainsboro : Color.Black;
+            rdKeepAll.Margin = new Padding(2, 8, 12, 0);
+            rdKeepAll.CheckedChanged += delegate { ApplyUserDataMode(); };
 
             chkHideUsage = new CheckBox();
             chkHideUsage.Text = "隐藏使用记录";
@@ -290,7 +321,10 @@ namespace FnosUninstall
 
             pnlTools.Controls.Add(btnScan);
             pnlTools.Controls.Add(chkDeep);
-            pnlTools.Controls.Add(chkKeepData);
+            pnlTools.Controls.Add(lbData);
+            pnlTools.Controls.Add(rdKeepConfig);
+            pnlTools.Controls.Add(rdPurge);
+            pnlTools.Controls.Add(rdKeepAll);
             pnlTools.Controls.Add(chkHideUsage);
             pnlTools.Controls.Add(btnAll);
             pnlTools.Controls.Add(btnNone);
@@ -429,9 +463,19 @@ namespace FnosUninstall
 
         // ---------------------------------------------------------------- 扫描
 
+        /// <summary>把「用户数据」三选一同步给扫描器</summary>
+        private void ApplyUserDataMode()
+        {
+            int m = 0;
+            if (rdPurge != null && rdPurge.Checked) m = 1;
+            else if (rdKeepAll != null && rdKeepAll.Checked) m = 2;
+            Scanner.UserDataMode = m;
+        }
+
         private void StartScan(bool deep)
         {
             if (busy) return;
+            ApplyUserDataMode();
             busy = true;
             btnScan.Enabled = false;
             btnRun.Enabled = false;
@@ -507,12 +551,6 @@ namespace FnosUninstall
                 if (r != 0) return r;
                 return string.Compare(a.Detail, b.Detail, StringComparison.OrdinalIgnoreCase);
             });
-
-            if (chkKeepData.Checked)
-            {
-                foreach (TraceItem it in items)
-                    if (it.Category == "用户数据") it.Checked = false;
-            }
 
             RenderList();
             UpdateSummary();
@@ -679,11 +717,20 @@ namespace FnosUninstall
             int dirCount = 0;
             foreach (TraceItem it in sel) if (it.Kind == ItemKind.Directory) dirCount++;
 
+            string dataLine;
+            if (Scanner.UserDataMode == 1)
+                dataLine = "· 用户数据：【全部删除】——设置、Cookie、日志、皮肤、下载记录、播放进度，不可恢复";
+            else if (Scanner.UserDataMode == 2)
+                dataLine = "· 用户数据：【完全保留】（仅删程序，数据全部留下）";
+            else
+                dataLine = "· 用户数据：【保留配置】——删缓存/日志/更新包，保留 settings.json、servers.json、皮肤";
+
             string ask = "即将删除 " + sel.Count + " 项（其中目录 " + dirCount + " 个）：\r\n\r\n" +
                          "· 安装目录及其下全部文件（resources / mpv / 更新缓存）\r\n" +
-                         "· 用户数据：设置、Cookie、日志、皮肤、下载记录、播放进度\r\n" +
+                         dataLine + "\r\n" +
                          "· 注册表：产品项、卸载登记、开机自启、MuiCache、最近使用记录\r\n" +
-                         "· 快捷方式、计划任务、防火墙规则\r\n\r\n" +
+                         "· 快捷方式（含「影视」「电视直播」这类子应用快捷方式）、计划任务、防火墙规则\r\n" +
+                         "· 安装器残留、Windows 错误报告、Electron 共享目录内的 FNOS 专属文件\r\n\r\n" +
                          "此操作不可撤销。建议先点「导出清单」留底。\r\n\r\n确定继续？";
             if (MessageBox.Show(this, ask, "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                     MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;

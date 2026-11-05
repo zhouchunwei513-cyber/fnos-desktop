@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -18,37 +19,70 @@ namespace FnosUninstall
         public static Action<string> Log = delegate { };
 
         private static string __logFile = "";
+        private static string __logFile2 = "";
         private static readonly object __logLock = new object();
 
-        /// <summary>初始化持久化日志：exe 同目录 uninstall-log.txt（追加写，带完整异常信息）</summary>
+        /// <summary>
+        /// 初始化持久化日志。两处都写：
+        /// 1) exe 同目录 uninstall-log.txt（开发排查用，含完整异常）
+        /// 2) %TEMP%\FNOS-uninstall.log（需求文档 §4.1 第 8 条要求的位置）
+        /// 日志保留 30 天，超过则按日期归档。
+        /// </summary>
         public static void InitLog(string dir)
         {
             try
             {
-                if (string.IsNullOrEmpty(dir)) return;
-                __logFile = Path.Combine(dir, "uninstall-log.txt");
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    __logFile = Path.Combine(dir, "uninstall-log.txt");
+                    RotateLog(__logFile, 30);
+                }
+                __logFile2 = Path.Combine(Path.GetTempPath(), "FNOS-uninstall.log");
+                RotateLog(__logFile2, 30);
+
                 StringBuilder head = new StringBuilder();
                 head.AppendLine();
                 head.AppendLine("===== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  FNOS 卸载器启动 =====");
                 head.AppendLine("系统：" + OsName());
                 head.AppendLine("管理员：" + (IsAdmin() ? "是" : "否"));
                 head.AppendLine("目录：" + AppDomain.CurrentDomain.BaseDirectory);
-                File.AppendAllText(__logFile, head.ToString(), new UTF8Encoding(true));
+                string txt = head.ToString();
+                if (__logFile.Length > 0) { try { File.AppendAllText(__logFile, txt, new UTF8Encoding(true)); } catch { } }
+                File.AppendAllText(__logFile2, txt, new UTF8Encoding(true));
             }
             catch { }
         }
 
-        public static string LogFilePath() { return __logFile; }
+        /// <summary>日志超过 days 天则改名为 <name>.yyyyMMdd.log 归档，重新开始写</summary>
+        private static void RotateLog(string path, int days)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+                FileInfo fi = new FileInfo(path);
+                if ((DateTime.Now - fi.CreationTime).TotalDays <= days) return;
+                string old = Path.Combine(Path.GetDirectoryName(path),
+                    Path.GetFileNameWithoutExtension(path) + "." + fi.CreationTime.ToString("yyyyMMdd") + ".log");
+                if (File.Exists(old)) File.Delete(old);
+                File.Move(path, old);
+            }
+            catch { }
+        }
+
+        public static string LogFilePath() { return __logFile.Length > 0 ? __logFile : __logFile2; }
 
         public static void Write(string format, params object[] args)
         {
             string line = args == null || args.Length == 0 ? format : string.Format(format, args);
             string stamped = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line;
             try { Log(stamped); } catch { }
-            if (__logFile.Length == 0) return;
             try
             {
-                lock (__logLock) { File.AppendAllText(__logFile, stamped + "\r\n", new UTF8Encoding(false)); }
+                lock (__logLock)
+                {
+                    if (__logFile.Length > 0) File.AppendAllText(__logFile, stamped + "\r\n", new UTF8Encoding(false));
+                    if (__logFile2.Length > 0) File.AppendAllText(__logFile2, stamped + "\r\n", new UTF8Encoding(false));
+                }
             }
             catch { }
         }
@@ -372,6 +406,52 @@ namespace FnosUninstall
         {
             try { return MoveFileEx(@"\??\" + path, null, 4); }
             catch { return false; }
+        }
+
+        // ---------------- 快捷方式 (.lnk) ----------------
+
+        /// <summary>
+        /// 读取 .lnk 的目标与参数（WScript.Shell COM，Win10/11 通用）。
+        /// 说明：FNOS 的子应用快捷方式名是「影视」「电视直播」这种应用名，
+        /// 目标是 wscript.exe，参数里带 fnos-launcher.vbs —— 必须读参数才能识别。
+        /// </summary>
+        public static void ReadLnk(string lnkPath, out string target, out string args)
+        {
+            target = "";
+            args = "";
+            try
+            {
+                Type t = Type.GetTypeFromProgID("WScript.Shell");
+                if (t == null) return;
+                object sh = Activator.CreateInstance(t);
+                object lnk = null;
+                try
+                {
+                    lnk = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, sh,
+                        new object[] { lnkPath });
+                    if (lnk == null) return;
+
+                    object o1 = t.InvokeMember("TargetPath", BindingFlags.GetProperty, null, lnk, null);
+                    if (o1 != null) target = o1.ToString();
+
+                    object o2 = t.InvokeMember("Arguments", BindingFlags.GetProperty, null, lnk, null);
+                    if (o2 != null) args = o2.ToString();
+
+                    object o3 = t.InvokeMember("WorkingDirectory", BindingFlags.GetProperty, null, lnk, null);
+                    if (o3 != null)
+                    {
+                        string wd = o3.ToString();
+                        if (args.Length == 0) args = wd;
+                        else args = args + " " + wd;
+                    }
+                }
+                finally
+                {
+                    if (lnk != null) { try { Marshal.ReleaseComObject(lnk); } catch { } }
+                    try { Marshal.ReleaseComObject(sh); } catch { }
+                }
+            }
+            catch { }
         }
 
         // ---------------- 进程 ----------------

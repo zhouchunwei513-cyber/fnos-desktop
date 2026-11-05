@@ -9935,24 +9935,42 @@ function __xappAttach31(win) {
     return !!wc.debugger.isAttached();
   } catch (_) { return false; }
 }
+// v4.0.38：第三方页应看到【Windows 真实深浅色】，而不是客户端自己的主题。
+// 客户端把 nativeTheme.themeSource 锁成了自身主题（全局面 prefers-color-scheme），
+// 于是「自动」类的第三方页永远跟着客户端主题走，与浏览器不一致
+// （用户反馈 qBittorrent 配色方案在客户端里选浅色/深色/自动都不生效，浏览器正常）。
+// 这里读注册表 AppsUseLightTheme 取真值；读不到再退回 shouldUseDarkColors。
+const __qbThemeTimers38 = new Map();
+const __qbThemeLast38 = new Map();
+let __sysDarkCache38 = null;
+let __sysDarkAt38 = 0;
+function __sysThemeDark38() {
+  try {
+    const now = Date.now();
+    if (__sysDarkCache38 !== null && now - __sysDarkAt38 < 30000) return __sysDarkCache38;
+    let dark = null;
+    try {
+      const { execFileSync } = require('child_process');
+      const out = execFileSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize', '/v', 'AppsUseLightTheme'], { encoding: 'utf8', windowsHide: true, timeout: 1500 });
+      const m = /AppsUseLightTheme\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(String(out));
+      if (m) dark = (parseInt(m[1], 16) === 0);
+    } catch (_) {}
+    if (dark === null) { try { dark = !!require('electron').nativeTheme.shouldUseDarkColors; } catch (_) { dark = false; } }
+    __sysDarkCache38 = !!dark; __sysDarkAt38 = now;
+    return __sysDarkCache38;
+  } catch (_) { return false; }
+}
+
 function __applyXappThemeInvert31(win, why) {
   try {
     if (!win || win.isDestroyed() || !win.__fnosXApp45) return;
     const wc = win.webContents;
     if (!wc || wc.isDestroyed()) return;
-    if (!__xappInvertOn()) {
-      // 关闭态（4.0.33 默认）：只在「之前 attach 过」的窗口上清覆写并脱离，绝不新 attach
-      try {
-        if (wc.debugger.isAttached()) {
-          const p0 = wc.debugger.sendCommand('Emulation.setEmulatedMedia', { media: '', features: [] });
-          if (p0 && p0.catch) p0.catch(() => {});
-          wc.debugger.detach();
-        }
-      } catch (_) {}
-      return;
-    }
     if (!__xappAttach31(win)) return;
-    const sees = __xappSeesDark31() ? 'dark' : 'light';
+    // 默认：页面看到的 prefers-color-scheme = Windows 真实值（与浏览器一致）；
+    // 打开对调开关时再取反（历史行为，settings.json 的 xappThemeInvert）。
+    const __sys38 = __sysThemeDark38();
+    const sees = __xappInvertOn() ? (__sys38 ? 'light' : 'dark') : (__sys38 ? 'dark' : 'light');
     try {
       const p1 = wc.debugger.sendCommand('Emulation.setEmulatedMedia', {
         media: '',
@@ -9960,6 +9978,10 @@ function __applyXappThemeInvert31(win, why) {
       });
       if (p1 && p1.catch) p1.catch(() => {});
     } catch (_) {}
+    // 设置完通知页面后，让 qB 按最新 clientdata 重算一次配色（load 早期那次必然早于 clientdata）
+    try { __nudgeQbTheme38(wc); } catch (_) {}
+    try { setTimeout(() => __nudgeQbTheme38(wc), 900); } catch (_) {}
+    try { setTimeout(() => __nudgeQbTheme38(wc), 2500); } catch (_) {}
     try {
       require('./logger.js').log('info', 'window', 'xapp.theme-invert', {
         params: {
@@ -9975,17 +9997,67 @@ function __applyXappThemeInvert31(win, why) {
     } catch (_) {}
   } catch (_) {}
 }
+// v4.0.38：qBittorrent 的配色方案存在服务端 clientdata（qbt_color_scheme）。它的页面在
+// load 早期就调用 ColorScheme.update()，那时 clientdata 还没回来，只能按 prefers-color-scheme
+// 兜底；之后值到了却不再重算，界面上就表现为"选了浅色/深色不生效"。
+// 注入脚本跑在隔离世界拿不到页面全局，这里只能在主世界（executeJavaScript）看守：
+// 值一变化就调用 qB 自己的 update()，与浏览器最终表现一致。
+// qB 主题重应用：窗口被遮挡时页面内的 setTimeout/setInterval 会被节流，事件驱动也救不了，
+// 所以统一由主进程通过已附加的 debugger 通道在主世界执行 qB 自己的 update()。
+function __nudgeQbTheme38(wc) {
+  try {
+    if (!wc || wc.isDestroyed()) return;
+    if (!wc.debugger || !wc.debugger.isAttached()) return;
+    const expr = "(()=>{try{var q=window.qBittorrent;if(!q||!q.ClientData||!q.ColorScheme)return 'no-q';" +
+      "var v=q.ClientData.get('color_scheme');if(typeof v==='undefined')return 'no-cd';" +
+      "q.ColorScheme.update();return 'ok:'+v+':'+document.documentElement.className.trim();}catch(e){return 'err:'+e.message;}})()";
+    const p = wc.debugger.sendCommand('Runtime.evaluate', { expression: expr, returnByValue: true });
+    if (p && p.then) {
+      p.then((r) => {
+        try {
+          // 只在结果变化时记一行，避免 1.2s 一次的刷屏
+          const v = String((r && r.result && r.result.value) || '');
+          if (v && __qbThemeLast38.get(wc.id) !== v) {
+            __qbThemeLast38.set(wc.id, v);
+            require('./logger.js').log('info', 'window', 'xapp.qb-theme38', { params: { wcId: wc.id, ret: v.slice(0, 80) } }, __RUN_MODE);
+          }
+        } catch (_) {}
+      }).catch(() => {});
+    }
+  } catch (_) {}
+}
+
+function __watchQbTheme38(wc) {
+  try {
+    if (!wc || wc.isDestroyed()) return;
+    // 页面内的 setInterval 在窗口被遮挡时会被节流（实测看守不触发），改由主进程轮询；
+    // 只在加载后 60s 内跑，覆盖"clientdata 回来 → 主题该生效"这段窗口期。
+    const pid = wc.id;
+    if (!__qbThemeTimers38.has(pid)) {
+      const src = `(function(){try{var q=window.qBittorrent;if(!q||!q.ClientData||!q.ColorScheme)return 0;var v=q.ClientData.get('color_scheme');if(typeof v==='undefined')return 0;if(v===window.__fnQbLastTheme)return 0;window.__fnQbLastTheme=v;q.ColorScheme.update();return 1;}catch(e){return 0;}})()`;
+      let ticks = 0;
+      const t = setInterval(() => {
+        try {
+          if (!wc || wc.isDestroyed() || ++ticks > 50) { clearInterval(t); __qbThemeTimers38.delete(pid); return; }
+          __nudgeQbTheme38(wc);
+        } catch (_) { try { clearInterval(t); } catch (_) {} __qbThemeTimers38.delete(pid); }
+      }, 1200);
+      __qbThemeTimers38.set(pid, t);
+      try { wc.once('destroyed', () => { try { clearInterval(t); } catch (_) {} __qbThemeTimers38.delete(pid); }); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
 function __registerXappWin31(win) {
   try {
     if (!win || !win.__fnosXApp45) return;
-    // 关闭态：不挂监听、不 attach、不入集合 —— 第三方窗与 4.0.31 完全一致
-    if (!__xappInvertOn()) return;
+    // v4.0.38：始终注册——即使不做"对调"，也要把 Windows 真实深浅色透给第三方页
     __xappWins31.add(win);
     const wc = win.webContents;
     const kick = (why) => { try { __applyXappThemeInvert31(win, why); } catch (_) {} };
     // start-loading 就先 attach：emulation 在导航间保持，首帧即为反相值，避免"先正后反"闪一下
     try { wc.on('did-start-loading', () => kick('start-loading')); } catch (_) {}
-    try { wc.on('did-finish-load', () => kick('finish-load')); } catch (_) {}
+    try { wc.on('did-finish-load', () => { kick('finish-load'); try { __watchQbTheme38(wc); } catch (_) {} }); } catch (_) {}
     try { wc.on('did-navigate-in-page', () => kick('in-page')); } catch (_) {}
     // 用户按 F12 开过开发者工具会把我们的 debugger 顶掉，关掉后补回
     try { wc.on('devtools-closed', () => kick('devtools-closed')); } catch (_) {}

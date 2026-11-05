@@ -3,6 +3,35 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.38
+
+> 用户反馈（含录屏）：客户端内 qBittorrent 的「配色方案」选浅色/深色/自动都不生效；浏览器打开同一页面完全正常。
+
+### 根因（两处叠加）
+
+1. **客户端把 prefers-color-scheme 锁成了自身主题**：`nativeTheme.themeSource` 被显式设成客户端
+   主题（light/dark），是**全局**的；第三方页因此看不到 Windows 真实深浅色，"自动"永远跟客户端走。
+2. **qB 自己的时序 bug 被放大**：`color-scheme.js` 在 load 早期用
+   `ClientData.get('color_scheme')` 决定 class，而该值来自服务端 `clientdata`
+   （`qbt_color_scheme`），那时还没回来 → 只能按 prefers-color-scheme 兜底；
+   之后值到了却不再重算，于是"选了深色还是白底"。浏览器里兜底值恰好等于系统值，所以看起来正常。
+
+### 改动
+
+| 位置 | 改动 |
+|---|---|
+| `main.js` | 第三方窗（`--fnos-xapp`）的 `prefers-color-scheme` 改为**读 Windows 注册表 AppsUseLightTheme 的真值**（`__sysThemeDark38`），不再跟随客户端主题；历史"对调"开关仍可用 |
+| `main.js` | `__nudgeQbTheme38`：通过已附加的 debugger 在主世界调用 qB 自己的 `ColorScheme.update()`，让 clientdata 到达后立刻重算 |
+| `main.js` | 轮询看守（1.2s×50 次，主进程定时器不受遮挡节流）——页面内的 setTimeout/setInterval 在窗口被遮挡时会被 throttling，实测无效 |
+
+### 验证（真机）
+
+- 保存「浅色」→ 重新打开窗口：`html` 无 `dark`、body 白底；
+- 保存「深色」→ 重新打开窗口：`html.dark`、body `rgb(18,18,18)`；
+- 打开设置改深色并点保存 → 约 1.2s 内自动变深（无需手动刷新）；
+- 日志 `xapp.qb-theme38 {ret:"ok:dark:…"}`（仅变化时记录）；0 ERROR；
+- 仅热部署，未推送远端。
+
 ## v4.0.36
 
 > 用户反馈：客户端里的应用窗口「先能打开，后来自动跳到错误页（应用不存在或未安装）」。

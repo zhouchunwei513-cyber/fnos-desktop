@@ -4310,6 +4310,36 @@ module.exports = function injectTitleBar(ctx) {
         }
       } catch (_) {}
     };
+    // v4.0.38：qBittorrent 的配色方案存在服务端 clientdata（qbt_color_scheme）。页面在 load
+    // 早期就调用 ColorScheme.update()，那时 clientdata 还没回来，只能按 prefers-color-scheme
+    // 兜底；之后值到了却不再重算 → 界面上表现为"选了浅色/深色不生效"。
+    // 注入脚本本身跑在隔离世界，读不到页面的 window.qBittorrent，所以这里往页面插入一段
+    // <script>，让看守代码在【主世界】运行（qB 的 CSP 允许 inline script）。
+    const __watchQbTheme38 = () => {
+      try {
+        if (typeof process === 'undefined' || !Array.isArray(process.argv)) return;
+        if (process.argv.indexOf('--fnos-xapp') < 0) return;
+        if (document.getElementById('fn-qb-theme-watch')) return;
+        const s = document.createElement('script');
+        s.id = 'fn-qb-theme-watch';
+        s.textContent = "(function(){try{if(window.__fnQbThemeWatch)return;window.__fnQbThemeWatch=1;" +
+          "var last='__init__';" +
+          "function apply(){try{var q=window.qBittorrent;if(!q||!q.ClientData||!q.ColorScheme)return;" +
+          "var v=q.ClientData.get('color_scheme');if(typeof v==='undefined')return;" +
+          "if(v===last)return;last=v;q.ColorScheme.update();}catch(e){}}" +
+          // 事件驱动：点「保存」后 qB 只更新了内存里的 clientdata，不再重算主题 → 这里补一次
+          "document.addEventListener('click',function(e){" +
+          "try{var t=e.target;var b=t&&t.closest?t.closest('button,input[type=button],a'):null;" +
+          "if(!b)return;var txt=(b.value||b.textContent||'').trim();" +
+          "if(!/^(保存|Save)$/i.test(txt))return;" +
+          "setTimeout(apply,150);setTimeout(apply,800);setTimeout(apply,2000);}catch(e){}},true);" +
+          // 首次进入 + 低频兜底
+          "apply();setTimeout(apply,400);setTimeout(apply,1500);setInterval(apply,2500);" +
+          "}catch(e){}})();";
+        (document.head || document.documentElement).appendChild(s);
+      } catch (_) {}
+    };
+
     let __sticky37Obs = false;
     const __watchSticky37 = () => {
       if (__sticky37Obs) return;
@@ -4323,7 +4353,7 @@ module.exports = function injectTitleBar(ctx) {
       const t37 = setInterval(() => { __fixSticky37(); if (++n37 > 20) clearInterval(t37); }, 500);
     };
 
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); __watchSticky37(); } catch (_) {} };
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); __watchSticky37(); __watchQbTheme38(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

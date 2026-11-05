@@ -1546,4 +1546,26 @@
     fpkStatus.textContent = '配置已保存';
     fpkStatus.style.color = '#4ade80';
   });
+
+  // v4.0.36：清理应用缓存（设置 → 维护）。只清缓存，不动 Cookie/localStorage，登录态保留。
+  (function initClearCache() {
+    const btn = document.getElementById('btn-clear-cache');
+    const hint = document.getElementById('cache-hint');
+    if (!btn || !window.fnosSettings || !window.fnosSettings.clearCache) return;
+    btn.addEventListener('click', async () => {
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '清理中…';
+      try {
+        const r = await window.fnosSettings.clearCache();
+        const mb = (r && r.bytes) ? (r.bytes / 1048576).toFixed(1) : '0';
+        if (hint) hint.textContent = (r && r.ok) ? ('已清理（约 ' + mb + ' MB），重新打开应用即可') : '清理失败，请重试';
+      } catch (_) {
+        if (hint) hint.textContent = '清理失败，请重试';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    });
+  })();
 })();

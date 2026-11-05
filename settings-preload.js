@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('fnosSettings', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
+  clearCache: () => ipcRenderer.invoke('settings:clear-cache'),
   setPassword: (payload) =>
     ipcRenderer.invoke('settings:set-password', {
       oldPassword: String(payload?.oldPassword || ''),

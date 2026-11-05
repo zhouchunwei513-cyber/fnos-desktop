@@ -8028,6 +8028,22 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           // 窗口不再停在报错页。moontv 这类 docker 映射端口(3000)在客户端网络不可达是实锤场景。
           try {
             if (isMainFrame && (code === -118 || code === -102 || code === -105 || code === -7 || code === -106)) {
+              // v4.0.36：连接层失败先做「端口自愈」——快捷方式/入口数据里可能是不带端口的
+              // 裸 host（http://host/app/xxx），而真实站点在 :10300。同源补齐端口重试一次，
+              // 避免直接掉进 appview 回退（那个 anchor 对 /app/<id>/ 类应用是 404）。
+              try {
+                if (!win.__fnPortFix30) {
+                  const __base36 = (() => { try { return __liveOriginBase() || (loadSettings() && loadSettings().origin) || ''; } catch (_) { return ''; } })();
+                  const __bu = new URL(__base36); const __fu = new URL(String(url || ''));
+                  if (__bu.port && !__fu.port && __bu.hostname === __fu.hostname) {
+                    win.__fnPortFix30 = true;
+                    const __fixed36 = __bu.origin + __fu.pathname + __fu.search + __fu.hash;
+                    try { require('./logger.js').log('warn', 'appwin', 'appwin.port-fix36', { params: { winId: win.id, code: code, from: String(url).slice(0, 120), to: __fixed36.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+                    setTimeout(() => { try { if (!win.isDestroyed()) win.loadURL(__fixed36); } catch (_) {} }, 120);
+                    return;
+                  }
+                }
+              } catch (_) {}
               win.__fnConnFail30 = (win.__fnConnFail30 || 0) + 1;
               if (win.__fnConnFail30 === 1 && !win.__fnConnSwap30) {
                 let __aid30 = '';
@@ -9374,6 +9390,17 @@ function __fnIsErrPage(win) {
 }
 // info: { app, url, retryUrl, code, desc, http, kind: 'network'|'http'|'entry' }
 function __fnShowErrPage(win, info) {
+  // v4.0.36：出错前先做一次「强制刷新（跳过缓存）」。客户端缓存过期会让页面看似坏掉
+  // （典型：前端旧 bundle → Failed to load plugins → 被判坏入口 → 跳到 appview 404）。
+  // 每窗只尝试一次，刷新后仍失败才真正显示错误页。
+  try {
+    if (win && !win.isDestroyed() && !win.__fnHardReload36 && !(info && info.noHardReload)) {
+      win.__fnHardReload36 = true;
+      try { require('./logger.js').log('warn', 'appwin', 'errpage.hard-reload36', { params: { app: String((info && info.app) || '').slice(0, 80), kind: String((info && info.kind) || ''), url: String((info && info.url) || '').slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+      setTimeout(() => { try { if (!win.isDestroyed()) win.webContents.reloadIgnoringCache(); } catch (_) {} }, 60);
+      return false;
+    }
+  } catch (_) {}
   try {
     if (!win || win.isDestroyed()) return false;
     const i = info || {};
@@ -13326,6 +13353,25 @@ ipcMain.handle('lock:set-password', async (_e, payload) => {
   }
 });
 
+// v4.0.36（用户反馈「应用页突然打不开、界面是旧版」）：设置 → 维护 → 清理应用缓存。
+// 只清 HTTP 缓存 / ServiceWorker / ShaderCache，绝不动 Cookie 与 localStorage（否则登录态丢失）。
+ipcMain.handle('settings:clear-cache', async () => {
+  let ok = true; let bytes = 0;
+  try {
+    const sesSet = new Set();
+    try { if (mainWindow && !mainWindow.isDestroyed()) sesSet.add(mainWindow.webContents.session); } catch (_) {}
+    try { for (const w of BrowserWindow.getAllWindows()) { try { if (w && !w.isDestroyed() && w.webContents) sesSet.add(w.webContents.session); } catch (_) {} } } catch (_) {}
+    try { sesSet.add(session.defaultSession); } catch (_) {}
+    for (const ses of sesSet) {
+      try { bytes += await ses.getCacheSize(); } catch (_) {}
+      try { await ses.clearCache(); } catch (_) { ok = false; }
+      try { await ses.clearStorageData({ storages: ['shadercache', 'serviceworkers', 'cachestorage'] }); } catch (_) {}
+    }
+  } catch (_) { ok = false; }
+  try { require('./logger.js').log('info', 'settings', 'cache.cleared', { params: { ok, bytes } }, __RUN_MODE); } catch (_) {}
+  return { ok, bytes };
+});
+
 ipcMain.handle('settings:get', async () => {
   const s = loadSettings();
   return {
@@ -15584,6 +15630,21 @@ function __startLaunchServer() {
                 u = __av;
               }
             }
+            // v4.0.36（用户反馈「客户端里打不开容器 qBittorrent」）：
+            // 容器/Docker 类应用没有 appview anchor，探针会拿到 404；此时问应用中心要它的
+            // 真实入口（appServiceInfo.urls，通常是独立端口），命中就改用真实地址，
+            // 不再把 404 的 appview 壳开成「页面打不开」。
+            try {
+              if (__pr && Number(__pr.status) >= 400) {
+                const __nm36 = (() => { try { return fpkAppNameFromUrl(appId) || appId; } catch (_) { return appId; } })();
+                const __real36 = await __fetchAppCenterUrlLive(__nm36);
+                try { require('./logger.js').log('info', 'launch', 'launch.ac-live.try', { params: { name: String(__nm36).slice(0, 60), hit: !!__real36, url: String(__real36 || '').slice(0, 150) } }, __RUN_MODE); } catch (_) {}
+                if (__real36 && /^https?:/i.test(__real36)) {
+                  try { require('./logger.js').log('info', 'launch', 'launch.ac-live', { params: { appId: String(appId || '').slice(0, 60), probeStatus: __pr.status, from: String(u).slice(0, 120), to: String(__real36).slice(0, 150) } }, __RUN_MODE); } catch (_) {}
+                  u = __real36;
+                }
+              }
+            } catch (_) {}
             // v4.0.22 根地址保险丝：NAS 桌面（站点根）永远 200，探针通过不代表地址对。
             // 应用窗绝不允许停在站点根，最后一道强制改走同源 appview?anchor。
             try {
@@ -16237,11 +16298,27 @@ function __appviewToPopout(navUrl) {
   const now = Date.now();
   const __dup = !!anchor && (now - (__appviewConvAt.get(anchor) || 0) < 2000);
   if (anchor && !__dup) __appviewConvAt.set(anchor, now);
-  setImmediate(() => {
+  setImmediate(async () => {
+    // v4.0.36（用户反馈「客户端里打不开容器 qBittorrent」）：
+    // 容器类应用（Docker）没有 appview anchor，点图标时 preload 解析失败会退回
+    // `/appview?anchor=<appId>`，该 anchor 不存在 → 客户端弹「页面打不开 404」。
+    // 这里先用应用中心接口（app-center/v1/app/installed）问真实入口：端口不同＝独立服务，
+    // 直接用它自己的地址开窗；同端口/未命中则维持原 appview 行为，不影响普通应用。
+    let __openUrl = s;
+    try {
+      const __real = await __fetchAppCenterUrlLive(anchor);
+      if (__real && /^https?:/i.test(__real)) {
+        const __ru = new URL(__real); const __su = new URL(s);
+        if (__ru.port && __ru.port !== __su.port) {
+          __openUrl = __real;
+          try { require('./logger.js').log('info', 'wintype', 'appview.cross-port-open', { params: { app: anchor, from: String(s).slice(0, 100), to: String(__real).slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+        }
+      }
+    } catch (_) {}
     // v2.10.0 r30：防抖只作用于 createAppWindow（防同 anchor 2s 内双开跳出窗）；
     // 主窗重置不再被防抖/anchor 缺失吞掉——无论是否转出，主窗都必须离开 appview。
     if (anchor && !__dup) {
-      try { createAppWindow(s, { appId: anchor, source: 'in-app' }); } catch (_) {}
+      try { createAppWindow(__openUrl, { appId: anchor, source: 'in-app' }); } catch (_) {}
     }
     try { __resetMainHome29(s); } catch (_) {}
     // v2.5.3 r19：从主页面打开应用 → 主页面不藏托盘（appview 内嵌转出同属主页面打开链）

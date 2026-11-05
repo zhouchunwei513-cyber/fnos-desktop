@@ -3,6 +3,40 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.36
+
+> 用户反馈：客户端里的应用窗口「先能打开，后来自动跳到错误页（应用不存在或未安装）」。
+
+### 根因（日志实证）
+
+```
+appwin.nav-error   {code:-102 ERR_CONNECTION_REFUSED, url:"http://<host>/app/fn-deepseek-harness"}  ← 地址丢了端口 :10300
+appwin.conn-fallback30 → 改走 /appview?anchor=fn-deepseek-harness → 404「应用不存在」
+```
+
+链路是三层叠加：
+
+1. 某条入口数据给的是**不带端口**的裸 host，窗口连 `:80` 被拒；
+2. 连接失败回退逻辑直接改走 `appview?anchor=`，但 `/app/<id>/` 类应用没有这个 anchor → 404；
+3. 客户端窗口里还缓存了**旧版前端**（实测：同一地址强制刷新后正常，缓存态报
+   `Failed to load plugins … cot-translation`），被入口质检判成坏入口，进一步加剧跳转。
+
+### 改动
+
+| 位置 | 改动 |
+|---|---|
+| `main.js` | `did-fail-load` 增加**端口自愈**：连接失败且 URL 缺端口、与当前站点同 host 时，先用 `origin` 补端口重试一次，再考虑 appview 回退 |
+| `main.js` | `__fnShowErrPage` 增加**一次强制刷新**：显示错误页前先 `reloadIgnoringCache()`，每窗仅一次，刷新后仍坏才显示错误页 |
+| `main.js` | 新增 `settings:clear-cache`：清 HTTP 缓存 / ServiceWorker / ShaderCache，**不动 Cookie 与 localStorage**，登录态保留 |
+| `settings.html` / `settings.js` / `settings-preload.js` | 设置页新增「维护 ▸ 清理应用缓存」按钮，清理后提示占用大小 |
+
+### 验证（真机）
+
+- `appwin.port-fix36`：`http://host/app/…` → `http://host:10300/app/…`，窗口正常加载；
+- 设置页按钮实测：`已清理（约 127.1 MB），重新打开应用即可`；
+- 人为打开不存在的 anchor：日志出现 `errpage.hard-reload36`（先强制刷新，不再直跳错误页）；
+- 热部署哈希一致、进程数 6、日志 0 ERROR。
+
 ## v4.0.35
 
 > 用户反馈：**从桌面快捷方式启动的内嵌窗应用没有标题栏**——窗口既没有 ☰ 也没有 —□✕，还不能拖动。

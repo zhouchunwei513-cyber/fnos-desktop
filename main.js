@@ -149,6 +149,40 @@ try {
 // 历史：v2.2.3/v2.2.4 曾为规避 GPU 进程崩溃（0x80000003）禁用硬件加速/GPU 进程，
 // 代价是纯软件渲染下影视/相册等复杂页面渲染不完整（加载一半/比例失调/内容不全）。现恢复硬件 GPU 合成。
 
+// ================= v4.0.53：所有日志统一到一个文件夹（用户要求） =================
+// 安装后此前散在 userData 根目录：fnos-diag.log / fnos-web.log / fnos-mpv.log / fnos-live.log，
+// 而主日志在 userData/logs/ 下。现在一律收进 userData/logs/，用户只要发这一个文件夹。
+function __fnosLogDir() {
+  const d = path.join(app.getPath('userData'), 'logs');
+  try { require('fs').mkdirSync(d, { recursive: true }); } catch (_) {}
+  return d;
+}
+function __fnosLogFile(name) { return path.join(__fnosLogDir(), String(name)); }
+// 旧位置（userData 根目录）的历史日志 → 搬到 logs/，只搬一次、不覆盖已有
+function __migrateStrayLogs() {
+  try {
+    const fsx = require('fs');
+    const root = app.getPath('userData');
+    const names = ['fnos-diag.log', 'fnos-web.log', 'fnos-mpv.log', 'fnos-live.log', 'fnos-live.log.1', 'fnos-live.log.2', 'fnos-live.log.3'];
+    let moved = 0;
+    for (const n of names) {
+      const src = path.join(root, n);
+      const dst = path.join(__fnosLogDir(), n);
+      try {
+        if (!fsx.existsSync(src)) continue;
+        // v4.0.54：目标已存在（新版启动时已先建好同名文件）时，把旧文件**改名归档**进 logs/，
+        // 而不是原地不动——否则根目录会一直留着一份几十 MB 的历史日志，违背「全在一个文件夹」。
+        const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        const target = fsx.existsSync(dst) ? path.join(__fnosLogDir(), n + '.old-' + stamp) : dst;
+        try { fsx.renameSync(src, target); }
+        catch (_) { fsx.copyFileSync(src, target); fsx.unlinkSync(src); }
+        moved += 1;
+      } catch (_) {}
+    }
+    if (moved) { try { fnosLog('info', 'logs', 'logs.migrated count=' + moved); } catch (_) {} }
+  } catch (_) {}
+}
+
 // v1.16.2：全局兜底——未捕获异常 / 未处理 Promise 拒绝时只记录日志，绝不闪退
 process.on('uncaughtException', (err) => {
   try {
@@ -156,7 +190,7 @@ process.on('uncaughtException', (err) => {
     console.error('[FNOS] uncaughtException:', msg);
     try {
       fs.appendFileSync(
-        path.join(app.getPath('userData'), 'fnos-diag.log'),
+        __fnosLogFile('fnos-diag.log'),
         `[FNOS] uncaughtException: ${msg}\n`
       );
     } catch (_) {}
@@ -168,7 +202,7 @@ process.on('unhandledRejection', (reason) => {
     console.warn('[FNOS] unhandledRejection:', msg);
     try {
       fs.appendFileSync(
-        path.join(app.getPath('userData'), 'fnos-diag.log'),
+        __fnosLogFile('fnos-diag.log'),
         `[FNOS] unhandledRejection: ${msg}\n`
       );
     } catch (_) {}
@@ -3292,7 +3326,7 @@ function __mainAspectFix(win) {
 function diagLog(line) {
   try {
     fs.appendFileSync(
-      path.join(app.getPath('userData'), 'fnos-diag.log'),
+      __fnosLogFile('fnos-diag.log'),
       `[FNOS] ${new Date().toISOString()} ${line}\n`
     );
   } catch (_) {}
@@ -5141,7 +5175,7 @@ function installCorsBypass(ses) {
       if (details.statusCode && details.statusCode >= 400) {
         try {
           fs.appendFileSync(
-            path.join(app.getPath('userData'), 'fnos-web.log'),
+            __fnosLogFile('fnos-web.log'),
             `[${new Date().toISOString()}] MEDIA HTTP ${details.statusCode} ${details.method} ${details.url}\n`
           );
         } catch (_) {}
@@ -5160,7 +5194,7 @@ function installCorsBypass(ses) {
       }
       try {
         fs.appendFileSync(
-          path.join(app.getPath('userData'), 'fnos-web.log'),
+          __fnosLogFile('fnos-web.log'),
           `[${new Date().toISOString()}] MEDIA NETERR ${details.error} ${details.method} ${details.url}\n`
         );
       } catch (_) {}
@@ -6636,7 +6670,7 @@ function registerWindow(win, opts = {}) {
       if (!/(video|media|decode|codec|mediaerror|mediasource|buffer|range|cors|跨域|播放|解码|加载失败|net::|failed to load|cannot play)/i.test(message)) return;
       try {
         fs.appendFileSync(
-          path.join(app.getPath('userData'), 'fnos-web.log'),
+          __fnosLogFile('fnos-web.log'),
           `[${new Date().toISOString()}] [${level === 3 ? 'ERROR' : 'WARN'}] (${sourceId || ''}:${line}) ${message}\n`
         );
       } catch (_) {}
@@ -16198,6 +16232,7 @@ try {
         try { fnosLog('info', 'launch', 'dsh.autostart ' + (ok ? 'ok' : 'fail') + ' url=' + target.slice(0, 120)); } catch (_) {}
       } catch (_) {}
     }, 10000);
+    setTimeout(() => { try { __migrateStrayLogs(); } catch (_) {} }, 3000);
     setTimeout(() => { try { __hookLoginCookies(); } catch (_) {} }, 8000);
     [15000, 60000, 180000].forEach((ms) => setTimeout(() => { try { __logLoginState('startup+' + (ms / 1000) + 's'); } catch (_) {} }, ms));
     setTimeout(() => { try { __keepLoginSweep(); } catch (_) {} }, 20000);
@@ -18394,7 +18429,7 @@ function createLiveWindow(autoplayChannel) {
     liveWindow.webContents.on('unresponsive', () => {
       try {
         fs.appendFileSync(
-          path.join(app.getPath('userData'), 'fnos-diag.log'),
+          __fnosLogFile('fnos-diag.log'),
           '[FNOS] live window unresponsive, force reload in 3s\n'
         );
       } catch (_) {}
@@ -18848,7 +18883,7 @@ ipcMain.handle('iptv:toggle-favorite', async (_e, name) => {
 // ================= v1.23.0：EPG 节目单 / 回看 / 录制 / 缓存 / 增强日志 =================
 
 // ---------- 结构化日志（写入 userData/fnos-live.log，2MB 轮转保留 3 份） ----------
-const LIVE_LOG_PATH = path.join(app.getPath('userData'), 'fnos-live.log');
+const LIVE_LOG_PATH = __fnosLogFile('fnos-live.log');
 function liveLog(level, event, data) {
   try {
     let line;
@@ -20929,7 +20964,7 @@ app.whenReady().then(() => {
     app.on('gpu-process-crashed', (_e, killed) => {
       try {
         fs.appendFileSync(
-          path.join(app.getPath('userData'), 'fnos-diag.log'),
+          __fnosLogFile('fnos-diag.log'),
           `[FNOS] gpu-process-crashed killed=${!!killed} at=${new Date().toISOString()}\n`
         );
       } catch (_) {}
@@ -20937,7 +20972,7 @@ app.whenReady().then(() => {
     app.on('render-process-gone', (_e, _wc, details) => {
       try {
         fs.appendFileSync(
-          path.join(app.getPath('userData'), 'fnos-diag.log'),
+          __fnosLogFile('fnos-diag.log'),
           `[FNOS] render-process-gone reason=${details && details.reason} exitCode=${details && details.exitCode} at=${new Date().toISOString()}\n`
         );
       } catch (_) {}
@@ -20945,7 +20980,7 @@ app.whenReady().then(() => {
     app.on('child-process-gone', (_e, details) => {
       try {
         fs.appendFileSync(
-          path.join(app.getPath('userData'), 'fnos-diag.log'),
+          __fnosLogFile('fnos-diag.log'),
           `[FNOS] child-process-gone type=${details && details.type} reason=${details && details.reason} at=${new Date().toISOString()}\n`
         );
       } catch (_) {}
@@ -20968,7 +21003,7 @@ app.whenReady().then(() => {
       `[FNOS] time     = ${new Date().toISOString()}`,
       '',
     ].join('\n');
-    fs.appendFileSync(path.join(app.getPath('userData'), 'fnos-diag.log'), diag);
+    fs.appendFileSync(__fnosLogFile('fnos-diag.log'), diag);
   } catch (_) {}
   applyUA('persist:connect');
   applyUA('persist:default');

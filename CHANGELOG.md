@@ -3,6 +3,37 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.54
+
+> 接 v4.0.53：迁移时若 `logs/` 里已有同名文件（新版启动会先创建），旧文件被跳过、
+> 一直留在根目录（实测残留 `fnos-diag.log` 25MB、`fnos-web.log` 162KB）。
+
+- `__migrateStrayLogs()` 改为：目标存在时把源文件**改名归档**为 `logs/<name>.old-YYYYMMDDHHMMSS`，
+  仍然搬进同一个文件夹，根目录不再残留日志。
+- 迁移失败（占用等）时先复制再删除，保证不丢内容。
+
+## v4.0.53
+
+> 用户要求：「把安装包的所有日志文件搞到一块，弄一个文件夹……安装以后产生日志全在一个文件夹里面。」
+
+### 现状（实测盘点）
+
+- `%APPDATA%\fnos-client\logs\`：主日志 `fnos-YYYY-MM-DD.log`（按天）
+- `%APPDATA%\fnos-client\`（**根目录**，散落 4 个）：`fnos-diag.log`（25MB）、`fnos-web.log`、`fnos-mpv.log`、`fnos-live.log`
+
+### 变更
+
+1. 新增 `__fnosLogDir()` / `__fnosLogFile(name)`：所有日志统一写到 `%APPDATA%\fnos-client\logs\`。
+2. 路径全部改到该目录：`fnos-diag.log`、`fnos-web.log`、`fnos-live.log`（含 `.1/.2/.3` 轮转）、
+   `fnos-mpv.log`（`mpv-player.js` 的 `_resolveLogPath()` 同步改，并自动建目录）。
+3. 启动 3s 后执行 `__migrateStrayLogs()`：把根目录里的历史日志**搬到** `logs/`（同名不覆盖、失败则复制后删除）。
+4. 目录不存在时自动创建，不再依赖任何上游先建目录。
+
+### 用户视角
+
+以后只需要看/发**一个文件夹**：`%APPDATA%\fnos-client\logs\`
+其中按天的主日志是 `fnos-YYYY-MM-DD.log`，其余诊断/网页/播放器/直播日志也都在同一层。
+
 ## v4.0.52
 
 > 接 v4.0.50/51 的登录态日志，修两个**会让诊断失真**的问题（都是实测发现）。

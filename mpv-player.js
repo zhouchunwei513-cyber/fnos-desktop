@@ -620,12 +620,14 @@ class MpvPlayer extends EventEmitter {
     if (process.platform === 'win32') prewarmCorners();
   }
 
-  // mpv 详细日志文件路径：放 userData（与 fnos-diag.log 同目录），回退系统临时目录
+  // mpv 详细日志文件路径：v4.0.53 起统一进 userData/logs/（与其它日志同目录），回退系统临时目录
   _resolveLogPath() {
     try {
       const { app } = require('electron');
       const base = (app && typeof app.getPath === 'function') ? app.getPath('userData') : os.tmpdir();
-      return path.join(base || os.tmpdir(), 'fnos-mpv.log');
+      const dir = path.join(base || os.tmpdir(), 'logs');
+      try { require('fs').mkdirSync(dir, { recursive: true }); } catch (_) {}
+      return path.join(dir, 'fnos-mpv.log');
     } catch (_) {
       return path.join(os.tmpdir(), 'fnos-mpv.log');
     }

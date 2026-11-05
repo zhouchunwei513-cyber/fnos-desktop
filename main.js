@@ -5512,11 +5512,15 @@ function showGlassDialog(parent, options = {}) {
       }
     }
     const isLong = (detail || '').length > 400;
-    const initHeight = isLong ? 560 : (message ? 240 : 220);
+    // v4.0.34：detail 行数参与高度估算——否则 3~4 行提示会被挤进 240px 里只剩一行 + 滚动条
+    const detailLines = detail ? detail.split('\n').length : 0;
+    const detailHeight = Math.min(10, detailLines) * 19;
+    const initHeight = isLong ? 560 : Math.min(640, 300 + detailHeight + (message && message.length > 60 ? 24 : 0));
     const payload = {
       title: options.title || APP_NAME,
       message,
       detail,
+      detailAlign: options.detailAlign || '',
       buttons,
       defaultId,
       cancelId,
@@ -11365,8 +11369,9 @@ async function launchUninstaller() {
   }
   const r = await showGlassDialog(null, {
     title: '卸载 FNOS 客户端',
-    message: '将启动「强力卸载器」：清理安装目录、用户数据、注册表、快捷方式与系统痕迹。',
-    detail: `卸载器需要管理员权限（会弹 UAC 授权框）。\n启动后本客户端会自动退出，卸载完成前请不要重复启动。\n\n程序：${exe}`,
+    message: '将启动「强力卸载器」清理安装目录、用户数据、注册表与快捷方式。',
+    detail: `需要管理员权限（会弹 UAC 授权框）\n启动后本客户端会自动退出`,
+    detailAlign: 'center',
     buttons: ['启动卸载器', '取消'], defaultId: 1, cancelId: 1, width: 580,
   });
   if (!r || r.response !== 0) return;

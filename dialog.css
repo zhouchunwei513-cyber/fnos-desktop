@@ -116,6 +116,17 @@ html, body {
   word-break: break-word;
 }
 .detail[hidden] { display: none !important; }
+.detail.detail-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.detail.detail-center .detail-text {
+  margin: 0 auto;
+  width: 100%;
+  text-align: center;
+}
 .detail-text {
   -webkit-app-region: no-drag;
   white-space: pre-wrap;

@@ -31,6 +31,9 @@ function applyOptions(opts) {
   if (dialogOptions.detail) {
     detailWrap.hidden = false;
     $('dlg-detail-text').textContent = dialogOptions.detail;
+    try { detailWrap.scrollTop = 0; } catch (_) {}
+    // v4.0.34：可选「detail 区域上下左右居中」（短提示更整齐；长文本仍可滚动）
+    try { detailWrap.classList.toggle('detail-center', dialogOptions.detailAlign === 'center'); } catch (_) {}
   } else {
     detailWrap.hidden = true;
   }

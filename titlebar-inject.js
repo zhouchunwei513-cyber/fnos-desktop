@@ -4294,7 +4294,36 @@ module.exports = function injectTitleBar(ctx) {
         }, 1500);
       } catch (_) {}
     };
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); } catch (_) {} };
+    // v4.0.37（用户对比截图：客户端里 qBittorrent 表头上方多出一条空白，浏览器没有）：
+    // qB 的 dynamicTable 把固定表头写成 sticky，并用**内联 !important** 写 top:<body 视口偏移>px。
+    // 我们的让位是 html padding-top（body 下移 34px），qB 读到的偏移就多出 34px，表头被顶下去
+    // 形成空档。样式表 !important 打不过内联 !important，只能在运行时改写内联值并持续看守。
+    const __fixSticky37 = () => {
+      try {
+        if (typeof process === 'undefined' || !Array.isArray(process.argv)) return;
+        if (process.argv.indexOf('--fnos-xapp') < 0) return;
+        const list = document.querySelectorAll('#torrentsTableFixedHeaderDiv,.dynamicTableFixedHeaderDiv');
+        for (let i = 0; i < list.length; i++) {
+          const el = list[i];
+          const cur = el.style.getPropertyValue('top');
+          if (cur && parseFloat(cur) !== 0) el.style.setProperty('top', '0px', 'important');
+        }
+      } catch (_) {}
+    };
+    let __sticky37Obs = false;
+    const __watchSticky37 = () => {
+      if (__sticky37Obs) return;
+      __sticky37Obs = true;
+      __fixSticky37();
+      try {
+        const mo37 = new MutationObserver(() => __fixSticky37());
+        mo37.observe(document.documentElement || document, { subtree: true, attributes: true, attributeFilter: ['style'] });
+      } catch (_) {}
+      let n37 = 0;
+      const t37 = setInterval(() => { __fixSticky37(); if (++n37 > 20) clearInterval(t37); }, 500);
+    };
+
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); __watchSticky37(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

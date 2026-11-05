@@ -3333,6 +3333,14 @@ ipcMain.on('fnos:media-log', (e, data) => {
       }
     } catch (_) {}
     const wcId = e && e.sender ? e.sender.id : -1;
+    // v4.0.50：登录态类上报同时写主日志（用户要发日志给我，主日志才是他们能找到的那份）
+    try {
+      const st0 = String((data && data.stage) || '');
+      if (/^login\./.test(st0)) {
+        const { stage: _s0, ...rest0 } = (data || {});
+        fnosLog('info', 'login', st0 + ' wcId=' + wcId, rest0);
+      }
+    } catch (_) {}
     const lvl = (data && ['info', 'warn', 'error'].indexOf(String(data.level)) !== -1) ? String(data.level) : 'info';
     const stage = String((data && data.stage) || 'unknown');
     dlog(lvl, 'mpv.preload.' + stage, {
@@ -13922,13 +13930,111 @@ ipcMain.handle('settings:set-keep-login', async (_e, v) => {
   return { ok: true, keepLogin: on };
 });
 
+// 任何 webContents 落到登录/认证页，就记一次现场（说明这一层掉登录了）
+try {
+  app.on('web-contents-created', (_e, wc) => {
+    try {
+      wc.on('did-finish-load', () => {
+        try {
+          const u = String(wc.getURL() || '');
+          if (/\/login|passport|\/api\/v1\/auth|\/connect\b/i.test(u)) __logLoginPage(u);
+        } catch (_) {}
+      });
+      wc.on('did-navigate', (_ev, u) => {
+        try { if (/\/login|passport|\/api\/v1\/auth/i.test(String(u || ''))) __logLoginPage(u); } catch (_) {}
+      });
+    } catch (_) {}
+  });
+} catch (_) {}
+
+// ================= v4.0.50：登录态诊断日志（用户要求：出问题时把日志发给我） =================
+// 目标：任何一次「掉登录」，只看 fnos-YYYY-MM-DD.log 就能判断是哪一层出的问题：
+//   login.state   —— 每轮快照：每个 partition 的 Cookie 总数 / 持久数 / 会话级数 / 域名分布
+//   login.cookie  —— 单个 Cookie 增删改（**只记名字、域名、过期时间、原因，绝不记值**）
+//   login.flag    —— 渲染层上报的 os-keep-login / fnos-Secret 是否存在（飞牛自己那套标记）
+//   login.page    —— 页面被判定为「登录页」的瞬间（说明这一层掉登录了）
+// v4.0.51：`session.getAllSessions()` 在本机实测恒为 0（Electron 44 + 部分构建不返回），
+// 导致 Cookie 保活其实一直空转。改为从「所有 webContents 的 session」反查，天然覆盖
+// 主窗、页内应用、快捷方式应用窗各自的 partition。
+function __allSessions() {
+  const out = [];
+  const seenSet = new Set();
+  const add = (ses) => { try { if (ses && !seenSet.has(ses)) { seenSet.add(ses); out.push(ses); } } catch (_) {} };
+  try { if (session && session.defaultSession) add(session.defaultSession); } catch (_) {}
+  try {
+    const wcMod = require('electron').webContents;
+    if (wcMod && typeof wcMod.getAllWebContents === 'function') {
+      for (const wc of wcMod.getAllWebContents()) { try { add(wc.session); } catch (_) {} }
+    }
+  } catch (_) {}
+  try { for (const w of BrowserWindow.getAllWindows()) { try { add(w.webContents.session); } catch (_) {} } } catch (_) {}
+  return out;
+}
+
+function __logLoginState(tag) {
+  try {
+    const sessions = __allSessions();
+    const keep = cachedSettings ? cachedSettings.keepLogin !== false : true;
+    fnosLog('info', 'login', 'login.state ' + String(tag || '') + ' keepLogin=' + (keep ? 1 : 0) + ' sessions=' + sessions.length);
+    sessions.forEach((ses, i) => {
+      let path0 = '';
+      try { path0 = (ses.storagePath || '').replace(/^.*Partitions[\\/]/, ''); } catch (_) {}
+      ses.cookies.get({}).then((list) => {
+        const byDomain = {};
+        let persistent = 0, sessCnt = 0;
+        for (const c of list) {
+          if (c && c.session === true) sessCnt += 1; else persistent += 1;
+          const d = String((c && c.domain) || '?');
+          byDomain[d] = (byDomain[d] || 0) + 1;
+        }
+        fnosLog('info', 'login', 'login.state.part ' + i + ' path=' + String(path0).slice(0, 40)
+          + ' cookies=' + list.length + ' persistent=' + persistent + ' session=' + sessCnt
+          + ' domains=' + JSON.stringify(byDomain).slice(0, 300));
+      }).catch(() => {});
+    });
+  } catch (_) {}
+}
+// Cookie 变更流水（只记元信息，value 一律不落盘）
+let __loginCookieHooked = false;
+function __hookLoginCookies() {
+  if (__loginCookieHooked) return;
+  __loginCookieHooked = true;
+  try {
+    const sessions = __allSessions();
+    for (const ses of sessions) {
+      try {
+        ses.cookies.on('changed', (_e, cookie, cause, removed) => {
+          try {
+            if (!cookie) return;
+            const name = String(cookie.name || '');
+            // 只关心跟身份/会话有关的，避免把统计类 Cookie 刷满日志
+            if (!/token|session|sess|auth|sid|uid|user|login|jwt|passport|secret|credential|cookie/i.test(name)) return;
+            fnosLog('info', 'login', 'login.cookie ' + (removed ? 'del' : 'set') + ' name=' + name.slice(0, 40)
+              + ' domain=' + String(cookie.domain || '').slice(0, 40)
+              + ' path=' + String(cookie.path || '/').slice(0, 30)
+              + ' exp=' + (cookie.session ? 'SESSION' : new Date(Number(cookie.expirationDate || 0) * 1000).toISOString().slice(0, 19))
+              + ' cause=' + String(cause || '').slice(0, 20));
+          } catch (_) {}
+        });
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+// 页面被判定为登录页（= 这一层掉登录了）：留现场，方便用户直接发日志
+function __logLoginPage(wcUrl, partitionHint) {
+  try {
+    fnosLog('warn', 'login', 'login.page detected url=' + String(wcUrl || '').slice(0, 160) + ' part=' + String(partitionHint || '').slice(0, 40));
+  } catch (_) {}
+  try { __logLoginState('on-login-page'); } catch (_) {}
+}
+
 // 把各 partition 里的「会话级 Cookie」（没有过期时间的）改写成长期 Cookie。
 // 第三方应用（qBittorrent / biliLive-tools / 各种控制面板）普遍用 session cookie，
 // Chromium 退出就清，这正是「应用里登录状态保不住」的主因。
 async function __keepLoginSweep() {
   try {
     if (!cachedSettings || cachedSettings.keepLogin === false) return { ok: 0, total: 0 };
-    const sessions = (typeof session.getAllSessions === 'function') ? session.getAllSessions() : [];
+    const sessions = __allSessions();
     let fixed = 0, total = 0;
     for (const ses of sessions) {
       let list = [];
@@ -13951,7 +14057,7 @@ async function __keepLoginSweep() {
       }
       try { if (ses.cookies && ses.cookies.flushStore) await ses.cookies.flushStore(); } catch (_) {}
     }
-    if (fixed) { try { fnosLog('info', 'login', 'keep-login.sweep fixed=' + fixed + ' total=' + total); } catch (_) {} }
+    try { fnosLog('info', 'login', 'keep-login.sweep fixed=' + fixed + ' total=' + total); } catch (_) {}
     return { ok: fixed, total };
   } catch (e) { return { ok: 0, total: 0, err: String(e && e.message || e) }; }
 }
@@ -16092,7 +16198,14 @@ try {
         try { fnosLog('info', 'launch', 'dsh.autostart ' + (ok ? 'ok' : 'fail') + ' url=' + target.slice(0, 120)); } catch (_) {}
       } catch (_) {}
     }, 10000);
+    setTimeout(() => { try { __hookLoginCookies(); } catch (_) {} }, 8000);
+    [15000, 60000, 180000].forEach((ms) => setTimeout(() => { try { __logLoginState('startup+' + (ms / 1000) + 's'); } catch (_) {} }, ms));
     setTimeout(() => { try { __keepLoginSweep(); } catch (_) {} }, 20000);
+    // 每 10 分钟留一次登录态快照，出问题回溯用（用户把日志发来即可定位）
+    try {
+      const t2 = setInterval(() => { try { __logLoginState('periodic'); } catch (_) {} }, 10 * 60 * 1000);
+      try { if (t2.unref) t2.unref(); } catch (_) {}
+    } catch (_) {}
     const t = setInterval(() => { try { __keepLoginSweep(); } catch (_) {} }, 5 * 60 * 1000);
     try { if (t.unref) t.unref(); } catch (_) {}
   }).catch(() => {});

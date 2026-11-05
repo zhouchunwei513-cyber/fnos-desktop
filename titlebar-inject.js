@@ -4667,7 +4667,32 @@ module.exports = function injectTitleBar(ctx) {
           } catch (_) {}
         };
         apply();
+        // v4.0.50：登录态现场上报（用户要求——出问题时把日志发来即可定位）
+        // 只报「有没有」，绝不带票据内容。
+        const report = (tag) => {
+          try {
+            let hasSecret = false, keep = null, secretLen = 0;
+            try {
+              const v = window.localStorage.getItem('fnos-Secret');
+              hasSecret = !!v;
+              secretLen = v ? String(v).length : 0;
+              keep = window.localStorage.getItem('os-keep-login');
+            } catch (_) {}
+            ipcRenderer.send('fnos:media-log', {
+              stage: 'login.flag',
+              tag: tag,
+              want: on ? 1 : 0,
+              keepFlag: keep,
+              hasTicket: hasSecret ? 1 : 0,
+              ticketLen: secretLen,
+              href: String(location.href || '').slice(0, 80),
+              partition: String((location.protocol + location.host) || '').slice(0, 60),
+            });
+          } catch (_) {}
+        };
+        report('apply');
         [600, 2000, 5000].forEach((ms) => setTimeout(apply, ms)); // SPA 路由切换后可能重写
+        [2500, 6000].forEach((ms) => setTimeout(() => report('settle' + ms), ms));
         try {
           ipcRenderer.on('settings:keep-login-changed', (e, d) => { on = !!(d && d.keepLogin); apply(); });
         } catch (_) {}

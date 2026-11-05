@@ -3,6 +3,46 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.52
+
+> 接 v4.0.50/51 的登录态日志，修两个**会让诊断失真**的问题（都是实测发现）。
+
+1. **`session.getAllSessions()` 在本机恒返回 0** → Cookie 保活（`__keepLoginSweep`）其实一直空转，
+   写日志的 `sessions=0` 也是同一个原因。改用 `__allSessions()`：从 `webContents.getAllWebContents()`
+   + `BrowserWindow.getAllWindows()` 反查各自的 `session`，天然覆盖主窗/页内应用/快捷方式应用窗。
+2. **`hasSecret` / `secretLen` 被日志脱敏成 `***`**（logger 的敏感键含 `secret`），导致最关键的
+   「票据在不在」反而看不到。渲染层字段改名为 `hasTicket` / `ticketLen`。
+
+## v4.0.51
+
+> 接 v4.0.50 的登录态日志，修两个落地问题。
+
+1. **`login.flag`（渲染层上报）原本只进 `fnos-diag.log`**：用户要发日志时通常找不到那份。
+   主进程 `fnos:media-log` 处理器里对 `login.*` 阶段额外写一条到 `fnos-YYYY-MM-DD.log`（前缀 `[login]`）。
+2. **`login.state sessions=0`**：启动 15s 太早，partition 还没建。改为启动 8s 挂 Cookie 监听，
+   并在 15s / 60s / 180s 各快照一次（`startup+15s` / `+60s` / `+180s`），之后每 10 分钟一次。
+
+## v4.0.50
+
+> 用户要求：「增强登录态的日志记录。我让用户出现这种状况的时候，把日志发给我，然后发给你修复这个问题。」
+
+### 新增登录态诊断日志（全部落在 `%APPDATA%\fnos-client\logs\fnos-YYYY-MM-DD.log`，前缀 `[login]`）
+
+| 日志 | 时机 | 内容 |
+|---|---|---|
+| `login.state` | 启动后 15s、每 10 分钟、以及「检测到登录页」时 | 当前 `keepLogin` 开关、session 数量 |
+| `login.state.part` | 同上，逐个 partition | partition 名、Cookie 总数、持久数、会话级数、按域名分布 |
+| `login.cookie` | Cookie 变更时（只关心 token/session/auth/uid/login/secret 等） | `set/del`、名字、域名、路径、**过期时间或 SESSION**、变更原因（cause）；**值一律不落盘** |
+| `login.flag`（渲染层） | 每页 `__applyKeepLogin` 应用后 | 期望值、`os-keep-login` 实际值、`fnos-Secret` 是否存在及长度、URL、origin |
+| `login.page` | 任何 webContents 落到 `/login`、`passport`、`/api/v1/auth` | 完整 URL + 触发一次 `login.state` 快照 |
+| `keep-login.sweep` | 每 5 分钟 Cookie 保活扫描 | `fixed=N total=M` |
+
+### 用法（给用户的话术）
+
+出问题时：关掉客户端 → 打开 `%APPDATA%\fnos-client\logs\` → 把当天的 `fnos-YYYY-MM-DD.log`
+（或只用 `Select-String '\[login\]'` 过滤后的部分）发过来即可定位是哪一层掉了：
+`login.page` 出现 = 这层已掉；`login.flag hasSecret=0` = 票据没存住；`login.cookie del` = 被谁清掉了。
+
 ## v4.0.49
 
 > 用户工单（2026-11-05）：「为什么每次部署、飞牛客户端重启以后，你自己（DeepSeek Harness）不启动呢？」

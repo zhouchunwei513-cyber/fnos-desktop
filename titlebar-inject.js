@@ -4450,6 +4450,40 @@ module.exports = function injectTitleBar(ctx) {
           return 'inherit';
         };
 
+        // v4.0.46：统一的「可视区夹取」。拖动与窗口出现时共用同一套边界，口径一致：
+        //   能整窗放下（宽/高 ≤ 可视区）→ 整窗不越界；
+        //   放不下 → 至少留 120px 宽 + 44px（标题栏）在可视区内，保证窗控按钮够得到。
+        // 实测动机：飞牛把 Docker 窗摆到 left=253/宽 1100（右缘 1353 > 视口 1246），
+        // 右上角 — □ ✕ 直接落在视口外，用户点不到。
+        const __clampPos = (win, rawL, rawT) => {
+          let L = Math.round(rawL), T = Math.round(rawT);
+          try {
+            const vw = document.body.clientWidth || window.innerWidth;
+            const vh = document.body.clientHeight || window.innerHeight;
+            const w = win.offsetWidth || 0, h = win.offsetHeight || 0;
+            if (w && w <= vw) L = Math.max(0, Math.min(L, vw - w));
+            else if (w) L = Math.max(-(w - 120), Math.min(L, vw - 120));
+            if (h && h <= vh) T = Math.max(0, Math.min(T, vh - h));
+            else if (h) T = Math.max(0, Math.min(T, vh - 44));
+          } catch (_) {}
+          return { L, T };
+        };
+        const __clampInView = (win) => {
+          try {
+            if (!win || win.getAttribute(MARK) !== '1') return false;
+            const curL = parseFloat(win.style.left);
+            const curT = parseFloat(win.style.top);
+            const L0 = isFinite(curL) ? curL : (win.offsetLeft || 0);
+            const T0 = isFinite(curT) ? curT : (win.offsetTop || 0);
+            const { L, T } = __clampPos(win, L0, T0);
+            if (L === Math.round(L0) && T === Math.round(T0)) return false;
+            win.style.left = L + 'px';
+            win.style.top = T + 'px';
+            try { ipcRenderer.send('fnos:media-log', { stage: 'inpage.clamp', from: Math.round(L0) + ',' + Math.round(T0), to: L + ',' + T }); } catch (_) {}
+            return true;
+          } catch (_) { return false; }
+        };
+
         const __mkIco = (kind) => {
           const s = document.createElement('span');
           s.className = 'fnos-iw-ico fnos-iw-ico-' + kind;
@@ -4518,15 +4552,10 @@ module.exports = function injectTitleBar(ctx) {
                 const dx = cx - sx, dy = cy - sy;
                 if (!moved && Math.abs(dx) <= 2 && Math.abs(dy) <= 2) return;
                 moved = true;
-                const vw = document.body.clientWidth || window.innerWidth;
-                const vh = document.body.clientHeight || window.innerHeight;
-                const ww = win.offsetWidth;
-                let L = Math.round(left0 + dx);
-                let T = Math.round(top0 + dy);
-                L = Math.max(-(ww - 120), Math.min(L, vw - 120));
-                T = Math.max(0, Math.min(T, vh - 44));
-                win.style.left = L + 'px';
-                win.style.top = T + 'px';
+                // v4.0.46：与「窗口出现时」共用同一套夹取口径（整窗放得下就整窗不越界）
+                const p = __clampPos(win, left0 + dx, top0 + dy);
+                win.style.left = p.L + 'px';
+                win.style.top = p.T + 'px';
               };
               const onUp = () => {
                 try { bar.releasePointerCapture(e.pointerId); } catch (_) {}
@@ -4561,6 +4590,11 @@ module.exports = function injectTitleBar(ctx) {
             const bar = __buildBar(win, hdr);
             win.insertBefore(bar, win.firstChild);
             try { ipcRenderer.send('fnos:media-log', { stage: 'inpage.bar', title: String(bar.textContent || '').slice(0, 24) }); } catch (_) {}
+            // v4.0.46：窗口出现时若被摆到可视区外（飞牛的默认摆放会这样），夹回可视区。
+            // 打开动画/布局要几帧才稳定，分两档补夹（只越界才动）。
+            try {
+              [120, 500, 1200].forEach((ms) => setTimeout(() => { if (win.isConnected) __clampInView(win); }, ms));
+            } catch (_) {}
           } catch (_) {}
         }
 

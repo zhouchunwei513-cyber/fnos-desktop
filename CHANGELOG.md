@@ -3,6 +3,19 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.56
+
+> 用户需求：「菜单工具里增加『用默认浏览器打开此窗口』选项，要实测能跑通。」
+
+### 实现
+
+- 「工具」菜单新增 `🌐 用默认浏览器打开此窗口`（快捷键 Ctrl+Shift+O，无边框窗下以菜单点击为准）。
+- 新增 `openCurrentWindowInBrowser()`：与「复制当前窗口链接地址」共用同一条 URL 解析——
+  优先窗口自身地址（`webContents.getURL()`），不是 http(s) 时退回当前应用窗/guest 的地址；
+  解析不到只记日志不弹窗。
+- 打开走 `shell.openExternal()`（即系统默认浏览器），成功/失败都写 `menu.open-browser` 日志
+  （`ok`、`url`、`winId`、`err`），便于事后对账。
+
 ## v4.0.55
 
 > 用户纠正：「自动拉起 DSH 只应该在你热部署重启客户端时做，不该写进客户端程序——别的用户机器上

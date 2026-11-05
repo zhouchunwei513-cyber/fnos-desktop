@@ -11669,6 +11669,51 @@ function copyCurrentWindowLink() {
   } catch (e) { dlog && dlog('warn', 'menu.copy-link', { err: String(e && e.message || e) }); }
 }
 
+// v4.0.56（用户要求）：工具菜单新增「用默认浏览器打开此窗口」。
+// 与「复制当前窗口链接地址」共用同一套 URL 解析：先取窗口自身地址，不是 http(s)（主窗桌面常是
+// webview 宿主）再退回当前应用窗/guest 的地址；解析不到就只记日志、不弹浏览器。
+function openCurrentWindowInBrowser() {
+  try {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (!win || win.isDestroyed()) return;
+    let url = '';
+    const selfUrl = win.webContents.getURL();
+    if (selfUrl && /^https?:/i.test(selfUrl)) {
+      url = selfUrl;
+    } else {
+      const guest = pickMenuGuest();
+      if (guest && !guest.isDestroyed()) {
+        const u = guest.getURL();
+        if (u && /^https?:/i.test(u)) url = u;
+      }
+    }
+    if (!url) { dlog && dlog('warn', 'menu.open-browser', { err: 'no-url', winId: win.id }); return; }
+    Promise.resolve(shell.openExternal(url))
+      .then(() => { dlog && dlog('info', 'menu.open-browser', { ok: true, url: String(url).slice(0, 160), winId: win.id }); })
+      .catch((e) => { dlog && dlog('warn', 'menu.open-browser', { ok: false, url: String(url).slice(0, 160), err: String(e && e.message || e) }); });
+  } catch (e) { dlog && dlog('warn', 'menu.open-browser', { err: String(e && e.message || e) }); }
+}
+
+// v4.0.56：给渲染层也留一个入口（标题栏/页面里可调用），与菜单项共用同一实现。
+// 用途：菜单项被系统菜单遮挡时仍可用；也便于自动化实测（CDP 直接调）。
+ipcMain.handle('app:open-window-in-browser', async (e) => {
+  try {
+    const w = hostWindowFromSender(e && e.sender) || BrowserWindow.getFocusedWindow() || mainWindow;
+    let url = '';
+    try { url = String((w && !w.isDestroyed() && w.webContents.getURL()) || ''); } catch (_) {}
+    if (!/^https?:/i.test(url)) {
+      try { const g = pickMenuGuest(); if (g && !g.isDestroyed()) { const u = g.getURL(); if (/^https?:/i.test(u)) url = u; } } catch (_) {}
+    }
+    if (!url) { dlog && dlog('warn', 'menu.open-browser', { err: 'no-url' }); return { ok: false, err: 'no-url' }; }
+    await shell.openExternal(url);
+    dlog && dlog('info', 'menu.open-browser', { ok: true, src: 'ipc', url: url.slice(0, 160) });
+    return { ok: true, url };
+  } catch (err) {
+    dlog && dlog('warn', 'menu.open-browser', { ok: false, src: 'ipc', err: String(err && err.message || err) });
+    return { ok: false, err: String(err && err.message || err) };
+  }
+});
+
 // v2.18.1: 「关于 FNOS」弹窗——与偏好设置页 / 帮助页同一套视觉与圆角：
 // 透明窗 + preload 注入同款标题栏（titlebar-inject 的"设置窗口"分支，clip-path 20px 圆角，与主页面一致）。
 // v2.18.5：检查更新改为「页面内嵌面板」，不再在关于窗上叠 glass 弹框——按钮经 IPC 调
@@ -11895,6 +11940,12 @@ function buildMenuTemplate() {
           label: '🔗 复制当前窗口链接地址',
           accelerator: 'Ctrl+Shift+C',
           click: () => copyCurrentWindowLink(),
+        },
+        {
+          // v4.0.56（用户要求）：用系统默认浏览器打开当前窗口所在的网页
+          label: '🌐 用默认浏览器打开此窗口',
+          accelerator: 'Ctrl+Shift+O',
+          click: () => openCurrentWindowInBrowser(),
         },
       ],
     },

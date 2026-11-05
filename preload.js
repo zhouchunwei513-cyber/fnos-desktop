@@ -2329,6 +2329,8 @@ try {
     // v2.0.0：网络状态 API
     getNetworkStatus: () => { console.log('[fnApi] getNetworkStatus'); return ipcRenderer.invoke('network:get-status'); },
     // v2.0.0：日志系统 API
+    // v4.0.56：用系统默认浏览器打开当前窗口所在网页（与「工具」菜单同一实现）
+    openWindowInBrowser: () => { try { console.log('[fnApi] openWindowInBrowser'); } catch (_) {} return ipcRenderer.invoke('app:open-window-in-browser'); },
     listLogFiles: () => { console.log('[fnApi] listLogFiles'); return ipcRenderer.invoke('log:list-files'); },
     readLogFile: (params) => { console.log('[fnApi] readLogFile', params); return ipcRenderer.invoke('log:read', params); },
     getLogStatus: () => { console.log('[fnApi] getLogStatus'); return ipcRenderer.invoke('log:get-status'); },

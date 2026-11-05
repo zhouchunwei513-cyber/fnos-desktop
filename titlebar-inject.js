@@ -4635,7 +4635,46 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); __watchSticky37(); __watchQbTheme38(); __watchInPageWindows(); } catch (_) {} };
+    // ================= v4.0.48：保持登录（覆盖三层：主窗 / 页内应用 / 独立应用窗） =================
+    // 飞牛前端用 localStorage 的 os-keep-login + fnos-Secret 决定「重启后认不认这个登录」。
+    // 这里按全局开关把它钉死：开 → 强制 '1' 并把票据留在 localStorage；
+    // 关 → 置 '0' 并把票据挪进 sessionStorage（本次会话有效，退出即失效）。
+    function __applyKeepLogin() {
+      try {
+        let on = true;
+        try {
+          const r = ipcRenderer.sendSync('settings:get-keep-login');
+          on = !!(r && r.keepLogin !== false);
+        } catch (_) {}
+        const apply = () => {
+          try {
+            const ls = window.localStorage, ss = window.sessionStorage;
+            if (!ls) return;
+            if (on) {
+              if (ls.getItem('os-keep-login') !== '1') ls.setItem('os-keep-login', '1');
+              // 票据只在 sessionStorage 里时搬到 localStorage（飞牛取消勾选时就是这么放的）
+              if (!ls.getItem('fnos-Secret') && ss && ss.getItem('fnos-Secret')) {
+                ls.setItem('fnos-Secret', ss.getItem('fnos-Secret'));
+                ss.removeItem('fnos-Secret');
+              }
+            } else {
+              if (ls.getItem('os-keep-login') !== '0') ls.setItem('os-keep-login', '0');
+              if (ss && ls.getItem('fnos-Secret')) {
+                ss.setItem('fnos-Secret', ls.getItem('fnos-Secret'));
+                ls.removeItem('fnos-Secret');
+              }
+            }
+          } catch (_) {}
+        };
+        apply();
+        [600, 2000, 5000].forEach((ms) => setTimeout(apply, ms)); // SPA 路由切换后可能重写
+        try {
+          ipcRenderer.on('settings:keep-login-changed', (e, d) => { on = !!(d && d.keepLogin); apply(); });
+        } catch (_) {}
+      } catch (_) {}
+    }
+
+    const start = () => { try { __applyKeepLogin(); __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); __watchSticky37(); __watchQbTheme38(); __watchInPageWindows(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

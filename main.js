@@ -2086,6 +2086,13 @@ function defaultSettings() {
       host: '',                // FPK 服务地址（如 192.168.31.101）
       port: 18080,             // FPK 服务端口
     },
+    // v4.0.48（用户需求）：保持登录状态——全局一个开关，覆盖三层：
+    //   ① 主程序对 NAS 的登录（fnOS 前端把票据放 localStorage：fnos-Secret + os-keep-login）
+    //   ② 主窗桌面里页内应用的身份（同 partition）
+    //   ③ 快捷方式/独立应用窗里的登录（各自 partition，多为 Cookie）
+    // 开启时：渲染层强制 os-keep-login=1；主进程把各 partition 的「会话级 Cookie」改写成长期 Cookie。
+    // 关闭时：渲染层把 os-keep-login 置 0 并把票据挪回 sessionStorage（退出即失效）。
+    keepLogin: true,
     // v2.15.0：主窗口位置/尺寸持久化（关闭/调整时存，启动恢复上次大小），null 表示用默认
     windowBounds: null,
     // v2.24.6：MPV 自动播放下一集（MPV 右键菜单 / 控制条「☰」菜单可切换；根级键，
@@ -13658,6 +13665,8 @@ ipcMain.handle('settings:get', async () => {
     shortcuts: { ...DEFAULT_SHORTCUTS, ...(s.shortcuts || {}) },
     urlRewrites: Array.isArray(s.urlRewrites) ? s.urlRewrites : [],
     autoHideMenuBar: !!s.autoHideMenuBar,
+    // v4.0.48：保持登录（全局开关，默认开）
+    keepLogin: s.keepLogin !== false,
     // v1.52.0：自定义标题栏自动隐藏（鼠标移到窗口顶部显示）。false = 标题栏常驻显示（默认）
     titleBarAutoHide: s.titleBarAutoHide === undefined ? false : !!s.titleBarAutoHide,
     // v1.58：标题栏不透明度/颜色（标题栏颜色独立于界面主题色）
@@ -13885,6 +13894,65 @@ ipcMain.handle('settings:preview-titlebar', async (_e, opts) => {
     return { ok: false, error: err?.message || '预览失败' };
   }
 });
+
+// ================= v4.0.48：保持登录（全局开关，覆盖三层） =================
+// 渲染层（主窗 + 应用窗 + 快捷方式窗）通过同步 IPC 取当前值，用来强制 fnOS 的
+// localStorage 标记 os-keep-login（飞牛自己就用它决定「重启后还认不认这个登录」）。
+ipcMain.on('settings:get-keep-login', (e) => {
+  try { e.returnValue = { keepLogin: cachedSettings ? cachedSettings.keepLogin !== false : true }; }
+  catch (_) { try { e.returnValue = { keepLogin: true }; } catch (_) {} }
+});
+ipcMain.handle('settings:set-keep-login', async (_e, v) => {
+  const on = !!v;
+  try {
+    cachedSettings.keepLogin = on;
+    saveSettings({ keepLogin: on });
+  } catch (_) {}
+  try {
+    // 立即对所有已开窗口生效（用户切开关不用重启）
+    const all = BrowserWindow.getAllWindows();
+    for (const w of all) {
+      try { if (w && !w.isDestroyed()) w.webContents.send('settings:keep-login-changed', { keepLogin: on }); } catch (_) {}
+    }
+  } catch (_) {}
+  try { __keepLoginSweep(); } catch (_) {}
+  try { fnosLog('info', 'settings', 'keepLogin.set ' + (on ? 'on' : 'off')); } catch (_) {}
+  return { ok: true, keepLogin: on };
+});
+
+// 把各 partition 里的「会话级 Cookie」（没有过期时间的）改写成长期 Cookie。
+// 第三方应用（qBittorrent / biliLive-tools / 各种控制面板）普遍用 session cookie，
+// Chromium 退出就清，这正是「应用里登录状态保不住」的主因。
+async function __keepLoginSweep() {
+  try {
+    if (!cachedSettings || cachedSettings.keepLogin === false) return { ok: 0, total: 0 };
+    const sessions = (typeof session.getAllSessions === 'function') ? session.getAllSessions() : [];
+    let fixed = 0, total = 0;
+    for (const ses of sessions) {
+      let list = [];
+      try { list = await ses.cookies.get({}); } catch (_) { continue; }
+      for (const c of list) {
+        total += 1;
+        if (!c || c.session !== true) continue;   // 已经是持久 Cookie，跳过
+        const exp = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365; // +1 年
+        const det = {
+          url: (c.secure ? 'https://' : 'http://') + String(c.domain || '').replace(/^\./, '') + (c.path || '/'),
+          name: c.name,
+          value: c.value,
+          path: c.path || '/',
+          secure: !!c.secure,
+          httpOnly: !!c.httpOnly,
+          expirationDate: exp,
+        };
+        if (!c.hostOnly && c.domain) det.domain = c.domain;
+        try { await ses.cookies.set(det); fixed += 1; } catch (_) {}
+      }
+      try { if (ses.cookies && ses.cookies.flushStore) await ses.cookies.flushStore(); } catch (_) {}
+    }
+    if (fixed) { try { fnosLog('info', 'login', 'keep-login.sweep fixed=' + fixed + ' total=' + total); } catch (_) {} }
+    return { ok: fixed, total };
+  } catch (e) { return { ok: 0, total: 0, err: String(e && e.message || e) }; }
+}
 
 ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
   try {
@@ -16001,6 +16069,16 @@ function __startLaunchServer() {
   } catch (_) {}
 }
 if (__gotSingleLock) { try { app.whenReady().then(() => { setTimeout(__startLaunchServer, 0); }); } catch (_) {} }
+// v4.0.48：保持登录——启动 20s 后扫一次（等登录 Cookie 落地），之后每 5 分钟扫一次。
+// 只在 keepLogin 开启时生效；只把「会话级 Cookie」改写成长期 Cookie，不动其它数据。
+try {
+  app.whenReady().then(() => {
+    setTimeout(() => { try { __keepLoginSweep(); } catch (_) {} }, 20000);
+    const t = setInterval(() => { try { __keepLoginSweep(); } catch (_) {} }, 5 * 60 * 1000);
+    try { if (t.unref) t.unref(); } catch (_) {}
+  }).catch(() => {});
+} catch (_) {}
+
 
 
 // v2.1.5: IPC handler for uninstalling a NAS app (remove from manifest + delete shortcut + delete icon)

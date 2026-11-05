@@ -94,6 +94,23 @@
       </div>
     </section>
 
+    <!-- v4.0.48：保持登录状态（用户需求：全局一个开关，覆盖主程序 / 页内应用 / 独立应用窗） -->
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>登录状态</h2>
+      </div>
+      <p class="section-desc">开启后，涉及密码/账户登录的地方都会保持登录，重启客户端不用再登；只有你主动退出登录才会失效。</p>
+      <div class="autostart-row">
+        <label class="switch-label">
+          <input type="checkbox" id="keep-login-toggle" class="switch-input" checked />
+          <span class="switch-slider"></span>
+          <span class="switch-text" id="keep-login-text">保持登录状态（主程序 / 桌面内应用 / 快捷方式应用）</span>
+        </label>
+        <div id="keep-login-hint" class="hotkey-sub" style="margin-top:8px;color:#f0b429"></div>
+      </div>
+    </section>
+
     <!-- v2.0.0：多账号管理 -->
     <section class="settings-section">
       <div class="section-title">

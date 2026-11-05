@@ -3,6 +3,36 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.48
+
+> 用户需求（2026-11-05，语音）：涉及密码/账户登录的地方都要**保持登录**，除非用户主动退出、
+> 或取消「保持登录」；开关放偏好设置里，**全局一个**，**覆盖三层**（主程序 / 桌面内页内应用 / 快捷方式独立应用窗）。
+
+### 现状实测（先测后改）
+
+- 主程序对 NAS 的登录：飞牛前端把票据放 `localStorage`——`fnos-Secret`（24 字符）+ 标记 `os-keep-login=1`；
+  CDP 实测重启后**确实保住了**（直接进桌面）。
+- 各 partition 的 `Network/Cookies` 里只有 `osrt` / `language`，**没有登录票据**；
+  说明主程序登录不靠 Cookie，而第三方应用（qBittorrent、biliLive-tools 等）普遍用**会话级 Cookie**，
+  Chromium 退出即清 —— 这才是「应用里登录保不住」的主因。
+
+### 实现
+
+1. **新增全局设置 `keepLogin`（默认开）**：`settings.html` 偏好设置新增「登录状态」区块 + 开关；
+   `settings-preload.js` 暴露 `setKeepLogin`；主进程 `settings:get` 返回该值。
+2. **渲染层强制**（`titlebar-inject.js __applyKeepLogin`，主窗/应用窗/快捷方式窗都跑）：
+   - 开：`os-keep-login='1'`，并把只在 `sessionStorage` 的 `fnos-Secret` 搬回 `localStorage`；
+   - 关：`os-keep-login='0'`，并把 `fnos-Secret` 挪进 `sessionStorage`（退出即失效）；
+   - 监听 `settings:keep-login-changed` 实时响应，无需重启。
+3. **主进程 Cookie 保活**（`__keepLoginSweep`）：启动 20s 后 + 每 5 分钟，遍历 `session.getAllSessions()`，
+   把 `session === true` 的会话级 Cookie 改写成 **+1 年** 的持久 Cookie（覆盖所有 partition/第三方应用），
+   并 `flushStore()` 落盘；开关关闭时整个 sweep 直接跳过。日志 `login keep-login.sweep fixed=N total=M`。
+
+### 边界
+
+- 用户主动「退出登录」：飞牛自己会清 `fnos-Secret`，我们不做任何拦截。
+- 删除历史服务器 / 移除账号：仍按原逻辑清该 partition 的存储（保留原有行为）。
+
 ## v4.0.47
 
 > 用户工单（2026-11-05 22:45）：① biliLive-tools 直播录制里点「观看直播」，弹出的播放窗报错；

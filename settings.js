@@ -57,6 +57,9 @@
   const autostartToggle = $('autostart-toggle');
   const autostartText = $('autostart-text');
   const autostartHint = $('autostart-hint');
+  // v4.0.48：保持登录开关
+  const keepLoginToggle = $('keep-login-toggle');
+  const keepLoginHint = $('keep-login-hint');
 
   const pwdForm = $('pwd-form');
   const oldPwd = $('old-pwd');
@@ -678,6 +681,7 @@
       if (!info) return;
       if (optTbAutoHide) { optTbAutoHide.checked = info.titleBarAutoHide === true; syncTbLabel(); }
       if (optHideBall) { optHideBall.checked = info.hideAccountBall === true; syncHideBallLabel(); }
+      if (keepLoginToggle) keepLoginToggle.checked = info.keepLogin !== false;
       uiAlphaPct = (info.uiTransparentAlpha != null && Number.isFinite(Number(info.uiTransparentAlpha)))
         ? Math.max(0, Math.min(100, Math.round(Number(info.uiTransparentAlpha))))
         : 62;
@@ -1255,6 +1259,27 @@
           autostartHint.textContent = err?.message || '操作失败';
           autostartHint.style.color = '#f87171';
         }
+      }
+    });
+  }
+
+  // v4.0.48：保持登录开关——立即生效（主进程广播给所有窗口 + 改写会话级 Cookie）
+  if (keepLoginToggle) {
+    keepLoginToggle.addEventListener('change', async () => {
+      const on = keepLoginToggle.checked;
+      if (keepLoginHint) { keepLoginHint.textContent = on ? '已开启：正在保持登录…' : '已关闭：退出后将不再保持登录'; keepLoginHint.style.color = '#f0b429'; }
+      try {
+        const res = await fnosSettings.setKeepLogin(on);
+        if (keepLoginHint) {
+          keepLoginHint.textContent = on
+            ? '已开启：主程序、桌面内应用、快捷方式应用都会保持登录'
+            : '已关闭：下次退出客户端后需要重新登录';
+          keepLoginHint.style.color = '#4ade80';
+        }
+        if (!res || res.ok !== true) throw new Error('保存失败');
+      } catch (err) {
+        keepLoginToggle.checked = !on;
+        if (keepLoginHint) { keepLoginHint.textContent = (err && err.message) || '操作失败'; keepLoginHint.style.color = '#f87171'; }
       }
     });
   }

@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('fnosSettings', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   clearCache: () => ipcRenderer.invoke('settings:clear-cache'),
+  // v4.0.48：保持登录开关（全局一个，覆盖主程序/页内应用/独立应用窗）
+  setKeepLogin: (on) => ipcRenderer.invoke('settings:set-keep-login', !!on),
   setPassword: (payload) =>
     ipcRenderer.invoke('settings:set-password', {
       oldPassword: String(payload?.oldPassword || ''),

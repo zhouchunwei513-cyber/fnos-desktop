@@ -8278,6 +8278,32 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                 }
               } catch (_) {}
               win.__fnConnFail30 = (win.__fnConnFail30 || 0) + 1;
+              // v4.0.59（用户工单：切换账号后两类打开方式都试了，大部分应用打不开）——
+              // 日志实证：失败 URL 主机要么是**另一个账号的 NAS**（121.40.186.165，现网不可达 -118 超时），
+              // 要么是**本机不监听的 103xx 端口**（-102 拒绝）。这类失败重试任何端口变体都不会成功，
+              // 只会多开窗口。这里识别出来后直接给明确错误页并停止重试，同时留一条汇总日志。
+              try {
+                const __u0 = String(url || '');
+                const __host0 = (() => { try { return String(new URL(__u0).hostname || '').toLowerCase(); } catch (_) { return ''; } })();
+                const __otherAcct = __host0 && __launchKnownAccountHosts().indexOf(__host0) >= 0;
+                const __connClass = [-102, -105, -106, -118, -7, -21, -137, -324].indexOf(Number(code)) >= 0;
+                if (__otherAcct && __connClass) {
+                  const __all = (getAccounts() || []);
+                  let __label = __host0;
+                  try {
+                    const hit = __all.find((a) => String(a && (a.origin || a.href) || '').indexOf(__host0) >= 0);
+                    if (hit) __label = String(hit.label || hit.name || __host0);
+                  } catch (_) {}
+                  try { require('./logger.js').log('warn', 'appwin', 'appwin.cross-account-unreachable', { params: { winId: win.id, code: code, appId: String((opts && opts.appId) || '').slice(0, 60), host: __host0, account: __label.slice(0, 40), url: __u0.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+                  try {
+                    if (!win.isDestroyed()) {
+                      const __ep = 'file://' + path.join(__dirname, 'error.html') + '?app=' + encodeURIComponent('账号「' + __label + '」') + '&url=' + encodeURIComponent(__u0);
+                      win.loadURL(__ep);
+                    }
+                  } catch (_) {}
+                  return;
+                }
+              } catch (_) {}
               if (win.__fnConnFail30 === 1 && !win.__fnConnSwap30) {
                 let __aid30 = '';
                 try { __aid30 = String((opts && (opts.appId || opts.name)) || __appLabel || ''); } catch (_) {}

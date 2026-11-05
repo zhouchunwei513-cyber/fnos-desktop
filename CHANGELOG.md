@@ -3,6 +3,33 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.42
+
+> 用户反馈：改用 Tailscale 地址登录后，桌面快捷方式打不开 DeepSeek Harness。
+
+### 根因（两处叠加，日志实证）
+
+1. **端口停留在旧 origin**：快捷方式/manifest 存的是公网完整地址
+   `http://<host>:10300/app/xxx`，换成 Tailscale 后主机变成 `100.x`、端口却还是 `10300`
+   → `ERR_CONNECTION_REFUSED`（日志：`url:"http://100.103.38.13:10300/app/fn-deepseek-harness"`）。
+2. **入口质检误判**：端口修正后 `/app/fn-deepseek-harness` 已 200 加载成功，
+   但质检把 iframe 形态、正文极短的 DSH 页判成坏入口 → 回退 `/appview?anchor=…`（404）。
+
+### 改动
+
+- `main.js`：连接被拒时，若目标是 NAS 内置应用页（`/app/`、`/appview`），
+  按「同主机已知 origin」（settings.origin / history / 账号列表）的真实端口重试一次
+  （只作用于内置应用页，第三方容器端口不动）。
+- `main.js`：入口质检放宽——落在 `/app/<id>/` 且非登录页时直接认定为有效入口，
+  不再切候选链（日志 `appwin.entry-check.app-route-ok`）。
+
+### 验证
+
+```
+appwin.load.done {"url":"http://100.103.38.13:5666/app/fn-deepseek-harness"}
+窗口标题：飞牛PC客户端 — DeepSeek Harness
+```
+快捷方式在 Tailscale 会话下可正常打开；热部署 0 ERROR。
 ## v4.0.39
 
 > 用户工单：标题栏 / 窗口四角「圆角 / 半圆角」各拆成大小两档（共五档），修掉

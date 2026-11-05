@@ -7246,6 +7246,26 @@ function __entryCacheHostFix(url) {
 
 function createAppWindow(url, opts = {}) {
   const __cw_t0 = Date.now();
+  // v4.0.41（用户反馈：改用 Tailscale 地址登录后，桌面快捷方式打不开 DSH）：
+  // 快捷方式/manifest 里存的是旧 origin 的完整地址（公网 http://<host>:10300/app/xxx），
+  // 换了连接方式后主机变成 100.x、端口却还是 10300 → ERR_CONNECTION_REFUSED。
+  // 这里把「与当前 NAS 同主机的内置应用页」端口对齐到当前 origin 的真实端口。
+  // 只对 /app/ 与 /appview 生效，避免误改第三方容器端口（如 qB 的 :8080）。
+  try {
+    const __lb41 = String(__liveOriginBase() || '');
+    const __u41 = String(url || '');
+    if (__lb41 && /^https?:\/\//i.test(__u41)) {
+      const live = new URL(__lb41);
+      const u = new URL(__u41);
+      const isNasApp = /^\/(app|appview)(\/|\?|$)/i.test(u.pathname || '');
+      if (isNasApp && live.hostname && u.hostname === live.hostname && u.port !== live.port) {
+        const from = u.toString();
+        u.port = live.port;
+        url = u.toString();
+        try { fnosLog('warn', 'launch', 'url.port-align41', { from, to: String(url).slice(0, 160) }); } catch (_) {}
+      }
+    }
+  } catch (_) {}
   try { global.__fnClickOpened25 = true; } catch (_) {}
   // v3.0.32（问题2：快捷方式打不开、程序内打开正常）：快捷方式链路传进来的常是
   // appview?anchor=<id> 中转地址，而 FPK 图标管理器里同一应用有真实地址
@@ -8081,6 +8101,22 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                     setTimeout(() => { try { if (!win.isDestroyed()) win.loadURL(__fixed36); } catch (_) {} }, 120);
                     return;
                   }
+                  // v4.0.41：端口存在但不对（快捷方式存的是旧 origin 的 :10300，主机却已换成
+                  // Tailscale 的 100.x）→ 按「同主机已知 origin」的真实端口重试一次。
+                  // 只处理 NAS 内置应用页（/app/、/appview），第三方容器端口不动。
+                  if (__fu.port && /^\/(app|appview)(\/|\?|$)/i.test(__fu.pathname || '')) {
+                    const __cands41 = [];
+                    try { const st41 = loadSettings(); [st41 && st41.origin, st41 && st41.lastConnectHref, __base36].forEach((v) => { if (v) { try { const u = new URL(String(v)); if (u.hostname === __fu.hostname && u.port && u.port !== __fu.port) __cands41.push(u); } catch (_) {} } }); } catch (_) {}
+                    try { (getAccounts() || []).forEach((a) => { try { const u = new URL(String((a && a.origin) || '')); if (u.hostname === __fu.hostname && u.port && u.port !== __fu.port) __cands41.push(u); } catch (_) {} }); } catch (_) {}
+                    const __hit41 = __cands41[0];
+                    if (__hit41) {
+                      win.__fnPortFix30 = true;
+                      const __fixed41 = __hit41.origin + __fu.pathname + __fu.search + __fu.hash;
+                      try { require('./logger.js').log('warn', 'appwin', 'appwin.port-align41', { params: { winId: win.id, code: code, from: String(url).slice(0, 120), to: __fixed41.slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+                      setTimeout(() => { try { if (!win.isDestroyed()) win.loadURL(__fixed41); } catch (_) {} }, 120);
+                      return;
+                    }
+                  }
                 }
               } catch (_) {}
               win.__fnConnFail30 = (win.__fnConnFail30 || 0) + 1;
@@ -8136,6 +8172,18 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
                     }
                   } catch (_) {}
                   const __login30 = Array.isArray(__r30) ? (__r30[3] || 0) : 0;
+                  // v4.0.42（Tailscale 会话下快捷方式打不开 DSH）：/app/<id>/ 是 NAS 内置应用
+                  // 的真实入口页，DSH 这类 iframe 形态页面正文很短、也不含"未安装"字样，
+                  // 但旧判据会因文本量/嵌入元素把它判成坏入口 → 回退到 appview?anchor（404）。
+                  // 只要落在 /app/<id>/ 且不是登录页，就认定入口有效，不再切换候选。
+                  try {
+                    const __cu42 = String(win.webContents.getURL() || '');
+                    const __pu42 = (() => { try { return new URL(__cu42).pathname || ''; } catch (_) { return ''; } })();
+                    if (!__login30 && /^\/app\/[^/]+\/?/i.test(__pu42)) {
+                      if (bad) { try { dlog && dlog('info', 'appwin.entry-check.app-route-ok', { app: __appLabel, winId: win.id, url: __cu42.slice(0, 120), wasBad: !!bad, len: __len30, has: __has30 }); } catch (_) {} }
+                      bad = false;
+                    }
+                  } catch (_) {}
                   try { win.__fnEntryCheck = false; } catch (_) {}
                   try {
                     dlog && dlog('info', 'appwin.entry-check', { app: __appLabel, winId: win.id, bad: !!bad, len: __len30, has: __has30, login: __login30, left: __urlCandidates.length, url: String(win.webContents.getURL() || '').slice(0, 120) });
@@ -11289,10 +11337,14 @@ function doConnectTo(serverInput) {
       });
     } catch (_) {}
     // 目标仍是 100.64/10：先探一次 TCP（不通也照样加载，由 did-fail-load 进等待通道）
+    // v4.0.40：端口从 href 里取真值——此前用 parsed.port（normalizeServer 并不返回该字段）
+    // 于是永远回落成 80，Tailscale 上 5666 的 NAS 每次预检都 false，日志误导排查。
     try {
       if (__isCgnatUrl53(parsed.href)) {
-        __probeTcp53(parsed.hostname, Number(parsed.port || 80) || 80, 2000, (ok) => {
-          try { fnosLog('info', 'network', 'vpn.precheck', { host: parsed.hostname, port: Number(parsed.port || 80) || 80, ok }); } catch (_) {}
+        const __pu40 = (() => { try { const u = new URL(parsed.href); return Number(u.port || (u.protocol === 'https:' ? 443 : 80)) || 80; } catch (_) { return 80; } })();
+        const __ph40 = parsed.hostname;
+        __probeTcp53(__ph40, __pu40, 2000, (ok) => {
+          try { fnosLog('info', 'network', 'vpn.precheck', { host: __ph40, port: __pu40, ok }); } catch (_) {}
         });
       }
     } catch (_) {}

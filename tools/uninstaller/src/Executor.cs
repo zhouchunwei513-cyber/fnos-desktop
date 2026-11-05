@@ -31,6 +31,7 @@ namespace FnosUninstall
             if (items == null || items.Count == 0) return results;
 
             // 1) 结束进程（必须先做，否则文件被占用）
+            log("开始清理，共 " + items.Count + " 项");
             log("结束 FNOS 相关进程…");
             List<string> roots = new List<string>();
             if (info != null)
@@ -208,8 +209,16 @@ namespace FnosUninstall
             if (fail > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine("失败项通常是被占用或权限不足：重启后再运行一次，或手动删除上面列出的路径。");
+                sb.AppendLine("失败项处理办法：");
+                sb.AppendLine("  1) 重启电脑 —— 被占用的文件已登记到 PendingFileRenameOperations，重启时由系统删除；");
+                sb.AppendLine("  2) 重启后再运行一次本工具，清掉剩下的空目录与注册表项；");
+                sb.AppendLine("  3) 仍然失败时，把同目录的 uninstall-log.txt 一起提供给开发者（里面有占用进程名与具体错误）。");
             }
+
+            string logPath = Util.LogFilePath();
+            if (!string.IsNullOrEmpty(logPath) && fail > 0)
+                sb.AppendLine("详细日志：" + logPath);
+
             return sb.ToString();
         }
     }

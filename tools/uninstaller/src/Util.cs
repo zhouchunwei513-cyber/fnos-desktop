@@ -17,11 +17,50 @@ namespace FnosUninstall
         /// <summary>日志回调（UI 订阅）</summary>
         public static Action<string> Log = delegate { };
 
+        private static string __logFile = "";
+        private static readonly object __logLock = new object();
+
+        /// <summary>初始化持久化日志：exe 同目录 uninstall-log.txt（追加写，带完整异常信息）</summary>
+        public static void InitLog(string dir)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(dir)) return;
+                __logFile = Path.Combine(dir, "uninstall-log.txt");
+                StringBuilder head = new StringBuilder();
+                head.AppendLine();
+                head.AppendLine("===== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  FNOS 卸载器启动 =====");
+                head.AppendLine("系统：" + OsName());
+                head.AppendLine("管理员：" + (IsAdmin() ? "是" : "否"));
+                head.AppendLine("目录：" + AppDomain.CurrentDomain.BaseDirectory);
+                File.AppendAllText(__logFile, head.ToString(), new UTF8Encoding(true));
+            }
+            catch { }
+        }
+
+        public static string LogFilePath() { return __logFile; }
+
         public static void Write(string format, params object[] args)
         {
             string line = args == null || args.Length == 0 ? format : string.Format(format, args);
-            try { Log("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line); }
+            string stamped = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line;
+            try { Log(stamped); } catch { }
+            if (__logFile.Length == 0) return;
+            try
+            {
+                lock (__logLock) { File.AppendAllText(__logFile, stamped + "\r\n", new UTF8Encoding(false)); }
+            }
             catch { }
+        }
+
+        /// <summary>异常摘要：类型 + 消息，便于日志定位</summary>
+        public static string Short(Exception e)
+        {
+            if (e == null) return "";
+            string s = e.GetType().Name;
+            if (!string.IsNullOrEmpty(e.Message)) s += "：" + e.Message;
+            s = s.Replace("\r", " ").Replace("\n", " ");
+            return s.Length <= 200 ? s : s.Substring(0, 200) + "…";
         }
 
         // ---------------- 路径 ----------------
@@ -33,13 +72,25 @@ namespace FnosUninstall
             catch { return p; }
         }
 
-        /// <summary>长路径前缀，避免 260 字符限制</summary>
+        /// <summary>
+        /// 长路径前缀。注意：只在确实超长时才加 —— .NET Framework 的 EnumerateFiles/Directory.Delete
+        /// 对普通长度的 `\\?\` 路径会抛「路径中具有非法字符」(ArgumentException)。
+        /// </summary>
         public static string LongPath(string p)
         {
             if (string.IsNullOrEmpty(p)) return p;
             if (p.StartsWith(@"\\?\")) return p;
+            if (p.Length < 240) return p;
             if (p.StartsWith(@"\\")) return @"\\?\UNC\" + p.Substring(2);
             return @"\\?\" + p;
+        }
+
+        /// <summary>去掉 \\?\ 前缀（用于写 PendingFileRenameOperations）</summary>
+        public static string StripLongPrefix(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return p;
+            if (p.StartsWith(@"\\?\")) return p.Substring(4);
+            return p;
         }
 
         public static string Combine(string a, string b) { return Path.Combine(a, b); }
@@ -89,48 +140,72 @@ namespace FnosUninstall
             catch { }
         }
 
-        /// <summary>目录删除：先常规，再清属性，最后登记重启删除</summary>
+        private class TreeResult
+        {
+            public int Failed = 0;
+            public string FirstError = "";
+            public List<string> FailedPaths = new List<string>();
+        }
+
+        /// <summary>
+        /// 目录删除（v1.0.1 重写）：整体删 → 占用探测+杀进程 → 重试 → 抢权限 → 逐文件删 → 登记重启删除。
+        /// 每一步都写日志，失败时给出具体原因（不再只回一个异常类型名）。
+        /// </summary>
         public static bool DeleteDirectory(string path, out string msg)
         {
             msg = "";
             if (!DirExists(path)) { msg = "不存在（已清理）"; return true; }
-            try
-            {
-                Directory.Delete(LongPath(path), true);
-                msg = "已删除";
-                return true;
-            }
-            catch (Exception e1)
-            {
-                msg = e1.GetType().Name;
-            }
-            try
-            {
-                ClearReadOnly(path);
-                Directory.Delete(LongPath(path), true);
-                msg = "已删除（清只读后）";
-                return true;
-            }
-            catch (Exception e2)
-            {
-                msg = e2.GetType().Name;
-            }
-            // 杀占用进程后重试
+
+            // ① 整体删除
+            try { Directory.Delete(LongPath(path), true); msg = "已删除"; return true; }
+            catch (Exception e) { Write("    整体删除失败：" + Short(e)); }
+
+            // ② 谁在占用 + 杀进程
+            List<int> pids;
+            string lockers = WhoIsLocking(path, out pids);
+            if (lockers.Length > 0) Write("    占用探测：" + lockers);
+            if (pids.Count > 0) Write("    已结束占用进程：" + KillPids(pids) + " 个");
             KillProcessesUnder(path);
-            Thread.Sleep(300);
+
+            try { ClearReadOnly(path); Directory.Delete(LongPath(path), true); msg = "已删除（清属性/结束进程后）"; return true; }
+            catch (Exception e) { Write("    二次删除失败：" + Short(e)); }
+
+            for (int i = 0; i < 3; i++)
+            {
+                Thread.Sleep(800);
+                try { Directory.Delete(LongPath(path), true); msg = "已删除（第 " + (i + 1) + " 次重试）"; return true; }
+                catch { }
+            }
+
+            // ③ 权限不足：抢所有权后再试
             try
             {
-                Directory.Delete(LongPath(path), true);
-                msg = "已删除（结束占用进程后）";
+                if (NeedTakeOwn(path))
+                {
+                    TakeOwnership(path);
+                    Directory.Delete(LongPath(path), true);
+                    msg = "已删除（修复权限后）";
+                    return true;
+                }
+            }
+            catch { }
+
+            // ④ 逐文件删除，收集失败项
+            TreeResult tr = DeleteTreeDetailed(path);
+            if (!DirExists(path))
+            {
+                msg = tr.Failed == 0 ? "已删除（逐文件）" : ("已删除，另有 " + tr.Failed + " 个文件登记重启删除");
                 return true;
             }
-            catch (Exception e3)
-            {
-                // 登记重启删除
-                bool ok = ScheduleDeleteOnReboot(path);
-                msg = ok ? "占用中，已登记重启后删除" : "删除失败：" + e3.Message;
-                return ok;
-            }
+
+            // ⑤ 仍然残留：只能登记重启删除
+            int scheduled = ScheduleDeleteFilesOnReboot(tr.FailedPaths);
+            bool dirScheduled = ScheduleDeleteDirOnReboot(path);
+            msg = "残留 " + tr.Failed + " 项（" + (tr.FirstError.Length > 0 ? tr.FirstError : "被占用") + "）";
+            if (scheduled > 0) msg += "；已登记 " + scheduled + " 项重启删除";
+            if (dirScheduled) msg += "；目录已登记重启删除";
+            if (scheduled == 0 && !dirScheduled) msg = "删除失败：" + msg;
+            return DirExists(path) == false;
         }
 
         public static bool DeleteFile(string path, out string msg)
@@ -146,52 +221,157 @@ namespace FnosUninstall
             }
             catch (Exception e)
             {
-                bool ok = ScheduleDeleteOnReboot(path);
-                msg = ok ? "占用中，已登记重启后删除" : "删除失败：" + e.Message;
-                return ok;
+                Write("    文件删除失败：" + path + "  ← " + Short(e));
+                List<int> pids;
+                string lockers = WhoIsLocking(path, out pids);
+                if (lockers.Length > 0) Write("    占用探测：" + lockers);
+                KillPids(pids);
+                Thread.Sleep(300);
+                try { File.Delete(LongPath(path)); msg = "已删除（结束占用后）"; return true; } catch { }
+                int n = ScheduleDeleteFilesOnReboot(new List<string>(new string[] { path }));
+                msg = n > 0 ? "被占用，已登记重启删除" : "删除失败：" + Short(e);
+                return n > 0;
             }
         }
 
-        /// <summary>通过 PendingFileRenameOperations 登记重启删除</summary>
-        public static bool ScheduleDeleteOnReboot(string path)
+        private static TreeResult DeleteTreeDetailed(string root)
         {
+            TreeResult r = new TreeResult();
+            List<string> files = new List<string>();
+            List<string> dirs = new List<string>();
+            try
+            {
+                files.AddRange(Directory.EnumerateFiles(LongPath(root), "*", SearchOption.AllDirectories));
+                dirs.AddRange(Directory.EnumerateDirectories(LongPath(root), "*", SearchOption.AllDirectories));
+            }
+            catch (Exception e)
+            {
+                r.Failed++;
+                r.FirstError = Short(e);
+                r.FailedPaths.Add(root);
+                return r;
+            }
+
+            foreach (string f in files)
+            {
+                try
+                {
+                    File.SetAttributes(f, FileAttributes.Normal);
+                    File.Delete(f);
+                    continue;
+                }
+                catch (Exception e)
+                {
+                    // 精准定位：这个文件被谁占用？结束它再试一次
+                    List<int> lockPids;
+                    string who = WhoIsLocking(f, out lockPids);
+                    if (who.Length > 0)
+                    {
+                        Write("    × " + f + "  ← 被 " + who + " 占用，尝试结束进程");
+                        int k = KillPids(lockPids);
+                        Write("      已结束 " + k + " 个进程，重试删除：" + (k > 0 ? "是" : "否"));
+                        Thread.Sleep(400);
+                        try
+                        {
+                            File.SetAttributes(f, FileAttributes.Normal);
+                            File.Delete(f);
+                            continue;
+                        }
+                        catch { }
+                    }
+
+                    r.Failed++;
+                    if (r.FirstError.Length == 0) r.FirstError = Short(e);
+                    r.FailedPaths.Add(f);
+                    Write("    × " + f + "  ← " + Short(e));
+                }
+            }
+
+            dirs.Sort(delegate (string a, string b) { return b.Length.CompareTo(a.Length); });
+            foreach (string d in dirs)
+            {
+                try { Directory.Delete(d, false); } catch { }
+            }
+            try { Directory.Delete(LongPath(root), false); } catch { }
+            return r;
+        }
+
+        private static bool NeedTakeOwn(string dir)
+        {
+            try
+            {
+                string probe = Path.Combine(dir, ".fnos-uninst-probe");
+                using (FileStream fs = File.Create(probe)) { fs.WriteByte(0); }
+                File.Delete(probe);
+                return false;
+            }
+            catch (UnauthorizedAccessException) { return true; }
+            catch { return false; }
+        }
+
+        /// <summary>接管所有权并授予管理员完全控制（其它用户目录 / Program Files 常需要）</summary>
+        public static void TakeOwnership(string dir)
+        {
+            Write("    尝试接管权限：" + dir);
+            try { Write("    takeown: " + Run("takeown.exe", "/f \"" + dir + "\" /r /d y", 90000).Trim()); } catch { }
+            try { Run("icacls.exe", "\"" + dir + "\" /grant *S-1-5-32-544:F /t /c /q", 180000); } catch { }
+        }
+
+        /// <summary>把文件清单登记到 PendingFileRenameOperations（重启时由 SMSS 删除）</summary>
+        public static int ScheduleDeleteFilesOnReboot(List<string> files)
+        {
+            if (files == null || files.Count == 0) return 0;
             try
             {
                 using (RegistryKey k = Registry.LocalMachine.OpenSubKey(
                     @"SYSTEM\CurrentControlSet\Control\Session Manager", true))
                 {
-                    if (k == null) return false;
-                    string[] old = k.GetValue("PendingFileRenameOperations") as string[];
+                    if (k == null) { Write("    × 无法打开 Session Manager 键（需要管理员）"); return 0; }
+
                     List<string> list = new List<string>();
+                    string[] old = k.GetValue("PendingFileRenameOperations") as string[];
                     if (old != null) list.AddRange(old);
-                    foreach (string one in EnumerateFilesForPending(path))
+
+                    HashSet<string> exist = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    for (int i = 0; i + 1 < list.Count; i += 2) exist.Add(list[i]);
+
+                    int added = 0;
+                    foreach (string f in files)
                     {
-                        list.Add(@"\??\" + one);
+                        if (string.IsNullOrEmpty(f)) continue;
+                        string src = @"\??\" + StripLongPrefix(f);
+                        if (!exist.Add(src)) continue;
+                        list.Add(src);
                         list.Add("");
+                        added++;
                     }
+                    if (added == 0) return 0;
+
                     k.SetValue("PendingFileRenameOperations", list.ToArray(), RegistryValueKind.MultiString);
+
+                    // 读回校验：确认系统真的记下了
+                    string[] back = k.GetValue("PendingFileRenameOperations") as string[];
+                    int verified = 0;
+                    if (back != null) { foreach (string s in back) if (exist.Contains(s)) verified++; }
+                    Write("    PendingFileRenameOperations 登记 " + added + " 项，读回校验 " + verified + " 项");
+                    return verified;
                 }
-                return true;
             }
-            catch { return false; }
+            catch (Exception e)
+            {
+                Write("    × 登记重启删除失败：" + Short(e));
+                return 0;
+            }
         }
 
-        private static List<string> EnumerateFilesForPending(string path)
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool MoveFileEx(string existing, string newName, int flags);
+
+        /// <summary>空目录登记重启删除（MOVEFILE_DELAY_UNTIL_REBOOT=4）</summary>
+        public static bool ScheduleDeleteDirOnReboot(string path)
         {
-            List<string> outList = new List<string>();
-            try
-            {
-                if (FileExists(path)) { outList.Add(path); return outList; }
-                if (!DirExists(path)) return outList;
-                outList.AddRange(Directory.EnumerateFiles(LongPath(path), "*", SearchOption.AllDirectories));
-                // 目录本身排在文件之后
-                List<string> dirs = new List<string>(Directory.EnumerateDirectories(LongPath(path), "*", SearchOption.AllDirectories));
-                dirs.Sort(delegate (string a, string b) { return b.Length.CompareTo(a.Length); });
-                outList.AddRange(dirs);
-                outList.Add(path);
-            }
-            catch { }
-            return outList;
+            try { return MoveFileEx(@"\??\" + path, null, 4); }
+            catch { return false; }
         }
 
         // ---------------- 进程 ----------------
@@ -245,6 +425,132 @@ namespace FnosUninstall
         public static void KillProcessesUnder(string dir)
         {
             KillFnosProcesses(dir);
+        }
+
+        /// <summary>按 PID 结束进程（占用探测结果）</summary>
+        public static int KillPids(List<int> pids)
+        {
+            int n = 0;
+            if (pids == null) return 0;
+            foreach (int pid in pids)
+            {
+                try
+                {
+                    if (pid <= 0 || pid == Process.GetCurrentProcess().Id) continue;
+                    using (Process p = Process.GetProcessById(pid))
+                    {
+                        p.Kill();
+                        n++;
+                        try { p.WaitForExit(3000); } catch { }
+                    }
+                }
+                catch { }
+            }
+            return n;
+        }
+
+        // ---------------- 占用探测（Restart Manager，Vista~Win11 通用） ----------------
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RM_UNIQUE_PROCESS
+        {
+            public int dwProcessId;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct RM_PROCESS_INFO
+        {
+            public RM_UNIQUE_PROCESS Process;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+            public string strAppName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+            public string strServiceShortName;
+            public int ApplicationType;
+            public uint AppStatus;
+            public uint TSSessionId;
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool bRestartable;
+        }
+
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        private static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, StringBuilder strSessionKey);
+
+        [DllImport("rstrtmgr.dll")]
+        private static extern int RmEndSession(uint pSessionHandle);
+
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        private static extern int RmRegisterResources(uint pSessionHandle, uint nFiles, string[] rgsFilenames,
+            uint nApplications, RM_UNIQUE_PROCESS[] rgApplications, uint nServices, string[] rgsServiceNames);
+
+        [DllImport("rstrtmgr.dll")]
+        private static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo,
+            [In, Out] RM_PROCESS_INFO[] rgAffectedApps, out uint lpdwRebootReasons);
+
+        /// <summary>查「谁占用着这个路径」，返回 "进程名(PID)" 串，pids 供后续结束</summary>
+        public static string WhoIsLocking(string path, out List<int> pids)
+        {
+            pids = new List<int>();
+            StringBuilder sb = new StringBuilder();
+            uint handle = 0;
+            bool started = false;
+            try
+            {
+                StringBuilder key = new StringBuilder(256);
+                if (RmStartSession(out handle, 0, key) != 0) return "";
+                started = true;
+
+                // Restart Manager 对目录的识别很弱：目录要把内部文件作为资源注册才查得到占用者
+                List<string> res = new List<string>();
+                if (FileExists(path))
+                {
+                    res.Add(path);
+                }
+                else if (DirExists(path))
+                {
+                    try
+                    {
+                        int n = 0;
+                        foreach (string f in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                        {
+                            res.Add(f);
+                            if (++n >= 64) break;
+                        }
+                    }
+                    catch { }
+                    if (res.Count == 0) res.Add(path);
+                }
+                else res.Add(path);
+
+                string[] resources = res.ToArray();
+                if (RmRegisterResources(handle, (uint)resources.Length, resources, 0, null, 0, null) != 0) return "";
+
+                uint needed = 0, count = 0, reasons = 0;
+                int rv = RmGetList(handle, out needed, ref count, null, out reasons);
+                if (rv == 234 && needed > 0)   // ERROR_MORE_DATA
+                {
+                    RM_PROCESS_INFO[] infos = new RM_PROCESS_INFO[needed];
+                    count = needed;
+                    rv = RmGetList(handle, out needed, ref count, infos, out reasons);
+                    if (rv == 0)
+                    {
+                        for (int i = 0; i < count; i++)
+                        {
+                            string n = infos[i].strAppName;
+                            if (string.IsNullOrEmpty(n)) n = "进程";
+                            if (sb.Length > 0) sb.Append("、");
+                            sb.Append(n + "(" + infos[i].Process.dwProcessId + ")");
+                            pids.Add(infos[i].Process.dwProcessId);
+                        }
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (started) { try { RmEndSession(handle); } catch { } }
+            }
+            return sb.ToString();
         }
 
         public static bool IsFnosRunning()

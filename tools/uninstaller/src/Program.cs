@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("FNOS 客户端强力卸载工具（Windows 10 / 11）")]
 [assembly: AssemblyProduct("FNOS 客户端强力卸载")]
 [assembly: AssemblyCompany("FNOS")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 namespace FnosUninstall
 {
@@ -33,6 +33,8 @@ namespace FnosUninstall
 
             // 必须在创建任何窗口之前声明 DPI 感知，否则 Win10/11 高分屏下界面会被位图拉伸
             Util.EnableDpiAwareness();
+            // 持久化日志：exe 同目录 uninstall-log.txt，出问题可直接发这个文件
+            Util.InitLog(AppDomain.CurrentDomain.BaseDirectory);
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -145,6 +147,7 @@ namespace FnosUninstall
         private Button btnAll;
         private Button btnNone;
         private Button btnExport;
+        private Button btnLog;
         private Button btnRun;
         private Button btnClose;
         private CheckBox chkDeep;
@@ -187,7 +190,7 @@ namespace FnosUninstall
 
         private void BuildUi()
         {
-            Text = Program.AppTitle + "  v1.0";
+            Text = Program.AppTitle + "  v1.0.1";
             Font = new Font("Microsoft YaHei UI", 9F);
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);
@@ -278,8 +281,12 @@ namespace FnosUninstall
             btnNone.Margin = new Padding(0, 3, 6, 0);
             btnNone.Click += delegate { SetAll(false); };
             btnExport = MakeButton("导出清单", 90);
-            btnExport.Margin = new Padding(0, 3, 0, 0);
+            btnExport.Margin = new Padding(0, 3, 6, 0);
             btnExport.Click += delegate { ExportPlan(); };
+
+            btnLog = MakeButton("打开日志", 90);
+            btnLog.Margin = new Padding(0, 3, 0, 0);
+            btnLog.Click += delegate { OpenLog(); };
 
             pnlTools.Controls.Add(btnScan);
             pnlTools.Controls.Add(chkDeep);
@@ -288,6 +295,7 @@ namespace FnosUninstall
             pnlTools.Controls.Add(btnAll);
             pnlTools.Controls.Add(btnNone);
             pnlTools.Controls.Add(btnExport);
+            pnlTools.Controls.Add(btnLog);
 
             // ---------- 列表 ----------
             lv = new ListView();
@@ -577,6 +585,26 @@ namespace FnosUninstall
             UpdateSummary();
         }
 
+        private void OpenLog()
+        {
+            try
+            {
+                string p = Util.LogFilePath();
+                if (string.IsNullOrEmpty(p) || !File.Exists(p))
+                {
+                    MessageBox.Show(this, "还没有生成日志（执行一次扫描后就会有）。", Program.AppTitle,
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                Process.Start("notepad.exe", "\"" + p + "\"");
+            }
+            catch (Exception e)
+            {
+                MessageBox.Show(this, "打开日志失败：" + e.Message, Program.AppTitle,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
         private void ExportPlan()
         {
             StringBuilder sb = new StringBuilder();
@@ -722,13 +750,21 @@ namespace FnosUninstall
             SetStatus("完成：成功 " + ok + " 项，失败 " + fail + " 项");
             AppendLog("===== 完成：成功 " + ok + "，失败 " + fail + " =====");
 
-            string msg = "清理完成。\r\n\r\n成功 " + ok + " 项，失败 " + fail + " 项。\r\n报告已保存到：\r\n" + p;
+            string msg = "清理完成。\r\n\r\n成功 " + ok + " 项，失败 " + fail + " 项。\r\n报告：\r\n" + p;
             if (fail > 0)
-                msg += "\r\n\r\n失败项多为「文件被占用」。重启电脑后再运行一次本工具即可清除（部分已登记为重启删除）。";
+            {
+                msg += "\r\n\r\n失败项多为文件被占用（日志里有占用进程名）。处理："
+                     + "\r\n1) 重启电脑，已登记的文件会在重启时被系统删除；"
+                     + "\r\n2) 重启后再运行一次本工具，清掉剩下的空目录与注册表项。"
+                     + "\r\n\r\n详细日志：\r\n" + Util.LogFilePath();
+            }
             MessageBox.Show(this, msg, Program.AppTitle, MessageBoxButtons.OK,
                 fail > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
 
-            StartScan(chkDeep.Checked);
+            // 不再自动重扫（以前会自动再扫一遍，看起来像"反复扫描"）；需要的点「重新扫描」
+            SetStatus(fail > 0
+                ? "已清理，仍有 " + fail + " 项失败：重启后再运行一次；点「重新扫描」可查看剩余"
+                : "清理完成；点「重新扫描」可确认是否还有残留");
         }
     }
 }

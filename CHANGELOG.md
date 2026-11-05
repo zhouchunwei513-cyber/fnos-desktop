@@ -3,6 +3,40 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.47
+
+> 用户工单（2026-11-05 22:45）：① biliLive-tools 直播录制里点「观看直播」，弹出的播放窗报错；
+> ② 同一路直播在这个应用内看卡顿，浏览器看不卡；日志里没有播放侧记录。
+
+### 1. 「观看直播」弹窗报错 —— 账号主机归位误改第三方端口（根因实锤）
+
+日志（fnos-2026-11-05.log 14:39:22~14:39:33）：
+
+```
+launch.account-fix  fromHost 121.40.186.165  toHost 100.103.38.13
+appwin.target-fix  http://121.40.186.165:10305/#/liveVideoPlayer?...  →  http://100.103.38.13:10305/...
+appwin.nav-error   code=-102 ERR_CONNECTION_REFUSED
+appwin.load.fail   → error.html?app=FNOS...
+```
+
+- biliLive-tools 跑在 `:10305`（独立容器服务），播放页就是它自己的 `#/liveVideoPlayer?...`。
+- `__launchAccountFix()`（多账号 host 归位）把主机名从 `121.40.186.165` 换成当前登录 NAS
+  的 `100.103.38.13`，但**端口保持 10305**；10305 只在前者监听 → 连接被拒 → 错误页。
+- 修法：URL 显式带端口且与当前 NAS Web 端口不同 → 判定为第三方应用端口，**不做主机归位**，
+  记 `launch.account-fix.skip reason=third-party-port`。
+
+### 2. 应用内看直播卡顿 —— 补播放侧诊断埋点
+
+日志此前完全没有播放侧数据，无法判断是硬解/丢帧/缓冲还是网络。`preload.js` 新增
+`__fnMediaDiag()`（走既有 `fnos:media-log`，落成 `mpv.preload.video.*`）：
+
+- `video.support`：MSE 是否可用、H.264/HEVC 支持、UA、CPU 核数
+- `video.found`：来源页、`currentSrc`、分辨率、是否 MSE 直播流
+- `video.playing/waiting/stalled/seeking/error/ratechange/ended`：每次带上
+  `currentTime / readyState / networkState / droppedVideoFrames / totalVideoFrames / 缓冲水位 / 错误码`
+- `video.sample`：播放中每 5s 一条（共 6 条），额外算 `speed = Δ媒体时间 / Δ墙钟`，
+  **< 1 就是卡**（1.0 表示实时跟播）
+
 ## v4.0.46
 
 > 接 v4.0.45（页内应用窗自绘标题栏）的两处收尾：深色主题配色核对 + 窗口初始摆到视口外。

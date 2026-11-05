@@ -2378,3 +2378,85 @@ try {
 } catch (e) {
   try { ipcRenderer.send('fnos:media-log', { stage: 'titlebar.loadfail', err: String(e&&e.stack||e) }); } catch(_){}
 }
+
+// ===================== v4.0.47：应用内视频/直播卡顿诊断埋点 =====================
+// 用户工单（2026-11-05）：biliLive-tools 里看直播卡顿，同一路流用浏览器看不卡；日志里
+// 没有任何播放侧记录，无法判断是硬解没生效、丢帧、缓冲不足还是网络。这里补一组轻量埋点：
+//   video.found / video.support  —— 元素来源、分辨率、MSE 编解码支持
+//   video.<event>                —— playing/waiting/stalled/error/seeking/ratechange 全记
+//   video.sample                 —— 播放中每 5s 一条（30s 内），带丢帧数/总帧数/缓冲水位
+// 走既有 fnos:media-log 通道（主进程落成 mpv.preload.video.*），不新增 IPC。
+try {
+  (function __fnMediaDiag() {
+    const send = (stage, extra) => { try { ipcRenderer.send('fnos:media-log', Object.assign({ stage: stage }, extra || {})); } catch (_) {} };
+    let supportLogged = false;
+    const logSupport = () => {
+      if (supportLogged) return;
+      supportLogged = true;
+      let mse = false, h264 = null, hevc = null;
+      try {
+        mse = typeof MediaSource !== 'undefined';
+        if (mse) {
+          h264 = MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"');
+          hevc = MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.B0"');
+        }
+      } catch (_) {}
+      send('video.support', { mse: mse, h264: h264, hevc: hevc, ua: String(navigator.userAgent || '').slice(0, 120), cores: navigator.hardwareConcurrency || 0 });
+    };
+    const seen = new WeakSet();
+    const attach = (v) => {
+      try {
+        if (!v || seen.has(v)) return;
+        seen.add(v);
+        logSupport();
+        const where = String(location.host || '') + String(location.pathname || '').slice(0, 24);
+        const q = () => { try { return v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : {}; } catch (_) { return {}; } };
+        const buf = () => { try { const b = v.buffered; return b && b.length ? Math.round((b.end(b.length - 1) - v.currentTime) * 10) / 10 : 0; } catch (_) { return 0; } };
+        send('video.found', { where: where, src: String(v.currentSrc || v.src || '').slice(0, 140), w: v.videoWidth, h: v.videoHeight, ms: v.duration === Infinity });
+        ['loadedmetadata', 'playing', 'waiting', 'stalled', 'seeking', 'seeked', 'error', 'ended', 'ratechange'].forEach((ev) => {
+          v.addEventListener(ev, () => {
+            const qq = q();
+            send('video.' + ev, {
+              where: where,
+              t: Math.round((v.currentTime || 0) * 10) / 10,
+              ready: v.readyState, net: v.networkState, paused: v.paused,
+              dropped: qq.droppedVideoFrames, total: qq.totalVideoFrames,
+              buf: buf(), w: v.videoWidth, h: v.videoHeight, rate: v.playbackRate,
+              err: v.error ? ('code=' + v.error.code) : '',
+            });
+          }, true);
+        });
+        let n = 0, lastT = v.currentTime || 0, lastWall = Date.now();
+        const iv = setInterval(() => {
+          try {
+            if (!v.isConnected) { clearInterval(iv); return; }
+            n += 1;
+            const qq = q();
+            const now = Date.now(), t = v.currentTime || 0;
+            // 实时播放速率：这段采样里"媒体时间前进 / 墙钟前进"，明显 <1 就是卡
+            const speed = (now - lastWall) > 0 ? Math.round(((t - lastT) / ((now - lastWall) / 1000)) * 100) / 100 : 0;
+            lastT = t; lastWall = now;
+            send('video.sample', {
+              where: where, n: n, t: Math.round(t * 10) / 10, speed: speed,
+              ready: v.readyState, net: v.networkState, paused: v.paused,
+              dropped: qq.droppedVideoFrames, total: qq.totalVideoFrames,
+              buf: buf(), w: v.videoWidth, h: v.videoHeight,
+            });
+            if (n >= 6) clearInterval(iv);
+          } catch (_) { try { clearInterval(iv); } catch (_) {} }
+        }, 5000);
+      } catch (_) {}
+    };
+    const scan = () => { try { document.querySelectorAll('video').forEach(attach); } catch (_) {} };
+    const boot = () => {
+      try {
+        scan();
+        const mo = new MutationObserver(() => scan());
+        mo.observe(document.documentElement || document, { childList: true, subtree: true });
+        setInterval(scan, 10000);
+      } catch (_) {}
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+  })();
+} catch (_) {}

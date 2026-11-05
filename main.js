@@ -17363,6 +17363,20 @@ function __launchAccountFix(u, tag) {
     if (!ph || !lh || ph === lh) return s;
     const others = __launchKnownAccountHosts();
     if (others.indexOf(ph) < 0) return s;
+    // v4.0.47（用户工单：biliLive-tools 直播录制里点「观看直播」，弹出的播放窗直接报错）——
+    // 实测日志 winId=23/24：121.40.186.165:10305 → 被改成 100.103.38.13:10305 →
+    // ERR_CONNECTION_REFUSED → 落到 error.html。根因：账号主机归位只该换「同一 NAS Web 服务」
+    // 的主机；第三方容器应用端口（biliLive-tools :10305、:3000 之类）是**只在该主机上监听**的
+    // 独立服务，换主机不换端口必然连接被拒。这里凡是 URL 显式带端口且与 NAS Web 端口不同，
+    // 一律不做归位（连端口一起搬家的场景不成立）。
+    const __puPort = String(pu.port || '');
+    const __luPort = String(lu.port || '');
+    if (__puPort && __luPort && __puPort !== __luPort) {
+      try {
+        require('./logger.js').log('info', 'launch', 'launch.account-fix.skip', { params: { reason: 'third-party-port', fromHost: ph.slice(0, 80), port: __puPort.slice(0, 10), nasPort: __luPort.slice(0, 10), before: s.slice(0, 150) } }, __RUN_MODE);
+      } catch (_) {}
+      return s;
+    }
     const port = pu.port || lu.port;
     const nw = lu.protocol + '//' + lu.hostname + (port ? ':' + port : '') + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
     try {

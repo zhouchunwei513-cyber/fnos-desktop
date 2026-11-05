@@ -101,3 +101,32 @@ npm run dist
 - 所有窗口/webContents 操作前必须做 `isDestroyed()` 检查，优先使用 `isAlive(win)` / `safeSend(win, channel, ...args)`。
 - 退出时清理 `idleAutoLockTimer`、`authHeartbeatTimer`、`g_networkWatcher`、`menuRebuildTimer`、`g_persistTimer`。
 - 沙箱环境无法真实启动 Windows Electron 或实测 Win11 绿屏；最终兼容性需在 Windows 实机验证。
+
+## 热部署（不改安装包，DSH 侧一键跑）
+
+除「打 tag → CI 出 NSIS 安装包」的正式发布外，日常调试走**热部署**：只替换已安装目录里的
+`resources/app.asar`，秒级生效，不用每次等 140MB 安装包。
+
+由 DSH 侧脚本执行（脚本不进仓库，位于 `DS1/tools/deploy.sh`）：
+
+```bash
+./deploy.sh                 # 默认用当前仓库工作副本
+./deploy.sh /path/to/src    # 指定源码目录
+```
+
+脚本行为（7 步，任一步失败即中止）：
+
+1. 用 `npm ci --omit=dev` 复现生产依赖（`adm-zip`，按 package-lock 精确版本）并缓存；
+2. 按 `package.json.build.files` 收集文件——文本文件转 CRLF（匹配 electron-builder 在
+   Windows 上的产物），`package.json` 剥离 `build`/`scripts`/`devDependencies`；
+3. `@electron/asar pack` 打包，打印字节数与 SHA256；
+4. 上传到 Windows 机器的临时目录；
+5. 结束 `FNOS.exe` → 备份为 `app.asar.bak-<时间戳>` → 覆盖 → 校验哈希 → 用计划任务
+   `DSH-FNOS-CDP` 重启（带 `--remote-debugging-port=9222`，仅监听 127.0.0.1）；
+6. 比对本地与远端 SHA256（不一致即失败）；
+7. 回读当日日志：长度、最近 200 行里的 ERROR 数、最后 3 行。
+
+回滚：把 `resources/app.asar.bak-<时间戳>` 复制回 `app.asar` 再重启即可。
+
+> 注意：README 的更新日志与版本号只影响文档，`app.asar` 里不含 README，
+> 所以纯文档改动不需要热部署。

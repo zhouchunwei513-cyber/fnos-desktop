@@ -30,11 +30,19 @@
   `insertCSS('[class*="app-layout--header"]{display:none !important}')`，把页面自带的那条表头隐藏，
   只留我们一条（避免 v4.0.9 的两条标题栏叠一起）；并新增 `appwin.embed-bar` 日志留痕。
 - 页面表头由 appview 容器在**主框架**渲染，`insertCSS` 只作用于主框架，不会误伤应用 iframe 里的工具栏。
+- `titlebar-inject.js`：内嵌窗自绘栏的标题不能空着——页面表头被隐藏后，标题按「appview 表头标题 →
+  URL `anchor` → `document.title`」补采（前 6 秒补采 5 次）。截图实测：一条栏 + 应用名 + — □ ✕。
 
-### 验证（待真机）
+### 验证（CDP + 日志，真机热部署 v4.0.44）
 
-- 热部署后在内嵌窗里拖标题栏：日志应出现 `drag.arm` → `drag.start` → `drag.move`（同级窗口 id），
-  位移方向与光标一致；点 □/—/✕ 应出现 `ctl.maximize` / `ctl.unmaximize.done` / `ctl.close`。
+- 内嵌窗里 `document.getElementById('fnos-titlebar')` 存在，按钮 = `fnos-tb-min/max/close`；
+  主进程日志 `appwin.embed-bar win=6 why=load`。
+- 拖动：`drag.start.src win=… useMain=0 arm=1109,352` → `drag.move base=1109,352 cur=1100,360 -> 500,343`
+  → 窗口 (509,335) → (500,343)，与指针同向同量（合成输入无真实光标，故走渲染层同源分支）。
+- 按钮：`ctl.maximize win=8 before=509,335,1032,684` → `ctl.maximize.done after=0,0,1920,1048`；
+  `ctl.close win=8 bounds=… max=1`。
+- 截图：内嵌窗只有一条自绘标题栏（左侧应用名、右侧 — □ ✕），页面自带表头已隐藏。
+- 仍待用户真实鼠标复核：`useMain=1` 分支的手感、还原后是否有亚像素偏移。
 
 ## v4.0.43
 

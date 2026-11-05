@@ -2855,6 +2855,32 @@ module.exports = function injectTitleBar(ctx) {
         __setCss(titleEl, 'color:rgba(255,255,255,0.95);font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;');
         left.appendChild(logo);
         left.appendChild(titleEl);
+        // v4.0.44（内嵌窗改用自绘栏后，标题不能空着）——
+        // 页面自带表头被主进程 insertCSS 隐藏（appwin.embed-bar），标题文字要从它身上读：
+        // 优先 appview 表头标题 → URL 的 anchor → document.title。表头是 display:none 但仍在 DOM 里，
+        // textContent 可读；SPA 路由切换后标题会变，前 6 秒补采几次即可（之后交给导航事件重建）。
+        (function () {
+          const __syncTitle = () => {
+            try {
+              if (!titleEl.isConnected) return;
+              let t = '';
+              try {
+                const h = document.querySelector('[class*="app-layout--header-title"]');
+                if (h) t = String(h.textContent || '').trim();
+              } catch (_) {}
+              if (!t) {
+                try {
+                  const m = /[?&]anchor=([^&]+)/.exec(String(location.href || ''));
+                  if (m) { try { t = decodeURIComponent(m[1]); } catch (_) { t = m[1]; } }
+                } catch (_) {}
+              }
+              if (!t) t = String(document.title || '').trim();
+              if (t && titleEl.textContent !== t) titleEl.textContent = t;
+            } catch (_) {}
+          };
+          __syncTitle();
+          try { [400, 1200, 2500, 4000, 6000].forEach((ms) => setTimeout(__syncTitle, ms)); } catch (_) {}
+        })();
         // 右：— □ ✕ 三钮（r15 硬规则移除 ↗ 跳出：内嵌窗绝不剥离 fnOS 框架转独立跳出窗）
         // v4.0.28（用户工单）：↻ 刷新也一并移除，内嵌窗自绘栏只剩 — □ ✕。
         const btns = document.createElement('div');

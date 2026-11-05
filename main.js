@@ -7759,6 +7759,19 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     },
   });
 
+  // v4.0.35：快捷方式 + /appview 时，页面自带一条「浮动表头」（app-layout--header），
+  // 它在本窗口里与内容重叠（实测：去掉位移后 header 与 iframe 的 top 都是 0），
+  // 会把侧栏首项压住。自绘标题栏已提供 ☰ 与 —□✕，这里只把这条冗余浮层隐藏。
+  if (String((opts && opts.source) || '') === 'shortcut' && __embedAuto === false) {
+    try {
+      win.webContents.on('did-finish-load', () => {
+        try {
+          win.webContents.insertCSS('[class*="app-layout--header"]{display:none !important}').catch(() => {});
+        } catch (_) {}
+      });
+    } catch (_) {}
+  }
+
   // v1.48.0：无边框窗口，无系统菜单栏；菜单功能改由自定义标题栏「☰ 菜单」按钮弹出。
   try { win.setMenuBarVisibility(false); } catch (_) {}
   // v2.10.0 r30（问题1 根修）：应用窗旗标——帧脚本25/26 的杀除段据此放行（__KILLON29__）。

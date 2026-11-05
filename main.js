@@ -7001,6 +7001,13 @@ function __resolveAppEntry(rawUrl, appId) {
       let host = '', port = '';
       try { const pu = new URL(c.url); host = pu.hostname; port = pu.port || ''; } catch (_) {}
       const live = (() => { try { const lu = new URL(String(__liveOriginBase() || '')); return { host: lu.hostname, port: lu.port || '' }; } catch (_) { return { host: '', port: '' }; } })();
+      // v4.0.63：候选 host 属于「已登记的其他账号」→ 一律丢弃（跨账号地址在本机必然不可达）
+      try {
+        if (host && live.host && host !== live.host && __launchKnownAccountHosts().indexOf(host) >= 0) {
+          drops.push({ url: c.url, reason: 'other-account-host' });
+          continue;
+        }
+      } catch (_) {}
       // 禁止：NAS 内置路径但 host/port 与当前账号不一致（必然拒连）
       if (k === 'nas-path' && live.host && (host !== live.host || port !== live.port)) {
         drops.push({ url: c.url, reason: 'host-port-mismatch' });
@@ -12425,8 +12432,21 @@ async function processScannedApps(apps) {
 function buildAppCenterUrl(origin, svc) {
   try {
     if (!svc) return '';
-    // 后端返回的完整外部访问地址优先（如 http://公网IP:10303/，第三方应用反代端口）
-    if (svc.fullUrl && /^https?:/i.test(svc.fullUrl)) return svc.fullUrl;
+    // v4.0.63（用户工单：快捷方式打开第三方应用跑到另一个账号的 host）——
+    // app-center 的 fullUrl 是**公网/反代地址**（实测 com.fntb.iconmgr → http://121.40.186.165:10307/），
+    // 在局域网/组网环境下照搬必然超时。改为：
+    //   只有当 fullUrl 的 host 与当前账号一致，或条目没有任何相对字段（urls.path/port/host）时才用它；
+    //   否则一律用「当前账号 origin + 条目里的 port/path」重新拼。
+    if (svc.fullUrl && /^https?:/i.test(svc.fullUrl)) {
+      try {
+        const fu = new URL(svc.fullUrl);
+        const cu = new URL(origin);
+        const u0 = svc.urls || {};
+        const hasRel = !!(u0.path || u0.port || u0.host);
+        if (!hasRel || fu.hostname === cu.hostname) return svc.fullUrl;
+        try { fnosLog('info', 'shortcut.url', 'app-center fullUrl ignored (cross-host)', { fullUrl: String(svc.fullUrl).slice(0, 100), origin: String(origin).slice(0, 80) }); } catch (_) {}
+      } catch (_) { return svc.fullUrl; }
+    }
     const urls = svc.urls || {};
     const o = new URL(origin);
     const protocol = (urls.protocol || o.protocol).replace(/:+$/, '');

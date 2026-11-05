@@ -3,6 +3,24 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.63
+
+> 实测矩阵跑出来抓到两个"权威数据其实是公网地址"的坑（v4.0.62 的 app-center 候选接进来后才暴露）。
+
+### 1. `buildAppCenterUrl` 照搬 `fullUrl`
+
+app-center 条目里的 `fullUrl` 是**公网/反代地址**（实测 `com.fntb.iconmgr → http://121.40.186.165:10307/`、
+`bililivetools → http://121.40.186.165:10305/`）。客户端原来无条件优先用它，于是在局域网/组网环境下
+打开第三方应用会跑到另一个账号的 host 上，必然超时。
+
+**修法**：`fullUrl` 只在「host 与当前账号一致」或「条目没有任何相对字段（urls.path/port/host）」时才用；
+否则用「当前账号 origin + 条目里的 port/path」重新拼，并记 `shortcut.url app-center fullUrl ignored (cross-host)`。
+
+### 2. 解析器兜底
+
+`__resolveAppEntry()` 新增丢弃规则：候选 host 属于**已登记的其他账号** → `drops reason=other-account-host`，
+不再可能把别的账号地址当成最终结果。
+
 ## v4.0.62
 
 > 复盘文档 `docs/APP-LAUNCH-ARCHITECTURE.md` 的 **P1**：把"按规则推断"升级为"按权威数据 + 失败分类"。

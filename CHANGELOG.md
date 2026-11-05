@@ -3,6 +3,27 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.62
+
+> 复盘文档 `docs/APP-LAUNCH-ARCHITECTURE.md` 的 **P1**：把"按规则推断"升级为"按权威数据 + 失败分类"。
+
+### 新增
+
+1. **app-center 权威候选**：`__resolveAppEntry()` 在「账号维度记忆」之后接入
+   `app-center/v1/app/installed` 解析出的真实入口（`__appCenterUrlCache`），候选顺序
+   `memo → app-center → rebind-nas-path → raw`。
+2. **预热**：本次没有 app-center 数据时，后台触发 `__fetchAppCenterUrlLive(appId)`，
+   下次打开直接命中，不增加当前这次打开的耗时。
+3. **失败分类** `__failReason(code, url)`，写入 `appwin.load.fail` 的 `reason` 字段：
+   | reason | 含义 | 典型场景 |
+   |---|---|---|
+   | `account-offline` | 另一个账号的 host 连不上 | 切账号后打开旧账号应用 |
+   | `port-closed` | 同机端口无人监听 | FRP 高位端口 103xx 在内网 |
+   | `network-timeout` | 其他网络超时 | 组网/公网不稳 |
+   | `dns` | 解析失败 | DDNS 域名 |
+   | `aborted` | 自己取消/被导航替换 | 不算真失败，避免噪声 |
+   | `entry-404` | 入口失效 | appview anchor 已被删 |
+
 ## v4.0.61
 
 > 用户要求：整体复盘「程序内打开 / 快捷方式打开」两条链路，在 FNID / 内网 / 异地组网 / FRP / DDNS

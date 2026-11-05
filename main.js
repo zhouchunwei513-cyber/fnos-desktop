@@ -6947,14 +6947,46 @@ function __classifyTarget(u) {
     return 'third-party';
   } catch (_) { return 'unknown'; }
 }
+// v4.0.62：失败分类（给用户看得懂的原因，也给后续话术与统计用）
+//   account-offline  : 目标是"另一个账号"的 host，且连不上（超时/不可达）
+//   port-closed      : 同一台 NAS 的端口没人监听（典型：FRP 高位端口 103xx 在内网不监听）
+//   entry-404        : 入口本身失效（appview anchor / app 路径 404）
+//   network-timeout  : 其他网络类超时
+//   aborted          : 我们自己取消/被导航替换（不算真失败）
+function __failReason(code, u) {
+  try {
+    const c = Number(code);
+    let host = '';
+    try { host = String(new URL(String(u || '')).hostname || '').toLowerCase(); } catch (_) {}
+    let liveHost = '';
+    try { liveHost = String(new URL(String(__liveOriginBase() || '')).hostname || '').toLowerCase(); } catch (_) {}
+    const otherAcct = host && __launchKnownAccountHosts().indexOf(host) >= 0;
+    if (c === -3) return 'aborted';
+    if (c === -102) return otherAcct ? 'account-offline' : 'port-closed';
+    if (c === -118 || c === -7 || c === -21 || c === -137) return otherAcct ? 'account-offline' : 'network-timeout';
+    if (c === -105 || c === -106) return 'dns';
+    return 'unknown';
+  } catch (_) { return 'unknown'; }
+}
+
 function __resolveAppEntry(rawUrl, appId) {
   const out = { url: String(rawUrl || ''), kind: 'unknown', source: 'raw', drops: [], account: __acctKey() };
   try {
     const raw = String(rawUrl || '');
     const cands = [];
     const push = (u, src) => { try { const x = String(u || ''); if (!/^https?:/i.test(x)) return; if (!cands.some((c) => c.url === x)) cands.push({ url: x, src: src }); } catch (_) {} };
-    // ① 账号维度记忆
+    // ① 账号维度记忆（按账号分桶、只记成功）
     if (appId) push(__okurl2Get(appId), 'memo');
+    // ①b app-center 权威数据（本账号的 app-installed 真实入口，永远是当前 origin 的四元组）
+    if (appId) {
+      try { const ac = __appCenterUrlCache.get(String(appId)); if (ac) push(ac, 'app-center'); } catch (_) {}
+      // 预热：本次没有就后台拉一次，下次打开直接命中
+      try {
+        if (!__appCenterUrlCache.get(String(appId))) {
+          Promise.resolve(__fetchAppCenterUrlLive(String(appId))).catch(() => {});
+        }
+      } catch (_) {}
+    }
     // ② 原始地址按类别处理
     const kind0 = __classifyTarget(raw);
     if (kind0 === 'nas-path') push(__rebindToCurrentOrigin(raw), 'rebind-nas-path');
@@ -7090,7 +7122,7 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
         } catch (_) {}
       });
       win.webContents.on('did-fail-load', (e, code, desc, vurl, isMain) => {
-        try { require('./logger.js').log('warn', 'appwin', 'appwin.load.fail', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 60), url: String(vurl || '').slice(0, 140), main: !!isMain, appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE); } catch (_) {}
+        try { require('./logger.js').log('warn', 'appwin', 'appwin.load.fail', { params: { winId: win.id, code: code, desc: String(desc || '').slice(0, 60), reason: __failReason(code, vurl), url: String(vurl || '').slice(0, 140), main: !!isMain, appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE); } catch (_) {}
 
         // v3.0.58：连接类失败 → 换候选继续试（原来 -102 直接进错误页，用户只能反复点）
         try {

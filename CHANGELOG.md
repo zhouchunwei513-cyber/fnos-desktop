@@ -3,6 +3,27 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.49
+
+> 用户工单（2026-11-05）：「为什么每次部署、飞牛客户端重启以后，你自己（DeepSeek Harness）不启动呢？」
+
+### 现状
+
+- 只有 `DS1/tools/deploy.sh` 会在部署后调桌面快捷方式拉起 DSH；
+- 用户**手动**重启客户端、或客户端崩溃自愈后，不会自动恢复到 DSH 窗口。
+
+### 实现（客户端自己负责，不再依赖部署脚本）
+
+- 新增设置 `autoLaunchDsh`（默认 `true`）。
+- `app.whenReady()` 后 10s：若本地还没有 `/app/fn-deepseek-harness` 窗口，则用
+  `__openAppByWindowType()` 打开（与 `/launch` 接口同一条路径），日志 `launch dsh.autostart ok|fail|skip=exists`。
+- 已有 N 个应用窗时只跳过、不重复开。
+
+### 顺带（DS1 侧，不进安装包）
+
+- 微信语音去重改为**按音频内容 sha1**（重放会换文件名/消息 id）+ 注入层「内容哈希 24h 窗口」；
+  实测重放副本被 `dedupe skip` 拦下。
+
 ## v4.0.48
 
 > 用户需求（2026-11-05，语音）：涉及密码/账户登录的地方都要**保持登录**，除非用户主动退出、

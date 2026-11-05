@@ -676,23 +676,23 @@
       </div>
     </section>
 
-    <div class="section-title" style="margin-top:28px">
-      <span class="bar"></span>
-      <h2>维护</h2>
-    </div>
-    <p class="section-desc">
-      清理客户端内置浏览器的缓存（旧版前端脚本、图片等）。<b>不会影响</b>你的账号、设置、皮肤和下载记录；
-      当某个应用页出现「打不开 / 界面是旧版本 / 样式错乱」时，清理后重新打开通常即可恢复。
-    </p>
-    <div class="hotkey-row" style="align-items:center">
-      <div class="hotkey-label">
-        <div class="hotkey-title">清理应用缓存</div>
-        <div class="hotkey-sub" id="cache-hint">用于修复应用页面加载异常（不清理登录态）</div>
+    <section class="settings-section">
+      <div class="section-title">
+        <span class="bar"></span>
+        <h2>维护</h2>
       </div>
-      <div style="flex:0 0 200px;display:flex;justify-content:flex-end">
+      <p class="section-desc">
+        清理客户端内置浏览器的缓存（旧版前端脚本、图片等）。<b>不会影响</b>你的账号、设置、皮肤和下载记录；
+        当某个应用页出现「打不开 / 界面是旧版本 / 样式错乱」时，清理后重新打开通常即可恢复。
+      </p>
+      <div class="color-picker-row" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid rgba(255,255,255,0.06)">
+        <div>
+          <div class="hotkey-title">清理应用缓存</div>
+          <div class="hotkey-sub" id="cache-hint">用于修复应用页面加载异常（不清理登录态）</div>
+        </div>
         <button type="button" class="btn-primary" id="btn-clear-cache">立即清理</button>
       </div>
-    </div>
+    </section>
 
     <div class="setup-actions" style="margin-top:14px">
       <button type="button" class="btn-ghost" id="btn-close">关闭</button>

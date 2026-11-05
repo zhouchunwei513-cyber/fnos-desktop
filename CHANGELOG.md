@@ -37,6 +37,19 @@ appwin.conn-fallback30 → 改走 /appview?anchor=fn-deepseek-harness → 404「
 - 人为打开不存在的 anchor：日志出现 `errpage.hard-reload36`（先强制刷新，不再直跳错误页）；
 - 热部署哈希一致、进程数 6、日志 0 ERROR。
 
+### 追加：设置页样式对齐 + 部署脚本自动恢复窗口
+
+- 「维护」区块改为标准 `<section class="settings-section">` 结构（标题条 / 描述 / 行内按钮），
+  与偏好设置页其余卡片风格一致；此前是裸 `hotkey-row`，视觉上脱离卡片；
+- `tools/deploy.sh` 增加「7/8 恢复 DSH 窗口」：热部署会重启客户端，脚本自动用桌面快捷方式
+  （`fnos-launcher.vbs fn-deepseek-harness`）把对话窗拉回来，避免部署后无窗可用。
+
+### 已知限制补充（qBittorrent 这类 Docker 容器）
+
+容器 WebUI **没有注册成 fnOS 应用**（`/app-center/v1/app/installed` 39 个应用里查无此项），
+因此没有 appview anchor，客户端内无法按应用打开；已在桌面生成 `qBittorrent.url`
+（指向 Tailscale 地址），双击用浏览器打开。
+
 ## v4.0.35
 
 > 用户反馈：**从桌面快捷方式启动的内嵌窗应用没有标题栏**——窗口既没有 ☰ 也没有 —□✕，还不能拖动。

@@ -17701,13 +17701,29 @@ function __launchAccountFix(u, tag) {
     // 的主机；第三方容器应用端口（biliLive-tools :10305、:3000 之类）是**只在该主机上监听**的
     // 独立服务，换主机不换端口必然连接被拒。这里凡是 URL 显式带端口且与 NAS Web 端口不同，
     // 一律不做归位（连端口一起搬家的场景不成立）。
+    // v4.0.60（用户工单：切账号后大部分应用打不开）——把口径定成「看路径，不看端口」：
+    //   · NAS 内置路径（/app/、/appview、/cgi/、/iscsi、/vm、/snapshot、/fn-sync…）：
+    //     这些是飞牛自己的服务，任何端口都只是「同一台 NAS 的入口」，换账号时**host+端口一起换**
+    //     到当前账号 origin 才不会拒连。实测挂掉的就是这类：条目里带的是公网地址
+    //     121.40.186.165:103xx，host 被换成 100.103.38.13 后端口没换 → ERR_CONNECTION_REFUSED。
+    //   · 第三方容器端口（biliLive-tools :10305、qBittorrent 之类）：只在该主机上监听，
+    //     换主机必断 —— 保持 v4.0.47 的「不归位」行为。
+    const __nasPath = /^\/(app|appview|cgi|iscsi|vm|snapshot|fn-sync|trim|p|v|music|api)\b/i.test(String(pu.pathname || '/'));
     const __puPort = String(pu.port || '');
     const __luPort = String(lu.port || '');
-    if (__puPort && __luPort && __puPort !== __luPort) {
+    if (!__nasPath && __puPort && __luPort && __puPort !== __luPort) {
       try {
         require('./logger.js').log('info', 'launch', 'launch.account-fix.skip', { params: { reason: 'third-party-port', fromHost: ph.slice(0, 80), port: __puPort.slice(0, 10), nasPort: __luPort.slice(0, 10), before: s.slice(0, 150) } }, __RUN_MODE);
       } catch (_) {}
       return s;
+    }
+    if (__nasPath) {
+      // host + 端口整体换成当前账号 origin（端口不再沿用旧账号的 103xx）
+      const __nw2 = lu.protocol + '//' + lu.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+      try {
+        require('./logger.js').log('info', 'launch', 'launch.account-fix', { params: { tag: String(tag || '').slice(0, 60), mode: 'nas-path-full-remap', fromHost: ph.slice(0, 80), toHost: lu.host.slice(0, 90), before: s.slice(0, 150), after: String(__nw2).slice(0, 160) } }, __RUN_MODE);
+      } catch (_) {}
+      return __nw2;
     }
     const port = pu.port || lu.port;
     const nw = lu.protocol + '//' + lu.hostname + (port ? ':' + port : '') + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');

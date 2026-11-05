@@ -3,6 +3,27 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.60
+
+> 接 v4.0.59：用户选定「在 NAS 侧修正入口」。查证后的真实数据形态与修法如下。
+
+### 查证
+
+- `app-center/v1/app/installed`（39 个应用）返回的端口是**正确**的（如 `com.fntb.iconmgr=18080`、`OpenList=34600`），
+  host 为空（= 用当前 NAS 主机）。
+- 但应用条目里嵌着**公网地址**：例如 `fndesk_1793498656305` 的 URL 参数
+  `uB2=121.40.186.165:10311`。登录态把 host 换成当前 NAS（100.103.38.13）后**端口仍是 103xx** →
+  本机不监听 103xx（实测 10300/10301/10303/10307/10311 全部拒连）→ `ERR_CONNECTION_REFUSED`。
+- 另一类 `121.40.186.165:*` 是另一个账号的 NAS，当前不可达（-118 超时，v4.0.59 已给明确错误页）。
+
+### 修复（把「看端口」改成「看路径」）
+
+- NAS 内置路径（`/app/`、`/appview`、`/cgi/`、`/iscsi`、`/vm`、`/snapshot`、`/fn-sync`、`/trim`、`/p`、`/v`、`/music`、`/api`）：
+  换账号时 **host + 端口整体换成当前账号 origin**（不再沿用旧账号的 103xx），日志
+  `launch.account-fix mode=nas-path-full-remap`。
+- 第三方容器端口（`biliLive-tools :10305`、qBittorrent 等，路径不在上述集合）：
+  维持 v4.0.47 的「不归位」，避免把容器应用搬到不存在的端口上。
+
 ## v4.0.59
 
 > 用户工单：切换账号后，分别用「程序内打开」和「桌面快捷方式打开」各试一遍，大部分应用打不开；

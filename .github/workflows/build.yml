@@ -74,6 +74,15 @@ jobs:
           if ($d3d) { Copy-Item $d3d.FullName "mpv/d3dcompiler_43.dll" -Force }
           Get-ChildItem mpv | ForEach-Object { Write-Host "  mpv/$($_.Name) $([math]::Round($_.Length/1MB,1)) MB" }
 
+      - name: 构建卸载器（csc，随包分发到 resources/uninstaller/）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin/uninstaller | Out-Null
+          powershell -ExecutionPolicy Bypass -File tools/uninstaller/build-uninstaller.ps1 -OutDir bin/uninstaller
+          if (-not (Test-Path bin/uninstaller/FNOS-Uninstaller.exe)) { throw "卸载器编译失败" }
+          $f = Get-Item bin/uninstaller/FNOS-Uninstaller.exe
+          Write-Host ("卸载器就绪：{0} {1} KB" -f $f.Name, [math]::Round($f.Length/1KB,1))
+
       - name: Build Windows setup (nsis only)
         run: npx electron-builder --x64 --publish never   # target 由 package.json build.win.target 驱动（NSIS x64）
 

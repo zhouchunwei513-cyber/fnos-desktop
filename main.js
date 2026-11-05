@@ -11336,6 +11336,60 @@ function createAboutWindow() {
   return aboutWin;
 }
 
+// ===================== v4.0.34：菜单内「卸载客户端」 =====================
+// 随包分发 tools/uninstaller 编译出的 FNOS-Uninstaller.exe（electron-builder extraResources → resources/uninstaller/）
+function getUninstallerPath() {
+  const candidates = [];
+  try { if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'uninstaller', 'FNOS-Uninstaller.exe')); } catch (_) {}
+  candidates.push(path.join(__dirname, 'bin', 'uninstaller', 'FNOS-Uninstaller.exe'));
+  candidates.push(path.join(__dirname, '..', 'bin', 'uninstaller', 'FNOS-Uninstaller.exe'));
+  for (const p of candidates) {
+    try { if (p && fs.existsSync(p)) return p; } catch (_) {}
+  }
+  return '';
+}
+
+async function launchUninstaller() {
+  try { require('./logger.js').log('info', 'uninstall', 'menu.click', { params: {} }); } catch (_) {}
+  const exe = getUninstallerPath();
+  try { require('./logger.js').log('info', 'uninstall', 'exe', { params: { exe } }); } catch (_) {}
+  if (!exe) {
+    try { require('./logger.js').log('warn', 'uninstall', 'missing', { params: {} }); } catch (_) {}
+    await showGlassDialog(null, {
+      title: '卸载器不可用',
+      message: '当前安装包里没有找到 FNOS-Uninstaller.exe。',
+      detail: '自行打包时，请先运行 tools/uninstaller/build-uninstaller.ps1 生成到 bin/uninstaller/，再执行打包。',
+      buttons: ['知道了'], width: 520,
+    });
+    return;
+  }
+  const r = await showGlassDialog(null, {
+    title: '卸载 FNOS 客户端',
+    message: '将启动「强力卸载器」：清理安装目录、用户数据、注册表、快捷方式与系统痕迹。',
+    detail: `卸载器需要管理员权限（会弹 UAC 授权框）。\n启动后本客户端会自动退出，卸载完成前请不要重复启动。\n\n程序：${exe}`,
+    buttons: ['启动卸载器', '取消'], defaultId: 1, cancelId: 1, width: 580,
+  });
+  if (!r || r.response !== 0) return;
+  try { require('./logger.js').log('info', 'uninstall', 'launch', { params: { exe } }); } catch (_) {}
+  let started = false;
+  try {
+    const err = await shell.openPath(exe); // ShellExecute：由 exe 清单触发 UAC
+    started = !err;
+    if (err) throw new Error(err);
+  } catch (e) {
+    try {
+      const q = exe.replace(/'/g, "''");
+      cp.spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Start-Process -FilePath '${q}' -Verb RunAs`], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      started = true;
+    } catch (e2) {
+      try { require('./logger.js').log('error', 'uninstall', 'spawn.fail', { params: { err: String(e2 && e2.message || e2) } }); } catch (_) {}
+      await showGlassDialog(null, { title: '启动卸载器失败', message: String(e2 && e2.message || e2), buttons: ['知道了'], width: 560 });
+      return;
+    }
+  }
+  if (started) setTimeout(() => { try { app.quit(); } catch (_) {} }, 1500);
+}
+
 function buildMenuTemplate() {
   const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
 
@@ -11501,6 +11555,11 @@ function buildMenuTemplate() {
           // v2.18.0: 把当前版本号传给帮助页，页脚版本号自动跟随 APP_VERSION，不再手写死值。
           helpWin.loadFile(HELP_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
         }},
+        { type: 'separator' },
+        {
+          label: '卸载 FNOS 客户端…',
+          click: () => { launchUninstaller(); },
+        },
       ],
     },
     {

@@ -3,6 +3,31 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.34
+
+> 用户需求：把「强力卸载器」集成进客户端，菜单里直接调用。
+
+### 做了什么
+
+在 **帮助** 菜单新增「卸载 FNOS 客户端…」，点击后二次确认 → 启动随包分发的
+`FNOS-Uninstaller.exe`（管理员权限）→ 客户端自动退出，避免占用文件导致清理失败。
+
+| 位置 | 改动 |
+|---|---|
+| `main.js` | 新增 `getUninstallerPath()`（打包态 `resources/uninstaller/`、开发态 `bin/uninstaller/`）与 `launchUninstaller()`（确认框 → `shell.openPath` 提权启动 → 兜底 PowerShell `Start-Process -Verb RunAs` → 1.5s 后退出应用） |
+| `main.js` | 菜单模板 `帮助` 子菜单插入「卸载 FNOS 客户端…」；走自绘菜单（`fnmenu:invoke`）与原生菜单同源，零分叉 |
+| `package.json` | `win.extraResources` 增加 `bin/uninstaller → uninstaller` |
+| `.github/workflows/build.yml` | 打包前用 `csc` 编译 `tools/uninstaller`，产物缺失即中止发布 |
+| `.gitignore` | 忽略 `bin/uninstaller/*.exe` 编译产物（仓库只存 `.cs` 源码） |
+
+### 验证
+
+- `node --check main.js` 通过；
+- 热部署到真机：`app.asar` SHA256 本地/远端一致，重启后 6 进程、日志 0 ERROR；
+- 菜单实测：帮助 ▸ 卸载 FNOS 客户端… 条目可见；点击弹出确认框（含卸载器路径），
+  取消后正常关闭、不启动卸载器；
+- 卸载器定位日志：`[uninstall] menu.click` / `exe` 两条 info 级记录。
+
 ## v4.0.33
 
 > 用户反馈：v4.0.32 把 Docker 应用主题对调后，要求「再调回来」。

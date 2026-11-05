@@ -10008,9 +10008,16 @@ function __nudgeQbTheme38(wc) {
   try {
     if (!wc || wc.isDestroyed()) return;
     if (!wc.debugger || !wc.debugger.isAttached()) return;
+    // v4.0.38：除了调 update()，还要把 html 的内联 color-scheme 同步成页面实际主题。
+    // 否则「深色→浅色」后 color-scheme 仍残留 dark，滚动条/下拉菜单/右键菜单等原生控件
+    // 继续按深色绘制 → 用户看到的"深浅混搭"（截图：浅色页面里黑滚动条、黑下拉菜单）。
     const expr = "(()=>{try{var q=window.qBittorrent;if(!q||!q.ClientData||!q.ColorScheme)return 'no-q';" +
       "var v=q.ClientData.get('color_scheme');if(typeof v==='undefined')return 'no-cd';" +
-      "q.ColorScheme.update();return 'ok:'+v+':'+document.documentElement.className.trim();}catch(e){return 'err:'+e.message;}})()";
+      "q.ColorScheme.update();" +
+      "var d=document.documentElement;var isDark=d.classList.contains('dark');" +
+      "var want=isDark?'dark':'light';" +
+      "if(String(d.style.colorScheme||'')!==want){d.style.setProperty('color-scheme',want);}" +
+      "return 'ok:'+v+':'+want+':'+d.className.trim();}catch(e){return 'err:'+e.message;}})()";
     const p = wc.debugger.sendCommand('Runtime.evaluate', { expression: expr, returnByValue: true });
     if (p && p.then) {
       p.then((r) => {

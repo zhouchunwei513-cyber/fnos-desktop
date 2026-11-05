@@ -1125,11 +1125,18 @@ module.exports = function injectTitleBar(ctx) {
         // 窗口裁剪的上两角改由【标题栏四角】决定（标题栏就是窗口最上沿），下两角由【窗口四角】决定。
         // 两套设置因此完全独立：改窗口圆角不再篡改标题栏上角，反之亦然。
         const __pw = (px) => 'calc(' + px + 'px / var(--fnos-f, 1))';
+        // v4.0.57（用户工单：标题栏四角与窗口四角必须**完全独立**，互不影响）——
+        // 旧实现（v4.0.39）把窗口裁剪的「上两角」直接取标题栏设置（__topR = barR），
+        // 于是改标题栏圆角会篡改窗口顶部裁剪；同时 __botR 的 half 分支两端相同，
+        // 窗口「半圆角」等于「圆角」，规格没落地。现在窗口四角**只**由 winCorner 决定：
+        //   round-*  → 四角圆
+        //   half-*   → 上两角直角 + 下两角圆（窗口自己在下方露出圆角）
+        //   square   → 四角直角
+        // 标题栏四角仍只由 barCorner 决定（见 __fixBarRadius），两套设置零耦合。
         const __winR = __tbCornerRadius(TB.winCorner);
-        const __barR = __tbCornerRadius(TB.barCorner);
         const __winHalf = __tbCornerIsHalf(TB.winCorner);
-        const __topR = __barR;                       // 上两角：标题栏说了算
-        const __botR = __winHalf ? __winR : __winR;  // 下两角：窗口说了算（half 与 round 下角都圆）
+        const __topR = __winHalf ? 0 : __winR;
+        const __botR = __winR;
         const __wr = __pw(__topR) + ' ' + __pw(__topR) + ' ' + __pw(__botR) + ' ' + __pw(__botR);
         // v4.0.11（用户工单：半圆角对 xapp 窗口不生效）——
         // xapp 分支把 clip-path 写在 html 上，原来 half 只覆盖 html:root>body，
@@ -1138,7 +1145,8 @@ module.exports = function injectTitleBar(ctx) {
           ? 'html:root,html:root>body{clip-path:none !important;-webkit-clip-path:none !important;border-radius:0 !important;}'
           : ('html:root,html:root>body{clip-path:inset(0 round ' + __wr + ') !important;'
              + '-webkit-clip-path:inset(0 round ' + __wr + ') !important;}'));
-        try { console.log('[fnos-corner]', JSON.stringify({ bar: TB.barCorner, win: TB.winCorner, topR: __topR, botR: __botR, clip: __wr })); } catch (_) {}
+        try { console.log('[fnos-corner]', JSON.stringify({ bar: TB.barCorner, win: TB.winCorner, winHalf: __winHalf, topR: __topR, botR: __botR, clip: __wr })); } catch (_) {}
+        try { ipcRenderer.send('fnos:media-log', { stage: 'corner.apply', barCorner: TB.barCorner, winCorner: TB.winCorner, half: __winHalf ? 1 : 0, topR: __topR, botR: __botR }); } catch (_) {}
       } catch (_) {}
     }
 

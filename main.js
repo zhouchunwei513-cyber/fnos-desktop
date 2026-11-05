@@ -16863,7 +16863,33 @@ function __appviewToPopout(navUrl) {
   let anchor = '';
   try { anchor = new URL(s).searchParams.get('anchor') || ''; } catch (_) {}
   const now = Date.now();
-  const __dup = !!anchor && (now - (__appviewConvAt.get(anchor) || 0) < 2000);
+  // v4.0.58（用户工单：用桌面快捷方式打开后「大部分应用报错、报错窗口一个劲跳」）——
+  // 实测日志：`icon-not-found fallback-window-open` 每 ~6.8s 一次，同一个 anchor
+  // （fndesk_1793327681330）在 NAS 上已经 404（应用被删/改名），页面每次失败都再开一个新窗口，
+  // 2s 防抖拦不住 6.8s 的循环，于是窗口像走马灯一样一遍遍弹。
+  // 现在升级为「同 anchor 30s 内只允许开一个窗」：若已有该 anchor 的窗口（哪怕停在错误页），
+  // 只把它唤到前台并记日志，绝不再开新窗。用户关掉错误窗后再点，仍可重试。
+  let __dup = false;
+  if (anchor) {
+    const lastAt = __appviewConvAt.get(anchor) || 0;
+    if (now - lastAt < 2000) __dup = true;
+    else if (now - lastAt < 30000) {
+      let opened = false;
+      try {
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w || w.isDestroyed()) continue;
+          if (String(w.__fnAppId || '') !== anchor) continue;
+          opened = true;
+          try { if (w.isMinimized()) w.restore(); w.show(); w.focus(); } catch (_) {}
+          break;
+        }
+      } catch (_) {}
+      if (opened) {
+        __dup = true;
+        try { require('./logger.js').log('warn', 'appwin', 'appview.dup-skip', { params: { app: anchor.slice(0, 80), age: now - lastAt, url: s.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+      }
+    }
+  }
   if (anchor && !__dup) __appviewConvAt.set(anchor, now);
   setImmediate(async () => {
     // v4.0.36（用户反馈「客户端里打不开容器 qBittorrent」）：

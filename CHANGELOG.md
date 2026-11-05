@@ -3,6 +3,34 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.58
+
+> 用户工单：「用桌面快捷方式打开应用后，大部分应用报错，然后重复启动报错窗口，一个劲跳窗口。」
+
+### 日志实锤
+
+```
+renderer.launch icon-not-found fallback-window-open  in={"anchor":"fndesk_1793327681330"}   ← 每 ~6.8s 一次
+wintype appview.to-popout  app=fndesk_1793327681330
+appwin  popout.load        url=.../appview?anchor=fndesk_1793327681330  source=in-app
+appwin  errpage.hard-reload36  url=.../appview?anchor=fndesk_1793327681330
+```
+
+- 直接请求该地址：`appview http=404`（NAS 上这个 fndesk 应用入口已不存在），
+  而 `http://nas:5666/` 仍是 200 —— 不是网络问题，是**这个应用入口失效**。
+- 失败的页面每轮都**再开一个新窗口**，原有的 2s 防抖拦不住 6.8s 的循环 → 窗口走马灯。
+
+### 修复
+
+- `__appviewToPopout()` 的重复开窗守卫从「2s 内同 anchor 不双开」升级为：
+  **同 anchor 30s 内只允许一个窗口**——已有该 anchor 的窗口（即使停在错误页）就只 restore/show/focus，
+  不再开新窗，日志 `appview.dup-skip`。用户关掉错误窗后再点仍可重试。
+
+### 待用户处理（数据问题，不是客户端 bug）
+
+- 失效入口是 `fndesk_1793327681330`，请在飞牛桌面删掉对应那个图标/快捷方式（客户端无法判断它叫什么名字，
+  只能知道 anchor）。删掉后所有跳窗现象即消失。
+
 ## v4.0.57
 
 > 用户工单：「检查标题栏四角与窗口四角设置会不会互相冲突、互相影响——要求两者完全独立；

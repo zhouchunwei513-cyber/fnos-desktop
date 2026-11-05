@@ -3,6 +3,18 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.55
+
+> 用户纠正：「自动拉起 DSH 只应该在你热部署重启客户端时做，不该写进客户端程序——别的用户机器上
+> 根本没装 DSH，客户端凭什么去启动它？」
+
+### 回滚
+
+- 删除 v4.0.49 引入的客户端侧自动拉起（`autoLaunchDsh` 设置项 + `app.whenReady()` 后 10s 打开
+  `/app/fn-deepseek-harness` 的逻辑），客户端不再主动打开任何 DSH 窗口。
+- **热部署时的拉起保留在 `DS1/tools/deploy.sh` 第 7 步**（走桌面快捷方式 `DeepSeek Harness.lnk`），
+  只影响开发/测试环节，不进入安装包行为。
+
 ## v4.0.54
 
 > 接 v4.0.53：迁移时若 `logs/` 里已有同名文件（新版启动会先创建），旧文件被跳过、

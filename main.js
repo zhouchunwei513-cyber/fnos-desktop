@@ -2127,8 +2127,6 @@ function defaultSettings() {
     // 开启时：渲染层强制 os-keep-login=1；主进程把各 partition 的「会话级 Cookie」改写成长期 Cookie。
     // 关闭时：渲染层把 os-keep-login 置 0 并把票据挪回 sessionStorage（退出即失效）。
     keepLogin: true,
-    // v4.0.49（用户工单）：客户端启动后自动拉起 DeepSeek Harness 应用窗（部署/重启后不用手点）
-    autoLaunchDsh: true,
     // v2.15.0：主窗口位置/尺寸持久化（关闭/调整时存，启动恢复上次大小），null 表示用默认
     windowBounds: null,
     // v2.24.6：MPV 自动播放下一集（MPV 右键菜单 / 控制条「☰」菜单可切换；根级键，
@@ -16211,38 +16209,24 @@ function __startLaunchServer() {
   } catch (_) {}
 }
 if (__gotSingleLock) { try { app.whenReady().then(() => { setTimeout(__startLaunchServer, 0); }); } catch (_) {} }
-// v4.0.48：保持登录——启动 20s 后扫一次（等登录 Cookie 落地），之后每 5 分钟扫一次。
+// v4.0.48：保持登录——启动后按几个时间点扫一次（等登录 Cookie 落地），之后每 5 分钟扫一次。
 // 只在 keepLogin 开启时生效；只把「会话级 Cookie」改写成长期 Cookie，不动其它数据。
-// v4.0.49（用户工单「为什么每次部署重启客户端后，你自己不启动呢」）——
-// 之前只有 deploy.sh 会调快捷方式拉起；用户手动重启客户端时不会。这里由客户端自己负责：
-// 启动 10s 后，若还没有 DeepSeek Harness 应用窗，就按启动器同一条路径打开。
+// v4.0.55：这里**不再自动拉起 DeepSeek Harness**——那是开发方热部署时的行为（deploy.sh 负责），
+// 普通用户机器上未必装了 DSH，客户端不该去开它。
 try {
   app.whenReady().then(() => {
-    setTimeout(() => {
-      try {
-        if (cachedSettings && cachedSettings.autoLaunchDsh === false) return;
-        const base = String(__liveOriginBase() || '').replace(/\/$/, '');
-        if (!base) return;
-        const target = base + '/app/fn-deepseek-harness';
-        const exists = BrowserWindow.getAllWindows().some((w) => {
-          try { return !w.isDestroyed() && String(w.webContents.getURL()).indexOf('/app/fn-deepseek-harness') >= 0; } catch (_) { return false; }
-        });
-        if (exists) { try { fnosLog('info', 'launch', 'dsh.autostart skip=exists'); } catch (_) {} return; }
-        const ok = __openAppByWindowType('fn-deepseek-harness', 'DeepSeek Harness', target, 'popout', target);
-        try { fnosLog('info', 'launch', 'dsh.autostart ' + (ok ? 'ok' : 'fail') + ' url=' + target.slice(0, 120)); } catch (_) {}
-      } catch (_) {}
-    }, 10000);
     setTimeout(() => { try { __migrateStrayLogs(); } catch (_) {} }, 3000);
     setTimeout(() => { try { __hookLoginCookies(); } catch (_) {} }, 8000);
     [15000, 60000, 180000].forEach((ms) => setTimeout(() => { try { __logLoginState('startup+' + (ms / 1000) + 's'); } catch (_) {} }, ms));
     setTimeout(() => { try { __keepLoginSweep(); } catch (_) {} }, 20000);
-    // 每 10 分钟留一次登录态快照，出问题回溯用（用户把日志发来即可定位）
     try {
       const t2 = setInterval(() => { try { __logLoginState('periodic'); } catch (_) {} }, 10 * 60 * 1000);
       try { if (t2.unref) t2.unref(); } catch (_) {}
     } catch (_) {}
-    const t = setInterval(() => { try { __keepLoginSweep(); } catch (_) {} }, 5 * 60 * 1000);
-    try { if (t.unref) t.unref(); } catch (_) {}
+    try {
+      const t = setInterval(() => { try { __keepLoginSweep(); } catch (_) {} }, 5 * 60 * 1000);
+      try { if (t.unref) t.unref(); } catch (_) {}
+    } catch (_) {}
   }).catch(() => {});
 } catch (_) {}
 

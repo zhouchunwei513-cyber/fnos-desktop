@@ -4399,7 +4399,209 @@ module.exports = function injectTitleBar(ctx) {
       const t37 = setInterval(() => { __fixSticky37(); if (++n37 > 20) clearInterval(t37); }, 500);
     };
 
-    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); __watchSticky37(); __watchQbTheme38(); } catch (_) {} };
+    // ================= v4.0.45：主窗页内应用窗统一自绘标题栏 =================
+    // 用户定案（2026-11-05）：「程序内打开的所有应用，标题栏一律用自绘标题栏」。
+    // 背景：客户端主窗里飞牛桌面打开的应用窗（.trim-ui__app-layout--window）的拖动与
+    // — □ ✕ 原本全由飞牛前端 bundle 的 DDe 钩子处理（header 上 mousedown → document
+    // mousemove，用 clientX/clientY 改 left/top，并把 top 夹在「视口高-55」）。这套逻辑
+    // 在高 DPI + RDP 会话下表现为「拖动反向 / 点窗控逐次下移、最后贴底拖不回来」。
+    // 那是第三方代码，改不动，索性整条接管：
+    //   ① 隐藏页面自带的 44px 表头（用样式表按 data 属性隐藏，React 重渲染也不会丢）；
+    //   ② 注入 36px 自绘栏：应用图标 + 应用名 + — □ ✕（与主程序/应用窗同款手感）；
+    //   ③ 拖动自己算：只用 clientX/clientY 增量写 **body 坐标**的 left/top，
+    //      **绝不用 screenX/screenY**（那正是之前反向的根源），夹取用 body.clientWidth/Height；
+    //   ④ 窗控**代理到飞牛原生按钮**（表头 display:none 仍可 click），让它内部的
+    //      activeWindows / 托盘 / 最大化 class 状态保持一致，不出现两套状态打架。
+    function __watchInPageWindows() {
+      try {
+        if (EMBED || !__isMainWin) return; // 只管主窗的飞牛桌面；应用窗/内嵌窗走各自分支
+        if (window.__fnosIwInstalled) { try { window.__fnosIwRescan && window.__fnosIwRescan(); } catch (_) {} return; }
+        window.__fnosIwInstalled = 1;
+
+        const BAR_H = 36;
+        const WIN_SEL = '[class*="app-layout--window"]';
+        const HDR_SEL = '[class*="app-layout--header"]';
+        const MARK = 'data-fnos-iw';
+
+        try {
+          if (!document.getElementById('fnos-iw-css')) {
+            const st = document.createElement('style');
+            st.id = 'fnos-iw-css';
+            st.textContent = '[' + MARK + '-hdr="1"]{display:none!important}'
+              + '[' + MARK + '="bar"]{box-sizing:border-box}'
+              + '[' + MARK + '="bar"] .fnos-iw-ico:hover{background:rgba(127,127,127,0.18)}'
+              + '[' + MARK + '="bar"] .fnos-iw-ico-close:hover{background:#E81123!important;color:#fff!important}';
+            (document.head || document.documentElement).appendChild(st);
+          }
+        } catch (_) {}
+
+        const __barBg = (hdr) => {
+          try {
+            const bg = getComputedStyle(hdr).backgroundColor;
+            if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg;
+          } catch (_) {}
+          try {
+            const dark = document.documentElement.classList.contains('dark') || document.body.classList.contains('dark');
+            return dark ? 'rgba(37,40,46,0.96)' : 'rgba(255,255,255,0.96)';
+          } catch (_) { return 'rgba(255,255,255,0.96)'; }
+        };
+        const __barFg = (hdr) => {
+          try { const c = getComputedStyle(hdr).color; if (c) return c; } catch (_) {}
+          return 'inherit';
+        };
+
+        const __mkIco = (kind) => {
+          const s = document.createElement('span');
+          s.className = 'fnos-iw-ico fnos-iw-ico-' + kind;
+          s.style.cssText = 'display:flex;align-items:center;justify-content:center;width:44px;height:100%;flex:0 0 auto;cursor:pointer;color:inherit;';
+          if (kind === 'min') s.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 8H13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+          else if (kind === 'max') s.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+          else s.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+          s.setAttribute('role', 'button');
+          s.title = kind === 'min' ? '最小化' : kind === 'max' ? '最大化/还原' : '关闭';
+          return s;
+        };
+
+        function __buildBar(win, hdr) {
+          const bar = document.createElement('div');
+          bar.setAttribute(MARK, 'bar');
+          bar.style.cssText = 'height:' + BAR_H + 'px;flex:0 0 ' + BAR_H + 'px;display:flex;align-items:center;'
+            + 'justify-content:space-between;padding:0;user-select:none;cursor:default;'
+            + 'background:' + __barBg(hdr) + ';color:' + __barFg(hdr) + ';';
+
+          const left = document.createElement('div');
+          left.style.cssText = 'display:flex;align-items:center;gap:8px;overflow:hidden;flex:1 1 auto;min-width:0;padding-left:12px;pointer-events:none;';
+          try {
+            const im0 = hdr.querySelector('img');
+            if (im0 && im0.getAttribute('src')) {
+              const im = document.createElement('img');
+              im.src = im0.getAttribute('src');
+              im.style.cssText = 'width:16px;height:16px;flex:0 0 auto;border-radius:4px;display:block;';
+              left.appendChild(im);
+            }
+          } catch (_) {}
+          const title = document.createElement('span');
+          title.style.cssText = 'font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+          const tt = hdr.querySelector('[class*="app-layout--header-title"]');
+          title.textContent = String((tt && tt.textContent) || '').trim() || String(document.title || '');
+          left.appendChild(title);
+          bar.appendChild(left);
+
+          const right = document.createElement('div');
+          right.style.cssText = 'display:flex;align-items:stretch;height:100%;flex:0 0 auto;';
+          const minB = __mkIco('min'), maxB = __mkIco('max'), closeB = __mkIco('close');
+          right.appendChild(minB); right.appendChild(maxB); right.appendChild(closeB);
+          bar.appendChild(right);
+
+          const __native = (cls) => {
+            try { const el = hdr.querySelector('.' + cls); if (el) { el.click(); return true; } } catch (_) {}
+            return false;
+          };
+          minB.addEventListener('click', (e) => { e.stopPropagation(); __native('app-layout-header-minimize'); });
+          maxB.addEventListener('click', (e) => { e.stopPropagation(); __native('app-layout-header-maximize'); });
+          closeB.addEventListener('click', (e) => { e.stopPropagation(); __native('app-layout-header-close'); });
+
+          // —— 自绘拖动（v4.0.45 核心）——
+          bar.addEventListener('pointerdown', (e) => {
+            try {
+              if (e.button !== 0) return;
+              if (e.target && e.target.closest && e.target.closest('[role="button"]')) return;
+              e.preventDefault(); e.stopPropagation();
+              const left0 = parseFloat(win.style.left) || 0;
+              const top0 = parseFloat(win.style.top) || 0;
+              const sx = e.clientX, sy = e.clientY;
+              let cx = sx, cy = sy;
+              try { bar.setPointerCapture(e.pointerId); } catch (_) {}
+              let moved = false;
+              const onMove = (ev) => {
+                cx = ev.clientX; cy = ev.clientY;
+                const dx = cx - sx, dy = cy - sy;
+                if (!moved && Math.abs(dx) <= 2 && Math.abs(dy) <= 2) return;
+                moved = true;
+                const vw = document.body.clientWidth || window.innerWidth;
+                const vh = document.body.clientHeight || window.innerHeight;
+                const ww = win.offsetWidth;
+                let L = Math.round(left0 + dx);
+                let T = Math.round(top0 + dy);
+                L = Math.max(-(ww - 120), Math.min(L, vw - 120));
+                T = Math.max(0, Math.min(T, vh - 44));
+                win.style.left = L + 'px';
+                win.style.top = T + 'px';
+              };
+              const onUp = () => {
+                try { bar.releasePointerCapture(e.pointerId); } catch (_) {}
+                bar.removeEventListener('pointermove', onMove);
+                bar.removeEventListener('pointerup', onUp);
+                bar.removeEventListener('pointercancel', onUp);
+                if (!moved) return;
+                // 松手后把光标最终位置回灌给飞牛（它自己的拖动会重读 rect 同步内部基准），
+                // 否则之后窗口 resize 时它按旧基准把窗口拽回原位。
+                try {
+                  hdr.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: cx, clientY: cy, button: 0 }));
+                  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: cx, clientY: cy, button: 0 }));
+                } catch (_) {}
+              };
+              bar.addEventListener('pointermove', onMove);
+              bar.addEventListener('pointerup', onUp);
+              bar.addEventListener('pointercancel', onUp);
+            } catch (_) {}
+          });
+          bar.addEventListener('dblclick', (e) => { e.preventDefault(); e.stopPropagation(); __native('app-layout-header-maximize'); });
+
+          return bar;
+        }
+
+        function __attach(win) {
+          try {
+            if (!win || win.getAttribute(MARK) === '1') return;
+            const hdr = win.querySelector(':scope > ' + HDR_SEL) || win.querySelector(HDR_SEL);
+            if (!hdr) return;
+            win.setAttribute(MARK, '1');
+            hdr.setAttribute(MARK + '-hdr', '1');
+            const bar = __buildBar(win, hdr);
+            win.insertBefore(bar, win.firstChild);
+            try { ipcRenderer.send('fnos:media-log', { stage: 'inpage.bar', title: String(bar.textContent || '').slice(0, 24) }); } catch (_) {}
+          } catch (_) {}
+        }
+
+        const __rescan = () => {
+          try {
+            document.querySelectorAll(WIN_SEL).forEach((w) => {
+              if (w.getAttribute(MARK) === '1') {
+                if (!w.querySelector(':scope > [' + MARK + '="bar"]')) { w.removeAttribute(MARK); __attach(w); }
+              } else __attach(w);
+            });
+          } catch (_) {}
+        };
+        window.__fnosIwRescan = __rescan;
+
+        let __pend = false;
+        const __mo = new MutationObserver(() => {
+          if (__pend) return;
+          __pend = true;
+          requestAnimationFrame(() => { __pend = false; __rescan(); });
+        });
+        try { __mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+        __rescan();
+        // 主题切换后重上色（表头背景/前景变了，我们的栏要跟）
+        try {
+          setInterval(() => {
+            try {
+              document.querySelectorAll('[' + MARK + '="bar"]').forEach((b) => {
+                const w = b.parentElement;
+                const hdr = w && w.querySelector(HDR_SEL);
+                if (!hdr) return;
+                const bg = __barBg(hdr), fg = __barFg(hdr);
+                if (b.style.background !== bg) b.style.background = bg;
+                if (b.style.color !== fg) b.style.color = fg;
+              });
+            } catch (_) {}
+          }, 2000);
+        } catch (_) {}
+      } catch (_) {}
+    }
+
+    const start = () => { try { __setupFullscreen(); if (EMBED) { buildEmbed(); } else { build(); buildAccountSwitcher(); } __ensureContentOffset(); __setupZoomControls(); __decoyFndeskAutoBottom(); __guardSysWidget(); __watchSticky37(); __watchQbTheme38(); __watchInPageWindows(); } catch (_) {} };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
     else start();
   } catch (e) {

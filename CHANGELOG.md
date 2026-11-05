@@ -3,6 +3,49 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.45
+
+> 用户定案（2026-11-05）：「程序内打开的所有应用，标题栏一律用自绘标题栏」——
+> 不再去修飞牛前端那套拖动/窗控，直接从根上接管。
+
+### 根因
+
+- 客户端主窗里飞牛桌面打开的应用窗（`.trim-ui__app-layout--window`）的拖动与 — □ ✕
+  全部由飞牛前端 bundle 的 `DDe` 钩子处理（header 上 `mousedown` → document `mousemove`，
+  按 `clientX/clientY` 改内联 `left/top`，并把这些值夹在
+  `left∈[260-width, clientWidth-100]`、`top∈[0, clientHeight-55]`）。
+- 这套逻辑与我们的窗口体系无关，高 DPI + RDP 会话下表现为「拖动反向」「点窗控逐次下移，
+  最后 top 撞到 `clientHeight-55` 夹取上限、标题栏滑出可视区拖不回来」。
+  第三方代码改不动，改为接管。
+
+### 修复（`titlebar-inject.js` 新增 `__watchInPageWindows()`，仅主窗生效）
+
+1. 隐藏页面自带的 44px 表头：注入 `[data-fnos-iw-hdr="1"]{display:none!important}`（走样式表，
+   React 重渲染不会把 inline 还原）；
+2. 注入 36px 自绘栏：应用图标 + 应用名 + — □ ✕，配色读原生表头的 computed style，主题切换每 2s 跟随；
+3. **拖动自己算**：`pointerdown` 记起点，`pointermove` 只用 `clientX/clientY` 增量写
+   **body 坐标**的 `style.left/top`，夹取用 `document.body.clientWidth/Height`
+   （`top` 下限 0 = 正好贴着主窗自绘标题栏下沿）；**绝不使用 `screenX/screenY`**；
+4. 窗控**代理到飞牛原生按钮**（`.app-layout-header-minimize/-maximize/-close`，表头虽隐藏但仍可
+   `click()`），因此 `activeWindows` / 托盘 / 最大化 class 状态全部由飞牛自己维护，不会两套状态打架；
+   双击标题栏 = 最大化/还原；
+5. 松手时把光标最终位置回灌一次 `mousedown/mouseup`，让飞牛重读 rect 同步内部基准，
+   避免之后窗口 resize 时按旧基准把窗口拽回原位；
+6. `MutationObserver`（rAF 节流）兜住新开的窗口与 React 重渲染。
+
+### 验证（真机 CDP，合成输入走完整事件链）
+
+- 注入后原生表头 `display:none`、自绘栏出现，标题「文件管理」；
+- 拖动 `(700,70)→(600,120)`：窗口 `left 163→63`、`top 18→68`，**Δ 精确 1:1，方向正确**；
+- 点自绘 □：窗口铺满 `[0,37,1246,678]`；再点精确还原 `[63,105,1100,716]`。
+
+### 配套（DS1 侧，不进安装包）
+
+- `tools/deploy.sh` 第 7 步改为用 Windows 桌面快捷方式
+  `C:\Users\<user>\Desktop\DeepSeek Harness.lnk` 重新拉起 DSH（用户要求）：
+  快捷方式缺失时回退老的 `wscript + fnos-launcher.vbs` 路径。
+  实测 `launch.open ok:true windowType:embed`。
+
 ## v4.0.44
 
 > 用户反馈（单位机 34" 带鱼屏 250% 缩放，用 100% 笔记本 RDP 进来）：

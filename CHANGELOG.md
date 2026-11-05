@@ -3,6 +3,54 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.44
+
+> 用户反馈（单位机 34" 带鱼屏 250% 缩放，用 100% 笔记本 RDP 进来）：
+> ① 程序内打开的内嵌窗应用拖动反向（往上拖窗口往下跳、往下拖往上跳）；
+> ② 点内嵌窗的关闭/最大化/最小化按钮，窗口每点一次往下挪一点，几次后顶边贴到主窗下沿、拖不动。
+
+### 根因（日志 + CDP 实测）
+
+1. **这类窗口根本没走客户端自己的标题栏。** `createAppWindow` 里 `__embedAuto` 判定「URL 是
+   `/appview` 且不是快捷方式」的内嵌窗加 `--fnos-embed-style`；而 preload 自 v4.0.9 起对带这个
+   旗标的窗口**直接跳过标题栏注入**（当时为了消除「两条标题栏叠一起」）。于是拖动、—/□/✕
+   全部由飞牛页面自己画的那条 AppLayout 表头处理。
+2. 这正好解释日志怪象：客户端在跑、日志在写，但**完全没有这类窗口的 `drag.arm/start/move/end`
+   与 `ctl.maximize`**（只有别的窗口的 `ctl.close`）。v4.0.43 改的「主进程光标同源相减」只作用于
+   我们自己的 `win-drag-*` 通道，对内嵌窗无效。
+3. CDP 实测（本机 9222，打开 `/appview?anchor=…` 窗口）：窗口里 `document.getElementById('fnos-titlebar')`
+   为 `null`，只有页面 AppLayout 表头 —— 与代码判定一致。
+
+### 修复
+
+- `preload.js`：内嵌窗（`--fnos-embed-style`）**恢复注入自绘标题栏**（走 `buildEmbed`：
+  logo + 标题 + — □ ✕），拖动/窗控重新回到主进程 `win-drag-*` / `window-minimize|maximize|close`
+  通道，直接吃 v4.0.43 的坐标同源修正。
+- `main.js`（`createAppWindow`）：内嵌窗在 `did-finish-load` / SPA `did-navigate-in-page` 时
+  `insertCSS('[class*="app-layout--header"]{display:none !important}')`，把页面自带的那条表头隐藏，
+  只留我们一条（避免 v4.0.9 的两条标题栏叠一起）；并新增 `appwin.embed-bar` 日志留痕。
+- 页面表头由 appview 容器在**主框架**渲染，`insertCSS` 只作用于主框架，不会误伤应用 iframe 里的工具栏。
+
+### 验证（待真机）
+
+- 热部署后在内嵌窗里拖标题栏：日志应出现 `drag.arm` → `drag.start` → `drag.move`（同级窗口 id），
+  位移方向与光标一致；点 □/—/✕ 应出现 `ctl.maximize` / `ctl.unmaximize.done` / `ctl.close`。
+
+## v4.0.43
+
+> 用户反馈：250% 缩放 + RDP 100% 环境下拖动反向跳、拖不跟手（仅热部署，正式记录并入本版）。
+
+### 根因
+
+- `win-drag-move` 的基准 `d.sx/d.sy` 来自渲染层 DOM 的 `screenX/screenY`（CSS 像素），
+  而位移用的当前光标来自主进程 `screen.getCursorScreenPoint()`（DIP）；两套坐标系在高 DPI /
+  混合 DPI 下比例不同，位移被放大甚至反向。
+
+### 修复
+
+- `main.js`：`win-drag-move` 改为「当前光标也由主进程读取」，与窗口 `getBounds()` 同源相减；
+- 新增 `drag.move`（前 3 帧）、`ctl.maximize.done` / `ctl.unmaximize.done` 的 bounds 留痕。
+
 ## v4.0.42
 
 > 用户反馈：改用 Tailscale 地址登录后，桌面快捷方式打不开 DeepSeek Harness。

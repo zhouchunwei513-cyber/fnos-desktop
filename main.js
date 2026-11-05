@@ -3360,7 +3360,14 @@ ipcMain.on('window-minimize', (e) => {
 ipcMain.on('window-maximize', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
-    try { fnosLog('info', 'window', 'ctl.maximize win=' + (w ? w.id : -1)); } catch (_) {}
+    try {
+      const b0 = (w && !w.isDestroyed()) ? w.getBounds() : null;
+      fnosLog('info', 'window', 'ctl.maximize win=' + (w ? w.id : -1) + ' before=' + (b0 ? [b0.x, b0.y, b0.width, b0.height].join(',') : '-'));
+      if (w && !w.isDestroyed()) {
+        w.once('maximize', () => { try { const b1 = w.getBounds(); fnosLog('info', 'window', 'ctl.maximize.done win=' + w.id + ' after=' + [b1.x, b1.y, b1.width, b1.height].join(',')); } catch (_) {} });
+        w.once('unmaximize', () => { try { const b1 = w.getBounds(); fnosLog('info', 'window', 'ctl.unmaximize.done win=' + w.id + ' after=' + [b1.x, b1.y, b1.width, b1.height].join(',')); } catch (_) {} });
+      }
+    } catch (_) {}
     if (!w || w.isDestroyed()) return;
     __toggleMaxWin(w);
   } catch (_) {}
@@ -3368,7 +3375,10 @@ ipcMain.on('window-maximize', (e) => {
 ipcMain.on('window-close', (e) => {
   try {
     const w = hostWindowFromSender(e && e.sender);
-    try { fnosLog('info', 'window', 'ctl.close win=' + (w ? w.id : -1)); } catch (_) {}
+    try {
+      const b = (w && !w.isDestroyed()) ? w.getBounds() : null;
+      fnosLog('info', 'window', 'ctl.close win=' + (w ? w.id : -1) + ' bounds=' + (b ? [b.x, b.y, b.width, b.height].join(',') : '-') + ' max=' + (w && !w.isDestroyed() ? (w.isMaximized() ? 1 : 0) : '-'));
+    } catch (_) {}
     if (w && !w.isDestroyed()) w.close();
   } catch (_) {}
 });
@@ -3409,6 +3419,9 @@ function __winDragBegin(w, sx, sy) {
       win: w, ox: b.x, oy: b.y,
       sx: Number(sx) || 0, sy: Number(sy) || 0,
       lx: b.x, ly: b.y, maxPending: pending,
+      // v4.0.44：拖动坐标来源标记（true=主进程光标，false=渲染层 screenX/Y），
+      // 供 win-drag-move / __dragPollStart 判定，保证基准与 current 严格同源
+      useMain: true,
       // v3.0.23：拖动开始时把尺寸记下来，整个拖动过程只允许改位置、不允许改尺寸
       w0: b.width, h0: b.height
     };
@@ -3566,6 +3579,11 @@ function __dragPollStop() {
 function __dragPollStart(d) {
   __dragPollStop();
   if (!d || !d.win || d.win.isDestroyed()) return;
+  // v4.0.44：本次拖动若已判定走「渲染层屏幕坐标」（见 win-drag-start 的 useMain），
+  // 主进程轮询就不能再插手——两条链路用不同基准同时 setPosition 会互相打架、窗口乱跳。
+  // 轮询本来是给「MPV 原生窗盖住标题栏、renderer 收不到 mousemove」兜底的，那种情况
+  // 一定走 main 基准，照旧生效。
+  if (d.useMain === false) return;
   let lastX = null, lastY = null, still = 0, ticks = 0, moved = false;
   const __step = () => {
     try {
@@ -3640,6 +3658,21 @@ ipcMain.on('win-drag-start', (e, p) => {
       // v3.0.82：沿用「按下」那一刻的窗口位置与光标坐标，位移从按下算起（起步没有 2px 死区）
       st.ox = arm.bx; st.oy = arm.by; st.lx = arm.bx; st.ly = arm.by;
       st.sx = arm.sx; st.sy = arm.sy;
+      // v4.0.44（v4.0.43 只改了一半）——刚才两条链路混用坐标系：
+      //   基准 = arm.sx/sy（渲染层 MouseEvent.screenX/Y）
+      //   当前 = screen.getCursorScreenPoint()（主进程）
+      // 只要两者不是同一套坐标（页面 zoom、混合 DPI、RDP 会话切换、光标读取失败返回 0,0），
+      // 首帧位移就会整体偏一个固定量 —— 用户看到的就是「一拖就跳 / 方向不对」。
+      // 现在先判一次同源性：主进程光标与 arm 点相差 ≤3px 才认为两边等价，之后整段都用主进程光标；
+      // 否则整段都用渲染层坐标（useMain=false），保证「基准与当前同源」，绝不混算。
+      try {
+        const cp0 = screen.getCursorScreenPoint();
+        const __same = !!(cp0 && Number.isFinite(cp0.x) && Number.isFinite(cp0.y)
+          && Math.abs(cp0.x - arm.sx) <= 3 && Math.abs(cp0.y - arm.sy) <= 3);
+        st.useMain = __same;
+        if (__same) { st.sx = cp0.x; st.sy = cp0.y; }
+        try { fnosLog('info', 'window', 'drag.start.src win=' + w.id + ' useMain=' + (__same ? 1 : 0) + ' arm=' + arm.sx + ',' + arm.sy + ' main=' + (cp0 ? cp0.x + ',' + cp0.y : '-')); } catch (_) {}
+      } catch (_) { st.useMain = false; }
       try { clearTimeout(arm.timer); } catch (_) {}
       if (__winDragArm === arm) __winDragArm = null;
     } else {
@@ -3647,8 +3680,9 @@ ipcMain.on('win-drag-start', (e, p) => {
       // v3.0.77：以主进程读到的光标为拖动基准（与渲染层屏幕坐标同为 DIP，但能消除缩放偏差）
       try {
         const cp = screen.getCursorScreenPoint();
-        if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)) { st.sx = cp.x; st.sy = cp.y; }
-      } catch (_) {}
+        if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)) { st.sx = cp.x; st.sy = cp.y; st.useMain = true; }
+        else st.useMain = false;
+      } catch (_) { st.useMain = false; }
     }
     __winDragState = st;
     __dragPollStart(st);
@@ -3674,13 +3708,21 @@ ipcMain.on('win-drag-move', (e, p) => {
         if (st) {
           st.ox = arm.bx; st.oy = arm.by; st.lx = arm.bx; st.ly = arm.by;
           st.sx = arm.sx; st.sy = arm.sy;
+          // v4.0.44：同 win-drag-start —— 基准与 current 必须同源（这条自愈路径同理）
+          try {
+            const cp0 = screen.getCursorScreenPoint();
+            const __same = !!(cp0 && Number.isFinite(cp0.x) && Number.isFinite(cp0.y)
+              && Math.abs(cp0.x - arm.sx) <= 3 && Math.abs(cp0.y - arm.sy) <= 3);
+            st.useMain = __same;
+            if (__same) { st.sx = cp0.x; st.sy = cp0.y; }
+          } catch (_) { st.useMain = false; }
           try { clearTimeout(arm.timer); } catch (_) {}
           if (__winDragArm === arm) __winDragArm = null;
           __winDragState = st;
           __dragPollStart(st);
           __frostDragStart(w0);
           d = st;
-          try { fnosLog('info', 'window', 'drag.start.heal win=' + w0.id + ' o=' + st.ox + ',' + st.oy); } catch (_) {}
+          try { fnosLog('info', 'window', 'drag.start.heal win=' + w0.id + ' o=' + st.ox + ',' + st.oy + ' useMain=' + (st.useMain ? 1 : 0)); } catch (_) {}
         }
       } else if (w0) {
         try { fnosLog('info', 'window', 'drag.move.noarm win=' + w0.id + ' ignored'); } catch (_) {}
@@ -3708,11 +3750,58 @@ ipcMain.on('win-drag-move', (e, p) => {
       // v3.0.82：统一走 __doMaxRestore（它会在还原后校验实际 bounds，
       // 顺手修掉 unmaximize 与 setBounds 竞态把窗口撑到工作区尺寸的老问题）。
       // 本次仍不位移：还原帧只摆正窗口，下一帧 move 才按新基准跟手。
-      __doMaxRestore(d, sx, sy);
+      // v4.0.44：还原后要回填拖动基准，基准必须与后续 current 同源——这里按 useMain 取点。
+      let __mx = sx, __my = sy;
+      if (d.useMain !== false) {
+        try {
+          const cp = screen.getCursorScreenPoint();
+          if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)
+            && !(cp.x === 0 && cp.y === 0 && (Math.abs(sx) > 4 || Math.abs(sy) > 4))) { __mx = cp.x; __my = cp.y; }
+          else d.useMain = false;
+        } catch (_) { d.useMain = false; }
+      }
+      __doMaxRestore(d, __mx, __my);
       return;
     }
-    const nx = Math.round(d.ox + sx - d.sx);
-    const ny = Math.round(d.oy + sy - d.sy);
+    // v4.0.43（用户反馈：250% 缩放 + RDP 100% 环境下拖动反向跳、拖不跟手）：
+    // 旧算式混用两套坐标系——基准 d.sx/d.sy 来自渲染层/主进程不同来源，而这里又用另一套，
+    // 高 DPI/混合 DPI 下两者比例不同，位移被放大甚至反向。
+    // v4.0.44：改为「基准与当前严格同源」——drag.start 时已判定 useMain：
+    //   useMain=true  → 基准/当前都用 screen.getCursorScreenPoint()
+    //   useMain=false → 基准/当前都用渲染层 MouseEvent.screenX/Y
+    // 且主进程中途读不到光标（返回 0,0 / 异常）时，就地重锚切换到渲染层坐标，绝不混算。
+    let __cx = sx, __cy = sy;
+    if (d.useMain !== false) {
+      let __cpOk = false;
+      try {
+        const cp = screen.getCursorScreenPoint();
+        // 0,0 是最常见的「读不到光标」伪值（RDP 切换/安全桌面/CDP 合成输入）；
+        // 渲染层如果报了一个明显不是 (0,0) 的点，就以渲染层为准。
+        if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)
+          && !(cp.x === 0 && cp.y === 0 && (Math.abs(sx) > 4 || Math.abs(sy) > 4))) {
+          __cx = cp.x; __cy = cp.y; __cpOk = true;
+        }
+      } catch (_) {}
+      if (!__cpOk) {
+        try {
+          const b = d.win.getBounds();
+          d.ox = b.x; d.oy = b.y; d.lx = b.x; d.ly = b.y;
+          d.sx = sx; d.sy = sy;
+          d.useMain = false;
+          try { __dragPollStop(); } catch (_) {}
+          fnosLog('info', 'window', 'drag.rebase win=' + d.win.id + ' -> renderer ' + sx + ',' + sy);
+        } catch (_) {}
+        __cx = sx; __cy = sy;
+      }
+    }
+    const nx = Math.round(d.ox + __cx - d.sx);
+    const ny = Math.round(d.oy + __cy - d.sy);
+    try {
+      if (!d.__logN || d.__logN < 3) {
+        d.__logN = (d.__logN || 0) + 1;
+        fnosLog('info', 'window', 'drag.move win=' + d.win.id + ' base=' + d.sx + ',' + d.sy + ' cur=' + __cx + ',' + __cy + ' -> ' + nx + ',' + ny + ' (renderer ' + sx + ',' + sy + ')');
+      }
+    } catch (_) {}
     // v3.0.51（用户反馈：拖动窗口时边沿抖动）——
     // 日志实锤（渲染层 ball.resize 共 695 条，全部落在拖动时段）：拖动期间客户区尺寸在
     // ±1~3px 内以 15~30Hz 来回跳（10-30 一次拖动 7 秒 205 条≈每帧一次），页面跟着每帧重排，
@@ -7828,6 +7917,26 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
           win.webContents.insertCSS('[class*="app-layout--header"]{display:none !important}').catch(() => {});
         } catch (_) {}
       });
+    } catch (_) {}
+  }
+
+  // v4.0.44（BUG：内嵌窗拖动反向 + 点窗控按钮窗口逐次下移）——
+  // 现场：embed 形态（--fnos-embed-style）窗口里，拖动/最小化/最大化/关闭都由飞牛页面自己画的
+  // 那条表头（appview 的 AppLayout：logo + 标题 + —✕，桌面内嵌窗还有 □）处理，客户端主进程的
+  // win-drag-* / ctl.* 通道一次都没被调用（日志里完全没有这类窗口的 drag.* / ctl.maximize），
+  // 所以 v4.0.43 的「主进程光标同源」修正对这类窗口无效。
+  // 现在：内嵌窗也注入自绘标题栏（preload 侧去掉 --fnos-embed-style 的跳过），同时把页面自带的
+  // 这条表头隐藏掉，避免出现「两条标题栏叠在一起」（v4.0.9 当初跳过注入的原因）。
+  // 页面表头由 appview 容器在**主框架**渲染（AppLayout 直接挂在 #root 下），insertCSS 只作用于
+  // 主框架，不会误伤应用 iframe 内部的工具栏；SPA 内跳转后重新插一次。
+  if (__embedAuto) {
+    try {
+      const __hideEmbedPageBar = (why) => {
+        try { win.webContents.insertCSS('[class*="app-layout--header"]{display:none !important}').catch(() => {}); } catch (_) {}
+        try { fnosLog('info', 'appwin', 'appwin.embed-bar win=' + win.id + ' why=' + String(why || '') + ' url=' + String(win.webContents.getURL() || '').slice(0, 120)); } catch (_) {}
+      };
+      win.webContents.on('did-finish-load', () => __hideEmbedPageBar('load'));
+      win.webContents.on('did-navigate-in-page', (_e, _u, isMainFrame) => { if (isMainFrame !== false) __hideEmbedPageBar('in-page'); });
     } catch (_) {}
   }
 

@@ -50,12 +50,13 @@
 | `/Purge` | 静默 + **删除所有数据**（含配置，等价交互模式选「全部删除」） |
 | `/KeepData` | 静默 + **保留配置**（删缓存/日志/更新包，保留 `settings.json`/`servers.json`/皮肤，**默认**） |
 | `/KeepAllData` | 静默 + **仅删程序**（用户数据全部保留） |
+| `/cleanup` 或 `/uninstall` | 便携版清理：只删便携版 `data\`、`%APPDATA%\Electron` FNOS 专属项、`%TEMP%` 残留（可与 `/S` 搭配静默执行） |
 | `/no-deep` | 跳过全盘扫描（快速核对） |
 | `/report=<路径>` | 指定报告输出位置 |
 
 退出码：`0` = 全部成功；`1` = 部分失败（日志有明细）；`2` = 用户取消。
 
-例：`FNOS-Uninstaller.exe /dry-run` 先看一眼要删什么；`FNOS-Uninstaller.exe /S /Purge` 无人值守全删。
+例：`FNOS-Uninstaller.exe /dry-run` 先看一眼要删什么；`FNOS-Uninstaller.exe /S /Purge` 无人值守全删；`FNOS-Uninstaller.exe /cleanup /S` 静默清理便携版数据。
 
 ## 安全设计
 
@@ -109,7 +110,11 @@ powershell -ExecutionPolicy Bypass -File build-uninstaller.ps1
 
 ## 版本
 
-- **1.1.0**（当前）—— 修复「程序创建的快捷方式没删掉」+ 用户数据三选一 + 精准命名模式清理
+- **1.2.0**（当前）—— 修复 `/S` 参数、退出码 2、新增 `/cleanup` 便携版清理
+  - **修复 `/S` 短参数不生效**：`/S` 现在等价 `/silent`（需求文档 §4.3）。
+  - **退出码 2（用户取消）**：交互模式下点「否」确认弹窗时正确返回退出码 2（需求文档 §4.1 第 9 条）。
+  - **新增 `/cleanup` / `/uninstall` 参数**：便携版数据清理模式（需求文档 §5），只删便携版 `data\`、`%APPDATA%\Electron` FNOS 专属项、`%TEMP%` 残留、快捷方式，不动安装目录和注册表；可与 `/S` 搭配无人值守执行。
+- 1.1.0 —— 修复「程序创建的快捷方式没删掉」+ 用户数据三选一 + 精准命名模式清理
   - **快捷方式识别重写**：FNOS 的子应用/容器快捷方式名是「影视」「电视直播」「Lucky」等应用名，目标是 `wscript.exe`，真正的身份在参数里的 `fnos-launcher.vbs`——现在通过 COM 读取 `.lnk` 的目标+参数精准识别，不再依赖文件名含 "fnos"。**桌面截图里的 10 个快捷方式全部正确命中**。
   - **普通文件不再误删**：`.md`/`.txt` 等文件名含 fnos 的普通文件不再被当快捷方式，只认 `.lnk`/`.url`/`.bat`/`.cmd`/`.vbs`/`.ps1`。
   - **新增残留路径**（对照需求文档 §3）：`%LOCALAPPDATA%\fnos-client-updater`（142 MB 更新缓存）、`%LOCALAPPDATA%\fnos-desktop`、`%APPDATA%\fnos-client.lnk`、`%APPDATA%\Microsoft\Windows\Start Menu\Programs\FNOS\`、`%APPDATA%\Electron` 内 FNOS 专属项（`fnos-*`、`Partitions\fnos-shared\`、`logs\fnos-*.log`）、WER `ReportArchive/ReportQueue\*FNOS*`、`%TEMP%\fnos_*` 与 `%TEMP%\*\FNOS.exe` 孤儿副本。

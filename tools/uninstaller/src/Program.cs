@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("FNOS 客户端强力卸载工具（Windows 10 / 11）")]
 [assembly: AssemblyProduct("FNOS 客户端强力卸载")]
 [assembly: AssemblyCompany("FNOS")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace FnosUninstall
 {
@@ -40,11 +40,12 @@ namespace FnosUninstall
             Application.SetCompatibleTextRenderingDefault(false);
 
             bool dry = HasFlag("dry-run") || HasFlag("dryrun") || HasFlag("listonly");
-            bool silent = HasFlag("silent") || HasFlag("quiet") || HasFlag("y");
+            bool silent = HasFlag("silent") || HasFlag("quiet") || HasFlag("y") || HasFlag("s");
+            bool cleanup = HasFlag("cleanup") || HasFlag("uninstall");
 
-            if (dry || silent)
+            if (dry || silent || cleanup)
             {
-                int code = ConsoleMode(dry, silent);
+                int code = ConsoleMode(dry, silent, cleanup);
                 Environment.Exit(code);
                 return;
             }
@@ -83,8 +84,24 @@ namespace FnosUninstall
             catch { return Environment.CurrentDirectory; }
         }
 
-        /// <summary>无界面模式：/dry-run 只出清单，/silent 真删</summary>
-        private static int ConsoleMode(bool dry, bool silent)
+        /// <summary>判断是否为便携版清理目标（data\ 目录、Electron 共享目录 FNOS 项、%TEMP% 残留）</summary>
+        private static bool IsPortableCleanupItem(TraceItem it)
+        {
+            string p = (it.Path ?? "").ToLowerInvariant();
+            if (p.Length == 0) p = (it.Detail ?? "").ToLowerInvariant();
+            // 便携版 data 目录（Electron userData）
+            if (p.Contains("\\data\\") || p.EndsWith("\\data")) return true;
+            // Electron 共享目录 FNOS 专属项
+            if (p.Contains("\\appdata\\roaming\\electron")) return true;
+            // %TEMP% 中的 fnos 残留（fnos_ 前缀目录、FNOS.exe 孤儿副本、日志）
+            if (p.Contains("\\temp\\fnos") || (p.Contains("\\temp\\") && p.Contains("fnos.exe"))) return true;
+            // 快捷方式（fnos-launcher.vbs 相关）
+            if (it.Kind == ItemKind.Shortcut) return true;
+            return false;
+        }
+
+        /// <summary>无界面模式：/dry-run 只出清单，/silent 真删，/cleanup 便携版数据清理</summary>
+        private static int ConsoleMode(bool dry, bool silent, bool cleanup)
         {
             StringBuilder logBuf = new StringBuilder();
             Util.Log = delegate (string s) { logBuf.AppendLine(s); };
@@ -103,7 +120,13 @@ namespace FnosUninstall
             List<TraceItem> items = Scanner.Scan(deep, info, delegate (string s) { logBuf.AppendLine(s); });
 
             List<TraceItem> sel = new List<TraceItem>();
-            foreach (TraceItem it in items) if (it.Checked) sel.Add(it);
+            foreach (TraceItem it in items)
+            {
+                if (!it.Checked) continue;
+                // /cleanup 模式：只处理便携版数据 + Electron 共享目录 FNOS 专属项
+                if (cleanup && !IsPortableCleanupItem(it)) continue;
+                sel.Add(it);
+            }
 
             string outDir = ExeDir();
             if (dry)
@@ -733,7 +756,11 @@ namespace FnosUninstall
                          "· 安装器残留、Windows 错误报告、Electron 共享目录内的 FNOS 专属文件\r\n\r\n" +
                          "此操作不可撤销。建议先点「导出清单」留底。\r\n\r\n确定继续？";
             if (MessageBox.Show(this, ask, "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
-                    MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            {
+                Environment.ExitCode = 2;
+                return;
+            }
 
             busy = true;
             btnRun.Enabled = false;

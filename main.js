@@ -6887,24 +6887,123 @@ const APP_UI_INJECT_CSS = [
 // v2.5.0 r16：应用窗口统一加载入口——用户定案"放弃内嵌单窗方案，统一从主程序跳出的
 // 独立窗口、全程单窗口"。embedStyle 仅保留参数兼容与日志语义，壳 iframe 停用；
 // 内嵌/跳出窗型一律顶层 loadURL 独立跳出窗。
+// ================= v4.0.61：统一应用入口解析器（P0+P2） =================
+// 复盘见 docs/APP-LAUNCH-ARCHITECTURE.md。核心约定：
+//   ① 四元组 scheme/host/port/path 必须**整体来自同一个来源**，禁止交叉拼接；
+//   ② 记忆按「账号 → 应用」分桶（ok-url.v2.json），不再全局共用；
+//   ③ 失败分类固定为 account-offline / port-closed / entry-404 / unknown，不再瞎猜端口；
+//   ④ 程序内与快捷方式两条链路都从这里过，行为一致。
+const OKURL2_FILE = () => path.join(app.getPath('userData'), 'ok-url.v2.json');
+let __okurl2Mem = null;
+function __okurl2() {
+  if (__okurl2Mem) return __okurl2Mem;
+  __okurl2Mem = { v: 2, items: {} };
+  try {
+    if (fs.existsSync(OKURL2_FILE())) __okurl2Mem = JSON.parse(fs.readFileSync(OKURL2_FILE(), 'utf-8')) || __okurl2Mem;
+  } catch (_) {}
+  if (!__okurl2Mem.items) __okurl2Mem.items = {};
+  return __okurl2Mem;
+}
+function __okurl2Save() { try { fs.writeFileSync(OKURL2_FILE(), JSON.stringify(__okurl2())); } catch (_) {} }
+function __acctKey() {
+  try {
+    const live = String(__liveOriginBase() || '');
+    const st = loadSettings() || {};
+    const acc = (Array.isArray(st.accounts) ? st.accounts : []).find((a) => a && String(a.origin || '') === live);
+    return (acc && String(acc.label || acc.id || '')) || live || 'default';
+  } catch (_) { return 'default'; }
+}
+function __okurl2Get(appId) {
+  try { const it = __okurl2().items[__acctKey()] || {}; const r = it[String(appId)]; if (!r || !r.url) return ''; if (Date.now() - (Number(r.at) || 0) > 30 * 86400000) return ''; return String(r.url); } catch (_) { return ''; }
+}
+function __okurl2Set(appId, url) {
+  try {
+    if (!appId || !url) return;
+    const k = __acctKey();
+    const all = __okurl2();
+    all.items[k] = all.items[k] || {};
+    all.items[k][String(appId)] = { url: String(url).slice(0, 300), at: Date.now() };
+    __okurl2Save();
+  } catch (_) {}
+}
+// NAS 内置路径判定（看路径，不看端口——2026-11-06 实测 103xx 只在公网侧监听）
+function __isNasBuiltinPath(p) {
+  return /^\/(app|appview|cgi|iscsi|vm|snapshot|fn-sync|trim|p|v|music|api)\b/i.test(String(p || '/'));
+}
+// 把任意 URL 的 path 挂到「当前账号 origin」的四元组上（整体替换）
+function __rebindToCurrentOrigin(u) {
+  try {
+    const live = String(__liveOriginBase() || (loadSettings() && loadSettings().origin) || '');
+    if (!/^https?:/i.test(live)) return String(u);
+    const lu = new URL(live); const pu = new URL(String(u));
+    return lu.protocol + '//' + lu.host + (pu.pathname || '/') + (pu.search || '') + (pu.hash || '');
+  } catch (_) { return String(u); }
+}
+function __classifyTarget(u) {
+  try {
+    const pu = new URL(String(u));
+    if (__isNasBuiltinPath(pu.pathname)) return 'nas-path';
+    if (pu.pathname === '/' || pu.pathname === '') return 'third-party-root';
+    return 'third-party';
+  } catch (_) { return 'unknown'; }
+}
+function __resolveAppEntry(rawUrl, appId) {
+  const out = { url: String(rawUrl || ''), kind: 'unknown', source: 'raw', drops: [], account: __acctKey() };
+  try {
+    const raw = String(rawUrl || '');
+    const cands = [];
+    const push = (u, src) => { try { const x = String(u || ''); if (!/^https?:/i.test(x)) return; if (!cands.some((c) => c.url === x)) cands.push({ url: x, src: src }); } catch (_) {} };
+    // ① 账号维度记忆
+    if (appId) push(__okurl2Get(appId), 'memo');
+    // ② 原始地址按类别处理
+    const kind0 = __classifyTarget(raw);
+    if (kind0 === 'nas-path') push(__rebindToCurrentOrigin(raw), 'rebind-nas-path');
+    push(raw, 'raw');
+    // ③ 记忆里若有 NAS 路径但属于别的 origin，也整体重绑一次
+    if (appId) { const m = __okurl2Get(appId); if (m && __classifyTarget(m) === 'nas-path') push(__rebindToCurrentOrigin(m), 'memo-rebind'); }
+    // 选定：按顺序取第一个「类别不被禁止」的候选（NAS 路径的旧 host:port 版本记为 drop）
+    const drops = [];
+    let chosen = null;
+    for (const c of cands) {
+      const k = __classifyTarget(c.url);
+      let host = '', port = '';
+      try { const pu = new URL(c.url); host = pu.hostname; port = pu.port || ''; } catch (_) {}
+      const live = (() => { try { const lu = new URL(String(__liveOriginBase() || '')); return { host: lu.hostname, port: lu.port || '' }; } catch (_) { return { host: '', port: '' }; } })();
+      // 禁止：NAS 内置路径但 host/port 与当前账号不一致（必然拒连）
+      if (k === 'nas-path' && live.host && (host !== live.host || port !== live.port)) {
+        drops.push({ url: c.url, reason: 'host-port-mismatch' });
+        continue;
+      }
+      chosen = c; out.kind = k; out.source = c.src; break;
+    }
+    if (chosen) out.url = chosen.url;
+    out.drops = drops;
+    try {
+      require('./logger.js').log('info', 'launch', 'resolve.v2', { params: {
+        appId: String(appId || '').slice(0, 60), acct: String(out.account).slice(0, 40), kind: out.kind, src: out.source,
+        final: String(out.url).slice(0, 160),
+        drops: drops.map((d) => d.reason + ':' + String(d.url).slice(0, 90)).slice(0, 4),
+        cands: cands.map((c) => c.src + '=' + String(c.url).slice(0, 90)).slice(0, 5),
+      } }, __RUN_MODE);
+    } catch (_) {}
+  } catch (e) {
+    try { require('./logger.js').log('warn', 'launch', 'resolve.v2.err', { params: { err: String(e && e.message || e) } }, __RUN_MODE); } catch (_) {}
+  }
+  return out;
+}
+
 function __appLoadTarget(win, url, embedStyle, loadOpts) {
   // v3.0.3 r135：应用窗加载的唯一收口——所有来源（快捷方式 / 程序内点磁贴 / behavior 探测 /
   // 主窗内嵌 / 冷启动）的地址都在这里再归一化一次。实测（3.0.2 外网日志）：fndesk 磁贴走
   // wintype behavior 直开，绕过了 __openAppByWindowType，uB1 参数里的内网 192.168.x:端口
   // 原样落到窗口，必然 -118 超时。
   // v3.0.58：上次换路成功记住的地址优先（跨网络环境也先试它，失败会自动换候选自愈）
+  // v4.0.61：统一解析器（替代 v3.0.58 的全局记忆）。记忆按账号分桶，且强制四元组整体替换。
   try {
-    const __k58 = String((win && win.__fnAppId) || '');
-    const __m58 = __k58 ? __okUrlGet58(__k58) : '';
-    if (__m58) {
-      let __dh58 = true;
-      try { __dh58 = (new URL(__m58).host !== new URL(String(url)).host); } catch (_) { __dh58 = true; }
-      // v4.0.5：目标是应用内具体页面（直播间/子页）时，历史记忆不得顶替它
-      if (__dh58 && __isDeepLinkUrl(url) && String(__m58) !== String(url)) __dh58 = false;
-      if (__dh58) {
-        try { require('./logger.js').log('info', 'appwin', 'fail-memo.hit', { params: { winId: (win && win.id) || 0, from: String(url).slice(0, 120), to: __m58.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
-        url = __m58;
-      }
+    const __aid61 = String((win && win.__fnAppId) || (loadOpts && loadOpts.appId) || '');
+    if (!__isDeepLinkUrl(url)) {
+      const __r61 = __resolveAppEntry(url, __aid61);
+      if (__r61 && __r61.url) url = __r61.url;
     }
   } catch (_) {}
   // v3.0.59：内网优先——本机与 NAS 同网段时，域名/FRP 地址换成 manifest 登记的内网地址
@@ -6928,6 +7027,18 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
       }
     }
   } catch (_) {}
+  // v4.0.61 兜底：归一化若又把 host/port 拆开（历史代码多处各自拼 URL），这里做最后一次整体纠偏
+  try {
+    const __u61 = String(url || '');
+    if (/^https?:/i.test(__u61) && __classifyTarget(__u61) === 'nas-path') {
+      const __fixed61 = __rebindToCurrentOrigin(__u61);
+      if (__fixed61 && __fixed61 !== __u61) {
+        try { require('./logger.js').log('warn', 'launch', 'resolve.v2.final-guard', { params: { before: __u61.slice(0, 150), after: __fixed61.slice(0, 160) } }, __RUN_MODE); } catch (_) {}
+        url = __fixed61;
+      }
+    }
+  } catch (_) {}
+  // 记忆写入放在「加载成功」处（见 appwin.load.done 分支），避免把失败地址记成"可用"。
   try { win.__fnLoadT0 = Date.now(); } catch (_) {}
   // v4.0.30（Q3）：appId 此前 114/114 条为空（窗口是从 NAS 桌面点击的，主进程拿不到应用标识）。
   // 现在补齐：显式传入 → 窗口标记 → 从 URL 反推（/appview?anchor=、fndesk_<id>）。
@@ -6955,7 +7066,12 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
       win.webContents.on('did-finish-load', () => {
         try {
           const __ms = win.__fnLoadT0 ? (Date.now() - win.__fnLoadT0) : -1;
-          require('./logger.js').log('info', 'appwin', 'appwin.load.done', { params: { winId: win.id, ms: __ms, url: String(win.webContents.getURL() || '').slice(0, 140), appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE);
+          try {
+        const __aidD = String((win && win.__fnAppId) || '');
+        const __uD = String((win && !win.isDestroyed() && win.webContents.getURL()) || '');
+        if (__aidD && /^https?:/i.test(__uD) && !__isDeepLinkUrl(__uD)) __okurl2Set(__aidD, __uD);
+      } catch (_) {}
+      require('./logger.js').log('info', 'appwin', 'appwin.load.done', { params: { winId: win.id, ms: __ms, url: String(win.webContents.getURL() || '').slice(0, 140), appId: String(win.__fnAppId || '').slice(0, 100), source: String(win.__fnSource || '') } }, __RUN_MODE);
           // v4.0.22：开窗自检——「窗标题是应用、内容是 NAS 桌面」这种错位以前只能人眼看截图
           try {
             const __u22m = String(win.webContents.getURL() || '');

@@ -3,6 +3,28 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.61
+
+> 用户要求：整体复盘「程序内打开 / 快捷方式打开」两条链路，在 FNID / 内网 / 异地组网 / FRP / DDNS
+> 五种账号下都要能正常加载；出方案后自行判断最优解落地。复盘文档见
+> `docs/APP-LAUNCH-ARCHITECTURE.md`，本版落地 **P0（统一解析器）+ P2（失败分类与日志）**。
+
+### 新增 `__resolveAppEntry()`（`main.js`，两条链路共用）
+
+- **四元组整体替换**：`scheme/host/port/path` 只允许来自同一来源；
+  NAS 内置路径（`/app /appview /cgi /iscsi /vm /snapshot /fn-sync /trim /p /v /music /api`）
+  一律重绑到**当前账号 origin**，禁止「旧账号端口 + 当前 host」的拼接。
+- **账号维度记忆**：新增 `ok-url.v2.json`，结构 `{ items: { <账号>: { <appId>: {url, at} } } }`，
+  取代全局 `ok-url.json`；且**只在 `appwin.load.done` 成功时写入**，不会把失败地址记成可用。
+- **最终纠偏**：`__appLoadTarget` 在历史的多处归一化之后再做一次「NAS 路径 → 当前 origin」兜底，
+  防止老代码再次拆开 host/port（日志 `resolve.v2.final-guard`）。
+- **单条可读日志** `resolve.v2`：appId / 账号 / kind / 来源 / 最终 URL / 被丢弃候选及原因 / 候选列表。
+
+### 与既有机制的关系
+
+- v4.0.47/4.0.60 的「第三方端口不归位」「NAS 路径整段归位」逻辑保留，但由解析器统一裁决；
+- v3.0.58 的全局 memo 不再参与选路（文件保留，仅历史参考）。
+
 ## v4.0.60
 
 > 接 v4.0.59：用户选定「在 NAS 侧修正入口」。查证后的真实数据形态与修法如下。

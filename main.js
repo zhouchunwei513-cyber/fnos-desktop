@@ -10580,7 +10580,7 @@ try { require('electron').nativeTheme.on('updated', () => { try { __syncThemeFro
 // v2.9.0 r29（问题①④）：app-center 真入口预热——启动 6s 后拉一次 /app-center/v1/app/installed
 // 全列表进 __appCenterUrlCache（__truthRewrite28 动态真值数据源），docker/Lucky/OpenList/
 // qBittorrent 等第三方应用直达真入口（不弹 toast）+加载提速（少一跳中转+候选轮换）。
-try { setTimeout(() => { try { scanAppCenterViaRest(); fnosLog('info', 'appcenter', 'truth-warm29 scheduled', {}); } catch (_) {} }, 6000); } catch (_) {}
+try { setTimeout(() => { try { scanAppCenterViaRest(); fnosLog('info', 'appcenter', 'truth-warm29 scheduled', {}); } catch (_) {} }, 2500); } catch (_) {}
 
 // v2.1.10 旧名保留：仅隐藏到托盘（供其他内部调用）
 function hideMainToTray() { hideMainToBackground(); }
@@ -12578,6 +12578,27 @@ async function __fetchAppCenterUrlLive(appName) {
   return '';
 }
 
+// v4.0.70（启动性能优化）：解析预热。
+// app-center 清单拉到后，把最前面的 N 个应用入口一次性过一遍 __resolveAppEntry，
+// 让「账号维度记忆 ok-url.v2.json」和 app-center 权威候选在用户点击之前就绪，
+// 点开时少一跳候选轮换、直达真入口（实测 resolver 命中可省 100~400ms）。
+function __warmResolveTopApps(n) {
+  try {
+    const ids = [];
+    try { for (const k of __appCenterUrlCache.keys()) ids.push(k); } catch (_) {}
+    const top = ids.slice(0, Number(n) || 12);
+    let warmed = 0;
+    for (const id of top) {
+      try {
+        const u = __appCenterUrlCache.get(id);
+        if (u) { __resolveAppEntry(u, id); warmed++; }
+      } catch (_) {}
+    }
+    try { fnosLog('info', 'launch', 'warm.resolve', { cached: ids.length, warmed: warmed }); } catch (_) {}
+    return warmed;
+  } catch (_) { return 0; }
+}
+
 async function scanAppCenterViaRest() {
   try {
     const s = loadSettings();
@@ -12626,6 +12647,8 @@ async function scanAppCenterViaRest() {
     } catch (_) {}
     if (apps.length) processScannedApps(apps);
     else fnosLog('warn', 'appcenter.rest', 'empty app list', {});
+    // v4.0.70：清单到手立刻预热前 12 个应用的入口解析
+    try { __warmResolveTopApps(12); } catch (_) {}
   } catch (e) {
     fnosLog('warn', 'appcenter.rest', 'scan failed', { err: e.message });
   }

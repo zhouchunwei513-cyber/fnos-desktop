@@ -12,6 +12,15 @@
 - 只影响观感，不改任何加载/解析逻辑；日志 `appwin.skeleton.show` 可核对。
 - 注：解析预热（`/app-center/v1/app/installed` 全列表进内存缓存）早在 v2.9.0 r29 已实现，启动 6s 后自动预热。
 
+## v4.0.70
+
+### 启动性能：入口解析预热
+
+- app-center 清单拉取提前到启动后 **2.5s**（原 6s）；
+- 清单到手后调用 `__warmResolveTopApps(12)`：把前 12 个应用的入口一次性过一遍
+  `__resolveAppEntry`，让账号维度记忆 `ok-url.v2.json` 与 app-center 权威候选提前就绪；
+- 日志：`launch.warm.resolve {cached, warmed}`，便于核对命中率。
+
 ## v4.0.69
 
 ### 启动性能：关窗即停止加载（数据驱动）

@@ -4532,14 +4532,40 @@ module.exports = function injectTitleBar(ctx) {
           const right = document.createElement('div');
           right.style.cssText = 'display:flex;align-items:stretch;height:100%;flex:0 0 auto;';
           const minB = __mkIco('min'), maxB = __mkIco('max'), closeB = __mkIco('close');
-          // v4.0.67（用户工单：预览窗最小化点了没反应）：
-          // 飞牛的「预览」窗原生只有「最大化/关闭」两个按钮，没有最小化——
-          // 旧代码无条件画三个，最小化代理到不存在的原生按钮 = 死键。
-          // 这里按原生 header 实际有哪些按钮来决定画哪些，避免出现"点了没反应"的死键。
-          const __hasNative = (cls) => { try { return !!hdr.querySelector('.' + cls); } catch (_) { return false; } };
-          if (__hasNative('app-layout-header-minimize')) right.appendChild(minB);
-          if (__hasNative('app-layout-header-maximize')) right.appendChild(maxB);
-          if (__hasNative('app-layout-header-close')) right.appendChild(closeB);
+          // v4.0.68（用户工单：自绘栏要把原生标题栏的按钮补回来）：
+          // 不再逐个应用硬编码，而是**镜像原 header 里的全部可点击控件**（刷新/新窗口/搜索/下载/最小化/最大化/关闭…），
+          // 克隆其 DOM（图标风格一致）并把点击代理到原生元素，行为与原生完全一致。
+          // 镜像到 ≥1 个控件时就不再画我们自己的 min/max/close（避免重复）；镜像不到才回退。
+          let __mirrored = 0;
+          try {
+            const __all = [...hdr.querySelectorAll('.cursor-pointer')];
+            // 只取最外层按钮，避免图标内部被重复计数
+            const __tops = __all.filter((el) => !__all.some((o) => o !== el && o.contains(el)));
+            __tops.forEach((src) => {
+              try {
+                if (src.closest('[' + MARK + ']')) return;
+                const r = src.getBoundingClientRect();
+                const wpx = Math.min(Math.max(Math.round(r.width) || 32, 22), 46);
+                const c = src.cloneNode(true);
+                c.setAttribute(MARK, 'mirror');
+                c.style.cssText = 'display:flex;align-items:center;justify-content:center;width:' + wpx + 'px;'
+                  + 'height:100%;flex:0 0 auto;cursor:pointer;background:transparent;border:0;padding:0;';
+                c.addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  try { src.click(); } catch (_) {}
+                });
+                right.appendChild(c);
+                __mirrored++;
+              } catch (_) {}
+            });
+          } catch (_) {}
+          if (!__mirrored) {
+            // 回退：镜像不到时按原生能力画 min/max/close（v4.0.67 逻辑）
+            const __hasNative = (cls) => { try { return !!hdr.querySelector('.' + cls); } catch (_) { return false; } };
+            if (__hasNative('app-layout-header-minimize')) right.appendChild(minB);
+            if (__hasNative('app-layout-header-maximize')) right.appendChild(maxB);
+            if (__hasNative('app-layout-header-close')) right.appendChild(closeB);
+          }
           bar.appendChild(right);
 
           const __native = (cls) => {

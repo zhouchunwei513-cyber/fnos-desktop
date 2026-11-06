@@ -3,6 +3,15 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.68
+
+### 自绘标题栏「镜像原生按钮」（用户工单：把原生栏的按钮补回来）
+
+- 之前自绘栏固定画 min/max/close，导致「预览」窗这类带**刷新/新窗口/搜索/下载**的窗口丢按钮；
+- 改为**通用镜像**：克隆原生 header 里全部 `.cursor-pointer` 控件（取最外层，避免重复），
+  点击代理到原生元素（`clone.onclick → src.click()`），图标与行为都和原生一致；
+- 镜像到 ≥1 个控件时不再重复画自己的 min/max/close；镜像不到才回退旧逻辑。
+
 ## v4.0.67
 
 ### 预览窗「最小化」点了没反应（用户工单 + 视频取证）

@@ -3,6 +3,25 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.65
+
+> 用户工单：家里电脑上「内网账号 192.168.31.101 浏览器能开，客户端打不开」。
+
+### 1. 未登录时不再把窗口弹回连接页（实锤）
+
+- 日志实锤：`login.page detected url=http://192.168.31.101:5666/login` → `login.flag hasTicket:0`
+  → 1 秒后 `window.destroy reason=connectpage`。
+- 根因：NAS 未登录时把 `/` 302 到 `/login`，`mainWindow.loadURL()` 对 302 后的导航
+  可能 reject 成 `ERR_ABORTED/ERR_FAILED`，旧代码 `.catch(() => showConnectPage())`
+  直接销毁窗口 → 用户根本来不及在 NAS 登录页输账号密码。
+- 修法：catch 里判断「当前 URL 已是 NAS 的 http(s) 页面」就保留窗口（日志
+  `login.keep-window why=nav-aborted`），登录成功后 SPA 自己进桌面。
+
+### 2. 登录态诊断补充
+
+- 新增 `login.keep-window` 日志，配合既有 `login.page / login.flag / login.state`
+  一眼能看出「是掉登录还是网络问题」。
+
 ## v4.0.64
 
 > 多账号实测（第 2 个账号 `121.40.186.165:10300`）抓到的两个链路问题。

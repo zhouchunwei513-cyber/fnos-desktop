@@ -11369,7 +11369,22 @@ try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_)
     const __rfNav = fnosReferrerFor(loadTarget.href);
     const __optsNav = { userAgent: getNasUA() };
     if (__rfNav) __optsNav.httpReferrer = __rfNav;
-    mainWindow.loadURL(loadTarget.href, __optsNav).catch(() => showConnectPage());
+    // v4.0.65（用户工单：内网账号在客户端打不开、浏览器能开）：
+    // NAS 未登录时会把 / 302 到 /login，Electron 对 302 后的 loadURL 可能 reject 成
+    // ERR_ABORTED/ERR_FAILED —— 旧逻辑直接把窗口销毁弹回「连接服务器」页，用户根本
+    // 来不及在 NAS 登录页输账号密码。这里改成：只要当前页面已经是 NAS 的 http(s)
+    // 页面（含 /login），就保留窗口让用户登录，登录成功后 SPA 自己进桌面。
+    mainWindow.loadURL(loadTarget.href, __optsNav).catch((__errNav) => {
+      try {
+        const __msg = String((__errNav && __errNav.message) || '');
+        const __cur = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.getURL()) || '');
+        if (/ERR_ABORTED|ERR_FAILED|-3\b/i.test(__msg) && /^https?:/i.test(__cur)) {
+          try { fnosLog('info', 'login', 'login.keep-window why=nav-aborted cur=' + __cur.slice(0, 120)); } catch (_) {}
+          return;
+        }
+      } catch (_) {}
+      showConnectPage();
+    });
   } else {
     showConnectPage();
   }

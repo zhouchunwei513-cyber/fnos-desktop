@@ -5,21 +5,20 @@
 
 ## v4.0.70
 
-### 重应用加载骨架屏（用户要求：体感秒开）
+> 启动性能与体感优化（数据驱动：三台机器 400+ 条 `appwin.load.done`）。
 
-- 应用窗创建后 **300ms 仍未加载完**，就在页面里盖一层骨架（旋转指示 + 应用名，深色底）；
-- `did-finish-load` / `did-fail-load` 立刻撤掉；**快应用（<300ms）完全不会看到骨架**；
-- 只影响观感，不改任何加载/解析逻辑；日志 `appwin.skeleton.show` 可核对。
-- 注：解析预热（`/app-center/v1/app/installed` 全列表进内存缓存）早在 v2.9.0 r29 已实现，启动 6s 后自动预热。
+### 1. 重应用加载骨架屏
 
-## v4.0.70
+- 窗口创建后 **300ms 仍未加载完**，就在页面里盖一层骨架（应用名 + 旋转），
+  `did-finish-load` / `did-fail-load` 立刻撤掉；快应用（<300ms）根本不会出现骨架；
+- 日志 `appwin.skeleton.show`（diag）；实测 seek/相册/fn-deepseek-harness 均按预期触发。
 
-### 启动性能：入口解析预热
+### 2. 入口解析预热
 
 - app-center 清单拉取提前到启动后 **2.5s**（原 6s）；
-- 清单到手后调用 `__warmResolveTopApps(12)`：把前 12 个应用的入口一次性过一遍
+- 清单到手后调用 `__warmResolveTopApps(12)`：前 12 个应用入口一次性过一遍
   `__resolveAppEntry`，让账号维度记忆 `ok-url.v2.json` 与 app-center 权威候选提前就绪；
-- 日志：`launch.warm.resolve {cached, warmed}`，便于核对命中率。
+- 日志 `launch.warm.resolve {cached, warmed}`，实测 `cached:28, warmed:12`。
 
 ## v4.0.69
 

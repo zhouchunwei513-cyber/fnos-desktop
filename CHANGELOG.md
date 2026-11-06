@@ -3,6 +3,15 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.71
+
+### 重应用资源预取
+
+- 桌面就绪 8s 后，对固定几个重应用（相册 `/p`、`/seek`、安全中心 `/app/trim-security`、音乐 `/music`）
+  预拉**首页 HTML + 页内 js/css** 到同一 partition 的 HTTP 缓存；
+- 用户真正点开时命中缓存，省掉首包与静态资源的网络往返；失败静默，不影响任何加载逻辑；
+- 日志 `launch.prefetch.heavy {paths, htmlOk, assetOk}`。
+
 ## v4.0.70
 
 > 启动性能与体感优化（数据驱动：三台机器 400+ 条 `appwin.load.done`）。

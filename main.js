@@ -10582,6 +10582,50 @@ try { require('electron').nativeTheme.on('updated', () => { try { __syncThemeFro
 // qBittorrent 等第三方应用直达真入口（不弹 toast）+加载提速（少一跳中转+候选轮换）。
 try { setTimeout(() => { try { scanAppCenterViaRest(); fnosLog('info', 'appcenter', 'truth-warm29 scheduled', {}); } catch (_) {} }, 2500); } catch (_) {}
 
+// v4.0.71（用户要求：重应用尽量秒开）——资源预取。
+// 桌面就绪后（8s）把已知的重应用首页 HTML + 其中的 js/css 预拉一遍，进同一个 partition 的
+// HTTP 缓存；用户真正点开时直接命中缓存，省掉首包与静态资源的网络往返。
+// 只对固定几个重应用做（相册 / seek / 安全中心 / 音乐），避免开机流量过大；失败静默。
+async function __prefetchHeavyApps() {
+  try {
+    const __s = session.fromPartition(currentPartition);
+    const origin = String(__liveOriginBase() || loadSettings().origin || '').replace(/\/+$/, '');
+    if (!origin || !/^https?:/i.test(origin)) return { ok: 0 };
+    const paths = ['/p', '/seek?ver=0.0.1', '/app/trim-security', '/music'];
+    let htmlOk = 0, assetOk = 0;
+    for (const pth of paths) {
+      try {
+        const r = await __s.fetch(origin + pth, { credentials: 'include' });
+        if (!r.ok) continue;
+        const html = await r.text();
+        htmlOk++;
+        const urls = [];
+        try {
+          const re = /(?:src|href)=["']([^"']+)["']/g;
+          let m;
+          while ((m = re.exec(html)) && urls.length < 10) {
+            const u = m[1];
+            if (/\.(js|css)(\?|$)/i.test(u)) urls.push(u);
+          }
+        } catch (_) {}
+        for (const u of urls) {
+          try {
+            const abs = new URL(u, origin + pth).href;
+            const rr = await __s.fetch(abs, { credentials: 'include' });
+            if (rr.ok) assetOk++;
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    try { fnosLog('info', 'launch', 'prefetch.heavy', { paths: paths.length, htmlOk: htmlOk, assetOk: assetOk }); } catch (_) {}
+    return { ok: htmlOk, assets: assetOk };
+  } catch (e) {
+    try { fnosLog('warn', 'launch', 'prefetch.heavy.err', { err: String((e && e.message) || e) }); } catch (_) {}
+    return { ok: 0 };
+  }
+}
+try { setTimeout(() => { try { __prefetchHeavyApps(); } catch (_) {} }, 8000); } catch (_) {}
+
 // v2.1.10 旧名保留：仅隐藏到托盘（供其他内部调用）
 function hideMainToTray() { hideMainToBackground(); }
 

@@ -3,6 +3,16 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.69
+
+### 启动性能：关窗即停止加载（数据驱动）
+
+- 三台机器 400+ 条 `appwin.load.done` 统计发现：>3s 的慢加载全部集中在 seek / 相册 /
+  安全中心 / 百度网盘 / npc / iscsi 等重应用，`ms` 高达 **50~156 秒**——窗口早已 close，
+  页面仍在后台继续加载到 `did-finish-load` 才打点，污染统计且白占网络/CPU；
+- 修法：应用窗 `close` 时先 `webContents.stop()`，并记 `appwin.close.stop` 日志；
+- 真实加载耗时（客户端自带打点）：**快捷方式中位 594ms、程序内中位 952ms**，本来已是秒开级别。
+
 ## v4.0.68
 
 ### 自绘标题栏「镜像原生按钮」（用户工单：把原生栏的按钮补回来）

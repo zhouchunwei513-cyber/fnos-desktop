@@ -8122,6 +8122,23 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     },
   });
 
+  // v4.0.69（启动性能优化，实测数据驱动）：关窗即停止加载。
+  // 现场：三台机器 400+ 条 appwin.load.done 里，>3s 的慢加载全部集中在 seek/相册/安全中心/
+  // 百度网盘/npc/iscsi 等重应用，且 ms 高达 50~156 秒——这些窗口早已被 close，页面却还在
+  // 后台继续加载直到 did-finish-load 才打点，既污染耗时统计，也白占网络与 CPU。
+  // 这里在窗口 close 时先 webContents.stop()，把"关掉了还在跑"的加载切断。
+  try {
+    win.on('close', () => {
+      try {
+        const __wc = win.webContents;
+        if (__wc && !__wc.isDestroyed()) {
+          __wc.stop();
+          dlog('info', 'appwin.close.stop', { winId: win.id, url: String(__wc.getURL() || '').slice(0, 100) });
+        }
+      } catch (_) {}
+    });
+  } catch (_) {}
+
   // v4.0.35：快捷方式 + /appview 时，页面自带一条「浮动表头」（app-layout--header），
   // 它在本窗口里与内容重叠（实测：去掉位移后 header 与 iframe 的 top 都是 0），
   // 会把侧栏首项压住。自绘标题栏已提供 ☰ 与 —□✕，这里只把这条冗余浮层隐藏。

@@ -4532,7 +4532,14 @@ module.exports = function injectTitleBar(ctx) {
           const right = document.createElement('div');
           right.style.cssText = 'display:flex;align-items:stretch;height:100%;flex:0 0 auto;';
           const minB = __mkIco('min'), maxB = __mkIco('max'), closeB = __mkIco('close');
-          right.appendChild(minB); right.appendChild(maxB); right.appendChild(closeB);
+          // v4.0.67（用户工单：预览窗最小化点了没反应）：
+          // 飞牛的「预览」窗原生只有「最大化/关闭」两个按钮，没有最小化——
+          // 旧代码无条件画三个，最小化代理到不存在的原生按钮 = 死键。
+          // 这里按原生 header 实际有哪些按钮来决定画哪些，避免出现"点了没反应"的死键。
+          const __hasNative = (cls) => { try { return !!hdr.querySelector('.' + cls); } catch (_) { return false; } };
+          if (__hasNative('app-layout-header-minimize')) right.appendChild(minB);
+          if (__hasNative('app-layout-header-maximize')) right.appendChild(maxB);
+          if (__hasNative('app-layout-header-close')) right.appendChild(closeB);
           bar.appendChild(right);
 
           const __native = (cls) => {

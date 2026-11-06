@@ -3,6 +3,23 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.67
+
+### 预览窗「最小化」点了没反应（用户工单 + 视频取证）
+
+- CDP 实测：`.trim-ui__app-layout--window` 有两个窗口——「文件管理」header 里 3 个按钮
+  （min/max/close），「预览」header 里**只有 2 个**（max/close，**原生没有最小化**）；
+- 旧代码无条件画 min/max/close 三个，最小化代理到不存在的 `.app-layout-header-minimize` → 死键；
+- 修法：按原生 header 实际拥有的按钮类决定画哪些（min/max/close 各自判断），
+  预览窗现在只显示「最大化 + 关闭」，和系统原生行为一致。
+
+## v4.0.66
+
+### 登录页不再出现滚动条（用户工单：右侧一条竖滚动条）
+
+- `login.css` 追加硬化规则：`html/body` 强制 `overflow:hidden`，并对 `*::-webkit-scrollbar`
+  宽度归零（含 `scrollbar-width:none`），任何缩放下都不会再出现滚动条。
+
 ## v4.0.65
 
 > 用户工单：家里电脑上「内网账号 192.168.31.101 浏览器能开，客户端打不开」。

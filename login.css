@@ -385,3 +385,17 @@ html, body {
   .field { margin-bottom: 10px; }
   .hint { margin: 10px 0 14px; }
 }
+
+/* ===== v4.0.66：登录页禁止出现任何滚动条（用户工单：窗口右侧有一条滚动条） ===== */
+html, body {
+  overflow: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}

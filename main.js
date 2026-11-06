@@ -8139,6 +8139,40 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     });
   } catch (_) {}
 
+  // v4.0.70（用户要求：重应用体感秒开）——加载骨架屏。
+  // 300ms 还没加载完就在页面里盖一层骨架（图标+应用名+旋转），did-finish-load 立刻撤掉。
+  // 只影响观感，不改变任何加载逻辑；快应用（<300ms）根本不会出现骨架。
+  try {
+    const __skelName = String((opts && (opts.name || opts.title || opts.appId)) || '').replace(/[\\'"]/g, '').slice(0, 24) || '正在打开…';
+    let __skelTimer = setTimeout(() => {
+      try {
+        const __wc0 = win.webContents;
+        if (!__wc0 || __wc0.isDestroyed()) return;
+        const __js = "(function(){try{if(document.getElementById('__dsh_skel'))return;"
+          + "var st=document.createElement('style');st.textContent='@keyframes __dsh_spin{to{transform:rotate(360deg)}}';"
+          + "(document.head||document.documentElement).appendChild(st);"
+          + "var d=document.createElement('div');d.id='__dsh_skel';"
+          + "d.style.cssText='position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#0f1115;color:#9fb0c8;font:13px/1.6 system-ui,sans-serif;';"
+          + "var b=document.createElement('div');b.style.cssText='width:34px;height:34px;border-radius:50%;border:3px solid rgba(120,160,255,.25);border-top-color:#6f9dff;animation:__dsh_spin .9s linear infinite;';"
+          + "var t=document.createElement('div');t.textContent=" + JSON.stringify(__skelName) + ";"
+          + "d.appendChild(b);d.appendChild(t);(document.body||document.documentElement).appendChild(d);}catch(e){}})();";
+        __wc0.executeJavaScript(__js).catch(() => {});
+        dlog && dlog('info', 'appwin.skeleton.show', { app: __skelName });
+      } catch (_) {}
+    }, 300);
+    const __dropSkel = () => {
+      try { clearTimeout(__skelTimer); } catch (_) {}
+      try {
+        const __wc1 = win.webContents;
+        if (__wc1 && !__wc1.isDestroyed()) {
+          __wc1.executeJavaScript("(function(){var e=document.getElementById('__dsh_skel');if(e)e.remove();})()").catch(() => {});
+        }
+      } catch (_) {}
+    };
+    win.webContents.on('did-finish-load', __dropSkel);
+    win.webContents.on('did-fail-load', __dropSkel);
+  } catch (_) {}
+
   // v4.0.35：快捷方式 + /appview 时，页面自带一条「浮动表头」（app-layout--header），
   // 它在本窗口里与内容重叠（实测：去掉位移后 header 与 iframe 的 top 都是 0），
   // 会把侧栏首项压住。自绘标题栏已提供 ☰ 与 —□✕，这里只把这条冗余浮层隐藏。

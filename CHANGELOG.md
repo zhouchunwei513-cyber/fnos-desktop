@@ -3,6 +3,15 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.70
+
+### 重应用加载骨架屏（用户要求：体感秒开）
+
+- 应用窗创建后 **300ms 仍未加载完**，就在页面里盖一层骨架（旋转指示 + 应用名，深色底）；
+- `did-finish-load` / `did-fail-load` 立刻撤掉；**快应用（<300ms）完全不会看到骨架**；
+- 只影响观感，不改任何加载/解析逻辑；日志 `appwin.skeleton.show` 可核对。
+- 注：解析预热（`/app-center/v1/app/installed` 全列表进内存缓存）早在 v2.9.0 r29 已实现，启动 6s 后自动预热。
+
 ## v4.0.69
 
 ### 启动性能：关窗即停止加载（数据驱动）

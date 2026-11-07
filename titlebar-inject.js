@@ -1871,8 +1871,6 @@ module.exports = function injectTitleBar(ctx) {
     function build() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
-        // v4.0.78：音乐窗用系统原生标题栏，跳过自绘栏注入（防双重标题栏+底部白条）
-        try { if (/\/music(\/|$)/i.test(String(location.pathname || ''))) return; } catch (_) {}
 
         // 清理可能残留的旧沉浸黑条（v1.60~v1.61 引入，v1.62 移除：它是 no-drag 层会干扰拖动、且强制黑底）
         try { const old = document.getElementById('fnos-embed-topbar'); if (old) old.remove(); } catch (_) {}
@@ -2443,9 +2441,14 @@ module.exports = function injectTitleBar(ctx) {
           'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;' + __shellBgCss25 + '}' +
           (__fnIsThirdParty25 ? '' : 'html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}');
       } else if (__isAppWin && /\/music(\/|\?|$)/i.test(String(location.href || ''))) {
-        // v4.0.78：音乐窗不改 body 任何几何（不加 transform/padding/margin/height），
-        // 页面拿到和浏览器一模一样的视口。自绘栏已在 build() 入口跳过，不出现双重标题栏。
-        __padStyle.textContent = 'html{overflow:hidden !important;}';
+        // v4.0.79（用户：播放条被裁+偏大）：播放条是 position:absolute bottom:0（相对 body padding box）。
+        // 用 padding-top+border-box 让 body 总高 = 视口高，padding box 底 = 视口底 → 播放条贴底完整可见。
+        // 不用 transform/margin/height（任一改动都会让播放条错位）。自绘栏在 build() 入口跳过。
+        __padStyle.textContent = [
+          'html{overflow:hidden !important;}',
+          'html>body{padding-top:var(--fnos-bar-h, 34px) !important;height:100vh !important;',
+          '  box-sizing:border-box !important;overflow:hidden !important;margin:0 !important;}',
+        ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v4.0.73（用户工单：飞牛音乐底部播放条/列表底部被裁）：
         // 音乐 App 的播放条是 position:fixed bottom:0，而下面 __isAppWin 分支给 body 加了
@@ -2852,8 +2855,6 @@ module.exports = function injectTitleBar(ctx) {
     function buildEmbed() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
-        // v4.0.78：音乐窗用系统原生标题栏，跳过自绘栏注入（防双重标题栏+底部白条）
-        try { if (/\/music(\/|$)/i.test(String(location.pathname || ''))) return; } catch (_) {}
         const root2 = root();
         // 顶部拖动热区（与普通标题栏同款）
         const hot = document.createElement('div');

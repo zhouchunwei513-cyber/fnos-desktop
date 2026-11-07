@@ -15,6 +15,24 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.79
+
+### 音乐窗播放条完整显示 + 自绘标题栏（用户：被裁+偏大）
+
+根因：播放条是 `position:absolute; bottom:0`（相对 body 的 padding box），
+任何 body 高度/transform/margin 改动都会把它推离视口底。
+
+修法（`__padStyle`）：
+- `body{padding-top:34px; height:100vh; box-sizing:border-box; overflow:hidden}`
+- body 总高 = 视口高，padding box 底 = 视口底 → 播放条贴底完整可见
+- 自绘金色标题栏恢复正常注入（固定在顶部，覆盖 body 的 padding 区）
+
+## v4.0.78
+
+### 音乐窗：用系统原生标题栏
+
+对 /music 启用 frame:true，但用户要求自绘标题栏 → 已回退。
+
 ## v4.0.76
 
 ### 音乐窗：系统原生标题栏（--fnos-native-frame）

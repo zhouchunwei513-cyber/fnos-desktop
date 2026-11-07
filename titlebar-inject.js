@@ -2959,7 +2959,7 @@ module.exports = function injectTitleBar(ctx) {
         const __scheduleTopShow = () => {
           if (!AUTO_HIDE) { __cancelTopShow(); show(bar); return; }
           if (__topShowTimer) return;
-          __topShowTimer = setTimeout(() => { __topShowTimer = null; try { show(bar); } catch (_) {} }, 1500);
+          __topShowTimer = setTimeout(() => { __topShowTimer = null; try { show(bar); } catch (_) {} }, 0); // v4.0.106：用户要求去掉 1.5s 延时，推到顶部立即出现
         };
         document.addEventListener('mousemove', (ev) => {
           try {

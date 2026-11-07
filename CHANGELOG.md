@@ -15,6 +15,15 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.106
+
+### 1) 连接失败后「返回 FNOS 主页」无响应
+- 主窗口停在连接失败/错误页时，确认框 `glassMessageBox` 弹不出来 → Promise 永不 resolve；
+- 修法：检测到主窗处于错误/连接页时直接 `goHomeDirect()`；并给确认框 Promise 加 `.catch` 兜底。
+
+### 2) 自动隐藏标题栏：去掉 1.5s 延时
+- 鼠标推到顶部原来 1500ms 才出现，按用户要求改为 **立即出现**（延时 0）。
+
 ## v4.0.105
 
 ### 窗口几何记忆：appview 窗按 anchor 分键

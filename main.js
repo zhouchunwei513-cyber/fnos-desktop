@@ -6524,7 +6524,7 @@ function registerWindow(win, opts = {}) {
       type: 'warning', title: '页面无响应',
       buttons: ['重新加载', '等待'],
       defaultId: 0, cancelId: 1,
-    }).then(({ response }) => {
+    }).catch(() => { try { goHomeDirect(); } catch (_) {} return { response: 0 }; }).then(({ response }) => {
       if (response === 0 && !win.isDestroyed()) win.webContents.forceReload();
     }).catch(() => {});
   });
@@ -11943,6 +11943,17 @@ function doConnectTo(serverInput) {
 }
 
 function goHomeWithPrompt() {
+  // v4.0.106（用户工单：连接失败后菜单「返回 FNOS 主页」点了没反应，只能退出重登）：
+  // 主窗口停在连接失败/错误页时，glassMessageBox 弹不出来（或主窗已不可用），Promise 永不 resolve。
+  // 这种情况直接回家，不再走确认框。
+  try {
+    const __u = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && mainWindow.webContents.getURL()) || '');
+    if (!__u || /^about:|^data:|chrome-error:/i.test(__u) || /error\.html|connect\.html|showConnectPage/i.test(__u)) {
+      try { require('./logger.js').log('warn', 'nav', 'goHome.direct-badstate', { params: { url: __u.slice(0, 120) } }, __RUN_MODE); } catch (_) {}
+      goHomeDirect();
+      return;
+    }
+  } catch (_) {}
   // 返回飞牛主页：如果当前主窗口已打开其他程序，提供选项
   const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
   if (childWindows.length === 0) {

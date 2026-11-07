@@ -8159,9 +8159,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // 改为窗口透明（四角真正镂空），由页面 clip-path 裁出 20px 圆角。
     transparent: true,
     roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
-    // v5.0.6（用户选 A）：应用窗底色从透明改为深色 —— 应用自身在底部/圆角处的透明区
-    // 不再透出桌面（原来会看到一条黑带/壁纸），而是与页面同色，视觉上看不出空隙。
-    backgroundColor: '#14121b',
+    // v5.0.8（用户澄清）：底部那条带其实是滚动条（v5.0.7 已隐藏），
+    // 所以 v5.0.6 的深色底不再需要 —— 回退为透明，四角才会按「标题栏四角/窗口四角」显示圆角。
+    backgroundColor: '#00000000',
     show: false,
     autoHideMenuBar: true,
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +

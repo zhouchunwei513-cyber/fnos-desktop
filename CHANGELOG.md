@@ -15,6 +15,34 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.82
+
+### 飞牛音乐：播放条底部不再被裁
+
+- v4.0.81 后播放条已出现，但仍被底部裁掉 18px：body 让位 34px 后 `#root` 仍按 100vh 排，
+  实际区域变成 34..834，底部 34px 溢出视口；
+- 修法（/music 专用 CSS）：`#root{height:calc(100vh - 34px)}` + `.music-app-layout{height:100%}`，
+  整页正好落在 34..800；实测播放条 712–784，完整可见（与浏览器一致）。
+
+## v4.0.81
+
+### 飞牛音乐：几何补偿彻底跳过（v4.0.80 之后仍被推下去）
+
+- 第二处几何同步模块（周期性重写 body 的 `transform/height`）会覆盖 v4.0.80 的跳过；
+- 修法：音乐页在该模块里直接 `return`，并清掉之前写入的 inline `transform/height/max-height/min-height`，
+  让 /music 专用 CSS（body padding-top 让位）独立生效。
+
+## v4.0.80
+
+### 飞牛音乐：播放条消失 / 整页下移（浏览器对比定位）
+
+- 浏览器里音乐页正常；客户端里整页下移 **75px**、底部悬浮播放条被挤出视口；
+- 根因：/music 专用分支用 `body{padding-top:34px;height:100vh}`（不 transform），
+  但标题栏代码的「html padding 为 0 时的 transform 兜底」又给 body 加了
+  `translateY(34px/--fnos-f)`（实测 41.16px）→ **34+41=75px 双偏移**，
+  页面 absolute 图层整体下移且仍是 100vh 高 → 播放条落到视口外；
+- 修法：音乐页（`/music`）跳过该 transform 兜底，只保留 body padding 让位。
+
 ## v4.0.79
 
 ### 音乐窗播放条完整显示 + 自绘标题栏（用户：被裁+偏大）

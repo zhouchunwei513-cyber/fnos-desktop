@@ -2448,6 +2448,11 @@ module.exports = function injectTitleBar(ctx) {
           'html{overflow:hidden !important;}',
           'html>body{padding-top:var(--fnos-bar-h, 34px) !important;height:100vh !important;',
           '  box-sizing:border-box !important;overflow:hidden !important;margin:0 !important;}',
+          // v4.0.82（用户工单：播放条仍被底部裁 18px）：body 让位 34px 后，#root 仍按 100vh=800 排，
+          // 实际区域变成 34..834，底部 34px 溢出视口 → 悬浮播放条下半截被裁。
+          // 让 #root / music-app-layout 也扣掉标题栏高度，整页正好落在 34..800。
+          '#root{height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;}',
+          '.music-app-layout{height:100% !important;min-height:0 !important;}',
         ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v4.0.73（用户工单：飞牛音乐底部播放条/列表底部被裁）：
@@ -2504,7 +2509,13 @@ module.exports = function injectTitleBar(ctx) {
               // 兜底：html padding-top 被页面 CSS 压成 0 → 改用 body transform 让位
               // （v3.0.46 从 transform 改成 padding 是为了修底栏压内容，但若 padding 根本没生效，
               //   transform 是唯一能保证让位的手段；fixed 元素随 transform 一起下移，正好不压内容）
-              if (__pt === '0px' && document.body && !document.body.__fnosTransformFallback) {
+              // v4.0.80（用户工单：飞牛音乐播放条消失 + 整页下移）：
+              // /music 走的是「body padding-top 让位、绝不 transform」的专用分支；
+              // 但 html padding-top 恒为 0 → 这里又会兜底加 transform，两个偏移叠加（34+41=75px），
+              // 页面 absolute 图层被整体下移且高度仍 100vh → 底部播放条被挤出视口。
+              // 音乐页明确跳过这个兜底。
+              const __isMusic80 = /\/music(\/|\?|$)/i.test(String(location.href || ''));
+              if (!__isMusic80 && __pt === '0px' && document.body && !document.body.__fnosTransformFallback) {
                 document.body.__fnosTransformFallback = true;
                 const __barH2 = __barHeight();
                 document.body.style.setProperty('transform', 'translateY(calc(' + __barH2 + 'px / var(--fnos-f, 1)))', 'important');
@@ -3806,6 +3817,18 @@ module.exports = function injectTitleBar(ctx) {
                 for (let __i = 0; __i < __stale.length; __i++) {
                   if (b.style.getPropertyValue(__stale[__i])) b.style.removeProperty(__stale[__i]);
                 }
+              } catch (_) {}
+              return;
+            }
+            // v4.0.81：音乐页跳过整套 body 几何补偿（transform/height），
+            // 与浏览器保持一致的满铺布局；它的让位由 /music 专用 CSS（body padding-top）负责。
+            // 这里还要把之前可能写进去的 inline transform/height 清掉，否则残留值会继续把页面推下去。
+            if (/\/music(\/|\?|$)/i.test(String(location.href || ''))) {
+              try {
+                const __b81 = document.body;
+                ['transform', 'height', 'max-height', 'min-height', 'box-sizing', 'overflow-y'].forEach((k) => {
+                  try { __b81.style.removeProperty(k); } catch (_) {}
+                });
               } catch (_) {}
               return;
             }

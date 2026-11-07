@@ -767,6 +767,12 @@ class MpvPlayer extends EventEmitter {
     const effectiveCache = (opts.isLive && !opts.cacheLevel) ? 'live' : (opts.cacheLevel || 'smooth');
     args.push(...buildCacheArgs(effectiveCache));
 
+    // v5.0.2（用户工单：自定义 MPV 播直播，10 几秒就循环重播）——
+    // 外部内核常带自己的 mpv.conf（懒人包一般写 loop=inf / loop-file=inf），直播流窗口一到期就 EOF，
+    // 于是被 mpv 循环重播。这里显式关掉循环（命令行参数优先级高于 mpv.conf）：
+    // 直播与点播都由应用层负责续播/重连，不能交给 mpv 的 loop。
+    args.push('--loop-file=no', '--loop-playlist=no');
+
     // 网络健壮性（直播长时间运行易遇运营商断流/抖动，放宽超时）
     args.push('--network-timeout=120');
     // v4.0.27（用户工单：MPV 加载不上）——不再无条件塞 --user-agent：

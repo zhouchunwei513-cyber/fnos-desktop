@@ -2582,9 +2582,8 @@ module.exports = function injectTitleBar(ctx) {
         // v5.0.1（用户工单：DSH 应用窗底部露出 20px 空带）——
         // 实测该页 #root 是 static、height=视口-34，但实际落在 14..664（body 是 34..684），
         // 顶部被抬走 20px、底部正好空 20px（=窗口圆角半径）。这里把根容器下移回位。
-        __padStyle.textContent = [
-          'html>body #root{position:relative !important;top:20px !important;}',
-        ].join('');
+        // v5.0.2：v5.0.1 的 top:20px 实测把根容器推到 54..702（反而溢出 20px），已回退为不干预。
+        __padStyle.textContent = '';
       } else if (__isAppWin && /\/music(\/|\?|$)/i.test(String(location.href || ''))) {
         // v4.0.79（用户：播放条被裁+偏大）：播放条是 position:absolute bottom:0（相对 body padding box）。
         // 用 padding-top+border-box 让 body 总高 = 视口高，padding box 底 = 视口底 → 播放条贴底完整可见。

@@ -15,6 +15,22 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.85
+
+### 飞牛音乐：四个角的灰色来源与消除
+
+- 灰色 = 音乐页自带的 `body{background:rgb(44,40,56)}`，在窗口圆角与标题栏两端露出来；
+- 修法：/music 下 `html/body` 背景统一成页面主深色 `#14121b`，去掉 html 的圆角裁剪与标题栏圆角，
+  窗口四边不再露出灰边。
+
+## v4.0.84
+
+### 飞牛音乐：四角不再透出桌面壁纸
+
+- 应用窗默认 `transparent:true`（圆角处透出桌面壁纸，自绘标题栏需要）；
+- 音乐页是满铺深色页面，透过圆角看到的壁纸（蓝/红渐变）很突兀 → 音乐窗改
+  `transparent:false` + `backgroundColor:#14121b`，四角为深色底，不再像"加了块底布"。
+
 ## v4.0.83
 
 ### 飞牛音乐：播放条缩放到 80%（用户要求）

@@ -8068,9 +8068,11 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v2.15.38：恢复应用窗透明（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板，透明窗口本身不是白板根因；应用窗内容由
     // titlebar-inject 的「只 html 透明」CSS 保证 body 不透明，标题栏顶部 34px 透出桌面壁纸。
-    transparent: true,
+    // v4.0.84（用户工单：音乐窗四角透出桌面壁纸，像加了块"底布"）：音乐页是满铺深色页面，
+    // 圆角处透出的壁纸很突兀 → 音乐窗改不透明 + 深色底；其它应用窗保持透明。
+    transparent: !__isMusicNav76,
     roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
-    backgroundColor: '#00000000',
+    backgroundColor: __isMusicNav76 ? '#14121b' : '#00000000',
     show: false,
     autoHideMenuBar: true,
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +

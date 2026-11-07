@@ -2578,6 +2578,13 @@ module.exports = function injectTitleBar(ctx) {
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
           'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;' + __shellBgCss25 + '}' +
           (__fnIsThirdParty25 ? '' : 'html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}');
+      } else if (__isAppWin && /\/app\/fn-deepseek-harness/i.test(String(location.pathname || ''))) {
+        // v5.0.1（用户工单：DSH 应用窗底部露出 20px 空带）——
+        // 实测该页 #root 是 static、height=视口-34，但实际落在 14..664（body 是 34..684），
+        // 顶部被抬走 20px、底部正好空 20px（=窗口圆角半径）。这里把根容器下移回位。
+        __padStyle.textContent = [
+          'html>body #root{position:relative !important;top:20px !important;}',
+        ].join('');
       } else if (__isAppWin && /\/music(\/|\?|$)/i.test(String(location.href || ''))) {
         // v4.0.79（用户：播放条被裁+偏大）：播放条是 position:absolute bottom:0（相对 body padding box）。
         // 用 padding-top+border-box 让 body 总高 = 视口高，padding box 底 = 视口底 → 播放条贴底完整可见。

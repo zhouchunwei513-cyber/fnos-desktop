@@ -24,7 +24,15 @@ module.exports = function injectTitleBar(ctx) {
         const a = (100 - p) / 100;
         const el = document.documentElement;
         el.style.setProperty('--fnos-ui-a', String(Math.round(a * 1000) / 1000));
-        el.classList.toggle('fnos-ui-transparent', p > 0);
+        // v5.1.8（用户澄清：透明界面只针对飞牛菜单/二级面板，不该作用到应用窗）——
+        // 应用窗加了 fnos-ui-transparent 就会让 body 变半透明 → 圆角/接缝处透出桌面成灰块。
+        // 这里只在【非应用窗】（主窗口/菜单）上加这个 class。
+        let __isAppW = false;
+        try {
+          const a2 = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+          __isAppW = a2.indexOf('--fnos-app-window') >= 0 || a2.indexOf('--fnos-live-window') >= 0;
+        } catch (_) {}
+        el.classList.toggle('fnos-ui-transparent', p > 0 && !__isAppW);
       } catch (_) {}
     }
     // v2.5.7 r23（问题1/3 根修）：子帧（含跨源 iframe）不再整段跳过——appview 应用窗的假窗控

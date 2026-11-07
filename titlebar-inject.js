@@ -2490,6 +2490,10 @@ module.exports = function injectTitleBar(ctx) {
           // #desktopFooter 被顶出视口 → 状态栏错位。这里把根容器压到可视区高度，底栏重新贴底。
           'html>body>#desktop{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body>#desktop>#desktopFooter{flex:0 0 auto !important;}',
+          // v4.0.91（用户对比浏览器后定位）：浏览器里 body 是 overflow:hidden（应用自己管滚动），
+          // 我们第三方分支给 body 设了 overflow-y:auto → 滚侧栏时整个 body 一起滚，底部状态栏跟着走。
+          // 用 :has() 只在「页面根就是 #desktop」时关掉 body 滚动，不影响其它第三方应用。
+          'html:has(>body>#desktop)>body{overflow:hidden !important;}',
           // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky/absolute 贴顶类名，JS 接管前先让位
           // v4.0.14：补充 .absolute.top-0 / [class*="absolute-positioned"]（Naive UI n-layout--absolute-positioned）
           // v4.0.17（用户工单「新标签窗侧边栏少 4 项、直播观看页信息不全」根修）：

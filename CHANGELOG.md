@@ -15,6 +15,16 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.91
+
+### qBittorrent：滚动侧栏时底栏不再跟着走
+
+- 浏览器对比实测：浏览器里 `body{overflow:hidden}`（应用自己管内部滚动），
+  客户端第三方分支给 body 设了 `overflow-y:auto` → 滚侧栏时整个 body 一起滚，绝对定位的
+  `#desktopFooter` 跟着移动；
+- 修法：`html:has(>body>#desktop)>body{overflow:hidden}`，只在 qBittorrent 这类
+  「根容器就是 #desktop」的页面关闭 body 滚动，其它第三方应用不受影响。
+
 ## v4.0.90
 
 ### qBittorrent：底部状态栏不再错位（第三方应用 100vh 根容器）

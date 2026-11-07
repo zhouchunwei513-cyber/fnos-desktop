@@ -710,9 +710,20 @@ module.exports = function injectTitleBar(ctx) {
     // 于是两窗在「鼠标推到顶部调出标题栏」时表现不同：应用窗内容整体上跳/下推 34px，
     // 主窗内容不动。现在应用窗也走主窗模型（窗口外框 = 内容 + 标题栏高度，
     // 见 main.js createAppWindow 的 __fitGeo41），让位恒为标题栏高度，两窗一格。
-    const __tbFollowsHide = false;
+    // v5.1.14（用户要求：应用窗=主窗同一套显示逻辑，但内容铺满整窗、标题栏改覆盖层）——
+    // 覆盖层模型下「标题栏可见高度」就是页面 fixed 顶栏的补偿量：显示时 = 标题栏高度，
+    // 收起时 = 0。主窗口仍走「外框带 +34px、让位恒为 34」的老模型（不带这个标记）；
+    // 音乐窗有独立的播放条几何（v4.0.79~v4.0.83），暂不切覆盖层，继续保留原让位方式。
+    const __tbIsOverlayWin = () => {
+      try {
+        const a = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        if (a.indexOf('--fnos-app-window') < 0 && a.indexOf('--fnos-live-window') < 0) return false;
+        if (/\/music(\/|\?|$)/i.test(String((typeof location !== 'undefined' && location.href) || ''))) return false;
+        return true;
+      } catch (_) { return false; }
+    };
     function __tbHiddenState() {
-      if (!__tbFollowsHide) return false;
+      if (!__tbIsOverlayWin()) return false;
       try {
         const de = document.documentElement;
         if (de && de.getAttribute('data-fnos-tb-hidden') === '1') return true;
@@ -731,7 +742,7 @@ module.exports = function injectTitleBar(ctx) {
       try {
         const de = document.documentElement;
         if (de) {
-          if (hidden && __tbFollowsHide) de.setAttribute('data-fnos-tb-hidden', '1');
+          if (hidden && __tbIsOverlayWin()) de.setAttribute('data-fnos-tb-hidden', '1');
           else de.removeAttribute('data-fnos-tb-hidden');
         }
         const b = document.getElementById('fnos-titlebar');
@@ -1857,6 +1868,9 @@ module.exports = function injectTitleBar(ctx) {
       try { if (document.body) { document.body.style.removeProperty('transform'); document.body.style.removeProperty('height'); document.body.style.removeProperty('max-height'); } } catch (_) {}
       try { if (typeof window.__fnosApplyContentOffset === 'function') window.__fnosApplyContentOffset(); } catch (_) {}
       try { if (typeof window.__fnosRescanFixedTop === 'function') window.__fnosRescanFixedTop(); } catch (_) {}
+      // v5.1.14：应用自身 fixed 顶栏的补偿量随标题栏可见高度变化，显隐后立即按新值重算
+      // （MutationObserver 那条链路有 350~700ms 防抖，会晚一拍）。
+      try { __shiftFixedTop(Math.round(__barHeight())); } catch (_) {}
     }
     function hide(bar) {
       try {
@@ -1871,10 +1885,13 @@ module.exports = function injectTitleBar(ctx) {
         // 先把可见状态落成“隐藏”，再由统一入口写 0；仅应用窗参与，主窗保持 +34px 窗口补偿。
         try { __setTbHidden(true); } catch (_) {}
         try { __applyTitlebarHeight(); } catch (_) {}
-        if (__tbFollowsHide) {
-          try { if (document.body) { document.body.style.setProperty('transform', 'translateY(0)', 'important'); document.body.style.setProperty('height', '100vh', 'important'); document.body.style.setProperty('max-height', '100vh', 'important'); } } catch (_) {}
+        // v5.1.14：覆盖层模型下页面恒铺满窗口（0..h），收起时只是不再压住顶部，
+        // 内容不动；这里重写一次满铺几何 + fixed 顶栏补偿归零，防止残留让位。
+        if (__tbIsOverlayWin()) {
+          try { if (document.body) { document.body.style.setProperty('transform', 'none', 'important'); document.body.style.setProperty('height', '100vh', 'important'); document.body.style.setProperty('max-height', '100vh', 'important'); } } catch (_) {}
           try { if (typeof window.__fnosApplyContentOffset === 'function') window.__fnosApplyContentOffset(); } catch (_) {}
           try { if (typeof window.__fnosRescanFixedTop === 'function') window.__fnosRescanFixedTop(); } catch (_) {}
+          try { __shiftFixedTop(0); } catch (_) {}
         }
       } catch (_) {}
     }
@@ -2849,40 +2866,27 @@ module.exports = function injectTitleBar(ctx) {
           'html>body{background:transparent !important;}',
         ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
-        // v4.0.73（用户工单：飞牛音乐底部播放条/列表底部被裁）：
-        // 音乐 App 的播放条是 position:fixed bottom:0，而下面 __isAppWin 分支给 body 加了
-        // transform（创建包含块）→ fixed 后代改为相对 body 定位，整体下移 41px 被窗口下沿裁掉。
-        // 这里让音乐 App 复用第三方分支的「html padding-top 让位 + body height:100%」策略：
-        // 不做 transform，fixed 继续相对 viewport 定位，几何与浏览器一致。
-        // v3.0.46（网友反馈：Docker/qBittorrent 等第三方应用在客户端里底部状态栏压住"信息"面板
-        // 的字段、整页显示不正常；浏览器打开正常）：
-        // 第三方应用的布局依赖 position:fixed 顶/底栏与真实 100vh。下面 __isAppWin 分支用
-        // body transform 让位，会创建包含块（fixed 后代改为相对 body 定位 → 底栏整体偏移 34px），
-        // 同时把 body 高度压成 calc(100vh-34px)（硬编码 100vh 的容器比可视区高 34px）→ 底栏
-        // 恰好压住内容最后一行。这里不做 transform、不改 body 高度：改用 html padding-top 让位，
-        // fixed 继续相对 viewport 定位，body 高度 = 可视区 - 标题栏，与浏览器里的几何一致。
+        // 第三方应用窗（--fnos-xapp：Docker/qBittorrent/MoonTV 等）。
+        // v5.1.14（用户要求：应用窗=覆盖层模型）——页面铺满整窗（0..h），不再用
+        // html{padding-top:34px} 让位：那会让页面比浏览器里少 34px 可视高度，而且标题栏
+        // 显隐时页面会跟着上下跳。现在标题栏叠在内容上，应用自带的 fixed 顶栏靠
+        // --fnos-bar-h（= 标题栏可见高度：显示 34 / 收起 0）补到标题栏下沿，收起时自然归零。
+        // body 不做 transform：fixed 后代继续按视口定位，几何与浏览器一致（v3.0.46 的教训）。
         __padStyle.textContent = [
-          'html{overflow:hidden !important;height:100% !important;box-sizing:border-box !important;padding-top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;clip-path:inset(0 round var(--fnos-win-r, calc(20px / var(--fnos-f, 1)))) !important;' + __gifBg + '}',
+          'html{overflow:hidden !important;height:100% !important;box-sizing:border-box !important;clip-path:inset(0 round var(--fnos-win-r, calc(20px / var(--fnos-f, 1)))) !important;' + __gifBg + '}',
           'html>body{height:100% !important;min-height:0 !important;max-height:100% !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;}',
-          'html>body .h-screen,html>body .h-dvh{height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // v4.0.90（用户工单：qBittorrent 底部状态栏不固定、滚侧栏时跟着走）：
-          // qBittorrent WebUI 的 #desktop 用 100vh 铺满，html 让位 34px 后它比可视区高 34px，
-          // #desktopFooter 被顶出视口 → 状态栏错位。这里把根容器压到可视区高度，底栏重新贴底。
-          'html>body>#desktop{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          // qBittorrent WebUI 的 #desktop 用 100vh 铺满；现在 100vh 就是整窗可视高度，直接对齐。
+          'html>body>#desktop{height:100vh !important;}',
           'html>body>#desktop>#desktopFooter{flex:0 0 auto !important;}',
           // v4.0.91（用户对比浏览器后定位）：浏览器里 body 是 overflow:hidden（应用自己管滚动），
           // 我们第三方分支给 body 设了 overflow-y:auto → 滚侧栏时整个 body 一起滚，底部状态栏跟着走。
           // 用 :has() 只在「页面根就是 #desktop」时关掉 body 滚动，不影响其它第三方应用。
           'html:has(>body>#desktop)>body{overflow:hidden !important;}',
-          // v4.0.103（用户工单：MoonTV 这类 fixed 全屏页顶部被标题栏压住）：
-          // 首层是 Tailwind 的 .fixed.inset-0，position:fixed 不吃 html 的 padding-top，
-          // 内容整体顶到 0 被我们的 34px 标题栏盖住。这里把这类固定层整体下移 34px 并扣掉高度，
-          // 等价于「给它一个真实的短视口」，fixed 布局内部仍按整块区域排。
-          // v4.0.104：实测 MoonTV 的 .fixed.inset-0 在 MAIN 里面，不是 body 直接子元素，
-          // v4.0.103 的 `html>body>div` 选择器匹配不到 → 改成后代选择器。
+          // v4.0.103/104（用户工单：MoonTV 这类 fixed 全屏页顶部被标题栏压住）：
+          // 首层是 Tailwind 的 .fixed.inset-0，position:fixed 不吃任何 padding/让位，
+          // 内容整体顶到 0 被标题栏盖住。标题栏显示态下把这类固定层整体压到标题栏下沿并扣掉高度；
+          // 收起态 --fnos-bar-h=0，自动回到 top:0 / height:100vh 的满铺状态。
           'html>body div.fixed.inset-0{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;'
             + 'height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // v4.0.92（用户截图：底栏压住详情面板最后几行）：qBittorrent 的 #desktopFooter 是
@@ -2898,118 +2902,59 @@ module.exports = function injectTitleBar(ctx) {
           //   footer 的 bottom:0 失效 → 底部菜单（登出/日志/关于/设置）被顶到侧栏顶部，
           //   正好盖住主菜单的 直播录制/看板/视频处理/工具 四项（截图实锤：压制下面直接是登出）。
           //   改成 [class~="n-layout--absolute-positioned"] 精确 token 匹配，只动布局根节点本身。
+          // v5.1.14：值改为 --fnos-bar-h（显示 34 / 收起 0），与 JS 补偿同源，收起即归位。
           'html>body .fixed.top-0,html>body .sticky.top-0,html>body .absolute.top-0,html>body [class*="fixed"][class*="top-0"],html>body [class*="sticky"][class*="top-0"],html>body [class~="n-layout--absolute-positioned"]{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}'
         ].join('');
-        // v4.0.11：页面自身 CSS 的 !important 规则可能覆盖 <style> 里的 html{padding-top}。
-        // 用 inline style !important 兜底（inline !important > stylesheet !important），保证让位一定生效。
-        try {
-          const __htmlEl = document.documentElement;
-          const __padVal = 'calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))';
-          if (__htmlEl && __htmlEl.style.getPropertyValue('padding-top') !== __padVal) {
-            __htmlEl.style.setProperty('padding-top', __padVal, 'important');
-          }
-        } catch (_) {}
-        // 诊断 + 兜底：检查 html 实际 paddingTop，若被页面 CSS 压成 0 则改用 body transform 让位
+        // v5.1.14：不再给 html 写 inline padding-top（那正是 34px 让位），也不再有
+        // 「padding 被压成 0 → 改 body transform」的兜底（覆盖层模型下 transform 会破坏 fixed 几何）。
+        // 只在加载早期记录一次实际几何，方便日后排障。
         try {
           setTimeout(() => {
             try {
-              const __pt = getComputedStyle(document.documentElement).paddingTop;
-              const __bt = document.body ? getComputedStyle(document.body).marginTop : 'n/a';
               ipcRenderer.send('fnos:media-log', {
                 stage: 'titlebar.padding-check',
-                htmlPadTop: __pt,
-                bodyMarginTop: __bt,
+                mode: 'overlay',
+                htmlPadTop: getComputedStyle(document.documentElement).paddingTop,
+                bodyMarginTop: document.body ? getComputedStyle(document.body).marginTop : 'n/a',
                 barH: __barHeight(),
+                hidden: __tbHiddenState(),
               });
-              // 兜底：html padding-top 被页面 CSS 压成 0 → 改用 body transform 让位
-              // （v3.0.46 从 transform 改成 padding 是为了修底栏压内容，但若 padding 根本没生效，
-              //   transform 是唯一能保证让位的手段；fixed 元素随 transform 一起下移，正好不压内容）
-              // v4.0.80（用户工单：飞牛音乐播放条消失 + 整页下移）：
-              // /music 走的是「body padding-top 让位、绝不 transform」的专用分支；
-              // 但 html padding-top 恒为 0 → 这里又会兜底加 transform，两个偏移叠加（34+41=75px），
-              // 页面 absolute 图层被整体下移且高度仍 100vh → 底部播放条被挤出视口。
-              // 音乐页明确跳过这个兜底。
-              const __isMusic80 = /\/music(\/|\?|$)/i.test(String(location.href || ''));
-              if (!__isMusic80 && __pt === '0px' && document.body && !document.body.__fnosTransformFallback) {
-                document.body.__fnosTransformFallback = true;
-                const __barH2 = __barHeight();
-                document.body.style.setProperty('transform', 'translateY(calc(' + __barH2 + 'px / var(--fnos-f, 1)))', 'important');
-                document.body.style.setProperty('height', 'calc(100vh - ' + __barH2 + 'px / var(--fnos-f, 1))', 'important');
-                document.body.style.setProperty('max-height', 'calc(100vh - ' + __barH2 + 'px / var(--fnos-f, 1))', 'important');
-                document.body.style.setProperty('min-height', '0', 'important');
-                ipcRenderer.send('fnos:media-log', {
-                  stage: 'titlebar.transform-fallback',
-                  reason: 'html-padding-zero',
-                  barH: __barH2,
-                });
-              }
             } catch (_) {}
           }, 200);
         } catch (_) {}
         // v4.0.10（用户工单「标题栏压住内容区第一行」的直接原因）：
-        // v3.0.46 为了修好第三方应用「底栏压内容」把让位方式换成了 html{padding-top:34px}，
-        // 但 position:fixed 元素不参与 html 的 padding 布局——biliLive-tools 的顶栏、
-        // 录制任务标签栏都是 fixed;top:0，仍停在视口 y=0，正好被 34px 的标题栏盖住。
+        // position:fixed 元素不参与 html 的 padding 布局——biliLive-tools 的顶栏、
+        // 录制任务标签栏都是 fixed;top:0，会停在视口 y=0 被标题栏盖住第一行。
         // 这里补一遍「贴顶 fixed 元素整体下移标题栏高度」，只动 top 落在标题栏带内的元素，
-        // 原值记在元素上以便还原，窗口缩放/标题栏高度变化可重算。
+        // 原值记在元素上以便还原，窗口缩放/标题栏高度变化/标题栏显隐都会重算。
+        // v5.1.14：覆盖层模型下这就是唯一的让位手段，shift 直接取 __barHeight()
+        // （显示 34 / 收起 0），收起时自动把这些顶栏还原到 y=0。
         try { __watchFixedTop(); } catch (_) {}
         // v4.0.16：给 body 补不透明底色，修新标签窗整窗透明透出桌面。
         // v4.0.25：只在页面加载完成后补一次（旧版 0/500/1800 三次 + 扫元素抢色，见函数注释）
         try { setTimeout(__applyXappBodyBg, 1800); } catch (_) {}
       } else if (__isAppWin) {
-        // 应用窗口：body 下移 34px 给标题栏让位，内部滚动（滚动条落 y=34 下方），html 锁死滚动阻止传播。
+        // v5.1.14（用户要求：应用窗=覆盖层模型）——页面铺满整个窗口（0..h），自绘标题栏叠在
+        // 内容之上：显示时压住顶部标题栏高度、收起时滑出。不再对 body 做 translateY / 扣高度，
+        // 那套让位会让内容整体下移，鼠标推顶调出标题栏时页面还会跟着上下跳，与主窗口观感不一致。
+        // 应用自带 fixed 顶栏（qBittorrent 菜单栏、MoonTV header）由 __shiftFixedTop /
+        // __compFixedTop 在「显示态」下补到标题栏下沿，收起时归零（见 hide()）。
         __padStyle.textContent = [
           'html{overflow:hidden !important;' + __gifBg + '}',
-          // v2.15.76：应用窗口 body 的 margin 全方向归零。
-          // 原只重置了 margin-top，页面 body 自带的 8px margin-bottom 会把 body 底边推出窗口，
-          // 导致 clip-path 的 20px 底部圆角被裁到看不见（顶部两角正常、底部两角变直角）。
-          // v2.15.78: min-height/max-height guard. Some app pages declare
-          // body{min-height:100vh}; min-height wins over our height:calc(100vh-34px),
-          // so the body box grows back to the full viewport and its bottom edge (and
-          // therefore the 20px clip-path radius) lands below the window bottom -- the
-          // top two corners look round while the bottom two are cut square.
-          'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;overflow-y:auto !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important;clip-path:inset(0 round var(--fnos-win-r, calc(20px / var(--fnos-f, 1)))) !important;padding-top:0 !important;margin:0 !important;}',
-          // v3.0.12（用户反馈：飞牛音乐播放控制栏的提示气泡「下一首」盖住按钮）——
-          // 根因：body 的 transform 下移 34px 会创建包含块，Semi Design 把 tooltip portal 到
-          // document.body（.semi-portal 自身 position:absolute;top:0;left:0），其内部的 top/left
-          // 是 JS 按 getBoundingClientRect（viewport 坐标）写入的；包含块变成 body 后原点从 0
-          // 变成 34px，气泡整体下移 34px，正好从「按钮上方」落到「按钮身上」。
-          // 修法：不动让位机制（改 padding/margin 会让 body 内 fixed 顶栏、全高侧栏钻回标题栏
-          // 底下，v2.15.56 已踩过），只把 body 直接子级的 Semi 浮层容器的 absolute top 反向
-          // 偏 34px，让它的原点重新落在 viewport 顶边 —— 气泡、下拉、弹窗一并对齐。
-          'html>body>.semi-portal{top:calc(-1 * var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          // 全屏态 body 不再下移 34px（__fsBody 会写 transform:none），此时 portal 不该再补偿，
-          // 否则气泡反而上移 34px。
-          'html[data-fnos-fs="1"]>body>.semi-portal{top:0 !important;}',
-          // v2.16.0: fixed-viewport SPA apps (Tailwind h-dvh / h-screen / min-h-dvh) size their
-          // root to 100vh/dvh, ignoring the 34px titlebar. The body is already shrunk to
-          // calc(100vh-34px), but a child at height:100vh still spans the full window, so its
-          // bottom 34px overflows the body and is clipped (fnOS music: progress bar and the
-          // bottom of "recently added" cut off, and the page's scrollbar-width:none hides the
-          // scrollbar). Re-anchor viewport units to the visible area below the titlebar.
-          'html>body .h-screen,html>body .h-dvh{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          // v2.17.20: 上面只认 .h-screen/.h-dvh/.min-h-screen 这几个精确类名，而 Semi / Tailwind
-          // 应用常用任意值写法（h-[100dvh]、h-[100vh]、min-h-[100vh]），命中不了就比 body 高出
-          // 标题栏那 34px，撑出额外滚动条。这里按 class 子串补一层 max-height 兜底：只限上限，
-          // 写了更大 min-height 的元素按 CSS 规则仍以 min-height 为准，不会被误裁。
-          'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
-          'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          // v2.15.76：应用窗口 body 的 margin 全方向归零（否则 clip-path 的底部圆角被推出窗口裁成直角）。
+          // v5.1.14：高度恒为 100vh（= 整窗），不再扣标题栏；四角仍由 --fnos-win-r 统一裁。
+          'html>body{transform:none !important;overflow-y:auto !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;box-sizing:border-box !important;clip-path:inset(0 round var(--fnos-win-r, calc(20px / var(--fnos-f, 1)))) !important;padding-top:0 !important;margin:0 !important;}',
           // v2.17.20: webkit 侧把 body 自身滚动条轨道压到 0（是否启用由脚本按需挂
           // scrollbar-width，见 __ensureContentOffset），避免残留 1px 轨道。
           'html>body.fnos-no-body-scroll::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
         ].join('');
         // v2.15.92: auth pages (/signin, /oauth, /login) are centered cards with overflow:hidden.
-        // Skip body shift + overflow-y:auto injection to avoid extra scrollbars.
         const __authPath = (typeof location !== 'undefined' && location.pathname) ? String(location.pathname) : '';
         if (__authPath.indexOf('/signin') >= 0 || __authPath.indexOf('/oauth') >= 0 || __authPath.indexOf('/login') >= 0) {
-          // v2.17.22: 认证页（NAS 账号授权登录）原来只挂了个 clip-path，body 不下移也不限高，
-          // 于是登录卡片按整窗居中、正落在标题栏下面，标题栏看起来「另一半」——和主程序/应用窗
-          // 的默认标题栏对不上；body 又是整窗高，卡片一超出就冒出侧边/底部滚动条。
-          // 现在与普通应用窗完全同一套几何：body 下移标题栏高度、高度扣掉标题栏、锁死溢出。
+          // v5.1.14：与普通应用窗同一套几何（满铺 + 圆角），只是锁死溢出，登录卡片按整窗居中。
           __padStyle.textContent = [
             'html{overflow:hidden !important;' + __gifBg + '}',
-            'html>body{transform:translateY(calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1))) !important;height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;box-sizing:border-box !important;overflow:hidden !important;overflow-x:hidden !important;padding:0 !important;margin:0 !important;clip-path:inset(0 round var(--fnos-win-r, calc(20px / var(--fnos-f, 1)))) !important;}',
+            'html>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;box-sizing:border-box !important;overflow:hidden !important;overflow-x:hidden !important;padding:0 !important;margin:0 !important;clip-path:inset(0 round var(--fnos-win-r, calc(20px / var(--fnos-f, 1)))) !important;}',
             'html>body::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
           ].join('');
         }
@@ -3278,13 +3223,13 @@ module.exports = function injectTitleBar(ctx) {
         try {
           const st = document.createElement('style');
           st.id = 'fnos-embed-offset';
-          // v5.1.5：与其它应用窗分支统一走 --fnos-bar-h，隐藏时随状态归零。
-          // 兜底值仍取当前皮肤高度，皮肤未加载时行为与旧版一致。
           // v5.1.11（用户要求：应用窗与主窗同一套四角/显示逻辑）——内嵌窗此前完全不参与
           // 窗口四角：html 没有阻止底色传播的透明 GIF，body 也没裁圆角。这里复用主窗的 __gifBg
           // 常量，四角裁剪统一交给 #fnos-win-corner（start() 里对所有形态统一调用）。
-          st.textContent = 'html{padding-top:var(--fnos-bar-h, ' + __skinHeight + 'px) !important;box-sizing:border-box !important;' + __gifBg + '}'
-            + 'html>body{height:calc(100% - var(--fnos-bar-h, ' + __skinHeight + 'px)) !important;box-sizing:border-box !important;'
+          // v5.1.14（用户要求：应用窗内容铺满整窗、标题栏改覆盖层）——内嵌窗也不再
+          // html{padding-top} 让位：页面铺满 0..h，标题栏叠在顶部，收起时滑出。
+          st.textContent = 'html{box-sizing:border-box !important;' + __gifBg + '}'
+            + 'html>body{transform:none !important;height:100vh !important;min-height:0 !important;max-height:100vh !important;box-sizing:border-box !important;margin:0 !important;'
             + 'clip-path:inset(0 round var(--fnos-win-r, calc(20px / var(--fnos-f, 1)))) !important;}';
           (document.head || document.documentElement).appendChild(st);
         } catch (_) {}
@@ -3300,7 +3245,10 @@ module.exports = function injectTitleBar(ctx) {
         bar.setAttribute('data-fnos-tb', '1'); // v2.10.0 r30：补齐清扫豁免标记（与普通标题栏一致，KEEP [data-fnos-tb] 命中）
         // v4.0.24：同主标题栏——整条 bar 不吃事件，只有子元素（logo/标题/四钮）auto，
         // 避免盖住内嵌窗自己的 ✕ 把点击吃掉。
-        __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:none;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:no-drag;user-select:none;');
+        __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:none;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:no-drag;user-select:none;'
+          // v5.1.14（用户要求：标题栏显隐动画与主窗完全一致）——内嵌窗标题栏此前没有过渡，
+          // 收起/滑出是"瞬移"；这里补上与主窗完全相同的一条。
+          + 'transition:transform .16s ease,opacity .16s ease;');
         // v5.1.11：内嵌窗标题栏四角原来写死 6px，与「标题栏四角」设置无关；
         // 现在与其它窗口一样由 __fixBarRadius 按 TB.barCorner 落值。
         try { __fixBarRadius(bar); } catch (_) {}
@@ -4282,21 +4230,17 @@ module.exports = function injectTitleBar(ctx) {
                 b.style.setProperty(k, v, 'important');
               }
             };
-            const bh = __barHeight();
             // 标题栏下移补偿：body 整体下移，内容不被标题栏遮挡
             // v2.17.41（用户反馈：应用按 F11 全屏后窗口上部留一条透明长方形）——这里的 inline
             // !important 在层叠里压过任何样式表 !important，全屏样式表的 transform:none 根本
-            // 打不过它：全屏后 body 仍下移 34px、高度仍扣 34px，顶部 34px 没有任何内容，就透出
-            // 下层主窗口的标题栏。全屏态一律写满铺值，退出后自动回到 34px 补偿。
-            const __fsNow = (function () { try { return document.documentElement.getAttribute('data-fnos-fs') === '1'; } catch (_) { return false; } })();
-            // v5.1.4 → v5.1.5：隐藏态下这个周期模块会把 transform/height 写回 34px。
-            // 现在改读统一状态源（data-fnos-tb-hidden / bar.__fnosHidden），
-            // 不再依赖 opacity 过渡的瞬时计算值，隐藏/显示切换都不会写错。
-            const __hiddenNow = __tbHiddenState();
-            const __off = (__fsNow || __hiddenNow);
-            set('transform', __off ? 'none' : 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
-            set('height', __off ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
-            set('max-height', __off ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            // 打不过它。全屏态一律写满铺值。
+            // v5.1.14（用户要求：应用窗内容铺满整窗、标题栏改覆盖层）——应用窗**任何状态**
+            // 都写满铺值：transform:none + 100vh。标题栏只叠在内容上，不再把页面推下去。
+            // 应用自带的 fixed 顶栏另由 __shiftFixedTop / __compFixedTop 按 __barHeight()
+            // （显示态 = 标题栏高度，收起态 = 0）补偿。主窗口不走本函数（见上方 __app 判定）。
+            set('transform', 'none');
+            set('height', '100vh');
+            set('max-height', '100vh');
             set('min-height', '0');
             set('box-sizing', 'border-box');
             // v2.17.20: 双滚动条根因——音乐/影视这类 Semi / Tailwind 布局，左右面板各自就有

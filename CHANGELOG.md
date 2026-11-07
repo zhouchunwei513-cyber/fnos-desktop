@@ -15,6 +15,15 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.86
+
+### 飞牛音乐：保留 20px 圆角 + 去掉页面 body 背景
+
+- 用户要求：应用窗保留 **20px 圆角**，同时去掉音乐页自带的 `body{background:rgb(44,40,56)}`；
+- 修法：`html{clip-path:inset(0 round calc(20px/--fnos-f)); background:#14121b}`
+  + `html>body{background:transparent}`；
+- 圆角处露出的是窗口自身深色底（v4.0.84 的 `backgroundColor:#14121b`），既保留圆角又没有灰边。
+
 ## v4.0.85
 
 ### 飞牛音乐：四个角的灰色来源与消除

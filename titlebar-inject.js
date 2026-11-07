@@ -2455,11 +2455,10 @@ module.exports = function injectTitleBar(ctx) {
           '.music-app-layout{height:100% !important;min-height:0 !important;}',
           // v4.0.83（用户要求）：播放条整体缩到 80%，底边对齐、水平居中
           '.music-player-glass{transform:scale(.8) !important;transform-origin:bottom center !important;}',
-          // v4.0.85（用户：四个角的灰色哪来的）：灰 = 音乐页自带 body 背景 rgb(44,40,56)，
-          // 在窗口圆角与标题栏两端露出来。这里统一成页面主深色，并去掉窗口圆角裁剪，避免露边。
-          'html{clip-path:none !important;border-radius:0 !important;background:#14121b !important;}',
-          'html>body{background:#14121b !important;}',
-          '[data-fnos-iw="bar"]{border-radius:0 !important;}',
+          // v4.0.86（用户要求）：保留应用窗 20px 圆角，只把音乐页自带 body 背景去掉（透明），
+          // 圆角处露出的是窗口自身的深色底（v4.0.84 已设 #14121b），因此不会再有灰边/壁纸。
+          'html{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:#14121b !important;}',
+          'html>body{background:transparent !important;}',
         ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v4.0.73（用户工单：飞牛音乐底部播放条/列表底部被裁）：

@@ -15,6 +15,15 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.94
+
+### 标题栏皮肤：后台/隐藏窗口先用静态图顶上
+
+- v4.0.93 只在「视频解码报错」时回退静态图；但另一条路径是窗口被判定为后台/隐藏
+  （`__skinCanDecodeVideo()` 为假）→ 只铺深色占位，且部分窗口 visibilitychange 不触发 → 永久灰条；
+- 修法：deferred 分支也先铺 `bg_alpha.webp` 静态图（同一画面），窗口可见后再升级成视频；
+- 日志 `titlebar.skin.defer.static`。
+
 ## v4.0.93
 
 ### 标题栏视频皮肤解码失败时回退静态图

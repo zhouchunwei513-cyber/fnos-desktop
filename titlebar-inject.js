@@ -886,8 +886,20 @@ module.exports = function injectTitleBar(ctx) {
               // 磁盘一起排队，正是「点完要等好几秒」的来源。现在后台窗口只铺一个底色占位，
               // 等窗口真正可见再补视频（下方 visibilitychange / focus 会触发重建）。
               if (!__skinCanDecodeVideo()) {
+                // v4.0.94（用户工单：容器应用标题栏皮肤包加载不上）：后台/隐藏窗口原来只铺一层
+                // 深色占位，等可见才解码视频；但部分窗口的 visibilitychange 不触发 → 一直是灰条。
+                // 这里先用皮肤自带静态图 bg_alpha.webp 顶上去（同一画面），可见后再升级成视频。
                 try {
-                  bgLayer.style.backgroundColor = 'rgba(12,16,30,.94)';
+                  const __fb0 = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
+                  if (__fb0) {
+                    bgLayer.style.backgroundImage = 'url(\'' + __fb0 + '\')';
+                    bgLayer.style.backgroundSize = 'cover';
+                    bgLayer.style.backgroundPosition = 'center';
+                    bgLayer.style.backgroundColor = 'transparent';
+                    __tbLog('skin.defer.static', { to: 'bg_alpha.webp' });
+                  } else {
+                    bgLayer.style.backgroundColor = 'rgba(12,16,30,.94)';
+                  }
                   bgLayer.style.display = 'block';
                 } catch (_) {}
                 bar.__skinDeferredVideo = true;

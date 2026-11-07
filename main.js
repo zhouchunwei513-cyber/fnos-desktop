@@ -6617,9 +6617,15 @@ function registerWindow(win, opts = {}) {
         try { __base107 = String((typeof currentOrigin !== 'undefined' && currentOrigin) || loadSettings().origin || ''); } catch (_) {}
         const __bh107 = __base107 ? new URL(__base107).host : '';
         const __isLocal = /^(localhost|127\.0\.0\.1)$/i.test(__u107.hostname);
+        // v5.0.4（用户要求：应用内点链接/功能一律在客户端新窗口打开，不要跳浏览器）——
+        // 原来是交给系统浏览器，现在改为在客户端新建一个独立窗口加载该地址。
         if (/^https?:$/i.test(__u107.protocol) && __bh107 && __u107.host !== __bh107 && !__isLocal) {
-          try { shell.openExternal(url).catch(() => {}); } catch (_) {}
-          try { require('./logger.js').log('info', 'nav', 'external.open', { params: { url: String(url).slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+          try {
+            createAppWindow(url, { partition: currentPartition, source: 'external', appId: 'ext:' + __u107.host });
+          } catch (_) {
+            try { shell.openExternal(url).catch(() => {}); } catch (_) {}
+          }
+          try { require('./logger.js').log('info', 'nav', 'external.window', { params: { url: String(url).slice(0, 140) } }, __RUN_MODE); } catch (_) {}
           return { action: 'deny' };
         }
       } catch (_) {}

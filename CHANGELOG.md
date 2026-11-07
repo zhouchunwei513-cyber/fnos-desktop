@@ -15,6 +15,16 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.93
+
+### 标题栏视频皮肤解码失败时回退静态图
+
+- 现象：容器应用（qBittorrent/MoonTV 等）标题栏皮肤包加载不上，变成透明条；
+- 日志实锤：`titlebar.skin.video.error code4:MEDIA_ELEMENT_ERROR`（bg.mp4 在部分窗口解不出来），
+  旧代码只记日志没有兜底；
+- 修法：视频 `error` 时改用皮肤自带的静态图 `bg_alpha.webp` 铺满标题栏（同一画面），
+  日志 `titlebar.skin.video.fallback`。
+
 ## v4.0.92
 
 ### qBittorrent：底栏不再压住详情面板

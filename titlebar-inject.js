@@ -909,6 +909,21 @@ module.exports = function injectTitleBar(ctx) {
                   try {
                     const __er = v.error ? ('code' + v.error.code + ':' + String(v.error.message || '').slice(0, 40)) : 'unknown';
                     __tbLog('skin.video.error', { src: String(bg.src).slice(-28), er: __er, w: v.videoWidth, h: v.videoHeight, rs: v.readyState });
+                    // v4.0.93（用户工单：容器应用标题栏皮肤包加载不上）：部分窗口里 bg.mp4 解码失败
+                    // （code4 MEDIA_ERR_SRC_NOT_SUPPORTED），旧代码只记日志 → 标题栏变透明条。
+                    // 皮肤 manifest 里自带静态图 bg_alpha.webp（同一画面），这里退化成静态图兜底。
+                    try {
+                      const __fb = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
+                      if (__fb) {
+                        bgLayer.style.backgroundImage = 'url(\'' + __fb + '\')';
+                        bgLayer.style.backgroundSize = 'cover';
+                        bgLayer.style.backgroundPosition = 'center';
+                        bgLayer.style.backgroundRepeat = 'no-repeat';
+                        bgLayer.style.backgroundColor = 'transparent';
+                        try { v.remove(); } catch (_) {}
+                        __tbLog('skin.video.fallback', { to: 'bg_alpha.webp', win: !!bgLayer });
+                      }
+                    } catch (_) {}
                   } catch (_) {}
                 });
                 v.addEventListener('loadeddata', function () {

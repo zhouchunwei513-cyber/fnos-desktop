@@ -691,6 +691,46 @@ module.exports = function injectTitleBar(ctx) {
       }
     }
 
+    // v5.1.5：应用窗「让位值 = 标题栏可见高度」的唯一状态源。
+    // hide()/show() 只更新这个状态；所有几何写入点（--fnos-bar-h、body transform/height、
+    // html padding-top、fixed 顶栏补偿）都从 __tbHiddenState()/__barHeight() 取值，
+    // 防止皮肤延迟回调、周期几何模块把已归零的 34px 让位重新写回。
+    // 主窗口（--fnos-shell 且无 --fnos-app-window）不参与：它的窗口高度带 +34px 补偿，
+    // 让位必须保持 34px，不能跟随标题栏显隐归零。
+    const __tbFollowsHide = (function () {
+      try {
+        const a = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        return a.indexOf('--fnos-app-window') >= 0 || a.indexOf('--fnos-live-window') >= 0;
+      } catch (_) { return false; }
+    })();
+    function __tbHiddenState() {
+      if (!__tbFollowsHide) return false;
+      try {
+        const de = document.documentElement;
+        if (de && de.getAttribute('data-fnos-tb-hidden') === '1') return true;
+        const b = document.getElementById('fnos-titlebar');
+        if (b) {
+          if (b.__fnosHidden === true) return true;
+          if (b.__fnosHidden === false) return false;
+          const cs = getComputedStyle(b);
+          // 兜底：外部直接写 opacity:0 的隐藏路径（不经过 hide()）也认。
+          if (cs && cs.display !== 'none' && parseFloat(cs.opacity) === 0) return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+    function __setTbHidden(hidden) {
+      try {
+        const de = document.documentElement;
+        if (de) {
+          if (hidden && __tbFollowsHide) de.setAttribute('data-fnos-tb-hidden', '1');
+          else de.removeAttribute('data-fnos-tb-hidden');
+        }
+        const b = document.getElementById('fnos-titlebar');
+        if (b) b.__fnosHidden = !!hidden;
+      } catch (_) {}
+    }
+
     // 标题栏有效高度：皮肤 titlebar.height（20~80，默认 34）→ --fnos-bar-h（body 下移量）+ bar inline 高度
     function __applyTitlebarHeight() {
       try {
@@ -703,8 +743,10 @@ module.exports = function injectTitleBar(ctx) {
         // body transform / html padding-top 都用 calc(var(--fnos-bar-h) / var(--fnos-f))，
         // 值偏小导致让位不足，标题栏底边 > 内容区上边沿。
         const actualH = __skinHeight + (bar && bar.__tbIsMain ? 2 : 0);
+        // v5.1.5：隐藏态让位写 0；bar 自身高度仍保持真实值，滑入动画/点击区域不变。
+        const offsetH = __tbHiddenState() ? 0 : actualH;
         const el = document.documentElement;
-        if (el && el.style) el.style.setProperty('--fnos-bar-h', actualH + 'px');
+        if (el && el.style) el.style.setProperty('--fnos-bar-h', offsetH + 'px');
         if (bar) bar.style.height = actualH + 'px';
       } catch (_) {}
     }
@@ -1332,16 +1374,19 @@ module.exports = function injectTitleBar(ctx) {
     // so a page that grows the bar cannot leave content still covered.
     const __barHeight = () => {
       try {
+        // v5.1.5：应用窗标题栏隐藏时，有效让位高度为 0。body 几何、fixed 顶栏补偿、
+        // 诊断等都从本函数取“内容让位量”，这样隐藏态不会被任何调用方写回 34px。
+        const __hidden = __tbHiddenState();
         const b = document.getElementById('fnos-titlebar');
-        if (!b) return 34;
+        if (!b) return __hidden ? 0 : 34;
         // v2.17.15: prefer the inline height (34px / 36px). The bar carries
         // zoom:calc(1/var(--fnos-f)), so getBoundingClientRect would report 34/f and any
         // caller dividing by f again would double-compensate.
         const inline = parseFloat(b.style.height);
-        if (isFinite(inline) && inline > 20 && inline < 120) return Math.round(inline);
+        if (isFinite(inline) && inline > 20 && inline < 120) return __hidden ? 0 : Math.round(inline);
         const h = Math.round(b.getBoundingClientRect().height);
-        return (h > 20 && h < 120) ? h : 34;
-      } catch (_) { return 34; }
+        return __hidden ? 0 : ((h > 20 && h < 120) ? h : 34);
+      } catch (_) { return __tbHiddenState() ? 0 : 34; }
     };
 
     // v2.4.9（反馈 8 两种窗口模式自动适配）：内嵌窗形态宿主窗标记（主进程 additionalArguments
@@ -1751,9 +1796,13 @@ module.exports = function injectTitleBar(ctx) {
           bar.style.setProperty('-webkit-app-region', 'no-drag');
         }
       } catch (_) {}
-      // v5.1.3：显示时恢复让位
-      try { document.documentElement.style.removeProperty('--fnos-bar-h'); } catch (_) {}
+      // v5.1.5：先恢复“可见”状态，再按真实皮肤高度恢复让位。
+      // 不能 removeProperty：--fnos-bar-h 的 CSS 兜底是 34px，皮肤高度非 34 时会错位。
+      try { __setTbHidden(false); } catch (_) {}
+      try { __applyTitlebarHeight(); } catch (_) {}
       try { if (document.body) { document.body.style.removeProperty('transform'); document.body.style.removeProperty('height'); document.body.style.removeProperty('max-height'); } } catch (_) {}
+      try { if (typeof window.__fnosApplyContentOffset === 'function') window.__fnosApplyContentOffset(); } catch (_) {}
+      try { if (typeof window.__fnosRescanFixedTop === 'function') window.__fnosRescanFixedTop(); } catch (_) {}
     }
     function hide(bar) {
       try {
@@ -1764,10 +1813,15 @@ module.exports = function injectTitleBar(ctx) {
         bar.style.transform = 'translateY(-100%)';
         bar.style.opacity = '0';
         bar.style.pointerEvents = 'none';
-        // v5.1.3（用户工单：隐藏后窗口顶部那条灰带）——标题栏收走后 0..h 无人绘制，透出桌面。
-        // 隐藏期间把让位归零，让页面内容顶满；显示时再由 show() 恢复。
-        try { document.documentElement.style.setProperty('--fnos-bar-h', '0px'); } catch (_) {}
-        try { if (document.body) { document.body.style.setProperty('transform', 'translateY(0)', 'important'); document.body.style.setProperty('height', '100vh', 'important'); document.body.style.setProperty('max-height', '100vh', 'important'); } } catch (_) {}
+        // v5.1.5（用户工单：隐藏后窗口顶部那条灰带）——标题栏收走后 0..h 无人绘制，透出桌面。
+        // 先把可见状态落成“隐藏”，再由统一入口写 0；仅应用窗参与，主窗保持 +34px 窗口补偿。
+        try { __setTbHidden(true); } catch (_) {}
+        try { __applyTitlebarHeight(); } catch (_) {}
+        if (__tbFollowsHide) {
+          try { if (document.body) { document.body.style.setProperty('transform', 'translateY(0)', 'important'); document.body.style.setProperty('height', '100vh', 'important'); document.body.style.setProperty('max-height', '100vh', 'important'); } } catch (_) {}
+          try { if (typeof window.__fnosApplyContentOffset === 'function') window.__fnosApplyContentOffset(); } catch (_) {}
+          try { if (typeof window.__fnosRescanFixedTop === 'function') window.__fnosRescanFixedTop(); } catch (_) {}
+        }
       } catch (_) {}
     }
     function scheduleHide(bar, ms) {
@@ -2012,7 +2066,7 @@ module.exports = function injectTitleBar(ctx) {
           } catch (_) {}
           try {
             const mo2 = new MutationObserver(__bump);
-            mo2.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-fnos-fs'] });
+            mo2.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-fnos-fs', 'data-fnos-tb-hidden'] });
           } catch (_) {}
         }
         __shiftFixedTop(Math.round(__barHeight()));
@@ -2960,9 +3014,21 @@ module.exports = function injectTitleBar(ctx) {
         // keep such a bar inside a transform/filter ancestor, so the body offset cannot
         // carry it and it stays at y=0 under the titlebar. Rule: if it still lands inside
         // the titlebar band, push it down by the bar height; skip bars already below.
-        const __compFixedTop = (el) => {
+        const __compFixedTop = (el, bhIn) => {
           try {
             if (!el || el.nodeType !== 1) return;
+            const bh = (typeof bhIn === 'number' && isFinite(bhIn)) ? bhIn : __barHeight();
+            // v5.1.5：标题栏隐藏（bh=0）时把本模块写过的 translate 还原为页面原值，
+            // 否则 fixed 顶栏会一直停在 y=34，形成顶部空白带。
+            if (bh <= 0) {
+              if (el.__fnosCompTranslate) {
+                const os = el.__fnosCompTranslate;
+                if (os.v) el.style.setProperty('translate', os.v, os.pri || '');
+                else el.style.removeProperty('translate');
+                el.__fnosCompTranslate = null;
+              }
+              return;
+            }
             const cs = getComputedStyle(el);
             if (cs.position !== 'fixed') return;
             const __top = parseFloat(cs.top), __bot = parseFloat(cs.bottom);
@@ -2971,16 +3037,26 @@ module.exports = function injectTitleBar(ctx) {
             const r = el.getBoundingClientRect();
             const __h = Math.round(r.height);
             if (!__h || __h <= 0 || __h > 120) return;
-            const bh = __barHeight();
             if (r.top >= bh - 2) return;
             const want = '0 ' + bh + 'px';
             if (el.style.getPropertyValue('translate') === want && el.style.getPropertyPriority('translate') === 'important') return;
+            if (!el.__fnosCompTranslate) {
+              el.__fnosCompTranslate = {
+                v: el.style.getPropertyValue('translate') || '',
+                pri: el.style.getPropertyPriority('translate') || '',
+              };
+            }
             el.style.setProperty('translate', want, 'important');
           } catch (_) {}
         };
         const __scanFixedTop = () => {
-          try { const all = document.querySelectorAll('body *'); for (let i = 0; i < all.length; i++) __compFixedTop(all[i]); } catch (_) {}
+          try {
+            const bh = __barHeight();
+            const all = document.querySelectorAll('body *');
+            for (let i = 0; i < all.length; i++) __compFixedTop(all[i], bh);
+          } catch (_) {}
         };
+        try { window.__fnosRescanFixedTop = __scanFixedTop; } catch (_) {}
         __scanFixedTop();
         // DOM 变化 / 窗口尺寸变化时合并重扫（300ms 节流）——顶栏高度随宽度断点变化，必须重算
         let __compT = 0;
@@ -3084,8 +3160,10 @@ module.exports = function injectTitleBar(ctx) {
         try {
           const st = document.createElement('style');
           st.id = 'fnos-embed-offset';
-          st.textContent = 'html{padding-top:' + __skinHeight + 'px !important;box-sizing:border-box !important;}'
-            + 'html>body{height:calc(100% - ' + __skinHeight + 'px) !important;box-sizing:border-box !important;}';
+          // v5.1.5：与其它应用窗分支统一走 --fnos-bar-h，隐藏时随状态归零。
+          // 兜底值仍取当前皮肤高度，皮肤未加载时行为与旧版一致。
+          st.textContent = 'html{padding-top:var(--fnos-bar-h, ' + __skinHeight + 'px) !important;box-sizing:border-box !important;}'
+            + 'html>body{height:calc(100% - var(--fnos-bar-h, ' + __skinHeight + 'px)) !important;box-sizing:border-box !important;}';
           (document.head || document.documentElement).appendChild(st);
         } catch (_) {}
         const root2 = root();
@@ -4081,14 +4159,10 @@ module.exports = function injectTitleBar(ctx) {
             // 打不过它：全屏后 body 仍下移 34px、高度仍扣 34px，顶部 34px 没有任何内容，就透出
             // 下层主窗口的标题栏。全屏态一律写满铺值，退出后自动回到 34px 补偿。
             const __fsNow = (function () { try { return document.documentElement.getAttribute('data-fnos-fs') === '1'; } catch (_) { return false; } })();
-            // v5.1.4（用户工单：自动隐藏后顶部那条带还在）——隐藏态下这个周期模块
-            // 又把 transform/height 写回 34px，把 v5.1.3 的归零覆盖掉了。
-            // 这里按 bar 的 opacity 判断是否隐藏：隐藏则让位归零，让内容顶满。
-            let __hiddenNow = false;
-            try {
-              const __b = document.getElementById('fnos-titlebar');
-              __hiddenNow = !!(__b && getComputedStyle(__b).opacity === '0');
-            } catch (_) {}
+            // v5.1.4 → v5.1.5：隐藏态下这个周期模块会把 transform/height 写回 34px。
+            // 现在改读统一状态源（data-fnos-tb-hidden / bar.__fnosHidden），
+            // 不再依赖 opacity 过渡的瞬时计算值，隐藏/显示切换都不会写错。
+            const __hiddenNow = __tbHiddenState();
             const __off = (__fsNow || __hiddenNow);
             set('transform', __off ? 'none' : 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
             set('height', __off ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
@@ -4121,6 +4195,7 @@ module.exports = function injectTitleBar(ctx) {
             set('margin', '0');
           } catch (_) {}
         };
+        try { window.__fnosApplyContentOffset = apply; } catch (_) {}
         apply();
         // 页面脚本重置 body 内联样式时立即补回（apply 幂等，不会引发循环）
         try {
@@ -4144,6 +4219,7 @@ module.exports = function injectTitleBar(ctx) {
       try {
         const b = document.getElementById('fnos-titlebar');
         if (!b) return;
+        try { __setTbHidden(!!hidden); } catch (_) {}
         if (hidden) {
           b.style.transform = 'translateY(-100%)';
           b.style.opacity = '0';
@@ -4153,6 +4229,9 @@ module.exports = function injectTitleBar(ctx) {
           b.style.opacity = '1';
           b.style.pointerEvents = 'auto';
         }
+        // 全屏态/退出态都同步一次 --fnos-bar-h；全屏 CSS 对 body 另有覆盖，不受影响。
+        try { __applyTitlebarHeight(); } catch (_) {}
+        try { if (typeof window.__fnosRescanFixedTop === 'function') window.__fnosRescanFixedTop(); } catch (_) {}
       } catch (_) {}
     };
     // v2.17.41：全屏态 / 退出态的 body inline 显式落值。__ensureContentOffset 会周期性用
@@ -4279,6 +4358,10 @@ module.exports = function injectTitleBar(ctx) {
       try {
         const b = document.getElementById("fnos-titlebar");
         if (b) {
+          // v5.1.5：本函数强制把 bar 恢复为可见，状态必须一起回到“可见”，
+          // 否则退出全屏后标题栏已显示、内容却仍按隐藏态顶满（或反之）。
+          try { __setTbHidden(false); __applyTitlebarHeight(); } catch (_) {}
+          try { if (typeof window.__fnosRescanFixedTop === 'function') window.__fnosRescanFixedTop(); } catch (_) {}
           b.style.removeProperty("display");
           b.style.setProperty("display", "flex");
           b.style.removeProperty("visibility");

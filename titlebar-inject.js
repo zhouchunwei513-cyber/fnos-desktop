@@ -2629,7 +2629,9 @@ module.exports = function injectTitleBar(ctx) {
           // 首层是 Tailwind 的 .fixed.inset-0，position:fixed 不吃 html 的 padding-top，
           // 内容整体顶到 0 被我们的 34px 标题栏盖住。这里把这类固定层整体下移 34px 并扣掉高度，
           // 等价于「给它一个真实的短视口」，fixed 布局内部仍按整块区域排。
-          'html>body>div.fixed.inset-0{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;'
+          // v4.0.104：实测 MoonTV 的 .fixed.inset-0 在 MAIN 里面，不是 body 直接子元素，
+          // v4.0.103 的 `html>body>div` 选择器匹配不到 → 改成后代选择器。
+          'html>body div.fixed.inset-0{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;'
             + 'height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // v4.0.92（用户截图：底栏压住详情面板最后几行）：qBittorrent 的 #desktopFooter 是
           // absolute 定位、不占布局，而 #pageWrapper 按 100% 撑满 → 面板底部被底栏盖住。

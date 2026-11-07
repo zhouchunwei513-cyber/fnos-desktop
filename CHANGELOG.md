@@ -15,6 +15,22 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.105
+
+### 窗口几何记忆：appview 窗按 anchor 分键
+
+- 现象：容器窗关掉再开，位置/大小记不住；
+- 根因：所有 appview 窗的 `pathname` 都是 `/appview`，几何 key 全部相同 → 互相覆盖；
+- 修法：`__winGeoKey` 优先取 URL 的 `?anchor=`（如 `trim.docker`）作为 key。
+
+## v4.0.104
+
+### fixed 全屏层让位：选择器改为后代匹配
+
+- 实测 MoonTV DOM：`.fixed.inset-0` 位于 `MAIN` 之内（`BODY > MAIN > DIV`），
+  v4.0.103 的 `html>body>div.fixed.inset-0` 匹配不到 → 让位没生效；
+- 修法：改成 `html>body div.fixed.inset-0`（后代），仍然只影响这类全屏固定层。
+
 ## v4.0.103
 
 ### 第三方应用：fixed 全屏首层让位 34px

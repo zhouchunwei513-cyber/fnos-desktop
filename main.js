@@ -7628,7 +7628,12 @@ function __winGeoKey(url, opts) {
   try {
     const id = String((opts && (opts.appId || opts.name)) || '').trim();
     if (id) return id;
-    const p = new URL(String(url || '')).pathname.replace(/\/+$/, '') || '/';
+    const u = new URL(String(url || ''));
+    // v4.0.105（用户工单：容器窗"位置/大小记不住"）——appview 窗的 pathname 都是 /appview，
+    // 所有容器共用一个 key，互相覆盖；优先用 ?anchor= 作为 key。
+    const anchor = u.searchParams.get('anchor');
+    if (anchor) return String(anchor).slice(0, 80);
+    const p = u.pathname.replace(/\/+$/, '') || '/';
     return p;
   } catch (_) { return ''; }
 }

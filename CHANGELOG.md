@@ -15,6 +15,15 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.98
+
+### 标题栏皮肤：applyStyle 末尾强制兜底铺图
+
+- 日志证明素材可读（`skin.asset st:ok` bg.mp4 + bg_alpha.webp），但最终 `#fnos-tb-bg`
+  没有背景图 → 说明中途被重建/清空；
+- 修法：每次 `applyStyle()` 末尾检查「图层在 && 无 video && 无 backgroundImage」→ 直接用
+  `skinDir` 铺 `bg_alpha.webp`，日志 `titlebar.skin.static.enforce`。
+
 ## v4.0.97
 
 ### 标题栏皮肤：deferred 分支主动重拉设置（v4.0.96 只轮询不重取）

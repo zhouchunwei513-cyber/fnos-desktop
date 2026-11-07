@@ -1068,6 +1068,27 @@ module.exports = function injectTitleBar(ctx) {
         }
         bar.__skinSig = __sig;
         bar.__skinHasBg = hasBg;
+        // v4.0.98（用户工单：appview/内嵌窗标题栏始终是深色占位条）——
+        // 实测日志证明素材能读到（bg.mp4 + bg_alpha.webp 都 st:ok），但最终图层没有背景图，
+        // 说明中途被重建/清空了。这里在每次 applyStyle 末尾做一次强制兜底：
+        // 图层存在、没视频、也没背景图 → 直接用已解析出的 skinDir 铺静态图。
+        try {
+          if (bgLayer && bgLayer.isConnected && !bgLayer.querySelector('video')) {
+            const __hasImg98 = !!(bgLayer.style.backgroundImage && bgLayer.style.backgroundImage !== 'none');
+            if (!__hasImg98 && __skinState && __skinState.skinDir) {
+              const __u98 = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
+              if (__u98) {
+                bgLayer.style.backgroundImage = 'url(\'' + __u98 + '\')';
+                bgLayer.style.backgroundSize = 'cover';
+                bgLayer.style.backgroundPosition = 'center';
+                bgLayer.style.backgroundRepeat = 'no-repeat';
+                bgLayer.style.backgroundColor = 'transparent';
+                bgLayer.style.display = 'block';
+                __tbLog('skin.static.enforce', { to: 'bg_alpha.webp', w: bgLayer.offsetWidth, h: bgLayer.offsetHeight });
+              }
+            }
+          }
+        } catch (_) {}
         // v4.0.31（用户问题 1）：补一条「应用完成」回执 —— 此前只有 asset / video.ok 等碎片，
         // 看不出一个窗口从收到新皮肤到真正画出来用了多久、是否被降级成占位色。
         try {

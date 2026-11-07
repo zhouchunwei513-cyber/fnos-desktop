@@ -2549,6 +2549,17 @@ module.exports = function injectTitleBar(ctx) {
     // 不影响 canvas 背景，导致标题栏区域露出灰条。修复：html 加透明 GIF background-image 阻止
     // body 背景传播（标题栏透出 Windows 桌面），body 背景保留防穿透。
     try {
+      // v5.0.7（用户工单：应用窗底部那条其实是横向滚动条，右侧是纵向滚动条）——
+      // 应用窗统一隐藏滚动条（滚轮/键盘滚动能力保留）。
+      try {
+        if (!document.getElementById('fnos-hide-sb')) {
+          const __sb = document.createElement('style');
+          __sb.id = 'fnos-hide-sb';
+          __sb.textContent = '::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'
+            + 'html,body,*{scrollbar-width:none !important;-ms-overflow-style:none !important;}';
+          (document.head || document.documentElement).appendChild(__sb);
+        }
+      } catch (_) {}
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
       const __argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];

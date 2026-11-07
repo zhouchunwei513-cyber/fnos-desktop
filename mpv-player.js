@@ -772,6 +772,14 @@ class MpvPlayer extends EventEmitter {
     // 于是被 mpv 循环重播。这里显式关掉循环（命令行参数优先级高于 mpv.conf）：
     // 直播与点播都由应用层负责续播/重连，不能交给 mpv 的 loop。
     args.push('--loop-file=no', '--loop-playlist=no');
+    // v5.0.3（用户反馈：自定义内核播直播 10 几秒就"重播"）——
+    // 直播多为 HLS 滚动窗口（窗口常 10~15s）。流 EOF/重连后若不指定起点，mpv 会从
+    // 播放列表**头部**（窗口最老的那一段）开始 → 视觉上就是把最近十几秒又放了一遍。
+    // 这里把起点钉在"距直播边缘 1 段"，重连后直接接最新内容。
+    if (opts.isLive) {
+      args.push('--hls-live-edge=1');
+      args.push('--demuxer-lavf-o-add=live_start_index=-1');
+    }
 
     // 网络健壮性（直播长时间运行易遇运营商断流/抖动，放宽超时）
     args.push('--network-timeout=120');

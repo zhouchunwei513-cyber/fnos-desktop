@@ -1270,9 +1270,11 @@ module.exports = function injectTitleBar(ctx) {
         // 旧逻辑 __topR 取自 winCorner，而 html 的 clip-path 会把整个页面（含标题栏）的上沿一起裁掉，
         // 于是标题栏自己的「四角」设置在视觉上被窗口设置覆盖。
         // 现在拆开：页面**上沿**由【标题栏四角】决定，**下沿**由【窗口四角】决定，两套设置零耦合。
-        const __barR = __tbCornerRadius(TB.barCorner);   // 标题栏：round/half → 10/20，square → 0
-        const __topR = __barR;
-        const __botR = __winR;                            // 窗口：round/half → 10/20，square → 0
+        // v4.0.110（用户澄清：两套设置必须完全独立，标题栏设置不得影响窗口四角）：
+        // 页面（= 窗口外形）四角**只**取【窗口四角】；标题栏自己的圆角由 __fixBarRadius 用
+        // 【标题栏四角】独立绘制，二者互不写入对方。窗口选直角/半圆角时，页面顶部就是直角。
+        const __topR = __winHalf ? 0 : __winR;
+        const __botR = __winR;
         const __wr = __pw(__topR) + ' ' + __pw(__topR) + ' ' + __pw(__botR) + ' ' + __pw(__botR);
         // v4.0.11（用户工单：半圆角对 xapp 窗口不生效）——
         // xapp 分支把 clip-path 写在 html 上，原来 half 只覆盖 html:root>body，

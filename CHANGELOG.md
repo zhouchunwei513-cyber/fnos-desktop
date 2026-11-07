@@ -15,6 +15,14 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.107
+
+### 外部链接交给系统浏览器
+
+- 现象：点 GitHub Release 链接，客户端把它当应用打开 → 弹「应用打不开」；
+- 修法：`window.open`/`setWindowOpenHandler` 里，凡 **非 NAS 主机** 的 http(s) 链接
+  一律 `shell.openExternal` 并拒绝建窗；日志 `nav.external.open`。
+
 ## v4.0.106
 
 ### 1) 连接失败后「返回 FNOS 主页」无响应

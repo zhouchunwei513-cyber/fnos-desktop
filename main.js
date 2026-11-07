@@ -6609,6 +6609,20 @@ function registerWindow(win, opts = {}) {
       let __anchorH = '';
       try { const __mH = /fnos-anchor=([^,]+)/.exec(String(features || '')); if (__mH) { try { __anchorH = decodeURIComponent(__mH[1]); } catch (_) { __anchorH = __mH[1]; } } } catch (_) {}
       try { __windowTypeObserve(url, __embedStyle ? 'embed' : 'popout'); } catch (_) {}
+      // v4.0.107（用户工单：点 GitHub 链接被当成应用打开，弹「应用打不开」）：
+      // 非 NAS 主机的 http(s) 链接一律交给系统默认浏览器，不再建应用窗。
+      try {
+        const __u107 = new URL(url);
+        let __base107 = '';
+        try { __base107 = String((typeof currentOrigin !== 'undefined' && currentOrigin) || loadSettings().origin || ''); } catch (_) {}
+        const __bh107 = __base107 ? new URL(__base107).host : '';
+        const __isLocal = /^(localhost|127\.0\.0\.1)$/i.test(__u107.hostname);
+        if (/^https?:$/i.test(__u107.protocol) && __bh107 && __u107.host !== __bh107 && !__isLocal) {
+          try { shell.openExternal(url).catch(() => {}); } catch (_) {}
+          try { require('./logger.js').log('info', 'nav', 'external.open', { params: { url: String(url).slice(0, 140) } }, __RUN_MODE); } catch (_) {}
+          return { action: 'deny' };
+        }
+      } catch (_) {}
       if (/\/appview(\?|$)/i.test(url)) { try { __appviewToPopout(url); } catch (_) {} return { action: 'deny' }; }
       setImmediate(() => {
         // v2.5.1 r17：统一 appview 容器跳出窗；主程序藏托盘保持单窗口；内嵌监测转换来的

@@ -8041,6 +8041,12 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       //   使网页可视高度 = base.h * 0.92，与浏览器里的 100vh 等高。
       const hr45 = __fnIsInApp36 ? 0.92 : rr;
       h = Math.max(580, Math.round(base.h * hr45) + bb);
+    } else {
+      // v5.1.11（用户要求：应用窗与主窗同一套窗口模型）——快捷方式/冷启动窗保持原尺寸时，
+      //   外框同样补上标题栏高度。titlebar-inject 现在两窗统一按「窗口外框 = 内容 + 标题栏」
+      //   让位（应用窗不再在隐藏时归零），不补这一条这些窗的网页可视高度会比浏览器少 34px。
+      //   主窗（无关此函数）与 in-app 分支（上面已 +bb）行为不变。
+      h = h + bb;
     }
     w = Math.min(w, base.w);
     h = Math.min(h, base.h);

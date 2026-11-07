@@ -4081,9 +4081,18 @@ module.exports = function injectTitleBar(ctx) {
             // 打不过它：全屏后 body 仍下移 34px、高度仍扣 34px，顶部 34px 没有任何内容，就透出
             // 下层主窗口的标题栏。全屏态一律写满铺值，退出后自动回到 34px 补偿。
             const __fsNow = (function () { try { return document.documentElement.getAttribute('data-fnos-fs') === '1'; } catch (_) { return false; } })();
-            set('transform', __fsNow ? 'none' : 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
-            set('height', __fsNow ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
-            set('max-height', __fsNow ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            // v5.1.4（用户工单：自动隐藏后顶部那条带还在）——隐藏态下这个周期模块
+            // 又把 transform/height 写回 34px，把 v5.1.3 的归零覆盖掉了。
+            // 这里按 bar 的 opacity 判断是否隐藏：隐藏则让位归零，让内容顶满。
+            let __hiddenNow = false;
+            try {
+              const __b = document.getElementById('fnos-titlebar');
+              __hiddenNow = !!(__b && getComputedStyle(__b).opacity === '0');
+            } catch (_) {}
+            const __off = (__fsNow || __hiddenNow);
+            set('transform', __off ? 'none' : 'translateY(calc(' + bh + 'px / var(--fnos-f, 1)))');
+            set('height', __off ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
+            set('max-height', __off ? '100vh' : 'calc(100vh - ' + bh + 'px / var(--fnos-f, 1))');
             set('min-height', '0');
             set('box-sizing', 'border-box');
             // v2.17.20: 双滚动条根因——音乐/影视这类 Semi / Tailwind 布局，左右面板各自就有

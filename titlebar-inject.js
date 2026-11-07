@@ -907,6 +907,9 @@ module.exports = function injectTitleBar(ctx) {
                   };
                   const __fb0 = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
                   if (!__fb0) {
+                    // v4.0.97（根因）：v4.0.96 只轮询 __skinState，但该值在 appview 窗里永远是空——
+                    // 真正需要的是「重新用 sendSync 拉一次设置并重画」。__skinReloadSoon() 正是这套逻辑。
+                    try { setTimeout(function () { try { __skinReloadSoon(); } catch (_) {} }, 400); } catch (_) {}
                     let __tries = 0;
                     const __tik = setInterval(function () {
                       try {

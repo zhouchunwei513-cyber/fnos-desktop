@@ -15,6 +15,14 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.97
+
+### 标题栏皮肤：deferred 分支主动重拉设置（v4.0.96 只轮询不重取）
+
+- v4.0.96 只轮询 `__skinState`，但 appview 窗里该值恒为空；正确做法是调用既有的
+  `__skinReloadSoon()`（内部 `ipcRenderer.sendSync('settings:get-titlebar')` 重取 + 重画）；
+- 修法：deferred 分支铺占位后 400ms 触发一次 `__skinReloadSoon()`，日志见 `skin.refetch`。
+
 ## v4.0.96
 
 ### 标题栏皮肤：等皮肤设置到位后补图（根因修复）

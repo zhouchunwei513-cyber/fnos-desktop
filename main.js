@@ -7613,6 +7613,50 @@ function createAppWindow(url, opts = {}) {
   } catch (_) { try { return createAppWindowInner(url, opts, __cw_t0); } catch (_) {} }
 }
 
+// ===================== v4.0.87：应用窗几何记忆（尺寸/位置/比例） =====================
+// 用户要求：客户端和它的应用窗关闭、重启后，能记住上次的窗口大小与位置。
+// 存储：userData/win-geo.v1.json  { "<appKey>": {x,y,width,height,savedAt} }
+// appKey 优先 appId（同账号跨链路也复用），没有 appId 用 URL pathname。
+const WINGEO_FILE = () => path.join(app.getPath('userData'), 'win-geo.v1.json');
+let __winGeoCache = null;
+function __winGeoLoad() {
+  if (__winGeoCache) return __winGeoCache;
+  try { __winGeoCache = JSON.parse(fs.readFileSync(WINGEO_FILE(), 'utf-8')) || {}; } catch (_) { __winGeoCache = {}; }
+  return __winGeoCache;
+}
+function __winGeoKey(url, opts) {
+  try {
+    const id = String((opts && (opts.appId || opts.name)) || '').trim();
+    if (id) return id;
+    const p = new URL(String(url || '')).pathname.replace(/\/+$/, '') || '/';
+    return p;
+  } catch (_) { return ''; }
+}
+function __winGeoGet(key) {
+  try {
+    if (!key) return null;
+    const g = __winGeoLoad()[key];
+    if (!g || !(g.width > 200 && g.height > 150)) return null;
+    // 屏幕可见性校验：完全跑到屏幕外就不用
+    try {
+      const displays = screen.getAllDisplays().map((d) => d.workArea);
+      const ok = displays.some((a) => g.x < a.x + a.width - 40 && g.x + g.width > a.x + 40
+        && g.y < a.y + a.height - 30 && g.y + g.height > a.y + 20);
+      if (!ok) return null;
+    } catch (_) {}
+    return { x: Math.round(g.x), y: Math.round(g.y), width: Math.round(g.width), height: Math.round(g.height) };
+  } catch (_) { return null; }
+}
+function __winGeoSet(key, bounds) {
+  try {
+    if (!key || !bounds) return;
+    if (!(bounds.width > 200 && bounds.height > 150)) return;
+    const all = __winGeoLoad();
+    all[key] = { x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height), savedAt: Date.now() };
+    fs.writeFileSync(WINGEO_FILE(), JSON.stringify(all, null, 1), 'utf-8');
+  } catch (_) {}
+}
+
 function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v2.0.5：修复——子应用窗口必须与主窗口使用同一 partition，否则 cookie/session 不共享，
   // 导致子应用打开后被重定向到登录页。不再将 persist:nas-* 替换为 SHARED_PARTITION。
@@ -7978,6 +8022,13 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // v3.0.43：居中定位对【所有】应用窗口都计算（不再 source 分流返回 null）——x/y 永不为 undefined。
   const __geo36 = (() => {
     try {
+      // v4.0.87：优先用上次关闭时的窗口几何（尺寸/位置）
+      const __gkey87 = __winGeoKey(url, opts);
+      const __stored87 = __winGeoGet(__gkey87);
+      if (__stored87) {
+        try { dlog('info', 'appwin.geo87', { key: __gkey87, restored: __stored87 }); } catch (_) {}
+        return __stored87;
+      }
       const base = __mainContentRect41();
       const __g = __fitGeo41(base, opts && opts.width, opts && opts.height, __geoRatio41, __barStrip41());
       // v3.0.43 诊断：source、基准来源（content/normal/bounds/workarea）、基准矩形、比例、最终落位。
@@ -8142,6 +8193,22 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
         }
       } catch (_) {}
     });
+  } catch (_) {}
+
+  // v4.0.87：记住窗口尺寸/位置（拖拽、缩放、关闭时都落盘，600ms 防抖）
+  try {
+    const __gkey87b = __winGeoKey(url, opts);
+    let __geoTimer87 = null;
+    const __saveGeo87 = () => {
+      try {
+        if (win.isDestroyed() || win.isMinimized() || win.isMaximized() || win.isFullScreen()) return;
+        __winGeoSet(__gkey87b, win.getBounds());
+      } catch (_) {}
+    };
+    const __debounce87 = () => { try { clearTimeout(__geoTimer87); } catch (_) {} __geoTimer87 = setTimeout(__saveGeo87, 600); };
+    win.on('resize', __debounce87);
+    win.on('move', __debounce87);
+    win.on('close', () => { try { clearTimeout(__geoTimer87); } catch (_) {} __saveGeo87(); });
   } catch (_) {}
 
   // v4.0.70（用户要求：重应用体感秒开）——加载骨架屏。

@@ -15,6 +15,16 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.87
+
+### 应用窗记住尺寸/比例/位置
+
+- 用户要求：客户端与应用窗关闭、重启后记住原来的窗口大小与位置；
+- 存储：`userData/win-geo.v1.json`，按 `appId`（无 appId 用 URL path）分键；
+- 打开时优先用上次的 bounds（并做屏幕可见性校验，跑到屏幕外则回退默认布局）；
+- 拖动/缩放 600ms 防抖落盘，关闭时再存一次；最小化/最大化/全屏态不覆盖记忆值；
+- 日志 `appwin.geo87 {key, restored}`。
+
 ## v4.0.86
 
 ### 飞牛音乐：保留 20px 圆角 + 去掉页面 body 背景

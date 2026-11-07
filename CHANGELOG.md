@@ -15,6 +15,16 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.90
+
+### qBittorrent：底部状态栏不再错位（第三方应用 100vh 根容器）
+
+- 现象：滚侧栏时底部状态栏跟着走/被裁，浏览器里正常；
+- 根因：qBittorrent WebUI 的 `#desktop` 用 `100vh` 铺满，html 让位 34px 后它比可视区高 34px，
+  `#desktopFooter` 被顶出视口；
+- 修法（第三方应用分支 CSS）：`html>body>#desktop{height:calc(100vh - 34px/缩放)}`，
+  `#desktopFooter{flex:0 0 auto}` → 底栏重新贴住窗口底部，滚动侧栏不再移动。
+
 ## v4.0.89
 
 ### 飞牛音乐：四角强制 20px 圆角

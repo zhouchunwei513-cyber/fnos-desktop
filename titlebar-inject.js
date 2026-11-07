@@ -2485,6 +2485,11 @@ module.exports = function injectTitleBar(ctx) {
           'html>body .min-h-screen,html>body .min-h-dvh{min-height:calc(100% - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body [class*="100vh"],html>body [class*="h-screen"],html>body [class*="h-dvh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           'html>body [style*="100vh"]{max-height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          // v4.0.90（用户工单：qBittorrent 底部状态栏不固定、滚侧栏时跟着走）：
+          // qBittorrent WebUI 的 #desktop 用 100vh 铺满，html 让位 34px 后它比可视区高 34px，
+          // #desktopFooter 被顶出视口 → 状态栏错位。这里把根容器压到可视区高度，底栏重新贴底。
+          'html>body>#desktop{height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
+          'html>body>#desktop>#desktopFooter{flex:0 0 auto !important;}',
           // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky/absolute 贴顶类名，JS 接管前先让位
           // v4.0.14：补充 .absolute.top-0 / [class*="absolute-positioned"]（Naive UI n-layout--absolute-positioned）
           // v4.0.17（用户工单「新标签窗侧边栏少 4 项、直播观看页信息不全」根修）：

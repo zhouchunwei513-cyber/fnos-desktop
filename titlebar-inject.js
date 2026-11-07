@@ -1751,6 +1751,9 @@ module.exports = function injectTitleBar(ctx) {
           bar.style.setProperty('-webkit-app-region', 'no-drag');
         }
       } catch (_) {}
+      // v5.1.3：显示时恢复让位
+      try { document.documentElement.style.removeProperty('--fnos-bar-h'); } catch (_) {}
+      try { if (document.body) { document.body.style.removeProperty('transform'); document.body.style.removeProperty('height'); document.body.style.removeProperty('max-height'); } } catch (_) {}
     }
     function hide(bar) {
       try {
@@ -1761,6 +1764,10 @@ module.exports = function injectTitleBar(ctx) {
         bar.style.transform = 'translateY(-100%)';
         bar.style.opacity = '0';
         bar.style.pointerEvents = 'none';
+        // v5.1.3（用户工单：隐藏后窗口顶部那条灰带）——标题栏收走后 0..h 无人绘制，透出桌面。
+        // 隐藏期间把让位归零，让页面内容顶满；显示时再由 show() 恢复。
+        try { document.documentElement.style.setProperty('--fnos-bar-h', '0px'); } catch (_) {}
+        try { if (document.body) { document.body.style.setProperty('transform', 'translateY(0)', 'important'); document.body.style.setProperty('height', '100vh', 'important'); document.body.style.setProperty('max-height', '100vh', 'important'); } } catch (_) {}
       } catch (_) {}
     }
     function scheduleHide(bar, ms) {

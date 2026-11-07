@@ -1363,13 +1363,12 @@ module.exports = function injectTitleBar(ctx) {
         // v4.0.110（用户澄清：两套设置必须完全独立，标题栏设置不得影响窗口四角）：
         // 页面（= 窗口外形）四角**只**取【窗口四角】；标题栏自己的圆角由 __fixBarRadius 用
         // 【标题栏四角】独立绘制，二者互不写入对方。窗口选直角/半圆角时，页面顶部就是直角。
-        // v5.0.9（用户工单：窗口选半圆角后，顶部两角"还是方的"，但标题栏设置的是圆角）：
-        // 同一对物理角只能有一个半径 → 取两者中「更圆」的那个：
-        //   窗口上两角(半圆角/直角=0) 与 标题栏上两角(圆角=10/20, 直角=0) 取 max。
-        // 这样：窗口半圆角 + 标题栏圆角 → 上面两角圆；两边都直角 → 方。
-        const __barTopR = __tbCornerRadius(TB.barCorner);   // 标题栏直角时该函数返回 0
-        const __winTopR = __winHalf ? 0 : __winR;
-        const __topR = Math.max(__winTopR, __barTopR);
+        // v5.1.10（用户规范③：两套设置必须**完全独立**，禁止 max / 取更圆这类耦合）——
+        // v5.0.9 曾让页面顶部半径 = max(窗口上两角, 标题栏上两角)，结果「窗口半圆角 + 标题栏圆角」
+        // 时窗口顶部被标题栏设置带着变圆，违背规范②（半圆角 = 上两角 0）。这里严格按②取值：
+        //   round-* → 四角 R；half-* → 上两角 0 + 下两角 R；square → 全 0。
+        // 标题栏自身的上两角由 __fixBarRadius 用 barCorner 独立绘制，两者互不写入对方。
+        const __topR = __winHalf ? 0 : __winR;
         const __botR = __winR;
         const __wr = __pw(__topR) + ' ' + __pw(__topR) + ' ' + __pw(__botR) + ' ' + __pw(__botR);
         // v4.0.11（用户工单：半圆角对 xapp 窗口不生效）——
@@ -2787,12 +2786,10 @@ module.exports = function injectTitleBar(ctx) {
           '.music-player-glass{transform:scale(.8) !important;transform-origin:bottom center !important;}',
           // v4.0.86（用户要求）：保留应用窗 20px 圆角，只把音乐页自带 body 背景去掉（透明），
           // 圆角处露出的是窗口自身的深色底（v4.0.84 已设 #14121b），因此不会再有灰边/壁纸。
-          // v4.0.89（用户要求：音乐窗四角都要圆）：用户「窗口四角」选的是**大半圆角**，
-          // 其定义是「上两角直角 + 下两角圆」——所以上面两角天生是方的。
-          // 音乐窗这里用更高优先级强制四角 20px（html:root:root 压过圆角模块的 html:root）。
-          'html:root:root{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;'
-            + '-webkit-clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:transparent !important;}',
-          'html:root:root>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:transparent !important;}',
+          // v5.1.10（用户规范②/③：窗口四角**只**由 winCorner 决定）：撤销 v4.0.89 的写法——
+          // 它用 `html:root:root`（特异性 0,2,1 压过圆角模块的 html:root 0,1,1）强制四角 20px，
+          // 导致音乐窗无视「窗口四角」设置（选半圆角/直角仍显示四角 20px）。
+          // 现在音乐窗与其它窗口一样，统一由 __applyWinCornerStyle() 按 winCorner 落值。
           'html>body{background:transparent !important;}',
         ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {

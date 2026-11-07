@@ -14754,7 +14754,8 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.uiTransparentAlpha = uiTransparentAlpha;
     cachedSettings.barCorner = barCorner;
     cachedSettings.winCorner = winCorner;
-    // v3.0.70/75：点播 MPV 圆角跟随「窗口四角」三档；电视直播窗另看「标题栏四角」
+    // v5.1.10（规范④）：MPV 圆角**只读**「窗口四角」——点播窗四角随 round/half/square，
+    // 直播窗仅右上角；barCorner 只作为入参兼容传入，不参与任何判定（规范③两套独立）
     try { if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') MpvPlayerMod.setCornerStyle(__cornerNorm(winCorner), __cornerNorm(barCorner)); } catch (_) {}
     {
       const __oldStrip = __titlebarStrip;

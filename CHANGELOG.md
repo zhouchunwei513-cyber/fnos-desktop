@@ -15,6 +15,15 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.99
+
+### 标题栏皮肤：视频不出画面时看门狗换静态图
+
+- 实证：`skin.applied {kind:video, hasBg:true}` 但同窗 `skin.video.error code4` → video 元素在、
+  却永远没有首帧，图层是空的（用户看到蓝灰条）；
+- 修法：video 挂载后 1.5s 检查 `readyState`，仍 <2 就移除 video 并铺 `bg_alpha.webp`，
+  日志 `titlebar.skin.video.watchdog {rs, to}`。
+
 ## v4.0.98
 
 ### 标题栏皮肤：applyStyle 末尾强制兜底铺图

@@ -977,6 +977,27 @@ module.exports = function injectTitleBar(ctx) {
               } catch (_) {}
               v.src = url;
               bgLayer.appendChild(v);
+              // v4.0.99（用户工单：皮肤"已应用"却不出画面）：日志显示 skin.applied kind=video
+              // 但同窗有 code4 MEDIA_ERR_SRC_NOT_SUPPORTED —— video 元素挂着但永远没有首帧，
+              // 图层就是空的。这里加看门狗：1.5s 内 readyState 仍 <2 就撤掉 video、换静态图。
+              try {
+                setTimeout(function () {
+                  try {
+                    if (!v.isConnected) return;
+                    if (v.readyState >= 2) return;
+                    const __wfb = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
+                    if (!__wfb) return;
+                    bgLayer.style.backgroundImage = 'url(\'' + __wfb + '\')';
+                    bgLayer.style.backgroundSize = 'cover';
+                    bgLayer.style.backgroundPosition = 'center';
+                    bgLayer.style.backgroundRepeat = 'no-repeat';
+                    bgLayer.style.backgroundColor = 'transparent';
+                    const __rs = v.readyState;
+                    try { v.remove(); } catch (_) {}
+                    __tbLog('skin.video.watchdog', { rs: __rs, to: 'bg_alpha.webp' });
+                  } catch (_) {}
+                }, 1500);
+              } catch (_) {}
               bgLayer.style.display = 'block';
               // v3.0.24：视频首帧没出来之前铺一层深色底，避免标题栏变成「看不见的透明条」
               // （素材解码完成后 video 会整体盖住这层底色，不影响最终观感）

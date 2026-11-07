@@ -6290,7 +6290,9 @@ function createSettingsWindow() {
     fullscreenable: false,
     title: 'FNOS 设置',
     transparent: true,
-    roundedCorners: false, // v2.15.71：关闭 Win11 系统 8px 外层圆角，圆角由页面 clip-path 20px 统一绘制
+    // v5.1.0（用户要求：页面圆角外不要露出桌面）——启用系统 DWM 圆角，让窗口本身被裁圆；
+    // 若 Win11 重新出现 #444444 边框，把这里改回 false 即可回退。
+    roundedCorners: true, // 原 v2.15.71: false（为躲 DWM 边框关闭）
     backgroundColor: '#00000000',
     autoHideMenuBar: true,
     frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v2.15.2：mac 原生红绿灯，Windows 无边框 + settings-preload 注入自绘标题栏

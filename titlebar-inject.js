@@ -2566,6 +2566,17 @@ module.exports = function injectTitleBar(ctx) {
           (document.head || document.documentElement).appendChild(__sb);
         }
       } catch (_) {}
+      // v5.1.2（用户工单：整个窗口背后透出桌面/灰色底）——
+      // 实测 body 背景是 rgba(17,19,23,0.45)（半透明），窗口又透明 → 桌面透满整窗。
+      // 给 html 垫一层不透明深色底：body 的半透明色叠在它上面，结果不透明，同时不改变布局。
+      try {
+        if (__isAppWin && !document.getElementById('fnos-opaque-back')) {
+          const __ob = document.createElement('style');
+          __ob.id = 'fnos-opaque-back';
+          __ob.textContent = 'html{background:#14121b !important;}';
+          (document.head || document.documentElement).appendChild(__ob);
+        }
+      } catch (_) {}
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
       const __argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];

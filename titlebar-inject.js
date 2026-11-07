@@ -4435,7 +4435,9 @@ module.exports = function injectTitleBar(ctx) {
           if (!document.getElementById('fnos-iw-css')) {
             const st = document.createElement('style');
             st.id = 'fnos-iw-css';
-            st.textContent = '[' + MARK + '-hdr="1"]{display:none!important}'
+            // v4.0.72：用 visibility 而不是 display:none —— 保留原生表头占位高度，
+            // 否则应用按 100vh 算的布局会整体超出一截（飞牛音乐底部播放条被裁掉一半就是这原因）
+            st.textContent = '[' + MARK + '-hdr="1"]{visibility:hidden!important}'
               + '[' + MARK + '="bar"]{box-sizing:border-box}'
               + '[' + MARK + '="bar"] .fnos-iw-ico:hover{background:rgba(127,127,127,0.18)}'
               + '[' + MARK + '="bar"] .fnos-iw-ico-close:hover{background:#E81123!important;color:#fff!important}';
@@ -4629,7 +4631,21 @@ module.exports = function injectTitleBar(ctx) {
             win.setAttribute(MARK, '1');
             hdr.setAttribute(MARK + '-hdr', '1');
             const bar = __buildBar(win, hdr);
-            win.insertBefore(bar, win.firstChild);
+            // v4.0.72：覆盖式而非插入式——栏不占布局空间，应用（音乐/影视）的 100vh 布局保持原样
+            try {
+              const __hdrH = Math.round(hdr.getBoundingClientRect().height) || 44;
+              bar.style.position = 'absolute';
+              bar.style.top = '0';
+              bar.style.left = '0';
+              bar.style.right = '0';
+              bar.style.height = __hdrH + 'px';
+              bar.style.zIndex = '2147483000';
+              const __pos = getComputedStyle(win).position;
+              if (__pos === 'static') win.style.position = 'relative';
+              win.appendChild(bar);
+            } catch (_) {
+              win.insertBefore(bar, win.firstChild);
+            }
             // v4.0.71（用户工单：飞牛音乐底部播放条缺失，只有拖动标题栏才出现）：
             // 自绘栏是"后插"进窗口的第一个子节点，窗口变矮了 36px；而很多应用（音乐/影视等）
             // 的底部播放条是绝对定位、按加载时的容器尺寸算的，插入后不会自动重算 →

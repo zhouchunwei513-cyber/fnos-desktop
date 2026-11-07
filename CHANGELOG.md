@@ -3,6 +3,19 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.72
+
+### 页内窗自绘栏改为「覆盖式」，修应用底部被裁（飞牛音乐播放条只露一半）
+
+- v4.0.71 的 resize 重排没有根治；真正原因是**布局高度**：自绘栏作为第一个 flex 子节点插入（36px），
+  而原生表头被 `display:none` 移除（44px），应用页面按 `100vh` 计算的布局整体超出窗口 →
+  底部播放条被窗口下边缘裁掉一半；
+- 修法：
+  1. 原生表头改为 `visibility:hidden`（**保留 44px 占位**，不再 `display:none`）；
+  2. 自绘栏改为**绝对定位覆盖**在原生表头上（`position:absolute; top/left/right:0; height=原生表头高`），
+     不占布局空间 → 应用的 100vh 布局与浏览器里完全一致；
+  3. 保留 v4.0.71 的 resize 派发作为兜底。
+
 ## v4.0.71
 
 ### 重应用资源预取

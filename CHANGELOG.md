@@ -15,6 +15,15 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.103
+
+### 第三方应用：fixed 全屏首层让位 34px
+
+- 现象：MoonTV 等应用首层是 Tailwind `div.fixed.inset-0`，`position:fixed` 不参与 html 的
+  `padding-top`，内容顶到 0 被标题栏盖住（实测内容容器 top=-44）；
+- 修法：`html>body>div.fixed.inset-0{top:34px/缩放; height:calc(100vh - 34px/缩放)}`，
+  等价于给这类布局一个真实短视口。
+
 ## v4.0.102
 
 ### 标题栏静态底图改用 data:URL（blob 不渲染的最终解法）

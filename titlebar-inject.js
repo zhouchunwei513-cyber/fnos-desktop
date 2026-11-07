@@ -2625,6 +2625,12 @@ module.exports = function injectTitleBar(ctx) {
           // 我们第三方分支给 body 设了 overflow-y:auto → 滚侧栏时整个 body 一起滚，底部状态栏跟着走。
           // 用 :has() 只在「页面根就是 #desktop」时关掉 body 滚动，不影响其它第三方应用。
           'html:has(>body>#desktop)>body{overflow:hidden !important;}',
+          // v4.0.103（用户工单：MoonTV 这类 fixed 全屏页顶部被标题栏压住）：
+          // 首层是 Tailwind 的 .fixed.inset-0，position:fixed 不吃 html 的 padding-top，
+          // 内容整体顶到 0 被我们的 34px 标题栏盖住。这里把这类固定层整体下移 34px 并扣掉高度，
+          // 等价于「给它一个真实的短视口」，fixed 布局内部仍按整块区域排。
+          'html>body>div.fixed.inset-0{top:calc(var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;'
+            + 'height:calc(100vh - var(--fnos-bar-h, 34px) / var(--fnos-f, 1)) !important;}',
           // v4.0.92（用户截图：底栏压住详情面板最后几行）：qBittorrent 的 #desktopFooter 是
           // absolute 定位、不占布局，而 #pageWrapper 按 100% 撑满 → 面板底部被底栏盖住。
           // 这里让 #pageWrapper 扣掉「头部 60px + 底栏 28px」，内容区正好停在底栏上方。

@@ -7317,6 +7317,22 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
   const __rfApp = fnosReferrerFor(url);
   const __optsApp = { userAgent: getNasUA() };
   if (__rfApp) __optsApp.httpReferrer = __rfApp;
+  // v5.0.3（用户工单：应用自己按 100vh 排版，导致底部空带/顶部被压/播放条被裁）——
+  // 试点：把应用装进一个 iframe，iframe 高度 = 视口 - 34px（标题栏高度）。
+  // 应用拿到的是真实短视口，它自己的 100vh 计算天然正确，不必再逐个应用打 CSS 补丁。
+  // 目前只对 DSH 应用窗试点，验证通过后再推广到其它应用窗。
+  try {
+    // v5.0.5：iframe 试点被应用拒绝（页面直接报 Invalid token）→ 关闭试点，改回直载。
+    const __isPilotWrap = false && /\/app\/fn-deepseek-harness/i.test(String(url || ''));
+    if (__isPilotWrap) {
+      const __wrapHtml = '<!doctype html><html><head><meta charset="utf-8"><style>'
+        + 'html,body{margin:0;height:100%;background:#14121b;overflow:hidden}'
+        + 'iframe{position:fixed;top:0;left:0;width:100%;height:calc(100vh - 34px);border:0;display:block}'
+        + '</style></head><body><iframe src="' + String(url).replace(/"/g, '&quot;') + '"></iframe></body></html>';
+      try { fnosLog('info', 'appwin', 'wrap.pilot', { url: String(url).slice(0, 120) }); } catch (_) {}
+      return win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(__wrapHtml), __optsApp);
+    }
+  } catch (_) {}
   return win.loadURL(url, __optsApp);
 }
 

@@ -15,6 +15,16 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.95
+
+### 内嵌 appview 窗：套皮肤 + 内容让位
+
+- 用户实测的两个窗都是 `appview?anchor=trim.docker`（内嵌窗），走 buildEmbed 分支：
+  ① 原来只盖一条半透明栏、不套皮肤 → qBittorrent 显示蓝灰条；
+  ② 覆盖式标题栏、不给页面让位 → 顶部内容被压住；
+- 修法：buildEmbed 里 a) 给 html 加 34px padding-top 并同步 body 高度；
+  b) 标题栏铺皮肤静态图 `bg_alpha.webp`；日志 `embed.skin.static`。
+
 ## v4.0.94
 
 ### 标题栏皮肤：后台/隐藏窗口先用静态图顶上

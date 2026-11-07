@@ -2917,6 +2917,17 @@ module.exports = function injectTitleBar(ctx) {
     function buildEmbed() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
+        // v4.0.95（用户工单：内嵌 appview 窗 ①标题栏不套皮肤 ②内容顶部被压住）：
+        // 内嵌窗原来只是盖一条半透明栏，既没有皮肤、也不给页面让位。这里补两件事：
+        //   a) 页面整体下移 34px（html padding-top），顶栏不再压内容；
+        //   b) 标题栏铺皮肤静态图（与独立窗同一素材 bg_alpha.webp）。
+        try {
+          const st = document.createElement('style');
+          st.id = 'fnos-embed-offset';
+          st.textContent = 'html{padding-top:' + __skinHeight + 'px !important;box-sizing:border-box !important;}'
+            + 'html>body{height:calc(100% - ' + __skinHeight + 'px) !important;box-sizing:border-box !important;}';
+          (document.head || document.documentElement).appendChild(st);
+        } catch (_) {}
         const root2 = root();
         // 顶部拖动热区（与普通标题栏同款）
         const hot = document.createElement('div');
@@ -2930,6 +2941,20 @@ module.exports = function injectTitleBar(ctx) {
         // v4.0.24：同主标题栏——整条 bar 不吃事件，只有子元素（logo/标题/四钮）auto，
         // 避免盖住内嵌窗自己的 ✕ 把点击吃掉。
         __setCss(bar, 'position:fixed;top:0;left:0;right:0;height:' + __skinHeight + 'px;z-index:2147483647;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;pointer-events:none;background:rgba(18,22,30,0.30);border-radius:6px;-webkit-app-region:no-drag;user-select:none;');
+        // v4.0.95：内嵌标题栏也铺皮肤（静态图，避免视频解码问题）
+        try {
+          const __sk = (__skinState && __skinState.skin && __skinState.skin.titlebar) || null;
+          if (__sk && __skinState.skinDir) {
+            const __img = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
+            if (__img) {
+              bar.style.backgroundImage = 'url(\'' + __img + '\')';
+              bar.style.backgroundSize = 'cover';
+              bar.style.backgroundPosition = 'center';
+              bar.style.backgroundColor = 'transparent';
+              __tbLog('embed.skin.static', { to: 'bg_alpha.webp' });
+            }
+          }
+        } catch (_) {}
         // 左：应用 logo + 标题
         const left = document.createElement('div');
         __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;');

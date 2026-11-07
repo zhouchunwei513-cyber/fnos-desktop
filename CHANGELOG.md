@@ -15,6 +15,13 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.83
+
+### 飞牛音乐：播放条缩放到 80%（用户要求）
+
+- `/music` 专用 CSS 加 `.music-player-glass{transform:scale(.8);transform-origin:bottom center}`；
+- 实测播放条 576×72 → **461×58**，底边对齐、水平居中，不再遮挡内容。
+
 ## v4.0.82
 
 ### 飞牛音乐：播放条底部不再被裁

@@ -2453,6 +2453,8 @@ module.exports = function injectTitleBar(ctx) {
           // 让 #root / music-app-layout 也扣掉标题栏高度，整页正好落在 34..800。
           '#root{height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;}',
           '.music-app-layout{height:100% !important;min-height:0 !important;}',
+          // v4.0.83（用户要求）：播放条整体缩到 80%，底边对齐、水平居中
+          '.music-player-glass{transform:scale(.8) !important;transform-origin:bottom center !important;}',
         ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v4.0.73（用户工单：飞牛音乐底部播放条/列表底部被裁）：

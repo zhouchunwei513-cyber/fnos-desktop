@@ -15,6 +15,14 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.109
+
+### 电视直播 MPV 圆角：半圆角档归 0（对齐规范 4.2）
+
+- 现状核对：直播 MPV 已跟随「窗口四角」（`__cornerStyle`），且只裁右上角，半径 10/20 正确；
+- 差异：`half-*` 档原来仍会出右上角圆角，按规范 4.2 应为 **四角全直**；
+- 修法：`this._isLive` 分支改为 `mode = __mpvHalf ? 'none' : 'top-right'`。
+
 ## v4.0.108
 
 ### 修复：窗口四角覆盖标题栏四角（两套设置完全解耦）

@@ -1587,13 +1587,16 @@ class MpvPlayer extends EventEmitter {
     let mode = 'none';
     // v4.0.39：半径由「窗口四角」档位决定（小=10px / 大=20px / 直角=0），两套窗口模式：
     //   影视播放窗：四角跟窗口四角（half 档=上直下圆）
-    //   电视直播窗：只右上角出圆角，其余三角恒为直角（大档 20px / 小档 10px）
+    //   电视直播窗：只右上角出圆角（大 20px / 小 10px）；半圆角与直角档一律四角全直
+    //               （跟随「窗口四角」设置，与「标题栏四角」无关）
     const __mpvR = __mpvCornerRadius(__cornerStyle);
     const __mpvHalf = __mpvCornerIsHalf(__cornerStyle);
     if (this._fsOn) { mode = 'none'; }
     else if (!this._standalone && __mpvR > 0) {
       if (this._isLive) {
-        mode = 'top-right';
+        // v4.0.109（用户规范 4.2）：电视直播窗只看右上角；且**半圆角档在直播下应归 0**
+        //（小/大半圆角 = 四角全直），只有「小圆角/大圆角」才出右上角 10/20px。
+        mode = __mpvHalf ? 'none' : 'top-right';
       } else {
         mode = __mpvHalf ? 'half' : 'all';
       }

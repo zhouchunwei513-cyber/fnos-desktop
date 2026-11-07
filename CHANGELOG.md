@@ -15,6 +15,17 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.108
+
+### 修复：窗口四角覆盖标题栏四角（两套设置完全解耦）
+
+- 现象：窗口四角选「圆角」后，标题栏上两角被强制变成 20px，不受标题栏自身设置控制；
+- 根因：页面 `clip-path` 的**上沿**半径取自 `winCorner`（`__topR = __winHalf ? 0 : __winR`），
+  而这条 clip 作用于整个 html（含标题栏）→ 视觉上覆盖了标题栏设置；
+- 修法：`__topR` 改取 **barCorner**、`__botR` 仍取 winCorner；
+  标题栏半圆角（上两角圆）与窗口半圆角（下两角圆）的数值映射本就正确，保持不变；
+- 五档数值：小=10px、大=20px、直角=0px。
+
 ## v4.0.107
 
 ### 外部链接交给系统浏览器

@@ -6290,9 +6290,7 @@ function createSettingsWindow() {
     fullscreenable: false,
     title: 'FNOS 设置',
     transparent: true,
-    // v5.1.0（用户要求：页面圆角外不要露出桌面）——启用系统 DWM 圆角，让窗口本身被裁圆；
-    // 若 Win11 重新出现 #444444 边框，把这里改回 false 即可回退。
-    roundedCorners: true, // 原 v2.15.71: false（为躲 DWM 边框关闭）
+    roundedCorners: false, // v2.15.71：关闭 Win11 系统 8px 外层圆角，圆角由页面 clip-path 20px 统一绘制
     backgroundColor: '#00000000',
     autoHideMenuBar: true,
     frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v2.15.2：mac 原生红绿灯，Windows 无边框 + settings-preload 注入自绘标题栏
@@ -7319,22 +7317,6 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
   const __rfApp = fnosReferrerFor(url);
   const __optsApp = { userAgent: getNasUA() };
   if (__rfApp) __optsApp.httpReferrer = __rfApp;
-  // v5.0.3（用户工单：应用自己按 100vh 排版，导致底部空带/顶部被压/播放条被裁）——
-  // 试点：把应用装进一个 iframe，iframe 高度 = 视口 - 34px（标题栏高度）。
-  // 应用拿到的是真实短视口，它自己的 100vh 计算天然正确，不必再逐个应用打 CSS 补丁。
-  // 目前只对 DSH 应用窗试点，验证通过后再推广到其它应用窗。
-  try {
-    // v5.0.5：iframe 试点被应用拒绝（页面直接报 Invalid token）→ 关闭试点，改回直载。
-    const __isPilotWrap = false && /\/app\/fn-deepseek-harness/i.test(String(url || ''));
-    if (__isPilotWrap) {
-      const __wrapHtml = '<!doctype html><html><head><meta charset="utf-8"><style>'
-        + 'html,body{margin:0;height:100%;background:#14121b;overflow:hidden}'
-        + 'iframe{position:fixed;top:0;left:0;width:100%;height:calc(100vh - 34px);border:0;display:block}'
-        + '</style></head><body><iframe src="' + String(url).replace(/"/g, '&quot;') + '"></iframe></body></html>';
-      try { fnosLog('info', 'appwin', 'wrap.pilot', { url: String(url).slice(0, 120) }); } catch (_) {}
-      return win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(__wrapHtml), __optsApp);
-    }
-  } catch (_) {}
   return win.loadURL(url, __optsApp);
 }
 
@@ -8041,12 +8023,6 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       //   使网页可视高度 = base.h * 0.92，与浏览器里的 100vh 等高。
       const hr45 = __fnIsInApp36 ? 0.92 : rr;
       h = Math.max(580, Math.round(base.h * hr45) + bb);
-    } else {
-      // v5.1.11（用户要求：应用窗与主窗同一套窗口模型）——快捷方式/冷启动窗保持原尺寸时，
-      //   外框同样补上标题栏高度。titlebar-inject 现在两窗统一按「窗口外框 = 内容 + 标题栏」
-      //   让位（应用窗不再在隐藏时归零），不补这一条这些窗的网页可视高度会比浏览器少 34px。
-      //   主窗（无关此函数）与 in-app 分支（上面已 +bb）行为不变。
-      h = h + bb;
     }
     w = Math.min(w, base.w);
     h = Math.min(h, base.h);
@@ -8165,11 +8141,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v4.0.88（用户工单：圆角外还有一圈"直角"）：不透明窗口是方角的，圆角裁剪之外的
     // 四个小方块会露出窗口底色（灰），看起来就是"圆角外面套了个直角"。
     // 改为窗口透明（四角真正镂空），由页面 clip-path 裁出 20px 圆角。
-    transparent: false, // v5.1.12：应用窗不透明，取消「透出桌面」
+    transparent: true,
     roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
-    // v5.0.8（用户澄清）：底部那条带其实是滚动条（v5.0.7 已隐藏），
-    // 所以 v5.0.6 的深色底不再需要 —— 回退为透明，四角才会按「标题栏四角/窗口四角」显示圆角。
-    backgroundColor: '#14121b',
+    backgroundColor: '#00000000',
     show: false,
     autoHideMenuBar: true,
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +
@@ -14760,8 +14734,7 @@ ipcMain.handle('settings:set-ui-options', async (_e, opts) => {
     cachedSettings.uiTransparentAlpha = uiTransparentAlpha;
     cachedSettings.barCorner = barCorner;
     cachedSettings.winCorner = winCorner;
-    // v5.1.10（规范④）：MPV 圆角**只读**「窗口四角」——点播窗四角随 round/half/square，
-    // 直播窗仅右上角；barCorner 只作为入参兼容传入，不参与任何判定（规范③两套独立）
+    // v3.0.70/75：点播 MPV 圆角跟随「窗口四角」三档；电视直播窗另看「标题栏四角」
     try { if (MpvPlayerMod && typeof MpvPlayerMod.setCornerStyle === 'function') MpvPlayerMod.setCornerStyle(__cornerNorm(winCorner), __cornerNorm(barCorner)); } catch (_) {}
     {
       const __oldStrip = __titlebarStrip;

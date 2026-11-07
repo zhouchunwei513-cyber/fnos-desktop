@@ -537,9 +537,9 @@ function prewarmCorners() { try { ensureCornerHelper(); } catch (_) {} }
 // v3.0.74：新增 'half'（半圆角）——
 //   点播：上边左右两角直角 + 下边左右两角 20px 圆角（mode=3）；
 //   电视直播：四角全直（直播窗只在圆角模式保留右上角 R 角，半圆角 / 直角都是全直）。
-// v3.0.75（用户澄清）：点播 MPV 窗跟「窗口四角」三档 —— round/half/square；
-//   电视直播 MPV 窗同样**只读「窗口四角」**（v4.0.109 起，规范④）：圆角档保留右上角 R 角，
-//   半圆角与直角档四角全直。__barCornerStyle 仅保留入参兼容，不再参与任何圆角判定（规范③）。
+// v3.0.75（用户澄清）：
+//   点播 MPV 窗跟「窗口四角」三档 —— round=四角圆 / half=上直下圆 / square=四角直；
+//   电视直播 MPV 窗只看「标题栏四角」—— 圆角时保留右上角 R 角，直角与半圆角时四角全直。
 // v4.0.39：圆角五档 round-small / round-large / half-small / half-large / square
 let __cornerStyle = 'round-large';     // 窗口四角（winCorner）
 let __barCornerStyle = 'round-large';  // 标题栏四角（barCorner）
@@ -558,9 +558,6 @@ function __mpvCornerIsHalf(v) { return __mpvCornerNorm(v).indexOf('half') === 0;
 function setCornerStyle(v, barV) {
   __cornerStyle = __mpvCornerNorm(v);
   if (barV !== undefined) __barCornerStyle = __mpvCornerNorm(barV);
-  // v5.1.10（规范⑤：切换实时生效、不许重启）——设置页点选后立即重裁正在播放的 MPV 窗，
-  // 不必等 3s 心跳补裁；没有在播窗口时为空操作。
-  try { if (_embedded && !_embedded._dead) _embedded._scheduleCorners(); } catch (_) {}
 }
 
 class MpvPlayer extends EventEmitter {

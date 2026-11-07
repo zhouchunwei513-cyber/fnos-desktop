@@ -1,3 +1,11 @@
+## v5.1.9
+
+### 应用窗强制不透明底色（用户选择）
+
+- 应用自带 `body{background:rgba(…,0.45)}` 会把桌面透出来，圆角/接缝显灰；
+- 修法：应用窗注入 `html>body{background-color:#121517 !important;background-image:none}`；
+- 代价：应用窗彻底实心（不再有半透明观感），换取边角干净。
+
 ## v5.1.8
 
 ### 「透明界面」不再套到应用窗

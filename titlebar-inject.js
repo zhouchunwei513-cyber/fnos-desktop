@@ -2683,6 +2683,21 @@ module.exports = function injectTitleBar(ctx) {
       //   ② 就算能执行也不对：根节点（html）自己的背景由 canvas 绘制，**不受 html:root 的
       //      clip-path 裁剪** → 四角会被填成方块（v5.0.8 用户已经报过一次）。
       // 现在改成「不透明底板」方案，见下面 __isAppWin 声明之后那段。
+      // v5.1.9（用户选择「强制不透明」）：应用窗 body 背景强制不透明，
+      // 避免应用自带的 rgba(…,0.45) 半透明底把桌面透出来（圆角/接缝处显灰块）。
+      try {
+        let __isAppW9 = false;
+        try {
+          const a9 = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+          __isAppW9 = a9.indexOf('--fnos-app-window') >= 0 || a9.indexOf('--fnos-live-window') >= 0;
+        } catch (_) {}
+        if (__isAppW9 && !document.getElementById('fnos-opaque-body')) {
+          const __ob9 = document.createElement('style');
+          __ob9.id = 'fnos-opaque-body';
+          __ob9.textContent = 'html>body{background-color:#121517 !important;background-image:none !important;}';
+          (document.head || document.documentElement).appendChild(__ob9);
+        }
+      } catch (_) {}
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
       const __argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];

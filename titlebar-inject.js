@@ -840,6 +840,39 @@ module.exports = function injectTitleBar(ctx) {
       } catch (_) {}
     }
 
+    // v5.1.6（用户工单：应用窗标题栏左上/右上圆角处露出一小块灰色底板）——
+    // 皮肤模式下标题栏背景由 #fnos-tb-bg（背景层）/ #fnos-tb-shape（形状层）接管，
+    // 但 #fnos-titlebar 自身的 background / box-shadow / border-bottom 并不会自动消失：
+    // 两个图层是圆角裁剪的，bar 本体是整块矩形，圆角之外那一小块就被 bar 的底色
+    // （纯色 #101426 / 磨砂 frostColor）填成灰块；磨砂抓屏回包（titlebar-frost-bg）
+    // 还会周期性把底色写回。这里统一清成透明/无，让皮肤图层独占整条标题栏。
+    // 无皮肤时不调用（其它分支照常上色，行为不变）。
+    function __tbSkinActive(bar) {
+      try {
+        const s = __skinState && __skinState.skin;
+        if (!s || !__skinState.skinDir) return false;
+        const b = bar || document.getElementById('fnos-titlebar');
+        if (b && b.__skinHasBg === true) return true;
+        const tb = s.titlebar;
+        return !!(tb && tb.background && tb.background.type && tb.background.type !== 'none');
+      } catch (_) { return false; }
+    }
+    function __tbClearBarSurface(bar) {
+      try {
+        const b = bar || document.getElementById('fnos-titlebar');
+        if (!b || !b.style) return;
+        b.style.background = 'transparent';
+        b.style.backgroundColor = 'transparent';
+        b.style.backgroundImage = 'none';
+        b.style.boxShadow = 'none';
+        b.style.borderBottom = 'none';
+        if (!b.__tbSurfaceCleared) {
+          b.__tbSurfaceCleared = true;
+          __tbLog('skin.bar.surface-clear', {});
+        }
+      } catch (_) {}
+    }
+
     // v4.0.31（用户问题 1）：只有「窗口真的可见」才值得解码视频皮肤。
     // visibilityState 在窗口最小化 / 被系统隐藏时会变 hidden；再来一次 focus / visibilitychange
     // 就把占位底色升级成视频。这样一次换肤不再让 50+ 个窗口一起解视频。
@@ -924,7 +957,12 @@ module.exports = function injectTitleBar(ctx) {
             const __v = bgLayer.querySelector('video');
             if (__v && __v.paused) { try { __v.play().catch(function () {}); } catch (_) {} }
           }
-          if (__ok) return !!bar.__skinHasBg;
+          if (__ok) {
+            // v5.1.6：命中签名（皮肤层还活着）也要再确认 bar 本体不带底色，
+            // 否则磨砂回包等外部写入会一直留在圆角外那一小块上。
+            if (bar.__skinHasBg) __tbClearBarSurface(bar);
+            return !!bar.__skinHasBg;
+          }
         }
         if (bgLayer) { bgLayer.style.display = 'none'; bgLayer.style.backgroundImage = 'none'; bgLayer.style.backgroundColor = 'transparent'; bgLayer.innerHTML = ''; }
         if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; shapeLayer.innerHTML = ''; }
@@ -1163,6 +1201,8 @@ module.exports = function injectTitleBar(ctx) {
         }
         bar.__skinSig = __sig;
         bar.__skinHasBg = hasBg;
+        // v5.1.6：皮肤层真的铺上了 → 立刻清掉 bar 本体底色（圆角外露灰块的根因）
+        if (hasBg) __tbClearBarSurface(bar);
         // v4.0.98（用户工单：appview/内嵌窗标题栏始终是深色占位条）——
         // 实测日志证明素材能读到（bg.mp4 + bg_alpha.webp 都 st:ok），但最终图层没有背景图，
         // 说明中途被重建/清空了。这里在每次 applyStyle 末尾做一次强制兜底：
@@ -1537,7 +1577,9 @@ module.exports = function injectTitleBar(ctx) {
           if (!d || !d.url) return;
           __frostGeom = d;
           const bar0 = document.getElementById('fnos-titlebar');
-          if (bar0 && TB.material === 'frosted') {
+          // v5.1.6：皮肤模式下标题栏底色由皮肤图层独占，磨砂回包不得再往 bar 上写色，
+          // 否则圆角外那一小圈又会填回灰块（本回包每 0.24~1.1s 来一次）。
+          if (bar0 && TB.material === 'frosted' && !__tbSkinActive(bar0)) {
             // v4.0.11：抓屏成功后把兜底底色降回正常 frostAlpha，由磨砂层接管视觉
             try {
               const __fa = Math.max(0.02, Math.min(0.35, (TB.frostAlpha == null ? 10 : Number(TB.frostAlpha)) / 100));
@@ -1572,11 +1614,11 @@ module.exports = function injectTitleBar(ctx) {
         if (__applySkinLayers(bar)) {
           bar.style.setProperty('-webkit-app-region', 'no-drag');
           bar.__skinNoDrag = true;
-          bar.style.background = 'transparent';
-          bar.style.backgroundImage = 'none';
+          // v5.1.6：背景 / 阴影 / 底边分隔线一并清掉（旧代码漏了 borderBottom，
+          // 且圆角外的 bar 底色会从皮肤图层的圆弧外露出来，见 __tbClearBarSurface 注释）
+          __tbClearBarSurface(bar);
           bar.style.backdropFilter = 'none';
           bar.style.webkitBackdropFilter = 'none';
-          bar.style.boxShadow = 'none';
           const __skinIconDark = !!(__skinState.skin && __skinState.skin.titlebar && __skinState.skin.titlebar.content && __skinState.skin.titlebar.content.iconDark);
           bar.__useDarkIcon = !__skinIconDark;
           const __skStroke = __skinIconDark ? 'rgba(20,20,20,0.92)' : 'rgba(255,255,255,0.95)';

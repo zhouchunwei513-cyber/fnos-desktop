@@ -1871,6 +1871,8 @@ module.exports = function injectTitleBar(ctx) {
     function build() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
+        // v4.0.78：音乐窗用系统原生标题栏，跳过自绘栏注入（防双重标题栏+底部白条）
+        try { if (/\/music(\/|$)/i.test(String(location.pathname || ''))) return; } catch (_) {}
 
         // 清理可能残留的旧沉浸黑条（v1.60~v1.61 引入，v1.62 移除：它是 no-drag 层会干扰拖动、且强制黑底）
         try { const old = document.getElementById('fnos-embed-topbar'); if (old) old.remove(); } catch (_) {}
@@ -2422,6 +2424,8 @@ module.exports = function injectTitleBar(ctx) {
       // gets html transparency (desktop shows through), margin:0 (keeps the 20px radius)
       // and the fixed-top compensation so only one titlebar layer remains.
       const __isAppWin = __argv.indexOf('--fnos-app-window') >= 0 || __isLiveWin;
+      // v4.0.76：音乐窗用系统原生标题栏（--fnos-native-frame），不再注入自绘栏
+      const __isNativeFrame76 = __argv.indexOf('--fnos-native-frame') >= 0;
       const __isSettings = (!__isAppWin && __argv.indexOf('--fnos-shell') < 0); // 设置窗口：无 --fnos-shell 也无 --fnos-app-window（不透明窗口，独立布局）
       const __gifBg = 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;';
       // v4.0.25：壳色只给自家页面。第三方/Docker 应用页绝不写 body 底色——
@@ -2438,7 +2442,16 @@ module.exports = function injectTitleBar(ctx) {
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
           'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;' + __shellBgCss25 + '}' +
           (__fnIsThirdParty25 ? '' : 'html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}');
+      } else if (__isAppWin && /\/music(\/|\?|$)/i.test(String(location.href || ''))) {
+        // v4.0.78：音乐窗不改 body 任何几何（不加 transform/padding/margin/height），
+        // 页面拿到和浏览器一模一样的视口。自绘栏已在 build() 入口跳过，不出现双重标题栏。
+        __padStyle.textContent = 'html{overflow:hidden !important;}';
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
+        // v4.0.73（用户工单：飞牛音乐底部播放条/列表底部被裁）：
+        // 音乐 App 的播放条是 position:fixed bottom:0，而下面 __isAppWin 分支给 body 加了
+        // transform（创建包含块）→ fixed 后代改为相对 body 定位，整体下移 41px 被窗口下沿裁掉。
+        // 这里让音乐 App 复用第三方分支的「html padding-top 让位 + body height:100%」策略：
+        // 不做 transform，fixed 继续相对 viewport 定位，几何与浏览器一致。
         // v3.0.46（网友反馈：Docker/qBittorrent 等第三方应用在客户端里底部状态栏压住"信息"面板
         // 的字段、整页显示不正常；浏览器打开正常）：
         // 第三方应用的布局依赖 position:fixed 顶/底栏与真实 100vh。下面 __isAppWin 分支用
@@ -2839,6 +2852,8 @@ module.exports = function injectTitleBar(ctx) {
     function buildEmbed() {
       try {
         if (document.getElementById('fnos-titlebar')) return;
+        // v4.0.78：音乐窗用系统原生标题栏，跳过自绘栏注入（防双重标题栏+底部白条）
+        try { if (/\/music(\/|$)/i.test(String(location.pathname || ''))) return; } catch (_) {}
         const root2 = root();
         // 顶部拖动热区（与普通标题栏同款）
         const hot = document.createElement('div');

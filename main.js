@@ -8000,6 +8000,9 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
   // 真实 100vh。本客户端"把 body 下移 34px 给标题栏让位"用的是 transform + 压缩 body 高度，
   // 会创建包含块并改变 body 高度 → fixed 底栏整体偏移、全高容器比可视区高 34px → 底栏压住内容。
   // 这类窗口改走"html padding-top 让位"（fixed 继续相对 viewport），并跳过主题/假窗控注入。
+  // v4.0.76（用户要求：音乐窗底部播放条必须显示）：音乐窗改用系统原生标题栏，
+  // 让页面拿到与浏览器完全一致的视口（自绘栏无论怎么让位都会让音乐页的 fixed 播放条错位）。
+  const __isMusicNav76 = /\/music(\/|\?|$)/i.test(String(url || ''));
   const __xapp46 = (() => {
     try {
       const u = new URL(String(url || ''));
@@ -8065,7 +8068,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v2.15.38：恢复应用窗透明（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板，透明窗口本身不是白板根因；应用窗内容由
     // titlebar-inject 的「只 html 透明」CSS 保证 body 不透明，标题栏顶部 34px 透出桌面壁纸。
-    transparent: true,
+    transparent: !__isMusicNav76,
     roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
     backgroundColor: '#00000000',
     show: false,
@@ -8073,7 +8076,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +
     //   titleBarOverlay——overlay 在 Windows 会重新绘制系统原生窗口按钮(右上角 - □ ✕)，
     //   自定义标题栏盖不住，表现为"标题栏不统一/仍是系统按钮"。
-    frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    frame: process.platform === 'darwin' || __isMusicNav76, titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     // v2.0.6：优先使用 manifest 中存储的应用图标，避免初始显示主图标
     icon: (() => {
       try {
@@ -8112,7 +8115,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
       // v2.10.0 r30（问题1 根修）：--fnos-app-window 旗标——三套假窗控清扫（preload instantHide26 /
       // titlebar-inject chromeFix / 主进程帧脚本25/26）只在应用窗内生效；主窗整棵 frame 树（web 桌面
       // 内嵌窗的真 —□✕ 与拖动手柄）全豁免，杜绝把真实窗控当假窗控聚组杀除（反馈问题1）。
-      additionalArguments: ['--fnos-shell', ...(__embedAuto ? ['--fnos-embed-style'] : []), '--fnos-app-window', ...(__xapp46 ? ['--fnos-xapp'] : [])],
+      additionalArguments: ['--fnos-shell', ...(__embedAuto ? ['--fnos-embed-style'] : []), '--fnos-app-window', ...(__xapp46 ? ['--fnos-xapp'] : []), ...(__isMusicNav76 ? ['--fnos-native-frame'] : [])],
       enableBlinkFeatures: 'CSSBackdropFilter',
       v8CacheOptions: 'bypassHeatCheckAndEagerCompile',
       // v1.76.0：应用窗口禁用硬件加速（软件渲染）。修复部分 Docker 应用

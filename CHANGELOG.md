@@ -3,6 +3,44 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：`主版本.次版本.修订号`。
 完整的安装包与发布说明见 [Releases](https://github.com/zhouchunwei513-cyber/fnos-desktop/releases)。
 
+## v4.0.78
+
+### 音乐窗根治：完全不做 body 几何调整 + 不注入自绘栏
+
+根因：应用窗 body transform 创建包含块 → 音乐页 fixed 播放条被下移 34px 被裁掉；
+自绘栏注入又造成顶部金色栏 + 底部白色边缘。
+
+修法（三处同判 `/music`）：
+1. build() 跳过自绘栏注入（防双重标题栏）；
+2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
+3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
+
+## v4.0.76
+
+### 音乐窗：系统原生标题栏（--fnos-native-frame）
+
+对 /music 的应用窗启用 frame:true + transparent:false，页面视口和浏览器一致。
+
+## v4.0.74
+
+### 音乐窗：顶部透明框 + 底部控制栏仍被裁（接 v4.0.73）
+
+- v4.0.73 的 `html{padding-top}` 方案会在窗口顶部留一条 padding 区，窗口透明时透出桌面 →「透明框」；
+- 改用 **`body{margin-top:41px; height:calc(100vh-41px)}`**：
+  - 不创建包含块 → `position:fixed; bottom:0` 的播放控制栏继续贴**视口底部**，完整可见；
+  - 内容整体下移 41px、高度扣掉 41px → 不溢出；
+  - 顶部 41px 由自绘标题栏覆盖，不再透出桌面。
+
+## v4.0.73
+
+### 飞牛音乐：底部播放条/列表底部被裁（浏览器正常）
+
+- 音乐 App 的播放条是 `position:fixed; bottom:0`；而应用窗标题栏让位用的是 **body transform**
+  （`transform` 会创建包含块，fixed 后代改为相对 body 定位）→ 播放条整体下移 41px，被窗口下沿裁掉；
+- 修法：音乐窗改用**第三方应用同款策略**——`html{padding-top:标题栏高}` 让位、
+  `body{height:100%}`，不做 transform → fixed 继续相对 viewport 定位，几何与浏览器一致；
+- 第三方应用（`--fnos-xapp`）本来就是这个策略，本次把 `/music` 也纳入。
+
 ## v4.0.72
 
 ### 页内窗自绘栏改为「覆盖式」，修应用底部被裁（飞牛音乐播放条只露一半）

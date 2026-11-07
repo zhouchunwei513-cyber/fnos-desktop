@@ -2669,17 +2669,12 @@ module.exports = function injectTitleBar(ctx) {
           (document.head || document.documentElement).appendChild(__sb);
         }
       } catch (_) {}
-      // v5.1.2（用户工单：整个窗口背后透出桌面/灰色底）——
-      // 实测 body 背景是 rgba(17,19,23,0.45)（半透明），窗口又透明 → 桌面透满整窗。
-      // 给 html 垫一层不透明深色底：body 的半透明色叠在它上面，结果不透明，同时不改变布局。
-      try {
-        if (__isAppWin && !document.getElementById('fnos-opaque-back')) {
-          const __ob = document.createElement('style');
-          __ob.id = 'fnos-opaque-back';
-          __ob.textContent = 'html{background:#14121b !important;}';
-          (document.head || document.documentElement).appendChild(__ob);
-        }
-      } catch (_) {}
+      // v5.1.7：v5.1.2 那条「给 html 垫 #14121b」已经删掉，两个原因（都实测过）：
+      //   ① 它把 __isAppWin 用在下面 const 声明之前 → TDZ 抛 ReferenceError，被 catch 吞掉，
+      //      从上线起就没执行过（实测页面里没有 #fnos-opaque-back 这个 style，html 底色仍是透明）；
+      //   ② 就算能执行也不对：根节点（html）自己的背景由 canvas 绘制，**不受 html:root 的
+      //      clip-path 裁剪** → 四角会被填成方块（v5.0.8 用户已经报过一次）。
+      // 现在改成「不透明底板」方案，见下面 __isAppWin 声明之后那段。
       const __padStyle = document.createElement('style');
       __padStyle.id = 'fnos-tb-content-offset';
       const __argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
@@ -2698,6 +2693,43 @@ module.exports = function injectTitleBar(ctx) {
       // v4.0.25：壳色只给自家页面。第三方/Docker 应用页绝不写 body 底色——
       // 「暗模式正常、亮模式黑底深字」就是这条 !important 深色常量造成的。
       const __shellBgCss25 = __fnIsThirdParty25 ? '' : ('background:' + __FN_SHELL_BG25 + ' !important;');
+      // v5.1.7（用户工单：标题栏左上/右上圆角处灰色小方块）——
+      // CDP 实测（单位机 v5.1.6，应用窗 /app/fn-deepseek-harness，可复现）：
+      //   ① `elementFromPoint(6,6)` 命中的那个「无 id 的 DIV」是**标题栏内部的透明控件容器**
+      //      （rect [4,0,52,34]，inline style 里只有 display:flex/padding-left，background 透明）——
+      //      命中结果只说明谁在最上层，不说明谁在画，按它找绘制者会走偏；
+      //   ② 该点像素 alpha=0：圆角外本来就什么都没画（露桌面，正常）；
+      //   ③ 真正发灰的是**窗口圆角内侧那圈细缝**：标题栏圆角楔形（y≈21..34、x≈0..10）、
+      //      标题栏与 body 之间 y=33 那条 1px 接缝、body 圆角内缘；实测像素
+      //      rgba(18,20,22,0.45) —— 只有一层 45% 的深色压着桌面；
+      //   ④ 这层「灰」没有对应元素，它是 **canvas 背景**：body 背景是
+      //      rgba(17,19,23,0.45)（DSH 皮肤的半透明底），html 背景全透明时会按 CSS 规范
+      //      「传播」到 canvas，于是整窗被涂一层 45% 深色（body 下移 34px 不影响 canvas）。
+      //      对照实验：body 背景改透明 → 细缝 alpha 归 0；html 或 body 改不透明 → 四角被填成
+      //      方块（canvas 底色不吃根节点 clip-path）。
+      // 修法：既然没有元素可裁，就给它盖一块**同样圆角**的不透明底板（真元素，可被裁剪）：
+      //   · position:fixed + inset 铺满视口 → 不受 body 下移/让位影响（隐藏态 --fnos-bar-h=0 也一样）；
+      //   · z-index 取最小：画在 canvas 之上、body 内容之下（body 有 transform 会自成层叠上下文，
+      //     应用自带的 z-index:-1 壁纸层因此仍在底板之上，不会被盖掉）；
+      //   · clip-path:inherit → 直接继承 html 的窗口圆角裁剪，窗口四角设置 / DPI 缩放 /
+      //     全屏时 html 的 clip-path:none 全部自动跟随，不用在这里再算一遍半径；
+      //   · pointer-events:none，纯背景层，不参与布局、不影响页面主体内容。
+      // 结果：圆角外仍是透明的（只露桌面，与其它窗口一致），圆角内那圈细缝被不透明底盖住，不再发灰。
+      if (__isAppWin) {
+        try {
+          let __bp = document.getElementById('fnos-win-backplate');
+          if (!__bp) {
+            __bp = document.createElement('div');
+            __bp.id = 'fnos-win-backplate';
+            __bp.setAttribute('aria-hidden', 'true');
+            (document.documentElement || document.body).appendChild(__bp);
+          }
+          __setCss(__bp, 'position:fixed;left:0;top:0;width:100%;height:100%;'
+            + 'pointer-events:none;-webkit-app-region:no-drag;z-index:-2147483647;'
+            + 'background:#14121b;background-image:none;'
+            + 'clip-path:inherit;-webkit-clip-path:inherit;');
+        } catch (_) {}
+      }
       if (__isSettings) {
         // 设置窗口（settings.html，不透明窗口）：标题栏 bar 占顶部 34px。
         // v2.15.56：改用 body transform 下移 34px（而非 padding-top）——padding-top 无法约束 fixed 元素

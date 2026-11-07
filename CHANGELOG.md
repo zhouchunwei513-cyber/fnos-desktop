@@ -15,6 +15,14 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.92
+
+### qBittorrent：底栏不再压住详情面板
+
+- `#desktopFooter` 是 absolute 不占布局，`#pageWrapper` 按 100% 撑满 → 面板最后几行被底栏盖住；
+- 修法：`#pageWrapper{height:calc(100% - 60px - 28px)}`（扣掉头部 60 + 底栏 28）；
+- 实测：pageWrapper 94..552、footer 552..580，两者严丝合缝。
+
 ## v4.0.91
 
 ### qBittorrent：滚动侧栏时底栏不再跟着走

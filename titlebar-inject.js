@@ -2494,6 +2494,10 @@ module.exports = function injectTitleBar(ctx) {
           // 我们第三方分支给 body 设了 overflow-y:auto → 滚侧栏时整个 body 一起滚，底部状态栏跟着走。
           // 用 :has() 只在「页面根就是 #desktop」时关掉 body 滚动，不影响其它第三方应用。
           'html:has(>body>#desktop)>body{overflow:hidden !important;}',
+          // v4.0.92（用户截图：底栏压住详情面板最后几行）：qBittorrent 的 #desktopFooter 是
+          // absolute 定位、不占布局，而 #pageWrapper 按 100% 撑满 → 面板底部被底栏盖住。
+          // 这里让 #pageWrapper 扣掉「头部 60px + 底栏 28px」，内容区正好停在底栏上方。
+          'html>body>#desktop>#pageWrapper{height:calc(100% - 60px - 28px) !important;}',
           // v4.0.11 CSS 兜底：Tailwind / 组件库常见的 fixed/sticky/absolute 贴顶类名，JS 接管前先让位
           // v4.0.14：补充 .absolute.top-0 / [class*="absolute-positioned"]（Naive UI n-layout--absolute-positioned）
           // v4.0.17（用户工单「新标签窗侧边栏少 4 项、直播观看页信息不全」根修）：

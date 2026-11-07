@@ -2457,7 +2457,12 @@ module.exports = function injectTitleBar(ctx) {
           '.music-player-glass{transform:scale(.8) !important;transform-origin:bottom center !important;}',
           // v4.0.86（用户要求）：保留应用窗 20px 圆角，只把音乐页自带 body 背景去掉（透明），
           // 圆角处露出的是窗口自身的深色底（v4.0.84 已设 #14121b），因此不会再有灰边/壁纸。
-          'html{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:#14121b !important;}',
+          // v4.0.89（用户要求：音乐窗四角都要圆）：用户「窗口四角」选的是**大半圆角**，
+          // 其定义是「上两角直角 + 下两角圆」——所以上面两角天生是方的。
+          // 音乐窗这里用更高优先级强制四角 20px（html:root:root 压过圆角模块的 html:root）。
+          'html:root:root{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;'
+            + '-webkit-clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:transparent !important;}',
+          'html:root:root>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:transparent !important;}',
           'html>body{background:transparent !important;}',
         ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {

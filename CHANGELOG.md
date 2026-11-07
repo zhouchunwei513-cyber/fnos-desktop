@@ -15,6 +15,16 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.96
+
+### 标题栏皮肤：等皮肤设置到位后补图（根因修复）
+
+- 实测：appview/内嵌窗的标题栏在「皮肤设置经 IPC 下发」之前就建好了，此时 `__skinState.skinDir`
+  为空 → `__loadSkinAsset` 返回空 → 退成 `rgba(12,16,30,.94)` 深色占位，之后再无人重刷
+  （实测 `#fnos-tb-bg` 只有底色、`backgroundImage:none`）；
+- 修法：占位后启动 300ms 轮询（最多 13 次 ≈ 4s），`skinDir` 一到就铺 `bg_alpha.webp`，
+  日志 `titlebar.skin.static.retry-ok`。
+
 ## v4.0.95
 
 ### 内嵌 appview 窗：套皮肤 + 内容让位

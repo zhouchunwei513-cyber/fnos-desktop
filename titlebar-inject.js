@@ -890,7 +890,34 @@ module.exports = function injectTitleBar(ctx) {
                 // 深色占位，等可见才解码视频；但部分窗口的 visibilitychange 不触发 → 一直是灰条。
                 // 这里先用皮肤自带静态图 bg_alpha.webp 顶上去（同一画面），可见后再升级成视频。
                 try {
+                  // v4.0.96（用户工单：内嵌/appview 窗标题栏一直是蓝灰条）：
+                  // 栏往往在「皮肤设置通过 IPC 下发」之前就建好了，此时 __skinState.skinDir 为空，
+                  // __loadSkinAsset 返回空 → 退成深色占位，之后没人重刷。
+                  // 这里先铺占位，同时轮询等 skinDir 到位后立刻补图（最多 ~4s）。
+                  const __applyStatic = function (fb) {
+                    try {
+                      if (!fb || !bgLayer) return false;
+                      bgLayer.style.backgroundImage = 'url(\'' + fb + '\')';
+                      bgLayer.style.backgroundSize = 'cover';
+                      bgLayer.style.backgroundPosition = 'center';
+                      bgLayer.style.backgroundColor = 'transparent';
+                      __tbLog('skin.static.retry-ok', { to: 'bg_alpha.webp' });
+                      return true;
+                    } catch (_) { return false; }
+                  };
                   const __fb0 = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
+                  if (!__fb0) {
+                    let __tries = 0;
+                    const __tik = setInterval(function () {
+                      try {
+                        __tries++;
+                        const d2 = String((__skinState && __skinState.skinDir) || '');
+                        const f2 = d2 ? __loadSkinAsset(d2, 'bg_alpha.webp') : '';
+                        if (f2 && __applyStatic(f2)) { clearInterval(__tik); return; }
+                        if (__tries >= 13) clearInterval(__tik);
+                      } catch (_) { try { clearInterval(__tik); } catch (_) {} }
+                    }, 300);
+                  }
                   if (__fb0) {
                     bgLayer.style.backgroundImage = 'url(\'' + __fb0 + '\')';
                     bgLayer.style.backgroundSize = 'cover';

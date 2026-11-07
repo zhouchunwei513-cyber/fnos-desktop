@@ -4630,6 +4630,23 @@ module.exports = function injectTitleBar(ctx) {
             hdr.setAttribute(MARK + '-hdr', '1');
             const bar = __buildBar(win, hdr);
             win.insertBefore(bar, win.firstChild);
+            // v4.0.71（用户工单：飞牛音乐底部播放条缺失，只有拖动标题栏才出现）：
+            // 自绘栏是"后插"进窗口的第一个子节点，窗口变矮了 36px；而很多应用（音乐/影视等）
+            // 的底部播放条是绝对定位、按加载时的容器尺寸算的，插入后不会自动重算 →
+            // 底部被顶出可视区。这里在插入后的几个时机主动派发 resize，逼页面重排一次；
+            // 同时给窗口根节点打一个属性，应用若监听 MutationObserver 也能感知。
+            try {
+              const __forceReflow = () => {
+                try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+                try { document.dispatchEvent(new Event('resize')); } catch (_) {}
+                try {
+                  win.querySelectorAll('iframe').forEach((f) => {
+                    try { f.contentWindow && f.contentWindow.dispatchEvent(new Event('resize')); } catch (_) {}
+                  });
+                } catch (_) {}
+              };
+              [0, 60, 220, 700].forEach((ms) => setTimeout(__forceReflow, ms));
+            } catch (_) {}
             try { ipcRenderer.send('fnos:media-log', { stage: 'inpage.bar', title: String(bar.textContent || '').slice(0, 24) }); } catch (_) {}
             // v4.0.46：窗口出现时若被摆到可视区外（飞牛的默认摆放会这样），夹回可视区。
             // 打开动画/布局要几帧才稳定，分两档补夹（只越界才动）。

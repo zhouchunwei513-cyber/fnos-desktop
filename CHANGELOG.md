@@ -15,6 +15,24 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.102
+
+### 标题栏静态底图改用 data:URL（blob 不渲染的最终解法）
+
+- 决定性与实验：同一 `#fnos-tb-bg` 图层，把背景改成纯红色 → **立刻显示红色**，
+  说明图层、尺寸、z-index、display 全部正常，问题在 **blob 图片解不出来**；
+- 修法：图片类素材一律生成 `data:<mime>;base64,…`（同步解码、无 blob 生命周期问题），
+  视频等非图片素材仍走 blob。
+
+## v4.0.101
+
+### 标题栏静态底图不复用 blob 缓存（修复「有 blob 却不渲染」）
+
+- 实测：同一窗口 `#fnos-tb-bg` 的 `backgroundImage` 是 `blob:…`、尺寸/display/cover 全对，
+  屏幕上却是灰色；把 `z-index` 从 -2 改 0 仍灰 → 排除层级，判定为**失效 blob 被复用**；
+- 同一皮肤在 Docker appview 窗显示正常，独立窗异常 → 印证「部分窗口复用到了失效 URL」；
+- 修法：`bg_alpha.*`/静态底图**不进 `__skinAssetCache`**，每次调用都重新 `URL.createObjectURL`。
+
 ## v4.0.100
 
 ### 应用窗标题栏皮肤：直接用静态图，不再解码视频

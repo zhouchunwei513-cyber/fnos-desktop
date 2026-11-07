@@ -665,14 +665,24 @@ module.exports = function injectTitleBar(ctx) {
         try { __stamp = __fs.statSync(p).mtimeMs || 0; } catch (_) {}
         const __ck = p + '|' + __stamp;
         const __hit = __skinAssetCache.get(__ck);
-        if (__hit) return __hit;
+        // v4.0.101（用户工单：appview/应用窗标题栏有 blob 却不渲染）：
+        // 实测图层 backgroundImage 是 blob:…、尺寸/display 都对，屏幕却是灰的；而同一皮肤在别的窗口正常。
+        // 说明是「复用了已失效的 blob URL」。静态底图（bg_alpha.*）一律不走缓存，每次重建 blob。
+        const __noCache = /bg_alpha|bg\.(png|jpg|jpeg|webp|gif)$/i.test(String(src || ''));
+        if (__hit && !__noCache) return __hit;
         const __t0 = Date.now();
         const buf = __fs.readFileSync(p);
         const ext = String(src).toLowerCase().split('.').pop();
         const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm' }[ext] || 'application/octet-stream';
-        const blob = new Blob([buf], { type: mime });
-        const __u = URL.createObjectURL(blob);
-        __skinAssetCache.set(__ck, __u);
+        // v4.0.102（实测定位）：同一图层把背景改成纯红色能立刻显示 → 图层没问题，
+        // 是 blob 图片解不出来（blob 在部分窗口里 createObjectURL 后不渲染）。
+        // 静态底图改用 data:URL（同步解码、无生命周期问题）。
+        let __u;
+        if (/^image\//i.test(mime)) {
+          try { __u = 'data:' + mime + ';base64,' + Buffer.from(buf).toString('base64'); } catch (_) { __u = null; }
+        }
+        if (!__u) { const blob = new Blob([buf], { type: mime }); __u = URL.createObjectURL(blob); }
+        if (!__noCache) __skinAssetCache.set(__ck, __u);
         __tbLog('skin.asset', { st: 'ok', src: String(src).slice(-28), size: buf.length, mime: mime, ms: Date.now() - __t0 });
         return __u;
       } catch (e) {

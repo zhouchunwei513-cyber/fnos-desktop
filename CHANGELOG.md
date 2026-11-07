@@ -15,6 +15,14 @@
 2. CSS 几何分支跳过 body transform/padding/margin（播放条贴视口底）；
 3. main.js 对 /music 用 frame:true 系统原生标题栏，transparent:false。
 
+## v4.0.100
+
+### 应用窗标题栏皮肤：直接用静态图，不再解码视频
+
+- 实测：应用窗（`--fnos-app-window` / appview）里 `bg.mp4` 解码失败率极高（code4），
+  `skin.applied kind=video` 但永远没有首帧 → 标题栏空条；静态图 `bg_alpha.webp` 则稳定可用；
+- 修法：应用窗一律用静态图，视频分支只留给主窗；日志 `titlebar.skin.appwin.static`。
+
 ## v4.0.99
 
 ### 标题栏皮肤：视频不出画面时看门狗换静态图

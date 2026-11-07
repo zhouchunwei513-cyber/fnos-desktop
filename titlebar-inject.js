@@ -878,6 +878,28 @@ module.exports = function injectTitleBar(ctx) {
         if (shapeLayer) { shapeLayer.style.display = 'none'; shapeLayer.style.backgroundImage = 'none'; shapeLayer.innerHTML = ''; }
         let hasBg = false;
         if (bg && bg.type && bg.type !== 'none') {
+          // v4.0.100（用户实测：应用窗里视频皮肤永远画不出首帧，静态图却正常）：
+          // 应用窗（--fnos-app-window / appview）一律直接用静态图 bg_alpha.webp，
+          // 不再尝试解码 bg.mp4——这些窗口里 code4 解码失败率极高，视频分支只会得到空图层。
+          let __appWinStatic = false;
+          try { __appWinStatic = (typeof process !== 'undefined' && Array.isArray(process.argv)
+            && (process.argv.indexOf('--fnos-app-window') >= 0 || process.argv.indexOf('--fnos-embed-style') >= 0)); } catch (_) {}
+          if (__appWinStatic) {
+            try {
+              const __sp = __loadSkinAsset(__skinState.skinDir, 'bg_alpha.webp');
+              if (__sp && bgLayer) {
+                bgLayer.style.backgroundImage = 'url(\'' + __sp + '\')';
+                bgLayer.style.backgroundSize = 'cover';
+                bgLayer.style.backgroundPosition = 'center';
+                bgLayer.style.backgroundRepeat = 'no-repeat';
+                bgLayer.style.backgroundColor = 'transparent';
+                bgLayer.style.display = 'block';
+                hasBg = true;
+                __tbLog('skin.appwin.static', { to: 'bg_alpha.webp' });
+                bg = { type: 'image', src: 'bg_alpha.webp' };
+              }
+            } catch (_) {}
+          }
           if (bg.type === 'video' && bg.src) {
             const url = __loadSkinAsset(__skinState.skinDir, bg.src);
             if (url && bgLayer) {

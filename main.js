@@ -3750,6 +3750,15 @@ async function __netSegProbe(rawUrl, opts) {
   else if (out.http && out.http.ok && Number(out.http.status) >= 400) out.verdict = 'http-' + out.http.status;
   else if (out.http && !out.http.ok) out.verdict = 'http-fail';
   else out.verdict = 'ok';
+  // 6.5) v5.1.14（工单 2/3/9：mac 上「Node 通、页面却打不开」）——
+  // 主进程 Node 直连全通、Chromium 侧仍报 -109/-118/-102 时，问题不在 DNS/TCP/TLS，
+  // 而在 Chromium 自己的网络栈（系统代理接管 / macOS 本地网络权限 / PNA）。
+  // 单列一个 verdict，避免日志里只看到 "verdict":"ok" 而无从判断。
+  if (out.verdict === 'ok' && o.chromiumError) {
+    out.verdict = 'chromium-blocked';
+    out.chromiumError = String(o.chromiumError).slice(0, 140);
+    out.hint = '主进程 Node 直连可达，但 Chromium 加载失败：多为系统代理接管 / macOS 本地网络权限 / PNA 拦截。';
+  }
   mklog('macdiag.net.verdict', out);
   return out;
 }
@@ -5045,7 +5054,15 @@ function normalizeServer(input) {
   // 明文 HTTP 打到 HTTPS 端口被 nginx 直接 400 拒绝（"不支持 HTTPS"错觉根源）。
   const tlsHint = /:(?:443|8443)(?:$|\/)/.test(raw);
   let u;
-  try { u = new URL(`${tlsHint ? 'https' : 'http'}://${raw}`); } catch (_) { throw new Error('服务器地址格式不正确'); }
+  try { u = new URL(`${tlsHint ? 'https' : 'http'}://${raw}`); } catch (e) {
+    // v5.1.14（工单 9：DDNS IPv6 登录不了）——从 NAS 页面复制出来的 IPv6 常常不带方括号
+    // （如 2409:8a00:xxxx::1）。WHATWG URL 要求 IPv6 必须写成 [v6]，旧实现直接报
+    // 「服务器地址格式不正确」，用户看到的就是「IPv6 地址登录不进去」。
+    // 这里只在形如 IPv6（纯十六进制+冒号，且至少两段）时补方括号重试，域名/IPv4:端口不受影响。
+    const looksV6 = /^[0-9a-f:]+$/i.test(raw) && raw.split(':').length >= 3 && raw.charAt(0) !== '[';
+    if (!looksV6) throw new Error('服务器地址格式不正确');
+    try { u = new URL(`${tlsHint ? 'https' : 'http'}://[${raw}]`); } catch (_) { throw e; }
+  }
   // 注意：URL 会吞掉默认端口（https:443 → port 为空），仅非 TLS 提示且确实无端口时才补 5666
   if (!u.port && !tlsHint) u.port = '5666';
   return { origin: u.origin, href: u.toString(), isFnId: false };
@@ -5122,6 +5139,11 @@ async function __resolveServerScheme(input) {
 // 共用同一份 cookie、localStorage，实现一次登录全模块互通、重启自动恢复登录态。
 const SHARED_PARTITION = 'persist:fnos-shared';
 
+// v5.1.14（工单 3/6）：partition 名 → 原始 key，用于检测「两个不同账号撞进同一个分区」。
+// 24 字符截断下 FNID 的 key 前缀 "https___fnos_net_" 已占 18 字符，只剩 6 个字符参与区分，
+// 两个 FNID 前 6 位相同就会共享 Cookie/票据（表现为切换/登录后被踢回连接页）。
+// 这里先只做检测 + 日志（不改变既有命名，避免升级后老会话全部失效）；日志确认命中后再改命名。
+const __partOwner56 = new Map();
 function partitionForServer(parsed) {
   // v2.0.0：多账号支持——每个 NAS 服务器地址使用独立 partition，
   // 确保多个 NAS 账号的登录态互不干扰、可同时保持在线。
@@ -5130,7 +5152,17 @@ function partitionForServer(parsed) {
   if (parsed && (parsed.origin || parsed.href)) {
     const key = (parsed.isFnId && (parsed.baseHref || parsed.href)) ? (parsed.baseHref || parsed.href) : (parsed.origin || parsed.href);
     const hash = String(key).replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').slice(0, 24);
-    return 'persist:nas-' + hash;
+    const name = 'persist:nas-' + hash;
+    try {
+      const prev = __partOwner56.get(name);
+      if (prev === undefined) {
+        __partOwner56.set(name, String(key));
+        try { mklog('macdiag.partition.map', { name, key: String(key).slice(0, 120), fnid: !!(parsed && parsed.isFnId) }); } catch (_) {}
+      } else if (prev !== String(key)) {
+        try { mklog('macdiag.partition.collision', { name, prev: String(prev).slice(0, 120), cur: String(key).slice(0, 120), fnid: !!(parsed && parsed.isFnId) }); } catch (_) {}
+      }
+    } catch (_) {}
+    return name;
   }
   return SHARED_PARTITION;
 }
@@ -10518,10 +10550,14 @@ function __armBlackScan(win, tag) {
           try { require('./logger.js').log('info', 'window', 'black-scan.check', { params: { tag: String(tag || ''), ms: __ms, black, white, empty: !bmp, consecutive: __confirmed, heals: win.__fnBlackHeals } }, __RUN_MODE); } catch (_) {}
           if (__confirmed && !win.isDestroyed() && win.__fnBlackHeals < 3) { // v2.15.36 增加白屏检测；v2.8.0 r28（合并到 5 档快检）单窗自愈上限 2→3
             win.__fnBlackHeals++;
+            // v5.1.14（mac 红绿灯）：全屏态（含 mac 原生全屏）绝不能做 bounds 抖动——
+            // macOS 会把 setBounds 当成「退出全屏 / 破坏 Space」，自愈反而把用户踹出全屏。
             try {
-              const b = win.getBounds();
-              win.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height });
-              setImmediate(() => { try { if (!win.isDestroyed()) win.setBounds(b); } catch (_) {} });
+              if (!__isFsOn(win)) {
+                const b = win.getBounds();
+                win.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height });
+                setImmediate(() => { try { if (!win.isDestroyed()) win.setBounds(b); } catch (_) {} });
+              }
             } catch (_) {}
             try { win.webContents.executeJavaScript('(function(){try{window.dispatchEvent(new Event("resize"));}catch(_){}})()').catch(() => {}); } catch (_) {}
             try { win.webContents.reload(); } catch (_) {}
@@ -10890,10 +10926,14 @@ function __restoreMainHome(reason, force) {
     try { if (mainWindow.isMinimized()) mainWindow.restore(); } catch (_) {}
     try { mainWindow.show(); } catch (_) {}
     // 防黑屏重绘组合拳：bounds 微抖动触发 DWM 合成器重建合成表面 + 页面强制 reflow + resize
+    // v5.1.14（mac 红绿灯）：全屏态跳过 bounds 抖动（macOS 会因此退出全屏/破坏 Space），
+    // 只保留后面的 reflow + resize。
     try {
-      const b = mainWindow.getBounds();
-      mainWindow.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height });
-      setImmediate(() => { try { if (!mainWindow.isDestroyed()) mainWindow.setBounds(b); } catch (_) {} });
+      if (!__isFsOn(mainWindow)) {
+        const b = mainWindow.getBounds();
+        mainWindow.setBounds({ x: b.x + 1, y: b.y, width: b.width, height: b.height });
+        setImmediate(() => { try { if (!mainWindow.isDestroyed()) mainWindow.setBounds(b); } catch (_) {} });
+      }
     } catch (_) {}
     try {
       mainWindow.webContents.executeJavaScript('(function(){try{if(document.body){var d=document.body.style.display;document.body.style.display="none";void document.body.offsetHeight;document.body.style.display=d;}window.dispatchEvent(new Event("resize"));}catch(_){}})()').catch(() => {});
@@ -11972,7 +12012,7 @@ function createMainWindow(partition, loadTarget) {
           // macOS「本地网络权限」被拒时不再把用户踢回连接页（踢回去也没用，重登一样失败）。
           (async () => {
             let seg = null;
-            try { seg = await __netSegProbe(failUrl, { partition: currentPartition, tcpTimeout: 3000 }); } catch (_) {}
+            try { seg = await __netSegProbe(failUrl, { partition: currentPartition, tcpTimeout: 3000, chromiumError: errorCode + ' ' + errorDesc }); } catch (_) {}
             const verdict = (seg && seg.verdict) || '';
             mklog('macdiag.net.nav-giveup', { url: String(failUrl).slice(0, 160), code: errorCode, verdict });
             if (verdict === 'mac-local-network-permission') {
@@ -12240,7 +12280,7 @@ try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_)
       //   dns 失败（地址写错）→ 老行为回连接页（这里确实需要用户改地址）
       (async () => {
         let seg = null;
-        try { seg = await __netSegProbe(loadTarget.href, { partition: currentPartition, tcpTimeout: 3000 }); } catch (_) {}
+        try { seg = await __netSegProbe(loadTarget.href, { partition: currentPartition, tcpTimeout: 3000, chromiumError: __msg }); } catch (_) {}
         const verdict = String((seg && seg.verdict) || '');
         mklog('macdiag.net.createmain-fail', { url: String(loadTarget.href).slice(0, 160), verdict, cur: __cur.slice(0, 120), err: __msg.slice(0, 140) });
         try {
@@ -12659,7 +12699,7 @@ function doConnectTo(serverInput) {
       // 单一错误码分不清 DNS/TCP/TLS/Cookie/系统权限 —— 这里落 macdiag.net.* 全套证据。
       (async () => {
         let seg = null;
-        try { seg = await __netSegProbe(parsed.href, { partition: currentPartition, tcpTimeout: 3000 }); } catch (_) {}
+        try { seg = await __netSegProbe(parsed.href, { partition: currentPartition, tcpTimeout: 3000, chromiumError: String((e && e.message) || e) }); } catch (_) {}
         const verdict = (seg && seg.verdict) || '';
         let cur = '';
         try { cur = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.getURL()) || ''); } catch (_) {}
@@ -20032,9 +20072,16 @@ function createLiveWindow(autoplayChannel) {
         if (__isFsOn(liveWindow)) { __exitFullScreenWin(liveWindow); event.preventDefault(); }
         else if (__maxOn(liveWindow)) { __toggleMaxWin(liveWindow); event.preventDefault(); }
       });
-      liveWindow.on('enter-full-screen', () => __applyFsFor(liveWindow, true));
+      liveWindow.on('enter-full-screen', () => {
+        __applyFsFor(liveWindow, true);
+        try { __fsEnterAtMap.set(liveWindow, Date.now()); } catch (_) {}
+      });
       // 与主窗同样的守护：状态机仍认为全屏（只有 ESC/F11 会改状态）时被系统打断就重新进全屏
       liveWindow.on('leave-full-screen', () => {
+        // v5.1.14（mac 红绿灯）：macOS 原生全屏有独立 Space，不存在「被别的窗口抢前台打断」，
+        // 而退出瞬间 isFullScreen() 可能仍为 true → 旧守护会立刻 setFullScreen(true) 弹回全屏，
+        // 用户表现就是「直播窗点绿钮还原不了」。darwin 上直接按用户主动退出收尾。
+        if (process.platform === 'darwin') { __applyFsFor(liveWindow, false); return; }
         try {
           if (__isFsOn(liveWindow)) {
             const __n = (liveWindow.__fsLeaveGuard46 || 0) + 1;

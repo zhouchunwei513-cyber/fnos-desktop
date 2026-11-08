@@ -692,7 +692,11 @@ function destroyHls() {
 async function macPickPlayableUrl(ch) {
   try {
     if (!api || api.platform !== 'darwin') return ch.url;
-    if (!/\/\/(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ch.url)) return ch.url;
+    // v5.1.14（工单 7）：除私网 IPv4，也覆盖 IPv6 本地地址——fe80::/10、fc00::/7（ULA）、::1。
+    // macOS 的 Chromium 对「本地网络地址」同样拦截（Local Network Access），IPv6 内网源会同样黑屏。
+    const __priv4 = /\/\/(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ch.url);
+    const __priv6 = /\/\/\[?(?:fe80:|f[cd][0-9a-f]{2}:|::1)/i.test(ch.url);
+    if (!__priv4 && !__priv6) return ch.url;
     // 关键：换线路必须换「主机」（LAN 主机在渲染进程被 PNA 拦），
     // 所以直接向各线路要播放列表，按频道名找到同一频道的真实地址再测。
     for (const line of ['frp', 'ipv6']) {

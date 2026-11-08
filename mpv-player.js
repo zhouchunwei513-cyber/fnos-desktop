@@ -708,7 +708,10 @@ class MpvPlayer extends EventEmitter {
     // 而不是很快放弃触发"提前 EOF"。
     // 注意：reconnect_on_http_error 的值(如 4xx,5xx)含逗号，会被 mpv 当成 demuxer-lavf-o 的
     // 选项分隔符，这里不传（默认已覆盖 404/429/500/503）。其余键值用逗号分隔即可。
-    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
+    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8'
+      // v5.0.9（回归修复）：v5.0.3 的 --hls-live-edge / --demuxer-lavf-o-add 在该 mpv 构建里是未知选项
+      // → mpv 解析失败即 exit 1（用户实测：点 MPV 播放起不来）。改为把直播起点合进 ffmpeg 侧选项。
+      + (opts.isLive ? ',live_start_index=-1' : ''));
 
     // 形态 A：mpv 原生无边框窗口，覆盖在应用视频区（fntv 同款，最稳，OSC/拖动/键盘全可用）
     //   geometry 使用【屏幕物理像素】坐标（与 Electron getContentBounds()*scaleFactor 一致）。
@@ -776,10 +779,6 @@ class MpvPlayer extends EventEmitter {
     // 直播多为 HLS 滚动窗口（窗口常 10~15s）。流 EOF/重连后若不指定起点，mpv 会从
     // 播放列表**头部**（窗口最老的那一段）开始 → 视觉上就是把最近十几秒又放了一遍。
     // 这里把起点钉在"距直播边缘 1 段"，重连后直接接最新内容。
-    if (opts.isLive) {
-      args.push('--hls-live-edge=1');
-      args.push('--demuxer-lavf-o-add=live_start_index=-1');
-    }
 
     // 网络健壮性（直播长时间运行易遇运营商断流/抖动，放宽超时）
     args.push('--network-timeout=120');

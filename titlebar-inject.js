@@ -2703,10 +2703,29 @@ module.exports = function injectTitleBar(ctx) {
       // v4.0.76：音乐窗用系统原生标题栏（--fnos-native-frame），不再注入自绘栏
       const __isNativeFrame76 = __argv.indexOf('--fnos-native-frame') >= 0;
       const __isSettings = (!__isAppWin && __argv.indexOf('--fnos-shell') < 0); // 设置窗口：无 --fnos-shell 也无 --fnos-app-window（不透明窗口，独立布局）
-      const __gifBg = 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;';
+      // ===== v5.1.17（mac 用户工单：拖动窗口就出现白块）根修 =====
+      // 根因：macOS 上本项目 13 处 BrowserWindow 全都是「不透明窗」（transparent:false +
+      // backgroundColor:#14121b）——窗口本身没有 alpha，但页面里还留着两处透明：
+      //   ① html 的「透明 GIF 守卫」（本意是 Windows 上让标题栏透出桌面壁纸）→ 顶部标题栏
+      //      预留条（34px）整条是 alpha=0，什么都没画；
+      //   ② body 的壳色是半透明 / 四角 clip-path 之外也是 alpha=0。
+      // 静止时这两处由窗口服务器的窗口底色 #14121b 兜底，看起来正常；一旦窗口被拖动
+      // （原生拖动 + 主进程 setBounds 逐帧移动），窗口内容重新合成，未绘制区只能由窗口服务器
+      // 补默认底色——mac 上补出来的是白色，于是「拖一下就白、停止拖动后仍在」（只有重启窗口
+      // 才重新出一次完整页面）。CDP 实测（改前，拖动中截图）：顶部预留条 0~30 设备像素
+      // 100% alpha=0（a_min=0/a_mean=0），四角像素 (0,0,0,0)，全帧 alpha=0 占 4.88%。
+      // 修法：mac 上把 html/body 全部改成实色 #14121b，页面里不再存在任何 alpha=0 的像素；
+      // Windows 一行不动（仍透明 + 磨砂自绘，透出桌面壁纸的效果完全保留）。
+      const __MAC_SOLID_BG = '#14121b';
+      const __gifBg = isMac
+        ? ('background-color:' + __MAC_SOLID_BG + ' !important;background-image:none !important;')
+        : 'background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7") !important;background-color:transparent !important;';
+      // v5.1.17：mac 上「透明界面」滑块无法真的透明（窗口本身不透明），留着只会把 body 写回
+      // 半透明 → 又给白块留出 alpha 通道。mac 一律用实色。
+      const __solidOnMac = isMac ? ('background:' + __MAC_SOLID_BG + ' !important;') : 'background:transparent !important;';
       // v4.0.25：壳色只给自家页面。第三方/Docker 应用页绝不写 body 底色——
       // 「暗模式正常、亮模式黑底深字」就是这条 !important 深色常量造成的。
-      const __shellBgCss25 = __fnIsThirdParty25 ? '' : ('background:' + __FN_SHELL_BG25 + ' !important;');
+      const __shellBgCss25 = __fnIsThirdParty25 ? '' : ('background:' + (isMac ? __MAC_SOLID_BG : __FN_SHELL_BG25) + ' !important;');
       if (__isSettings) {
         // 设置窗口（settings.html，不透明窗口）：标题栏 bar 占顶部 34px。
         // v2.15.56：改用 body transform 下移 34px（而非 padding-top）——padding-top 无法约束 fixed 元素
@@ -2717,13 +2736,14 @@ module.exports = function injectTitleBar(ctx) {
         // v2.18.0 曾为了与标题栏 bar 的 10px 同比例收到 10px，实测观感偏方，现按用户回归 20px。
         __padStyle.textContent = 'html{overflow:hidden !important;' + __gifBg + '}' +
           'html>body{transform:translateY(var(--fnos-bar-h, 34px)) !important;height:calc(100vh - var(--fnos-bar-h, 34px)) !important;min-height:0 !important;max-height:calc(100vh - var(--fnos-bar-h, 34px)) !important;box-sizing:border-box !important;overflow-y:auto !important;padding-top:0 !important;margin:0 !important;clip-path:inset(0 round 20px) !important;' + __shellBgCss25 + '}' +
-          (__fnIsThirdParty25 ? '' : 'html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}');
+          (__fnIsThirdParty25 || isMac ? '' : 'html.fnos-ui-transparent>body{background:rgba(5,6,10,var(--fnos-ui-a,.38)) !important;}');
       } else if (__isAppWin && /\/music(\/|\?|$)/i.test(String(location.href || ''))) {
         // v4.0.79（用户：播放条被裁+偏大）：播放条是 position:absolute bottom:0（相对 body padding box）。
         // 用 padding-top+border-box 让 body 总高 = 视口高，padding box 底 = 视口底 → 播放条贴底完整可见。
         // 不用 transform/margin/height（任一改动都会让播放条错位）。自绘栏在 build() 入口跳过。
         __padStyle.textContent = [
-          'html{overflow:hidden !important;}',
+          // v5.1.17：mac 上实色（见 __MAC_SOLID_BG 注释），Windows 保持透明
+          'html{overflow:hidden !important;background:' + (isMac ? __MAC_SOLID_BG : 'transparent') + ' !important;}',
           'html>body{padding-top:var(--fnos-bar-h, 34px) !important;height:100vh !important;',
           '  box-sizing:border-box !important;overflow:hidden !important;margin:0 !important;}',
           // v4.0.82（用户工单：播放条仍被底部裁 18px）：body 让位 34px 后，#root 仍按 100vh=800 排，
@@ -2739,9 +2759,9 @@ module.exports = function injectTitleBar(ctx) {
           // 其定义是「上两角直角 + 下两角圆」——所以上面两角天生是方的。
           // 音乐窗这里用更高优先级强制四角 20px（html:root:root 压过圆角模块的 html:root）。
           'html:root:root{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;'
-            + '-webkit-clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:transparent !important;}',
-          'html:root:root>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;background:transparent !important;}',
-          'html>body{background:transparent !important;}',
+            + '-webkit-clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;' + __solidOnMac + '}',
+          'html:root:root>body{clip-path:inset(0 round calc(20px / var(--fnos-f, 1))) !important;' + __solidOnMac + '}',
+          'html>body{' + __solidOnMac + '}',
         ].join('');
       } else if (__isAppWin && __argv.indexOf('--fnos-xapp') >= 0) {
         // v4.0.73（用户工单：飞牛音乐底部播放条/列表底部被裁）：

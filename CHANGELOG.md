@@ -1,3 +1,12 @@
+## v5.1.3
+
+### macOS：移除 mpv 不支持的窗口定位命令
+
+- 实测 mac 上 mpv 日志每帧刷 `Command 'window-move'/'window-resize' not found`（macOS 构建没有这两个命令），
+  定位完全无效且污染日志；
+- 修法：删除 darwin 分支里的这两条命令，定位统一走 `set_property geometry`（WxH+X+Y）+ `window-*` 属性；
+- 实测：直播 MPV 播放正常（980x730 窗口、960x540 画面渲染），日志不再刷命令错误。
+
 ## v5.1.2
 
 ### macOS：只发 dmg（不发 zip）+ mpv 目录名兼容

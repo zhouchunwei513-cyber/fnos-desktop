@@ -1608,11 +1608,9 @@ class MpvPlayer extends EventEmitter {
             .catch(() => { done++; if (done === props.length) this._winPropsOk = ok > 0; });
         }
       }
-      // v2.15.4：macOS 加固运行时重定位（mach 构建对属性支持不一，多通道下发提高命中率）
-      if (process.platform === 'darwin') {
-        try { this.command(['window-move', x, y]).catch(() => {}); } catch (_) {}
-        try { this.command(['window-resize', w, h]).catch(() => {}); } catch (_) {}
-      }
+      // v5.1.3（mac 实测）：macOS 上 mpv 构建没有 window-move / window-resize 命令，
+      // 每次几何更新都刷两行 "Command not found" 且完全不生效 → 直接删掉，
+      // 定位改由上面的 set_property geometry（WxH+X+Y）+ window-* 属性完成。
       // v2.15.90：窗口几何变化（缩放跟随）后，按新窗口比例重算 cover 缩放，保证 resize 后仍贴合
       if (this._videoW && this._videoH) this._applyCoverZoom(this._videoW, this._videoH);
       // v2.24.0：圆角立即重裁（旧版依赖 _scheduleCorners 的 300ms debounce + 每次重新编译 C#，

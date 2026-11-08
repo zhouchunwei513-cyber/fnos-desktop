@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "5.1.0",
+  "version": "5.1.1",
   "description": "FNOS Desktop Client",
   "main": "main.js",
   "author": "FNOS",
@@ -134,7 +134,13 @@
       "extendInfo": {
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": true
-      }
+      },
+      "extraResources": [
+        {
+          "from": "build/mac-mpv",
+          "to": "mpv"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

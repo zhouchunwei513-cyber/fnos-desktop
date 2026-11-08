@@ -1,3 +1,14 @@
+## v5.1.1
+
+### macOS：内置 mpv 运行时（CI 打包）
+
+- 背景：macOS 27 属 Homebrew Tier 3，`brew install mpv` 无 bottle、源码依赖下载失败 → 本机装不了；
+- 方案：CI 的 mac job（macOS 15 runner）`brew install mpv` 后，用 `build/mac-bundle-mpv.sh` 把它打成
+  最小 `mpv.app`（启动脚本 + 真实二进制 + 递归收集的 dylib），经 `build.mac.extraResources`
+  随包分发到 `Contents/Resources/mpv/<arch>/mpv.app`；
+- 客户端 `findMpvExe()` 已按该路径探测（阶段一就写好了），探测不到再回退系统 mpv / 自定义路径；
+- 跨架构 job（x64 跑在 arm64 runner）自动跳过打包，避免打进错误架构的二进制。
+
 ## [未发布] macOS 移植 · 阶段一（构建 + 启动 + 标题栏与红绿灯并存）
 
 > 本轮不改 `package.json.version`（仍 5.0.16）、不部署、不推 GitHub；只做 Linux 环境可自检的部分。

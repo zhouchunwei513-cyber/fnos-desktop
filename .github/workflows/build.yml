@@ -208,6 +208,9 @@ jobs:
       - name: 生成 macOS 图标（sips + iconutil → build/icons/icon.icns）
         run: bash build/make-icns.sh
 
+      - name: 打包 mpv 运行时（Homebrew → 最小 .app，随包分发）
+        run: bash build/mac-bundle-mpv.sh ${{ matrix.arch }}
+
       - name: Build macOS ${{ matrix.arch }}（dmg + zip）
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'

@@ -567,7 +567,7 @@ function setPh(title, sub, isErr, loading) {
   $('#phTitle').textContent = title;
   $('#phSub').textContent = sub || '';
   $('#phSub').className = 'sub' + (isErr ? ' err' : '');
-  try { if (api && api.platform === 'darwin') { const b = document.getElementById('extBtn'); if (b) b.style.display = 'none'; } } catch (_) {}
+  try { if (api && api.platform === 'darwin') { const b = document.getElementById('extBtn'); if (b) b.style.display = ''; } } catch (_) {}
   $('#phSpin').style.display = loading ? 'block' : 'none';
   $('#placeholder').style.display = title ? 'flex' : 'none';
 }
@@ -1150,7 +1150,7 @@ async function init() {
         const r = videoEl.getBoundingClientRect();
         return clampRect(r.left, r.top, r.width, r.height);
       })();
-      const res = await api.mpvEmbed({ url, title, isLive: true, scope: 'live', rect, origin: location.origin });
+      const res = await api.mpvEmbed({ url, title, isLive: true, scope: 'live', rect, origin: location.origin, allowMac: true });
       if (res && res.ok) {
         setPh('已用 MPV 应用内播放', '频道：' + name + '（HEVC/4K 兼容）', false, false);
         try { api.liveLog('info', 'mpv.click', { ch: name }); } catch (_) {}

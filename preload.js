@@ -1476,6 +1476,7 @@ contextBridge.exposeInMainWorld('fnos', {
         try { restoreVideoDisplay(); } catch (_) {}
         return false;
       }
+      // mac 上想用 MPV 时（影视页显式设置或 payload.allowMac），继续走 MPV
       log('embed.invoke', { source: direct.source, url: direct.url.slice(0, 96) });
       try {
         const __r27 = await ipcRenderer.invoke('mpv:embed', payload);

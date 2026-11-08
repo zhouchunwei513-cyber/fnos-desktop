@@ -4514,7 +4514,7 @@ function __createMenuPopupWindow() {
       width: __menuLastSize.w, height: __menuLastSize.h,
       show: false,
       frame: false,
-      transparent: true,
+      transparent: process.platform !== 'darwin',
       backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
       // 菜单弹窗是 frame:false 的贴边浮层，两个平台都保持直角（macOS 上也不要系统圆角，
       // 否则弹出的自定义菜单会凭空多出一圈圆角/阴影）。
@@ -5763,7 +5763,7 @@ function showDownloadProgress(item, finalPath, tmpPath) {
     minWidth: 480,
     minHeight: 200,
     frame: false,
-    transparent: true,
+    transparent: process.platform !== 'darwin',
     resizable: true,
     minimizable: false,
     maximizable: false,
@@ -6156,7 +6156,7 @@ function showGlassDialog(parent, options = {}) {
       maximizable: false,
       fullscreenable: false,
       frame: false,
-      transparent: true,
+      transparent: process.platform !== 'darwin',
       modal: false,
       parent: undefined,
       // v3.0.30（问题1）：更新提示等对话框不再强制置顶——用户反馈"前置等级太高"，
@@ -6296,7 +6296,7 @@ function createLockWindow(mode /* 'unlock' | 'setup' | 'change' */ = 'unlock') {
   lockWindow = new BrowserWindow({
     x, y, width: sw, height: sh,
     frame: false,
-    transparent: true,
+    transparent: process.platform !== 'darwin',
     resizable: false,
     movable: false,
     minimizable: false,
@@ -6997,7 +6997,7 @@ function registerWindow(win, opts = {}) {
           // --fnos-app-window 旗标把它判成「设置窗」分支：html 不透明、body 铺 #05060a，
           // 于是标题栏那条透明栏透出的就是窗口底色——一条黑色横条，和影视（走
           // createAppWindow，透明窗 + 应用窗分支）的透明标题栏完全两个样子。
-          transparent: true,
+          transparent: process.platform !== 'darwin',
           backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
           roundedCorners: __ROUNDED_CORNERS,
           autoHideMenuBar: true,
@@ -12967,7 +12967,7 @@ function buildMenuTemplate() {
             // v2.18.0: 帮助窗改为透明窗——窗口本体仍是矩形，四角 R 角由页面 clip-path 绘制。
             // 帮助窗与偏好设置窗都走 titlebar-inject 的"设置窗口"分支，圆角半径与标题栏同比例。
             // 原来的不透明底色会让四角露出窗口背景，圆角逻辑对不对都看不出来。
-            transparent: true,
+            transparent: process.platform !== 'darwin',
             roundedCorners: __ROUNDED_CORNERS,
             backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
             icon: ICON_PATH,
@@ -15924,7 +15924,7 @@ function __showUpdChecking() {
   const win = new BrowserWindow({
     width: w, height: h,
     x: Math.round((wa.width - w) / 2), y: Math.round((wa.height - h) / 2),
-    frame: false, transparent: true, resizable: false, minimizable: false,
+    frame: false, transparent: process.platform !== 'darwin', resizable: false, minimizable: false,
     maximizable: false, fullscreenable: false, skipTaskbar: true,
     // v3.0.24（用户反馈：检查更新提示框前置等级太高，要按正常逻辑）——不再系统级置顶，
     // 只靠 mpv 降层 + 正常 z-order 浮在程序窗之上，不压其它程序。
@@ -15978,7 +15978,7 @@ function __showUpdProgress(ver) {
   const win = new BrowserWindow({
     width: w, height: h,
     x: Math.round((wa.width - w) / 2), y: Math.round((wa.height - h) / 2),
-    frame: false, transparent: true, resizable: false, minimizable: false,
+    frame: false, transparent: process.platform !== 'darwin', resizable: false, minimizable: false,
     maximizable: false, fullscreenable: false, skipTaskbar: true,
     alwaysOnTop: false, show: false, hasShadow: true, icon: ICON_PATH, // v3.0.24：用户反馈层级过高，改普通层级
     backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
@@ -19629,7 +19629,7 @@ function createLiveWindow(autoplayChannel) {
       width: 1280, height: 820, minWidth: 960, minHeight: 600,
       title: APP_NAME + ' · 电视直播',
       backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
-      transparent: true, // v2.15.25: live window transparent (titlebar shows desktop)
+      transparent: process.platform !== 'darwin', // v2.15.25: live window transparent (titlebar shows desktop)
     roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
       // v2.15.0：macOS 用原生标题栏（红绿灯），Windows 保持自绘无边框
       frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -21429,10 +21429,12 @@ async function embedMpvPlay(hostWin, payload) {
     dlog('warn', 'mpv.embed.skip', { reason: 'platform-or-module', platform: process.platform, hasSurface: !!MpvSurfaceMod, hasPlayer: !!MpvPlayerMod });
     return { ok: false, reason: 'MPV 仅支持 Windows/macOS 且模块已加载' };
   }
-  // v5.1.6（用户决策 A）：macOS 不接管播放，统一走网页 HTML5/hls.js。
-  if (process.platform === 'darwin') {
+  // v5.1.13（用户工单：mac 上 MPV 播放按钮被我误删，影视 MPV 也失效）——
+  // 修正：mac 不自动接管（默认 HTML5，跟随主窗），但保留【手动 MPV】通道。
+  // 调用方（live.html「🎬 MPV 打开」按钮 / 影视页显式请求）传 allowMac=true 时，mac 也走 MPV。
+  if (process.platform === 'darwin' && !(payload && payload.allowMac)) {
     try { dlog('info', 'mpv.embed.skip', { reason: 'mac-html5-first' }); } catch (_) {}
-    return { ok: false, reason: 'macOS 上已改为 HTML5 播放（MPV 覆盖窗无法跟随主窗）' };
+    return { ok: false, reason: 'macOS 默认 HTML5 播放（如需 MPV 请点「🎬 MPV 打开」）' };
   }
   let exePath = MpvPlayerMod.getMpvExe();
   if (!exePath) {

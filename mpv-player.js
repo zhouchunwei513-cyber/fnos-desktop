@@ -24,9 +24,13 @@ function findMpvExe() {
   if (process.resourcesPath) {
     if (isMac) {
       // 内置 mpv.app（macOS，按 CPU 架构选 arm64/x64）
-      const arch = process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64';
-      candidates.push(path.join(process.resourcesPath, 'mpv', arch, 'mpv.app', 'Contents', 'MacOS', 'mpv'));
-      candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'mpv', arch, 'mpv.app', 'Contents', 'MacOS', 'mpv'));
+      // v5.1.2：CI 产出的目录名是 arm64/x64，历史代码写的是 mac-arm64/mac-x64 → 两套都试
+      const archA = process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64';
+      const archB = process.arch === 'arm64' ? 'arm64' : 'x64';
+      for (const arch of [archB, archA]) {
+        candidates.push(path.join(process.resourcesPath, 'mpv', arch, 'mpv.app', 'Contents', 'MacOS', 'mpv'));
+        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'mpv', arch, 'mpv.app', 'Contents', 'MacOS', 'mpv'));
+      }
     } else {
       candidates.push(path.join(process.resourcesPath, 'mpv', 'mpv.exe'));
       candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'mpv', 'mpv.exe'));

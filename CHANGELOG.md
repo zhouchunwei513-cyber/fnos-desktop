@@ -1,3 +1,11 @@
+## v5.1.2
+
+### macOS：只发 dmg（不发 zip）+ mpv 目录名兼容
+
+- 打包目标去掉 zip，只保留 dmg（arm64 / x64）；CI 校验、artifact、Release 上传同步改为只认 dmg；
+- `findMpvExe()` 兼容 CI 实际产出的目录名（`mpv/arm64/…`）与历史命名（`mpv/mac-arm64/…`）；
+- 实测：mac 上点「🎬 MPV 打开」用内置 mpv 播放直播，日志显示 980x730 窗口、960x540 画面正常渲染。
+
 ## v5.1.1
 
 ### macOS：内置 mpv 运行时（CI 打包）

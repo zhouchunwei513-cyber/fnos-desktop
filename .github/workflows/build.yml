@@ -220,11 +220,9 @@ jobs:
         run: |
           arch='${{ matrix.arch }}'
           dmg=$(ls dist/FNOS-*-mac-${arch}.dmg 2>/dev/null | head -1 || true)
-          zip=$(ls dist/FNOS-*-mac-${arch}.zip 2>/dev/null | head -1 || true)
           [ -n "$dmg" ] || { echo "::error::未找到 ${arch} dmg 产物"; exit 1; }
-          [ -n "$zip" ] || { echo "::error::未找到 ${arch} zip 产物"; exit 1; }
-          # 安装包体积下限只防「空包 / 打包失败」，mac 不含 mpv 内核，40MB 足够
-          for f in "$dmg" "$zip"; do
+          # 只出 dmg（用户要求不发 zip）；体积下限只防「空包 / 打包失败」
+          for f in "$dmg"; do
             sz=$(stat -f%z "$f")
             echo "$f  $((sz / 1024 / 1024)) MB"
             [ "$sz" -gt $((40 * 1024 * 1024)) ] || { echo "::error::产物体积异常：$f"; exit 1; }
@@ -243,7 +241,6 @@ jobs:
           name: FNOS-mac-${{ matrix.arch }}-${{ github.ref_name }}
           path: |
             dist/FNOS-*-mac-${{ matrix.arch }}.dmg
-            dist/FNOS-*-mac-${{ matrix.arch }}.zip
           if-no-files-found: error
 
       - name: Release（dmg / zip 追加到同一个 tag Release）
@@ -252,7 +249,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="$GITHUB_REF_NAME"
-          files=$(ls dist/FNOS-*-mac-${{ matrix.arch }}.dmg dist/FNOS-*-mac-${{ matrix.arch }}.zip 2>/dev/null || true)
+          files=$(ls dist/FNOS-*-mac-${{ matrix.arch }}.dmg 2>/dev/null || true)
           [ -n "$files" ] || { echo "::error::没有可上传的 mac 产物"; exit 1; }
           # 并发幂等：Windows job 可能先/后创建 release，先等它出现再上传
           for i in 1 2 3 4 5 6; do

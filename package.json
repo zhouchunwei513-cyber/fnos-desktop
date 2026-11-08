@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "5.1.1",
+  "version": "5.1.2",
   "description": "FNOS Desktop Client",
   "main": "main.js",
   "author": "FNOS",
@@ -114,13 +114,6 @@
       "target": [
         {
           "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
           "arch": [
             "arm64",
             "x64"

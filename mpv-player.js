@@ -780,7 +780,8 @@ class MpvPlayer extends EventEmitter {
     args.push(...buildCacheArgs(effectiveCache));
     // v5.0.15：直播额外收紧缓存并保留 HLS 拉流（窗口只有 30s，缓存过大会让解复用器读到窗口末尾就停）
     if (opts.isLive) {
-      args.push('--cache-secs=15', '--demuxer-max-back=0', '--hls-bitrate=max');
+      // v5.0.16：`--demuxer-max-back=0` 缺单位会被 mpv 判为非法值 → 启动即 exit 1（已移除）
+      args.push('--cache-secs=15', '--hls-bitrate=max');
     }
 
     // v5.0.2（用户工单：自定义 MPV 播直播，10 几秒就循环重播）——

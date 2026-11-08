@@ -11415,7 +11415,9 @@ function createMainWindow(partition, loadTarget) {
     // 圆角仍由系统 roundedCorners 提供；Windows 保持透明窗不变。
     transparent: process.platform !== 'darwin',
     roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
-    backgroundColor: '#00030610',
+    // v5.1.10（用户截图工单）：mac 不透明窗底色必须给实色，旧值 #00030610 仅 6% 不透明，
+    // 会让标题栏白色预留区 + 圆角外四角露出白色窗口底（用户截图里"隐藏任务栏上方那块白"）。
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00030610',
     show: false,
     paintWhenInitiallyHidden: true,
     // v1.48.0：无边框窗口 + 注入自定义标题栏（与参考客户端 fntv 一致）。

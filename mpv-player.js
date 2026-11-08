@@ -1096,7 +1096,7 @@ class MpvPlayer extends EventEmitter {
     }
     if (msg.event === 'file-loaded') {
       // v5.0.12（排查用）：每次起播记录，配合 end-file 看是否周期性重载
-      try { this.emit('log', 'file-loaded live=' + (this._isLive ? 1 : 0) + ' url=' + String(this._curUrl || '').slice(-70)); } catch (_) {}
+      try { this.emit('log', 'file-loaded live=' + (this._isLive ? 1 : 0) + ' url=' + String(this._lastUrl || '').slice(-90)); } catch (_) {}
       this._reloadTries = 0; this._restartTries = 0;
       this._startupTries = 0; // 起播确认成功，清掉 startup watchdog 计数
       if (this._startupTimer) { clearTimeout(this._startupTimer); this._startupTimer = null; }
@@ -1433,6 +1433,13 @@ class MpvPlayer extends EventEmitter {
   // recover=true 表示这是断流恢复（重新签名/重连）：保留 _resumePos，新流 file-loaded 后 seek 回断点，
   // 不能像"打开新视频"那样把断点清空（否则恢复后会从头播放，表现为播一段时间就回到开头循环）。
   async loadfile(url, headers, opts) {
+    // v5.0.13（排查）：记录每次 loadfile 的 URL 与来源，定位"10 秒一段被反复重载"的触发者
+    try {
+      this.emit('log', 'loadfile url=' + String(url).slice(-100)
+        + ' live=' + ((opts && opts.isLive) ? 1 : 0)
+        + ' recover=' + ((opts && opts.recover) ? 1 : 0)
+        + ' resume=' + ((opts && typeof opts.resumePos === 'number') ? opts.resumePos : -1));
+    } catch (_) {}
     this._quitByUser = false;
     this._manualStop = false;
     this._lastUrl = url;

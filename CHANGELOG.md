@@ -1,3 +1,13 @@
+## v5.0.7
+
+### 直播"十几秒重播"根因修复：isLive 没传给播放器
+
+- 实测（宿舍机捕获 mpv 命令行）：有 `--loop-file=no`，但**没有** `--hls-live-edge` →
+  说明 v5.0.3 的直播参数没生效，因为 `payload.isLive` 没传进 MpvSurface 的 settings；
+- 根因：`main.js` 的 embed 分支只 `const st = getMpvSettings()`，payload.isLive 仅用于打日志；
+- 修法：`st = Object.assign({}, getMpvSettings(), { isLive: payload.isLive || payload.scope === 'live' })`
+  → mpv 按直播处理：加 `--hls-live-edge=1`、EOF 走直播重连而不是点播重载。
+
 ## v5.0.4
 
 ### 应用内点链接：改为客户端新窗口打开

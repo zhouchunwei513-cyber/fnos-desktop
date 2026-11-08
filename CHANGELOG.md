@@ -1,3 +1,13 @@
+## v5.0.9
+
+### 回退致命参数：MPV 无法启动（exit 1）
+
+- 现象：点 MPV 播放，内置/自定义内核都起不来；日志 `mpv.player.exit {"code":1}`
+- 根因：v5.0.3 引入的 `--hls-live-edge` / `--demuxer-lavf-o-add` 在该 mpv 构建里是**未知选项**，
+  mpv 解析失败即 exit 1；
+- 修法：删除这两个参数，直播起点改为合进已有的 `--demuxer-lavf-o=…,live_start_index=-1`
+  （ffmpeg 侧选项，未知也不致命）。
+
 ## v5.0.7
 
 ### 直播"十几秒重播"根因修复：isLive 没传给播放器

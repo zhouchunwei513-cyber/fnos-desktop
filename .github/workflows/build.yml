@@ -167,8 +167,18 @@ jobs:
   #      用户首次打开需要右键「打开」或在系统设置里放行；正式分发前需补 Developer ID + notarize。
   #   2) macOS 不打包 mpv 二进制（体积 + 签名 + GPL 分发链路），运行时探测系统 mpv。
   #   3) Windows job 完全未改动；两个 job 并行，Release 创建做了并发幂等处理（已在 Windows job 内）。
+  #   4) v5.1.0 首发实测踩坑：原先 runs-on: macos-14 导致 job 0 步、conclusion=cancelled、
+  #      runner_name 为空（check-run annotation：The configuration
+  #      'macos-14-arm64-us-default' is not supported）。原因是 GitHub 已于 2026-11-02
+  #      整体下线 macOS 14 runner 镜像（actions/runner-images#15226），标签彻底失效 →
+  #      任务永远等不到 runner。与账单额度 / workflow 语法 / permissions / matrix 无关。
+  #      现改为 macos-15（GA 的 arm64 / M1 镜像，公共仓库分钟数免费不限）。
+  #      若将来 macos-15 退役，按 docs.github.com「Standard GitHub-hosted runners」表格换新标签，
+  #      或直接用 macos-latest 让 GitHub 自动迁移；Intel 机器用 macos-15-intel。
+  #   5) 两个 matrix 条目共用同一 arm64 主机没问题：electron-builder 跨架构打包只是下载
+  #      不同架构的 Electron 预编译包，x64 产物在 arm64 主机上照样能出。
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -260,3 +270,15 @@ jobs:
             [ "$ok" -eq 1 ] || { echo "::error::资产 $f 连续 4 次上传失败"; exit 1; }
           done
           echo "mac ${{ matrix.arch }} 资产上传完成：$files"
+
+  # ===================== 备用通道（默认不启用）：无 macOS runner 时出 mac zip =====================
+  # 实测结论（electron-builder 26.15.3）：
+  #   - ubuntu/linux 主机可以打包 mac 的 zip / dir（未签名），产物结构与 mac 主机一致；
+  #   - dmg 必须在 macOS 上打：dmg-builder 依赖 sips / hdiutil / tiffutil 与 darwin 版 dmgbuild，
+  #     在 Linux 上会直接失败（⨯ sips process failed ENOENT）；
+  #   - 代码签名 / 公证只能在 macOS（官方文档：macOS Code Signing works only on macOS. Cannot be fixed.）
+  # 因此若 mac runner 再次不可用（额度、镜像退役、故障），可临时改为下面的 ubuntu job 出 zip-only：
+  #   runs-on: ubuntu-latest
+  #   steps: 同 build-macos，但跳过 make-icns.sh（sips/iconutil 是 macOS 独有），
+  #          并把 Build 步骤换成 npx electron-builder --mac zip --${{ matrix.arch }} --publish never
+  #   （未签名 zip，用户需 xattr -cr 或在「隐私与安全性」里放行；先提交一份 build/icons/icon.icns 更好）

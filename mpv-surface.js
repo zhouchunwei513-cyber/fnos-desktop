@@ -10,6 +10,22 @@
 
 const mpvMod = require('./mpv-player');
 
+// v5.1.4：本模块的 mac 真机诊断日志（与 main.js 的 [MACDIAG] 同格式，直接落 fnos-diag.log）
+let __mkLogPath = '';
+function __mk(event, extra) {
+  try {
+    if (!__mkLogPath) {
+      const path = require('path');
+      __mkLogPath = path.join(require('electron').app.getPath('userData'), 'logs', 'fnos-diag.log');
+    }
+    let line = `[MACDIAG] ${event}`;
+    if (extra !== undefined && extra !== null) {
+      try { line += ' ' + JSON.stringify(extra); } catch (_) { line += ' ' + String(extra); }
+    }
+    require('fs').appendFileSync(__mkLogPath, `[FNOS] ${new Date().toISOString()} ${line}\n`);
+  } catch (_) {}
+}
+
 class MpvSurface {
   // parentWin: 宿主 BrowserWindow；dipRect: 视频区（相对内容区 DIP）
   // opts.standalone: true 表示【独立播放器窗口】（菜单"用 mpv 打开"）。与嵌入覆盖窗不同：
@@ -364,6 +380,21 @@ class MpvSurface {
     if (!geo) return;
     const now = Date.now();
     this._geoWant = geo;
+    // v5.1.4（用户报第 1 项：mac 上 MPV 窗口不跟随主窗）——
+    // 之前整条跟随链路没有任何可检索日志，无法判断「宿主几何变了没」「几何发下去了没」
+    // 「mpv 收下了没」。这里补 macdiag.mpv.follow.push（500ms 节流），带宿主 contentBounds。
+    try {
+      if (!this._followLogAt || now - this._followLogAt >= 500) {
+        this._followLogAt = now;
+        let host = null;
+        try { host = this.parent && !this.parent.isDestroyed() ? this.parent.getContentBounds() : null; } catch (_) {}
+        __mk('macdiag.mpv.follow.push', {
+          standalone: !!this._standalone, pip: !!this._pip, host,
+          push: { x: Math.round(geo.x), y: Math.round(geo.y), w: Math.round(geo.width), h: Math.round(geo.height) },
+          dipRect: this.dipRect, viewOffset: this.viewOffset
+        });
+      }
+    } catch (_) {}
     // v2.24.4：记下“我们最近一次真正下发的几何”，供 audit 判断 mpv 是“还没追上”还是“真没接受”
     this._pushKey = Math.max(160, Math.round(geo.width)) + 'x' + Math.max(90, Math.round(geo.height)) +
       '+' + Math.round(geo.x) + '+' + Math.round(geo.y);
@@ -371,6 +402,24 @@ class MpvSurface {
     if (!this._geoLastAt || now - this._geoLastAt >= 24) {
       this._geoLastAt = now;
       try { this.player.setGeometry(geo); } catch (_) {}
+      // v5.1.4（用户报第 1 项）mac 专用兜底：宿主【只移动不改尺寸】时，macOS 上单发
+      // set_property geometry 只保证尺寸生效，origin 有时不跟随（Windows 的 w32 会重排整个 frame，
+      // cocoa 不会）。这里在"位置变了、尺寸没变"时把宽度抖 1px 再改回，逼 cocoa 走一次
+      // 完整 frame 重排（40ms，肉眼不可见），保证 MPV 窗口跟着主窗移动。
+      if (process.platform === 'darwin') {
+        try {
+          const posKey = Math.round(geo.x) + ',' + Math.round(geo.y);
+          if (this._lastPosKey && this._lastPosKey !== posKey) {
+            const jig = { x: geo.x, y: geo.y, width: Math.round(geo.width) + 1, height: geo.height };
+            try { this.player.setGeometry(jig); } catch (_) {}
+            const self = this;
+            const t = setTimeout(() => { try { if (!self._dead) self.player.setGeometry(geo); } catch (_) {} }, 40);
+            if (t.unref) t.unref();
+            __mk('macdiag.mpv.follow.jiggle', { from: this._lastPosKey, to: posKey });
+          }
+          this._lastPosKey = posKey;
+        } catch (_) {}
+      }
       return;
     }
     if (this._geoTrailTimer) return;
@@ -536,6 +585,13 @@ class MpvSurface {
           const w = d && (d.w || d.width);
           const h = d && (d.h || d.height);
           if (!w || !h || w <= 0 || h <= 0) return;
+          // v5.1.4：mpv 真实窗口尺寸回执（mac 上唯一能读到的窗口侧证据）
+          try {
+            if (!this._ackLogAt || now - this._ackLogAt >= 1000) {
+              this._ackLogAt = now;
+              __mk('macdiag.mpv.follow.ack', { want: wantKey, got: w + 'x' + h, match: (Math.abs(w - want.width) <= 2 && Math.abs(h - want.height) <= 2) });
+            }
+          } catch (_) {}
           if (Math.abs(w - want.width) <= 2 && Math.abs(h - want.height) <= 2) {
             this._winAuditKey = '';
             this._winAuditTries = 0;

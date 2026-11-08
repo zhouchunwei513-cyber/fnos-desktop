@@ -691,6 +691,112 @@ module.exports = function injectTitleBar(ctx) {
       }
     }
 
+    // ===== v5.1.4（用户工单 10：测试皮标题栏文字过大 / 34px 内显示不全）=====
+    // 根因（实测）：皮肤标题栏底图的比例由皮肤作者决定，测试皮 bg.jpg 是 2048×2048 的方图，
+    // 文字「fnIOS NAS」直接画在图上。老实现一律 background-size:cover —— 1149×34 的条要"盖满"
+    // 方图就得放大约 3.4 倍，只露出中间一条，图上的文字被裁掉上下、只剩笔画，看起来就是
+    // "文字过大、34px 里显示不全"。修法：给 cover 设"缩放上限"，超过上限就降级成按高度铺满
+    // （等价 contain），保证底图内的文字整条可见；比例接近标题栏的正常宽幅 banner 行为不变。
+    const __TB_BG_MAX_ZOOM = 1.6;
+    const __tbBgDims = new Map();
+    function __tbBgFit(el, label) {
+      try {
+        if (!el) return;
+        const raw = String((el.style && el.style.backgroundImage) || '');
+        const m = /url\(["']?(.*?)["']?\)/.exec(raw);
+        if (!m) return;
+        const url = m[1];
+        const key = url.length + ':' + url.slice(0, 96);
+        const apply = function (iw, ih) {
+          try {
+            if (!el.isConnected) return;
+            const w = el.clientWidth || el.offsetWidth || 0;
+            const h = el.clientHeight || el.offsetHeight || 0;
+            if (!iw || !ih || w < 8 || h < 8) return;
+            const wantFit = String(el.__tbBgFitMode || '');
+            const coverScale = Math.max(w / iw, h / ih);
+            const containScale = Math.min(w / iw, h / ih);
+            const zoom = containScale > 0 ? Math.round((coverScale / containScale) * 100) / 100 : 0;
+            // 极端比例（方图塞进长条）：cover 只能露出中间一条 → 用「模糊铺底 + 居中完整图」两层，
+            // 既不留白、又保证底图内容（文字）完整可见。
+            const extreme = (wantFit !== 'cover' && wantFit !== 'contain' && zoom > __TB_BG_MAX_ZOOM);
+            let mode = 'cover', size = 'cover';
+            if (wantFit === 'contain') { mode = 'contain.manifest'; size = 'contain'; }
+            else if (extreme) { mode = 'fill+contain'; size = 'cover'; }
+            el.style.backgroundSize = size;
+            el.style.backgroundPosition = 'center';
+            // 子图层：fill（模糊铺满，inset 外扩避免模糊边缘透底）+ fit（完整内容，按高度）
+            let fillEl = el.__tbFillEl, fitEl = el.__tbFitEl;
+            if (!fillEl || !fillEl.isConnected) {
+              fillEl = document.createElement('div');
+              fillEl.setAttribute('data-fnos-tb-bgfill', '1');
+              __setCss(fillEl, 'position:absolute;left:-24px;top:-24px;right:-24px;bottom:-24px;pointer-events:none;-webkit-app-region:no-drag;background-size:cover;background-position:center;background-repeat:no-repeat;filter:blur(14px) saturate(1.15);display:none;');
+              el.appendChild(fillEl);
+              el.__tbFillEl = fillEl;
+            }
+            if (!fitEl || !fitEl.isConnected) {
+              fitEl = document.createElement('div');
+              fitEl.setAttribute('data-fnos-tb-bgfit', '1');
+              __setCss(fitEl, 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;-webkit-app-region:no-drag;background-size:auto 100%;background-position:center;background-repeat:no-repeat;display:none;');
+              el.appendChild(fitEl);
+              el.__tbFitEl = fitEl;
+            }
+            if (extreme) {
+              try {
+                fillEl.style.backgroundImage = raw;
+                fillEl.style.display = 'block';
+                fitEl.style.backgroundImage = 'url("' + url + '")';
+                fitEl.style.display = 'block';
+              } catch (_) {}
+            } else {
+              try { fillEl.style.display = 'none'; fitEl.style.display = 'none'; } catch (_) {}
+            }
+            const cur = [mode, zoom, w, h, iw, ih].join('|');
+            if ((el.getAttribute('data-fnos-bgfit') || '') === cur) return;
+            el.setAttribute('data-fnos-bgfit', cur);
+            __tbLog('tb.bg.fit', { lb: String(label || ''), mode: mode, zoom: zoom, bar: w + 'x' + h, img: iw + 'x' + ih, size: size, layers: extreme ? 'fill+fit' : mode });
+          } catch (_) {}
+        };
+        const hit = __tbBgDims.get(key);
+        if (hit) { apply(hit[0], hit[1]); return; }
+        const im = new Image();
+        im.onload = function () {
+          try { __tbBgDims.set(key, [im.naturalWidth, im.naturalHeight]); } catch (_) {}
+          apply(im.naturalWidth || 1, im.naturalHeight || 1);
+        };
+        im.onerror = function () { try { __tbLog('tb.bg.fit.err', { lb: String(label || '') }); } catch (_) {} };
+        im.src = url;
+      } catch (_) {}
+    }
+
+    // 标题栏内文字字号上限：bar 高（皮肤 titlebar.height，20~80）→ 字号 ≤ barH*0.42（13px/34px≈0.38，
+    // 留出行距余量），并允许 manifest 用 titlebar.fontSize 指定（同样被上限夹住）。
+    function __tbTextMax(h) {
+      const bh = Number(h) || 34;
+      return Math.max(10, Math.min(20, Math.round(bh * 0.42 * 10) / 10));
+    }
+    function __tbFitTexts(bar) {
+      try {
+        const b = bar || document.getElementById('fnos-titlebar');
+        if (!b) return;
+        const bh = (b.getBoundingClientRect && b.getBoundingClientRect().height) || __skinHeight || 34;
+        const max = __tbTextMax(bh);
+        const manFs = Number(__skinState && __skinState.skin && __skinState.skin.titlebar && __skinState.skin.titlebar.fontSize);
+        let n = 0;
+        const els = b.querySelectorAll('#fnos-embed-title, .fnos-tb-title, [data-fnos-tb-text]');
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i];
+          try {
+            const cur = parseFloat(getComputedStyle(el).fontSize) || 0;
+            const want = el.__tbWantFont > 0 ? el.__tbWantFont : (isFinite(manFs) && manFs > 0 ? manFs : cur);
+            const target = Math.max(9, Math.min(want, max));
+            if (cur > target + 0.01) { el.style.setProperty('font-size', target + 'px', 'important'); n++; }
+          } catch (_) {}
+        }
+        if (n) __tbLog('tb.text.fit', { barH: Math.round(bh), max: max, n: n, manFs: isFinite(manFs) ? manFs : 0 });
+      } catch (_) {}
+    }
+
     // 标题栏有效高度：皮肤 titlebar.height（20~80，默认 34）→ --fnos-bar-h（body 下移量）+ bar inline 高度
     function __applyTitlebarHeight() {
       try {
@@ -706,6 +812,11 @@ module.exports = function injectTitleBar(ctx) {
         const el = document.documentElement;
         if (el && el.style) el.style.setProperty('--fnos-bar-h', actualH + 'px');
         if (bar) bar.style.height = actualH + 'px';
+        // v5.1.4（工单 10）：bar 高度一变，底图缩放与文字字号都要重新夹一次
+        try {
+          __tbBgFit(bar.__bgLayer || document.getElementById('fnos-tb-bg'), 'bar');
+          __tbFitTexts(bar);
+        } catch (_) {}
       } catch (_) {}
     }
 
@@ -1046,6 +1157,8 @@ module.exports = function injectTitleBar(ctx) {
           } else if ((bg.type === 'image' || bg.type === 'gif') && bg.src) {
             const url = __loadSkinAsset(__skinState.skinDir, bg.src);
             if (url && bgLayer) {
+              // v5.1.4（工单 10）：皮肤可显式声明 background.fit = cover|contain；缺省走智能缩放上限
+              try { bgLayer.__tbBgFitMode = (bg.fit === 'contain' || bg.fit === 'cover') ? bg.fit : ''; } catch (_) {}
               bgLayer.style.backgroundImage = 'url("' + url + '")';
               bgLayer.style.backgroundSize = bg.size || 'cover';
               bgLayer.style.backgroundPosition = bg.position || 'center';
@@ -1170,6 +1283,8 @@ module.exports = function injectTitleBar(ctx) {
             bgRad: (function () { try { return bgLayer ? getComputedStyle(bgLayer).borderTopLeftRadius : ''; } catch (_) { return ''; } })(),
           });
         } catch (_) {}
+        // v5.1.4（工单 10）：底图铺完统一夹一次「缩放上限」+「文字字号」，并留证据
+        try { __tbBgFit(bgLayer, 'apply'); __tbFitTexts(bar); } catch (_) {}
         return hasBg;
       } catch (_) { return false; }
     }
@@ -1233,6 +1348,20 @@ module.exports = function injectTitleBar(ctx) {
       }
     } catch (_) {}
     __applyTitlebarHeight();
+    // v5.1.4（工单 10）：窗口宽度变化会改变底图的缩放比例，重新夹一次（限流 250ms）
+    try {
+      let __tbFitT = 0;
+      window.addEventListener('resize', function () {
+        try {
+          const now = Date.now();
+          if (now - __tbFitT < 250) return;
+          __tbFitT = now;
+          const b = document.getElementById('fnos-titlebar');
+          __tbBgFit((b && b.__bgLayer) || b || document.getElementById('fnos-tb-bg'), 'resize');
+          __tbFitTexts(b);
+        } catch (_) {}
+      }, { passive: true });
+    } catch (_) {}
     // v4.0.31（用户需求 2）：首屏就把球的外观变量算好（球是延迟创建的，变量先到位不会闪一下默认色）
     __applyBallLook();
     let AUTO_HIDE = TB.autoHide;
@@ -3081,6 +3210,8 @@ module.exports = function injectTitleBar(ctx) {
               bar.style.backgroundSize = 'cover';
               bar.style.backgroundPosition = 'center';
               bar.style.backgroundColor = 'transparent';
+              // v5.1.4（工单 10）：内嵌窗底图同样走「缩放上限」，避免方形素材被放大裁掉文字
+              try { bar.__tbBgFitMode = (__sk.background && __sk.background.fit === 'contain') ? 'contain' : ''; __tbBgFit(bar, 'embed'); } catch (_) {}
               __tbLog('embed.skin.static', { to: 'bg_alpha.webp' });
             }
           }
@@ -3093,7 +3224,10 @@ module.exports = function injectTitleBar(ctx) {
         __setCss(logo, 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;');
         const titleEl = document.createElement('span');
         titleEl.id = 'fnos-embed-title';
-        __setCss(titleEl, 'color:rgba(255,255,255,0.95);font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;');
+        titleEl.setAttribute('data-fnos-tb-text', '1');
+        // v5.1.4（工单 10）：字号不再写死 13px，而是「不超过 bar 高的 42%」（13px/34px≈0.38），
+        // 皮肤 titlebar.fontSize 可覆盖（同样被上限夹住），保证任何 bar 高度下都完整显示。
+        __setCss(titleEl, 'color:rgba(255,255,255,0.95);font-size:' + __tbTextMax(__skinHeight) + 'px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw;line-height:1.1;');
         left.appendChild(logo);
         left.appendChild(titleEl);
         // v4.0.44（内嵌窗改用自绘栏后，标题不能空着）——

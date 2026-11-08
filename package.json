@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "5.1.3",
+  "version": "5.1.5",
   "description": "FNOS Desktop Client",
   "main": "main.js",
   "author": "FNOS",
@@ -126,7 +126,12 @@
       "gatekeeperAssess": false,
       "extendInfo": {
         "LSMinimumSystemVersion": "11.0",
-        "NSHighResolutionCapable": true
+        "NSHighResolutionCapable": true,
+        "NSLocalNetworkUsageDescription": "FNOS 需要访问局域网以连接你的 NAS 设备（局域网地址如 192.168.x.x）。",
+        "NSBonjourServices": [
+          "_http._tcp.",
+          "_https._tcp."
+        ]
       },
       "extraResources": [
         {

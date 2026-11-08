@@ -3391,6 +3391,389 @@ function dlog(level, event, extra) {
   } catch (_) {}
 }
 
+// =============================================================================
+// v5.1.4 macOS 真机诊断通道（用户报的 11 项问题的统一取证入口，全部写 fnos-diag.log）
+// 可检索关键字（grep 直接用）：
+//   macdiag.win.*       窗口几何/状态（move/resize/maximize/minimize/close/fullscreen/focus）
+//   macdiag.dock.*      macOS Dock / 应用激活
+//   macdiag.net.*       登录链路分段探测：dns → tcp(4/6) → tls → http → cookie → verdict
+//   macdiag.shortcut.*  桌面快捷方式(.app) 生成、图标(icns)、Dock 侧证据
+//   macdiag.mpv.*       MPV 窗口跟随宿主窗口（几何下发 / mpv 回执）
+//   macdiag.diag.*      /diag 诊断动作本身（入参 + 结果）
+// -----------------------------------------------------------------------------
+function mklog(event, extra) {
+  try {
+    let line = `[MACDIAG] ${event}`;
+    if (extra !== undefined && extra !== null) {
+      try { line += ' ' + JSON.stringify(extra); } catch (_) { line += ' ' + String(extra); }
+    }
+    diagLog(line);
+  } catch (_) {}
+}
+
+// ---- 全窗口事件日志（红绿灯/最大化/最小化/关闭行为取证）----
+// 旧代码里「窗口控制」类事件一条日志都没有（用户报的第 7 项无从查证），这里统一挂上。
+// move/resize 每窗口 300ms 节流，避免拖动时把日志刷爆。
+const __mkWinState = (win) => {
+  try {
+    return {
+      id: win.id,
+      vis: win.isVisible(),
+      min: win.isMinimized(),
+      max: typeof win.isMaximized === 'function' ? win.isMaximized() : null,
+      fs: typeof win.isFullScreen === 'function' ? win.isFullScreen() : null,
+      bounds: win.getBounds(),
+      cbounds: win.getContentBounds()
+    };
+  } catch (_) { return { id: (() => { try { return win.id; } catch (_) { return -1; } })() }; }
+};
+function __attachWinDiag(win) {
+  if (!win || win.__fnosDiagHooked) return;
+  win.__fnosDiagHooked = true;
+  const tag = () => {
+    try {
+      if (win === mainWindow) return 'main';
+      if (win.__fnAppId) return 'app:' + String(win.__fnAppId).slice(0, 40);
+      return win.__fnosWinTag || 'win';
+    } catch (_) { return 'win'; }
+  };
+  const lastGeo = { t: 0 };
+  const onGeom = (ev) => {
+    const now = Date.now();
+    if (now - lastGeo.t < 300) return;
+    lastGeo.t = now;
+    mklog('macdiag.win.geom', { ev, tag: tag(), ...__mkWinState(win) });
+  };
+  try {
+    win.on('move', () => onGeom('move'));
+    win.on('resize', () => onGeom('resize'));
+  } catch (_) {}
+  for (const ev of ['maximize', 'unmaximize', 'minimize', 'restore', 'enter-full-screen', 'leave-full-screen', 'close', 'closed', 'show', 'hide', 'focus', 'blur']) {
+    try { win.on(ev, () => mklog('macdiag.win.' + ev, { tag: tag(), ...__mkWinState(win) })); } catch (_) {}
+  }
+  // 应用窗第一次可见 → macOS 上必须主动 Dock 显示 + 激活，否则「快捷方式启动后 Dock 没有图标」
+  try {
+    win.once('ready-to-show', () => { try { if (win !== mainWindow) __macActivateApp('ready-to-show:' + tag()); } catch (_) {} });
+  } catch (_) {}
+}
+try { app.on('browser-window-created', (_e, win) => { try { __attachWinDiag(win); } catch (_) {} }); } catch (_) {}
+
+// ---- macOS Dock / 应用激活 ----
+// 用户报第 5 项：快捷方式启动应用后 Dock 不显示对应图标。
+// 根因：快捷方式 .app 是 LSUIElement（无 Dock 图标），热路径 POST /launch 只在后台开窗，
+// 全项目此前没有任何 app.dock.show()/app.focus() 调用 → 窗口出现但 Dock 不激活、也不前置。
+function __macActivateApp(why) {
+  if (process.platform !== 'darwin') return;
+  let before = null;
+  try { before = { dockVisible: app.dock ? app.dock.isVisible() : null, focused: (() => { const w = BrowserWindow.getFocusedWindow(); return w ? w.id : null; })() }; } catch (_) {}
+  try { if (app.dock && !app.dock.isVisible()) app.dock.show(); } catch (_) {}
+  try { app.focus({ steal: true }); } catch (_) { try { app.focus(true); } catch (_) {} }
+  setTimeout(() => {
+    let after = null;
+    try { after = { dockVisible: app.dock ? app.dock.isVisible() : null, focused: (() => { const w = BrowserWindow.getFocusedWindow(); return w ? w.id : null; })() }; } catch (_) {}
+    mklog('macdiag.dock.activate', { why, before, after });
+  }, 600);
+}
+
+// ---- 登录链路分段探测：DNS → TCP(v4/v6) → TLS → HTTP → Cookie ----
+// 用户报第 2/3/9 项（局域网 / FNID / DDNS IPv6 都登录不上）。
+// 旧日志只有「navigation fail -109」这类笼统结果，分不清是 DNS、TCP、证书还是 Cookie。
+// v5.1.4（工单 9：DDNS IPv6 登录失败）——实测这台 Mac 上有全局 IPv6（2409:8a0c:…），
+// 公网 IPv6（2400:3200::1:53）能通，但 DDNS 解析出的 IPv6 就在 Mac 自己的 /64 里
+// （ndp 邻居表 en1 可见），属于"局域网设备"。macOS 的本地网络权限按「本机所在的网段」
+// 拦截，而不是按公网/私网地址段，所以仅靠 __netIsPrivateHost 会把这种情况误判成
+// 普通 tcp-fail。这里补一层「目标是否与本机某网卡同网段」的判断。
+function __netIsLocalSubnetAddr(addr) {
+  try {
+    const os2 = require('os');
+    const a = String(addr || '').replace(/%.+$/, '');
+    if (!a) return '';
+    const v6 = a.indexOf(':') >= 0;
+    const pad = (x) => String(x || '0').padStart(4, '0');
+    const v6hex = (s) => {
+      try {
+        const t = String(s).toLowerCase().replace(/%.+$/, '').replace(/^\[|\]$/g, '');
+        const parts = t.split('::');
+        const head = parts[0] ? parts[0].split(':') : [];
+        const tail = parts.length > 1 ? (parts[1] ? parts[1].split(':') : []) : null;
+        if (tail === null) return head.map(pad).join('');
+        const mid = new Array(Math.max(0, 8 - head.length - tail.length)).fill('0000');
+        return head.concat(mid, tail).map(pad).join('');
+      } catch (_) { return ''; }
+    };
+    const ifs = os2.networkInterfaces() || {};
+    for (const name of Object.keys(ifs)) {
+      for (const ni of (ifs[name] || [])) {
+        if (!ni || !ni.address || ni.internal) continue;
+        const famOk = (ni.family === 'IPv6') ? v6 : (!v6);
+        if (!famOk) continue;
+        if (!v6) {
+          const toInt = (s) => String(s).split('.').reduce((acc, x) => ((acc << 8) >>> 0) + (Number(x) || 0), 0) >>> 0;
+          const m = toInt(ni.netmask || '255.255.255.0');
+          if (m === 0) continue;
+          if ((toInt(a) & m) === (toInt(ni.address) & m)) return name;
+        } else {
+          const plen = Math.max(1, Math.min(64, Number(ni.netmask) || 64));
+          const ha = v6hex(a), hb = v6hex(ni.address);
+          if (!ha || !hb) continue;
+          if (ha.slice(0, Math.floor(plen / 4)) === hb.slice(0, Math.floor(plen / 4))) return name;
+        }
+      }
+    }
+  } catch (_) {}
+  return '';
+}
+function __netIsPrivateHost(h) {
+  const s = String(h || '');
+  if (!s) return false;
+  if (/^(localhost|127\.|::1$|\[::1\])/i.test(s)) return true;
+  if (/^10\./.test(s) || /^192\.168\./.test(s)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(s)) return true;
+  if (/^169\.254\./.test(s)) return true;
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(s)) return true; // CGNAT / Tailscale
+  if (/\.local$/i.test(s) || /\.lan$/i.test(s)) return true;
+  if (/^f[cd][0-9a-f]{2}:/i.test(s) || /^fe80:/i.test(s)) return true;
+  return false;
+}
+async function __netSegProbe(rawUrl, opts) {
+  const o = opts || {};
+  const out = { url: String(rawUrl || '').slice(0, 200), at: new Date().toISOString() };
+  let u = null;
+  try {
+    const raw = String(rawUrl || '');
+    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : ('http://' + raw));
+  } catch (e) {
+    out.verdict = 'bad-url'; out.err = String(e && e.message || e);
+    mklog('macdiag.net.verdict', out);
+    return out;
+  }
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const isHttps = u.protocol === 'https:';
+  const port = Number(u.port || (isHttps ? 443 : 80));
+  out.host = host; out.port = port; out.https = isHttps; out.private = __netIsPrivateHost(host);
+  // 1) DNS
+  try {
+    const dns = require('dns');
+    const t0 = Date.now();
+    const addrs = await new Promise((resolve) => {
+      dns.lookup(host, { all: true, verbatim: true }, (err, list) => resolve(err ? { err: String(err.code || err.message) } : { list }));
+    });
+    out.dns = { ms: Date.now() - t0, addrs: (addrs.list || []).map((a) => a.address + '/' + a.family), err: addrs.err || '' };
+  } catch (e) { out.dns = { err: String(e && e.message || e) }; }
+  mklog('macdiag.net.dns', { host, dns: out.dns });
+  // 2) TCP：对每个解析地址单独计时
+  const net = require('net');
+  const tcp = async (addr, family) => {
+    return await new Promise((resolve) => {
+      const t0 = Date.now();
+      const s = new net.Socket();
+      let done = false;
+      const fin = (r) => { if (done) return; done = true; try { s.destroy(); } catch (_) {} resolve({ addr, family, ms: Date.now() - t0, ...r }); };
+      s.setTimeout(Number(o.tcpTimeout || 4000));
+      s.once('connect', () => fin({ ok: true }));
+      s.once('timeout', () => fin({ ok: false, err: 'timeout' }));
+      s.once('error', (e) => fin({ ok: false, err: String((e && e.code) || (e && e.message) || e) }));
+      try { s.connect({ host: addr, port, family }); } catch (e) { fin({ ok: false, err: String(e && e.message || e) }); }
+    });
+  };
+  const addrs = (out.dns && out.dns.addrs) || [];
+  out.tcp = [];
+  if (!addrs.length) {
+    out.tcp.push(await tcp(host, 0));
+  } else {
+    for (const a of addrs) {
+      const [ip, fam] = a.split('/');
+      out.tcp.push(await tcp(ip, Number(fam)));
+    }
+  }
+  mklog('macdiag.net.tcp', { host, port, tcp: out.tcp });
+  const tcpOk = out.tcp.find((t) => t.ok);
+  // 3) TLS（仅 https）
+  if (isHttps && tcpOk) {
+    try {
+      const tls = require('tls');
+      out.tls = await new Promise((resolve) => {
+        const t0 = Date.now();
+        const s = tls.connect({ host: tcpOk.addr, port, servername: host, rejectUnauthorized: false, timeout: 5000 }, () => {
+          const cert = s.getPeerCertificate ? s.getPeerCertificate() : {};
+          resolve({ ok: true, ms: Date.now() - t0, proto: s.getProtocol && s.getProtocol(), cn: cert && cert.subject && cert.subject.CN, issuer: cert && cert.issuer && cert.issuer.O, validTo: cert && cert.valid_to, authorized: s.authorized });
+          try { s.destroy(); } catch (_) {}
+        });
+        s.once('error', (e) => resolve({ ok: false, ms: Date.now() - t0, err: String((e && e.code) || (e && e.message) || e) }));
+        s.once('timeout', () => { resolve({ ok: false, ms: Date.now() - t0, err: 'timeout' }); try { s.destroy(); } catch (_) {} });
+      });
+    } catch (e) { out.tls = { ok: false, err: String(e && e.message || e) }; }
+    mklog('macdiag.net.tls', { host, tls: out.tls });
+  }
+  // 4) HTTP 状态
+  if (tcpOk) {
+    try {
+      const http = require(isHttps ? 'https' : 'http');
+      out.http = await new Promise((resolve) => {
+        const t0 = Date.now();
+        const req = http.request({ host: tcpOk.addr, port, path: '/', method: 'GET', servername: host, headers: { Host: host + ':' + port, 'User-Agent': getNasUA() }, rejectUnauthorized: false, timeout: 6000 }, (res) => {
+          resolve({ ok: true, status: res.statusCode, ms: Date.now() - t0, server: res.headers.server, location: res.headers.location, setCookie: (res.headers['set-cookie'] || []).length });
+          try { res.destroy(); } catch (_) {}
+        });
+        req.once('error', (e) => resolve({ ok: false, err: String((e && e.code) || (e && e.message) || e), ms: Date.now() - t0 }));
+        req.once('timeout', () => { resolve({ ok: false, err: 'timeout', ms: Date.now() - t0 }); try { req.destroy(); } catch (_) {} });
+        req.end();
+      });
+    } catch (e) { out.http = { ok: false, err: String(e && e.message || e) }; }
+    mklog('macdiag.net.http', { host, http: out.http });
+    // 5) Cookie（该分区里已有多少会话票据）
+    try {
+      const part = o.partition || '';
+      if (part) {
+        const ses = session.fromPartition(part);
+        const cks = await ses.cookies.get({});
+        out.cookie = { partition: part, count: cks.length, names: cks.slice(0, 8).map((c) => c.name) };
+        mklog('macdiag.net.cookie', { host, cookie: out.cookie });
+      }
+    } catch (e) { out.cookie = { err: String(e && e.message || e) }; }
+  }
+  // 6) 结论
+  if (out.dns && out.dns.err) out.verdict = 'dns-fail';
+  else if (!tcpOk) {
+    const errs = out.tcp.map((t) => t.err).filter(Boolean);
+    const unreachable = errs.some((e) => /ENETUNREACH|EHOSTUNREACH|EHOSTDOWN|EADDRNOTAVAIL/.test(e));
+    // v5.1.4（工单 9）：DDNS 的 IPv6 其实就在本机同一 /64 里（ndp 邻居表可见），
+    // macOS 本地网络权限拦的就是"本机所在网段"，不看公网/私网地址段。
+    let __localIf = '';
+    try { for (const t of out.tcp) { const ni = __netIsLocalSubnetAddr(t.addr); if (ni) { __localIf = ni; break; } } } catch (_) {}
+    try { for (const a of ((out.dns && out.dns.addrs) || [])) { const ni = __netIsLocalSubnetAddr(String(a).split('/')[0]); if (ni) { __localIf = ni; break; } } } catch (_) {}
+    out.localIf = __localIf;
+    if (process.platform === 'darwin' && (out.private || __localIf) && (unreachable || errs.every((e) => e === 'timeout' || /ENETUNREACH|EHOSTUNREACH/.test(e)))) {
+      out.verdict = 'mac-local-network-permission';
+      out.hint = 'macOS 本地网络权限：系统设置 → 隐私与安全性 → 本地网络 → 勾选 FNOS（改完需重启客户端）'
+        + (__localIf ? '｜目标与网卡 ' + __localIf + ' 同网段' : '');
+    } else out.verdict = 'tcp-fail';
+  } else if (out.tls && !out.tls.ok) out.verdict = 'tls-fail';
+  else if (out.http && out.http.ok && Number(out.http.status) >= 400) out.verdict = 'http-' + out.http.status;
+  else if (out.http && !out.http.ok) out.verdict = 'http-fail';
+  else out.verdict = 'ok';
+  mklog('macdiag.net.verdict', out);
+  return out;
+}
+
+// v5.1.4：网络拦截提示去重——一次连接失败会在「首次 loadURL reject → 4 次重试 → giveup」
+// 多处命中，每处都弹一个原生框就会堆出一屏 dialog（实测一次失败堆了 7 个）。
+// 同一 key 60 秒内只提示一次，并记一条 macdiag.net.prompt 便于核对到底弹了几次。
+const __netPromptAt = new Map();
+function __netPromptOnce(key, ttlMs) {
+  try {
+    const k = String(key || '');
+    const now = Date.now();
+    const prev = Number(__netPromptAt.get(k) || 0);
+    if (prev && now - prev < (Number(ttlMs) || 60000)) {
+      mklog('macdiag.net.prompt', { key: k, st: 'skip', since: now - prev });
+      return false;
+    }
+    __netPromptAt.set(k, now);
+    mklog('macdiag.net.prompt', { key: k, st: 'show' });
+    return true;
+  } catch (_) { return true; }
+}
+
+// ---- 统一诊断动作入口（loopback POST /diag 与 IPC mac:diag 共用）----
+// 只能让客户端自己取证并回执，才能做到"每项都有实测证据"。
+async function __diagHandle(action, params) {
+  const p = params || {};
+  const act = String(action || '').trim();
+  const t0 = Date.now();
+  let ret = null;
+  try {
+    if (act === 'state') {
+      ret = {
+        version: APP_VERSION,
+        platform: process.platform,
+        userData: app.getPath('userData'),
+        partition: (() => { try { return currentPartition; } catch (_) { return ''; } })(),
+        origin: (() => { try { return currentOrigin || (loadSettings() && loadSettings().origin) || ''; } catch (_) { return ''; } })(),
+        dock: (() => { try { return process.platform === 'darwin' && app.dock ? { visible: app.dock.isVisible() } : null; } catch (_) { return null; } })(),
+        windows: BrowserWindow.getAllWindows().map((w) => ({ tag: (w === mainWindow ? 'main' : (w.__fnAppId ? 'app:' + String(w.__fnAppId).slice(0, 40) : 'win')), url: (() => { try { return String(w.webContents.getURL()).slice(0, 140); } catch (_) { return ''; } })(), ...__mkWinState(w) }))
+      };
+    } else if (act === 'geom') {
+      const w = BrowserWindow.fromId(Number(p.winId)) || mainWindow;
+      if (!w || w.isDestroyed()) throw new Error('window not found');
+      const b = w.getBounds();
+      const nb = {
+        x: Number.isFinite(Number(p.x)) ? Number(p.x) : b.x,
+        y: Number.isFinite(Number(p.y)) ? Number(p.y) : b.y,
+        width: Number.isFinite(Number(p.width)) ? Number(p.width) : b.width,
+        height: Number.isFinite(Number(p.height)) ? Number(p.height) : b.height
+      };
+      w.setBounds(nb);
+      ret = { winId: w.id, before: b, after: w.getBounds(), content: w.getContentBounds() };
+    } else if (act === 'winctl') {
+      const w = BrowserWindow.fromId(Number(p.winId)) || mainWindow;
+      if (!w || w.isDestroyed()) throw new Error('window not found');
+      const op = String(p.op || '');
+      const before = __mkWinState(w);
+      if (op === 'minimize') w.minimize();
+      else if (op === 'maximize') w.maximize();
+      else if (op === 'unmaximize') w.unmaximize();
+      else if (op === 'fullscreen') w.setFullScreen(!w.isFullScreen());
+      else if (op === 'restore') { try { w.restore(); } catch (_) {} }
+      else if (op === 'show') w.show();
+      else if (op === 'hide') w.hide();
+      else if (op === 'focus') { w.show(); w.focus(); w.moveTop(); }
+      else if (op === 'close') w.close();
+      else throw new Error('unknown op: ' + op);
+      await new Promise((r) => setTimeout(r, 400));
+      ret = { winId: w.id, op, before, after: (w.isDestroyed() ? { destroyed: true } : __mkWinState(w)) };
+    } else if (act === 'mpv') {
+      const list = [];
+      try {
+        for (const [key, surf] of mpvSurfaces.entries()) {
+          const item = { key: String(key), standalone: !!surf._standalone, pip: !!surf._pip, started: !!surf._started, dead: !!surf._dead, pushKey: surf._pushKey || '', tick: surf._pollTick || 0, dipRect: surf.dipRect || null, viewOffset: surf.viewOffset || null, want: surf._geoWant || null, host: (() => { try { return surf.parent && !surf.parent.isDestroyed() ? { id: surf.parent.id, bounds: surf.parent.getBounds(), content: surf.parent.getContentBounds() } : null; } catch (_) { return null; } })() };
+          try {
+            if (surf.player && surf.player.isRunning && surf.player.isRunning()) {
+              const od = await surf.player.command(['get_property', 'osd-dimensions']).catch(() => null);
+              const ge = await surf.player.command(['get_property', 'geometry']).catch(() => null);
+              item.osdDimensions = od && od.data ? od.data : od;
+              item.mpvGeometry = ge && ge.data ? ge.data : ge;
+            }
+          } catch (_) {}
+          list.push(item);
+        }
+      } catch (e) { list.push({ err: String(e && e.message || e) }); }
+      ret = { surfaces: list };
+    } else if (act === 'connect') {
+      // v5.1.4（工单 6：3 账号 × 2 链路实测）——从 NAS 侧驱动账号切换，回执落 macdiag.login.*
+      const __url = String(p.url || '').trim();
+      mklog('macdiag.login.connect.start', { url: __url, prevOrigin: String(currentOrigin || ''), prevPartition: String(currentPartition || '') });
+      try { connectTo(__url); } catch (e) { mklog('macdiag.login.connect.err', { url: __url, err: String((e && e.message) || e).slice(0, 160) }); throw e; }
+      const __waitMs = Math.max(500, Math.min(30000, Number(p.waitMs) || 9000));
+      await new Promise((r) => setTimeout(r, __waitMs));
+      let __mw = null;
+      try { __mw = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null; } catch (_) {}
+      ret = {
+        requested: __url, waitedMs: __waitMs,
+        origin: String(currentOrigin || ''), partition: String(currentPartition || ''),
+        main: __mw ? { id: __mw.id, url: (() => { try { return String(__mw.webContents.getURL()).slice(0, 140); } catch (_) { return ''; } })(), loading: (() => { try { return !!__mw.webContents.isLoading(); } catch (_) { return null; } })(), vis: __mw.isVisible() } : null,
+        windows: (() => { try { return BrowserWindow.getAllWindows().map((w) => ({ id: w.id, url: (() => { try { return String(w.webContents.getURL()).slice(0, 100); } catch (_) { return ''; } })(), vis: w.isVisible() })); } catch (_) { return []; } })(),
+      };
+      mklog('macdiag.login.connect.done', ret);
+    } else if (act === 'netprobe') {
+      ret = await __netSegProbe(p.url, { partition: p.partition, tcpTimeout: p.tcpTimeout });
+    } else if (act === 'shortcut') {
+      ret = await __createMacShortcut({ appId: String(p.appId || ''), appName: String(p.appName || ''), iconPath: String(p.iconPath || ''), nasAddress: String(p.nasAddress || ''), dirOverride: String(p.dir || '') });
+    } else if (act === 'dock') {
+      __macActivateApp('diag');
+      await new Promise((r) => setTimeout(r, 800));
+      ret = { dock: (() => { try { return process.platform === 'darwin' && app.dock ? { visible: app.dock.isVisible() } : null; } catch (_) { return null; } })(), focused: (() => { const w = BrowserWindow.getFocusedWindow(); return w ? { id: w.id, url: (() => { try { return String(w.webContents.getURL()).slice(0, 100); } catch (_) { return ''; } })() } : null; })() };
+    } else {
+      throw new Error('unknown action: ' + act);
+    }
+  } catch (e) {
+    ret = { error: String((e && e.message) || e) };
+  }
+  mklog('macdiag.diag.' + (act || 'none'), { params: p, ms: Date.now() - t0, result: ret });
+  return ret;
+}
+try { ipcMain.handle('mac:diag', async (_e, payload) => await __diagHandle(payload && payload.action, payload && payload.params)); } catch (_) {}
+
 // preload（飞牛 webview / 渲染进程）上报的解析/自动接管/统一日志，汇入诊断日志与 fnos 日志文件
 // v2.4.0（需求第一部分-3）：渲染进程日志经既有 fnos:media-log IPC 汇入主进程日志文件
 // （不新增 IPC 事件，遵守需求前置约定 2），保留 level / msg / params / ret / err.stack 字段。
@@ -6344,9 +6727,14 @@ function createSettingsWindow() {
     maximizable: true,
     fullscreenable: false,
     title: 'FNOS 设置',
-    transparent: true,
+    // v5.1.5（用户工单 7：mac 上红绿灯最大化/最小化/关闭异常）——
+    // macOS 上「透明窗 + hiddenInset」会让原生红绿灯的命中区域失效（按钮看得见、点不动/行为乱），
+    // 这是 Electron 的已知限制。mac 改为不透明窗（用户本来也不要"透出桌面"），
+    // 圆角仍由系统 roundedCorners 提供；Windows 保持透明窗不变。
+    transparent: process.platform !== 'darwin',
     roundedCorners: __ROUNDED_CORNERS, // v2.15.71：关闭 Win11 系统 8px 外层圆角，圆角由页面 clip-path 20px 统一绘制
-    backgroundColor: '#00000000',
+    // v5.1.5：mac 已改为不透明窗，底色必须给实色（否则整窗透白）
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
     autoHideMenuBar: true,
     frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v2.15.2：mac 原生红绿灯，Windows 无边框 + settings-preload 注入自绘标题栏
     icon: ICON_PATH,
@@ -8202,9 +8590,14 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // v4.0.88（用户工单：圆角外还有一圈"直角"）：不透明窗口是方角的，圆角裁剪之外的
     // 四个小方块会露出窗口底色（灰），看起来就是"圆角外面套了个直角"。
     // 改为窗口透明（四角真正镂空），由页面 clip-path 裁出 20px 圆角。
-    transparent: true,
+    // v5.1.5（用户工单 7：mac 上红绿灯最大化/最小化/关闭异常）——
+    // macOS 上「透明窗 + hiddenInset」会让原生红绿灯的命中区域失效（按钮看得见、点不动/行为乱），
+    // 这是 Electron 的已知限制。mac 改为不透明窗（用户本来也不要"透出桌面"），
+    // 圆角仍由系统 roundedCorners 提供；Windows 保持透明窗不变。
+    transparent: process.platform !== 'darwin',
     roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
-    backgroundColor: '#00000000',
+    // v5.1.5：mac 已改为不透明窗，底色必须给实色（否则整窗透白）
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
     show: false,
     autoHideMenuBar: true,
     // v1.53.0：Windows 上 frame:false 即彻底无边框；【切勿】再加 titleBarStyle:'hidden' +
@@ -11016,7 +11409,11 @@ function createMainWindow(partition, loadTarget) {
     // v2.15.37：恢复透明窗口（transparent:true + #00000000）——用户要求标题栏透明（透出桌面壁纸）。
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
     // 故恢复透明让标题栏透出桌面壁纸；body 仍保留飞牛主页背景（titlebar-inject 只 html 透明），不挖空内容。
-    transparent: true,
+    // v5.1.5（用户工单 7：mac 上红绿灯最大化/最小化/关闭异常）——
+    // macOS 上「透明窗 + hiddenInset」会让原生红绿灯的命中区域失效（按钮看得见、点不动/行为乱），
+    // 这是 Electron 的已知限制。mac 改为不透明窗（用户本来也不要"透出桌面"），
+    // 圆角仍由系统 roundedCorners 提供；Windows 保持透明窗不变。
+    transparent: process.platform !== 'darwin',
     roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
     backgroundColor: '#00030610',
     show: false,
@@ -11408,8 +11805,40 @@ function createMainWindow(partition, loadTarget) {
           // v2.4.19 r15f：重试耗尽（输错服务器地址/服务器不可达）——原生弹窗报错并回到
           // 连接页重新输入地址。旧逻辑直接 return 黑屏卡死（异步 did-fail-load 无回退 UI）。
           dlog && dlog('warn', 'main.fail-load.giveup', { errorCode, errorDesc, url: String(failUrl).slice(0, 120) });
-          try { dialog.showMessageBox(mainWindow, { type: 'error', title: '连接失败', message: '无法连接服务器，将返回连接页，请检查地址后重新输入。', buttons: ['确定'] }); } catch (_) {}
-          setTimeout(() => { try { showConnectPage({ keepTarget: __failIsTransient25(failUrl) }); } catch (_) {} }, 300);
+          // v5.1.4（用户报第 2/3/9 项）：放弃重试前先做一次分段探测并把结论留在日志里，
+          // macOS「本地网络权限」被拒时不再把用户踢回连接页（踢回去也没用，重登一样失败）。
+          (async () => {
+            let seg = null;
+            try { seg = await __netSegProbe(failUrl, { partition: currentPartition, tcpTimeout: 3000 }); } catch (_) {}
+            const verdict = (seg && seg.verdict) || '';
+            mklog('macdiag.net.nav-giveup', { url: String(failUrl).slice(0, 160), code: errorCode, verdict });
+            if (verdict === 'mac-local-network-permission') {
+              try { fnosLog('warn', 'login', 'login.net.blocked reason=local-network host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
+              if (__netPromptOnce('localnet:' + String((seg && seg.host) || ''), 120000)) {
+                try { glassErrorBox('无法访问局域网服务器', '系统已拦截本应用访问局域网（macOS 本地网络权限）。\n\n请打开：系统设置 → 隐私与安全性 → 本地网络 → 勾选「FNOS」，然后重启客户端。\n\n证据：' + ((seg && seg.hint) || '')); } catch (_) {}
+              }
+              try {
+                const __w0 = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+                if (__w0) __fnShowErrPage(__w0, { app: 'FNOS 主页面', kind: 'net', code: verdict, url: String(failUrl), retryUrl: String(lastConnectHref || failUrl), noHardReload: true });
+              } catch (_) {}
+              return;
+            }
+            // v5.1.4（工单 2/3/9）：链路类失败（tcp/tls/http/超时）同样不再踢回连接页——
+            // 保留账号分区 + 切内置错误页（带「重试」），用户授权/网络恢复后一键回来。
+            if (verdict && verdict !== 'dns-fail') {
+              try { fnosLog('warn', 'login', 'login.net.blocked reason=link verdict=' + verdict + ' host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
+              try {
+                const __w1 = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+                if (__w1) __fnShowErrPage(__w1, { app: 'FNOS 主页面', kind: 'net', code: verdict, url: String(failUrl), retryUrl: String(lastConnectHref || failUrl), noHardReload: true });
+                else showConnectPage({ keepTarget: true });
+              } catch (_) {}
+              return;
+            }
+            if (__netPromptOnce('login-fail:' + String(failUrl || '').slice(0, 80), 30000)) {
+              try { dialog.showMessageBox(mainWindow, { type: 'error', title: '连接失败', message: '无法连接服务器，将返回连接页，请检查地址后重新输入。\n\n（诊断结论：' + (verdict || 'unknown') + '）', buttons: ['确定'] }); } catch (_) {}
+            }
+            setTimeout(() => { try { showConnectPage({ keepTarget: __failIsTransient25(failUrl) }); } catch (_) {} }, 300);
+          })();
           return;
         }
         _mainFailTries++;
@@ -11629,15 +12058,51 @@ try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_)
     // 来不及在 NAS 登录页输账号密码。这里改成：只要当前页面已经是 NAS 的 http(s)
     // 页面（含 /login），就保留窗口让用户登录，登录成功后 SPA 自己进桌面。
     mainWindow.loadURL(loadTarget.href, __optsNav).catch((__errNav) => {
-      try {
-        const __msg = String((__errNav && __errNav.message) || '');
-        const __cur = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.getURL()) || '');
-        if (/ERR_ABORTED|ERR_FAILED|-3\b/i.test(__msg) && /^https?:/i.test(__cur)) {
-          try { fnosLog('info', 'login', 'login.keep-window why=nav-aborted cur=' + __cur.slice(0, 120)); } catch (_) {}
+      const __msg = String((__errNav && __errNav.message) || '');
+      const __cur = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.getURL()) || '');
+      if (/ERR_ABORTED|ERR_FAILED|-3\b/i.test(__msg) && /^https?:/i.test(__cur)) {
+        try { fnosLog('info', 'login', 'login.keep-window why=nav-aborted cur=' + __cur.slice(0, 120)); } catch (_) {}
+        return;
+      }
+      // v5.1.4（工单 2/3/9：登录后被"踢回连接页"的元凶就是这里）——
+      // 旧逻辑无条件 showConnectPage()：销毁主窗 + 回连接页。而实测多数失败是
+      // 链路/系统权限问题（mac 本地网络权限、IPv6 不通、FNID 中转未就绪），
+      // 踢回连接页既解释不了原因、重新输地址也一样失败。
+      // 现在先做分段探测（macdiag.net.createmain-fail），再分档处理：
+      //   本地网络权限 → 保留窗口 + 指引弹窗
+      //   tcp/tls/http/超时 → 保留窗口 + 内置错误页（带重试，账号分区不变）
+      //   dns 失败（地址写错）→ 老行为回连接页（这里确实需要用户改地址）
+      (async () => {
+        let seg = null;
+        try { seg = await __netSegProbe(loadTarget.href, { partition: currentPartition, tcpTimeout: 3000 }); } catch (_) {}
+        const verdict = String((seg && seg.verdict) || '');
+        mklog('macdiag.net.createmain-fail', { url: String(loadTarget.href).slice(0, 160), verdict, cur: __cur.slice(0, 120), err: __msg.slice(0, 140) });
+        try {
+          const __cur2 = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.getURL()) || '');
+          if (/^https?:/i.test(__cur2)) {
+            try { fnosLog('info', 'login', 'login.keep-window why=createmain-fail cur=' + __cur2.slice(0, 120)); } catch (_) {}
+            return;
+          }
+        } catch (_) {}
+        if (verdict === 'mac-local-network-permission') {
+          try { fnosLog('warn', 'login', 'login.net.blocked reason=local-network host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
+          if (__netPromptOnce('localnet:' + String((seg && seg.host) || ''), 120000)) {
+            try { glassErrorBox('无法访问局域网服务器', '系统已拦截本应用访问局域网（macOS 本地网络权限）。\n\n请打开：系统设置 → 隐私与安全性 → 本地网络 → 勾选「FNOS」，然后重启客户端。\n\n诊断结论：' + verdict); } catch (_) {}
+          }
           return;
         }
-      } catch (_) {}
-      showConnectPage();
+        if (verdict === 'dns-fail') {
+          try { fnosLog('warn', 'login', 'login.net.blocked reason=dns host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
+          try { glassErrorBox('地址无法解析', '无法解析服务器地址：' + String((seg && seg.host) || '') + '\n\n请检查地址/端口是否填写正确。\n\n诊断结论：' + verdict); } catch (_) {}
+          showConnectPage({ keepTarget: __failIsTransient25(loadTarget.href) });
+          return;
+        }
+        // 链路类失败（tcp/tls/http/timeout）：保留主窗与账号分区，切到内置错误页（可重试）
+        try { fnosLog('warn', 'login', 'login.net.blocked reason=link verdict=' + verdict + ' host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
+        try {
+          __fnShowErrPage(mainWindow, { app: 'FNOS 主页面', kind: 'net', code: verdict || __msg.slice(0, 60), url: String(loadTarget.href), retryUrl: String(loadTarget.href), noHardReload: true });
+        } catch (_) { showConnectPage({ keepTarget: true }); }
+      })();
     });
   } else {
     showConnectPage();
@@ -11698,6 +12163,12 @@ function __bindAutoReturn25() {
 }
 
 function showConnectPage(opts) {
+  // v5.1.4（工单 2/3/9：用户被"莫名踢回连接页"）——此前只知道被踢，不知道是谁踢的。
+  // 这里在入口落一条带调用栈的诊断日志（macdiag.connectpage.caller），按栈顶帧就能定位。
+  try {
+    const __st = String(new Error().stack || '').split('\n').slice(1, 6).map((s) => s.trim().replace(/^at\s+/, '').slice(0, 90)).join(' <- ');
+    mklog('macdiag.connectpage.caller', { keep: !!(opts && opts.keepTarget), curPart: String(currentPartition || ''), curOrigin: String(currentOrigin || ''), href: String(lastConnectHref || '').slice(0, 120), stack: __st });
+  } catch (_) {}
   // v4.0.25：keepTarget=true 表示「网络抖了一下，不是用户要登出」——
   // 不写盘 currentPartition、不清 lastConnectHref / currentOrigin，等链路就绪还能自动回到 NAS。
   // 只有用户主动「返回连接页 / 移除账号 / 退出登录」才用默认的 keepTarget=false。
@@ -11998,13 +12469,52 @@ function doConnectTo(serverInput) {
   setImmediate(() => { try { startNetworkProbe(); } catch (_) {} });
   if (mainWindow && !mainWindow.isDestroyed()) {
     const onFail = (e) => {
-      glassErrorBox(
-        '连接失败',
-        `无法连接到 ${parsed.origin}\n\n${e.message}\n\n请检查：\n• 电脑是否与 NAS 在同一网络\n• 地址与端口是否正确\n• FN ID 是否正确、FN Connect 是否已开启`,
-      );
-      showConnectPage({ keepTarget: __failIsTransient25(parsed.href) });
+      // v5.1.4（用户报第 2/3/9 项）：连接失败先分段取证，再决定是否把用户踢回连接页。
+      // 实测 mac 上 192.168.31.101 是「-109 ERR_ADDRESS_UNREACHABLE」但同机 curl 200/21ms，
+      // 单一错误码分不清 DNS/TCP/TLS/Cookie/系统权限 —— 这里落 macdiag.net.* 全套证据。
+      (async () => {
+        let seg = null;
+        try { seg = await __netSegProbe(parsed.href, { partition: currentPartition, tcpTimeout: 3000 }); } catch (_) {}
+        const verdict = (seg && seg.verdict) || '';
+        let cur = '';
+        try { cur = String((mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.getURL()) || ''); } catch (_) {}
+        mklog('macdiag.net.connectto-fail', { url: String(parsed.href).slice(0, 160), verdict, cur: cur.slice(0, 120), err: String((e && e.message) || e).slice(0, 120) });
+        // 1) 窗口已经停在 NAS 的 http(s) 页面上（例如 302 到 /login 后 loadURL reject）→ 保留窗口让用户登录
+        if (/^https?:/i.test(cur)) {
+          try { fnosLog('info', 'login', 'login.keep-window why=connectto-load cur=' + cur.slice(0, 120)); } catch (_) {}
+          return;
+        }
+        // 2) macOS 本地网络权限被拒 → 不销毁窗口，给可执行的指引
+        if (verdict === 'mac-local-network-permission') {
+          try { fnosLog('warn', 'login', 'login.net.blocked reason=local-network host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
+          if (!__netPromptOnce('localnet:' + String((seg && seg.host) || ''), 120000)) return;
+          try {
+            glassErrorBox(
+              '无法访问局域网服务器',
+              `本机系统拦截了客户端访问局域网地址 ${(seg && seg.host) || ''}。\n\n请打开：系统设置 → 隐私与安全性 → 本地网络 → 勾选「FNOS」，然后重启客户端。\n\n诊断结论：${verdict}`,
+            );
+          } catch (_) {}
+          return;
+        }
+        glassErrorBox(
+          '连接失败',
+          `无法连接到 ${parsed.origin}\n\n${e.message}\n\n诊断结论：${verdict || 'unknown'}\n\n请检查：\n• 电脑是否与 NAS 在同一网络\n• 地址与端口是否正确\n• FN ID 是否正确、FN Connect 是否已开启`,
+        );
+        // v5.1.4（工单 2/3/9）：链路类失败不销毁主窗（原来一律 showConnectPage → 被踢回连接页）。
+        // dns 失败说明地址本身写错，仍需回连接页改地址；其余保持分区并切内置错误页（可重试）。
+        if (verdict && verdict !== 'dns-fail') {
+          try { fnosLog('warn', 'login', 'login.net.blocked reason=link verdict=' + verdict + ' host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
+          try {
+            const __w2 = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+            if (__w2) { __fnShowErrPage(__w2, { app: 'FNOS 主页面', kind: 'net', code: verdict, url: String(parsed.href), retryUrl: String(parsed.href), noHardReload: true }); return; }
+          } catch (_) {}
+        }
+        showConnectPage({ keepTarget: __failIsTransient25(parsed.href) });
+      })();
     };
     mainWindow.loadURL(parsed.href, { userAgent: getNasUA() }).catch(onFail);
+    // v5.1.4：连之前先留一份分段基线（macdiag.net.*），失败时对比才有意义
+    try { __netSegProbe(parsed.href, { partition: currentPartition, tcpTimeout: 2500 }).catch(() => {}); } catch (_) {}
     // v1.76.0：桌面快捷方式启动 --open-app 时，等待主页登录就绪后自动打开对应应用。
     // 旧版固定 1200ms 强开：未登录时应用窗口打开的是登录页（打不开）。
     // 现在：主页已登录（URL 非 /login）→ 立即打开；停在 /login → 等用户登录后
@@ -12206,9 +12716,14 @@ function createAboutWindow() {
     frame: process.platform === 'darwin',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     resizable: false, maximizable: false, minimizable: true,
-    transparent: true,
+    // v5.1.5（用户工单 7：mac 上红绿灯最大化/最小化/关闭异常）——
+    // macOS 上「透明窗 + hiddenInset」会让原生红绿灯的命中区域失效（按钮看得见、点不动/行为乱），
+    // 这是 Electron 的已知限制。mac 改为不透明窗（用户本来也不要"透出桌面"），
+    // 圆角仍由系统 roundedCorners 提供；Windows 保持透明窗不变。
+    transparent: process.platform !== 'darwin',
     roundedCorners: __ROUNDED_CORNERS,
-    backgroundColor: '#00000000',
+    // v5.1.5：mac 已改为不透明窗，底色必须给实色（否则整窗透白）
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
     icon: ICON_PATH,
     parent: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
     modal: false,
@@ -16093,48 +16608,123 @@ $sc.Save()
 // second-instance，与 Windows VBS 触发器回落 exe 完全同链）。Windows 分支代码保持原样。
 function __macQuote(s) { return "'" + String(s || '').replace(/'/g, "'\''") + "'"; }
 
-// 图标：PNG → sips/iconutil 生成 .icns（macOS 自带工具）。r20 教训：动图/坏图不得直进
-// nativeImage（native 崩溃 JS catch 不住）——mac 分支只吃原始 PNG 文件，非 PNG 回落默认图标。
-function __pngToIcnsMac(pngBuf) {
+// 图标：任意图片 → PNG → .icns（macOS 自带工具）。r20 教训：动图/坏图不得直进
+// nativeImage（native 崩溃 JS catch 不住）——mac 分支只吃 PNG，非 PNG 先用 sips 转 PNG。
+// v5.1.4（用户工单 4：桌面快捷方式图标是白板）——实测 NAS 下发的 fpklist_*.png 里混着
+// WebP（RIFF....WEBP）和 JPEG 数据，旧实现只认 PNG magic（buf[0]===0x89 && buf[1]==='P'），
+// 命中失败就回落到程序自带 icon.png；而 Finder 侧更是直接白板。现在改为「先落盘再用
+// sips -s format png 归一化」，并对每一步打 shortcut.icon.* 日志。
+function __macImageToPng(fileOrBuf, tag) {
+  const t = String(tag || '');
   try {
-    if (!pngBuf || !pngBuf.length) return '';
+    let buf = null, srcFile = '';
+    if (Buffer.isBuffer(fileOrBuf)) {
+      buf = fileOrBuf;
+      srcFile = path.join(os.tmpdir(), 'fnos-icon-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.bin');
+      fs.writeFileSync(srcFile, buf);
+    } else if (fileOrBuf && fs.existsSync(String(fileOrBuf))) {
+      srcFile = String(fileOrBuf);
+      buf = fs.readFileSync(srcFile);
+    }
+    if (!srcFile || !buf || buf.length < 16) { mklog('shortcut.icon.src', { tag: t, st: 'empty' }); return null; }
+    const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    const head = buf.slice(0, 12).toString('latin1').replace(/[^\x20-\x7e]/g, '.');
+    if (isPng) { mklog('shortcut.icon.src', { tag: t, st: 'png', size: buf.length }); return buf; }
+    // 非 PNG（webp/jpeg/gif…）→ sips 转 PNG（macOS 自带，无需第三方库）
+    const outPng = srcFile + '.png';
+    try {
+      cp.execSync('sips -s format png ' + __macQuote(srcFile) + ' --out ' + __macQuote(outPng), { stdio: 'ignore', timeout: 20000 });
+    } catch (e) {
+      mklog('shortcut.icon.src', { tag: t, st: 'sips-fail', head: head, err: String((e && e.message) || e).slice(0, 120) });
+      return null;
+    }
+    const png = fs.existsSync(outPng) ? fs.readFileSync(outPng) : null;
+    const ok = !!(png && png.length > 100 && png[0] === 0x89 && png[1] === 0x50);
+    mklog('shortcut.icon.src', { tag: t, st: ok ? 'converted' : 'convert-bad', head: head, size: buf.length, pngSize: png ? png.length : 0 });
+    return ok ? png : null;
+  } catch (e) {
+    mklog('shortcut.icon.src', { tag: t, st: 'err', err: String((e && e.message) || e).slice(0, 120) });
+    return null;
+  }
+}
+
+function __pngToIcnsMac(pngBuf, tag) {
+  const t = String(tag || '');
+  try {
+    if (!pngBuf || !pngBuf.length) { mklog('shortcut.icon.icns', { tag: t, st: 'no-png' }); return ''; }
     let __h6 = '';
     try { __h6 = require('crypto').createHash('md5').update(pngBuf).digest('hex').slice(0, 6); } catch (_) {}
     try { fs.mkdirSync(ASSETS_DIR, { recursive: true }); } catch (_) {}
     const outIcns = path.join(ASSETS_DIR, `shortcut${__h6 ? '_' + __h6 : ''}.icns`);
     // v2.15.4：命中缓存须校验非空——此前失败可能留下 0 字节坏 .icns，复用会导致图标不显示。
-    if (fs.existsSync(outIcns) && fs.statSync(outIcns).size > 0) return outIcns;
+    if (fs.existsSync(outIcns) && fs.statSync(outIcns).size > 0) { mklog('shortcut.icon.icns', { tag: t, st: 'cache-hit', size: fs.statSync(outIcns).size }); return outIcns; }
     try { if (fs.existsSync(outIcns)) fs.rmSync(outIcns, { force: true }); } catch (_) {}
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fnos-icns-'));
     const iconset = path.join(tmp, 'app.iconset');
     fs.mkdirSync(iconset);
     const base = path.join(tmp, 'base.png');
     fs.writeFileSync(base, pngBuf);
+    let sized = 0;
     for (const s of [16, 32, 128, 256, 512]) {
-      cp.execSync(`sips -z ${s} ${s} ${__macQuote(base)} --out ${__macQuote(path.join(iconset, `icon_${s}x${s}.png`))}`, { stdio: 'ignore', timeout: 15000 });
-      cp.execSync(`sips -z ${s * 2} ${s * 2} ${__macQuote(base)} --out ${__macQuote(path.join(iconset, `icon_${s}x${s}@2x.png`))}`, { stdio: 'ignore', timeout: 15000 });
+      try {
+        cp.execSync(`sips -z ${s} ${s} ${__macQuote(base)} --out ${__macQuote(path.join(iconset, `icon_${s}x${s}.png`))}`, { stdio: 'ignore', timeout: 15000 });
+        cp.execSync(`sips -z ${s * 2} ${s * 2} ${__macQuote(base)} --out ${__macQuote(path.join(iconset, `icon_${s}x${s}@2x.png`))}`, { stdio: 'ignore', timeout: 15000 });
+        sized++;
+      } catch (e) {
+        mklog('shortcut.icon.icns', { tag: t, st: 'resize-fail', s: s, err: String((e && e.message) || e).slice(0, 100) });
+      }
     }
-    cp.execSync(`iconutil -c icns ${__macQuote(iconset)} -o ${__macQuote(outIcns)}`, { stdio: 'ignore', timeout: 15000 });
+    try { cp.execSync(`iconutil -c icns ${__macQuote(iconset)} -o ${__macQuote(outIcns)}`, { stdio: 'ignore', timeout: 15000 }); } catch (e) {
+      mklog('shortcut.icon.icns', { tag: t, st: 'iconutil-fail', err: String((e && e.message) || e).slice(0, 120) });
+    }
+    // 兜底：iconutil 不可用/尺寸不全时，sips 可直接产出 icns
+    if (!(fs.existsSync(outIcns) && fs.statSync(outIcns).size > 0)) {
+      try {
+        cp.execSync('sips -s format icns ' + __macQuote(base) + ' --out ' + __macQuote(outIcns), { stdio: 'ignore', timeout: 20000 });
+        mklog('shortcut.icon.icns', { tag: t, st: 'sips-fallback' });
+      } catch (e) { mklog('shortcut.icon.icns', { tag: t, st: 'sips-fallback-fail', err: String((e && e.message) || e).slice(0, 120) }); }
+    }
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
-    return (fs.existsSync(outIcns) && fs.statSync(outIcns).size > 0) ? outIcns : '';
-  } catch (_) { return ''; }
+    const ok = !!(fs.existsSync(outIcns) && fs.statSync(outIcns).size > 0);
+    // icns 可读性复核（读不出尺寸的 icns 在 Finder 里就是白板）
+    let dimOk = '';
+    if (ok) { try { dimOk = String(cp.execSync('sips -g pixelWidth -g pixelHeight ' + __macQuote(outIcns) + ' 2>/dev/null', { timeout: 8000 })).replace(/\s+/g, ' ').trim().slice(0, 80); } catch (_) {} }
+    mklog('shortcut.icon.icns', { tag: t, st: ok ? 'ok' : 'fail', sized: sized, size: ok ? fs.statSync(outIcns).size : 0, dim: dimOk });
+    return ok ? outIcns : '';
+  } catch (e) {
+    mklog('shortcut.icon.icns', { tag: t, st: 'err', err: String((e && e.message) || e).slice(0, 120) });
+    return '';
+  }
 }
 
-function __macIconPngBuffer(iconPath, preferLive) {
+function __macIconPngBuffer(iconPath, preferLive, tag) {
+  const t = String(tag || '');
   try {
-    if (preferLive) { try { return fs.readFileSync(LIVE_ICON_PNG); } catch (_) {} }
-    if (iconPath && fs.existsSync(iconPath) && /\.png$/i.test(iconPath)) {
+    if (preferLive) {
+      try {
+        const lb = fs.readFileSync(LIVE_ICON_PNG);
+        if (lb && lb.length > 100) { mklog('shortcut.icon.pick', { tag: t, from: 'live-icon' }); return lb; }
+      } catch (_) {}
+    }
+    if (iconPath && fs.existsSync(iconPath)) {
       const buf = fs.readFileSync(iconPath);
-      if (buf && buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50) return buf;
+      // v5.1.4：不再要求 .png 扩展名/PNG magic，一律交给 sips 归一化
+      const png = __macImageToPng(buf, t + ':src');
+      if (png) { mklog('shortcut.icon.pick', { tag: t, from: 'iconPath', size: png.length }); return png; }
     }
   } catch (_) {}
-  try { return fs.readFileSync(ICON_PNG); } catch (_) {}
+  try {
+    const fb = fs.readFileSync(ICON_PNG);
+    mklog('shortcut.icon.pick', { tag: t, from: 'app-icon-fallback', size: fb && fb.length });
+    return fb;
+  } catch (_) {}
   return null;
 }
 
 async function __createMacShortcut(payload) {
   try {
     const isLive = String(payload.appId) === LIVE_LAUNCH_ID;
+    const __tag = (isLive ? 'live' : 'app') + ':' + String(payload.appId || '').slice(-24);
     const appName = String(payload.appName || '').trim() || (isLive ? '电视直播' : '应用');
     let launchName = String(payload.appId || '');
     if (!isLive) { try { launchName = /^https?:/i.test(launchName) ? fpkAppNameFromUrl(launchName) : launchName; } catch (_) {} }
@@ -16153,7 +16743,10 @@ async function __createMacShortcut(payload) {
       }
     } catch (_) {}
     let desktop = '';
-    try { desktop = app.getPath('desktop'); } catch (_) {}
+    // v5.1.4（工单 4/5 取证通道）：dirOverride 允许把快捷方式写到任意目录（默认桌面），
+    // 用于自动化验证（macOS TCC 不让 ssh 读 ~/Desktop）
+    if (String(payload.dirOverride || '')) desktop = String(payload.dirOverride);
+    else { try { desktop = app.getPath('desktop'); } catch (_) {} }
     if (!desktop || !fs.existsSync(desktop)) desktop = path.join(os.homedir(), 'Desktop');
     if (desktop && !fs.existsSync(desktop)) { try { fs.mkdirSync(desktop, { recursive: true }); } catch (_) {} }
     if (!desktop || !fs.existsSync(desktop)) {
@@ -16171,6 +16764,30 @@ async function __createMacShortcut(payload) {
       return { success: false, msg: 'cleanup failed: cannot rewrite desktop shortcut', data: null };
     }
     const epFile = __LAUNCH_ENDPOINT_FILE();
+    // v5.1.4（工单 5：从桌面快捷方式启动后 Dock 里没有图标）——
+    // 旧实现冷启动直接 `"$EXE" --launch-app=… &`：EXE 是 FNOS.app/Contents/MacOS/FNOS，
+    // 由 applet（LSUIElement=true）的子进程直接 exec，LaunchServices 不认这是一次「App 启动」，
+    // 于是只有 accessory 级进程、Dock 不出图标。改为 `open -n -a <FNOS.app> --args …`，
+    // 走 LaunchServices 正常激活应用（Dock 图标 + 前台焦点）；open 不可用时再回落直启。
+    const __openLauncher = [
+      'launch_direct() {',
+      '  if [ -n "$NAS" ]; then',
+      '    "$EXE" "--launch-app=$APP" "--nas=$NAS" >/dev/null 2>&1 &',
+      '  else',
+      '    "$EXE" "--launch-app=$APP" >/dev/null 2>&1 &',
+      '  fi',
+      '}',
+      'APPBUNDLE=$(printf %s "$EXE" | sed -n "s#^\\(.*\\.app\\)/Contents/MacOS/.*#\\1#p")',
+      'if [ -n "$APPBUNDLE" ] && [ -d "$APPBUNDLE" ] && command -v open >/dev/null 2>&1; then',
+      '  if [ -n "$NAS" ]; then',
+      '    open -n -a "$APPBUNDLE" --args "--launch-app=$APP" "--nas=$NAS" >/dev/null 2>&1 && exit 0',
+      '  else',
+      '    open -n -a "$APPBUNDLE" --args "--launch-app=$APP" >/dev/null 2>&1 && exit 0',
+      '  fi',
+      'fi',
+      'if [ -x "$EXE" ]; then launch_direct; exit 0; fi',
+      'exit 1',
+    ].join(String.fromCharCode(10));
     const launcher = [
       '#!/bin/bash',
       '# FNOS fast launcher (generated, do not edit)',
@@ -16186,15 +16803,7 @@ async function __createMacShortcut(payload) {
       '    [ "$CODE" = "200" ] && exit 0',
       '  fi',
       'fi',
-      'if [ -x "$EXE" ]; then',
-      '  if [ -n "$NAS" ]; then',
-      '    "$EXE" "--launch-app=$APP" "--nas=$NAS" >/dev/null 2>&1 &',
-      '  else',
-      '    "$EXE" "--launch-app=$APP" >/dev/null 2>&1 &',
-      '  fi',
-      '  exit 0',
-      'fi',
-      'exit 1',
+      __openLauncher,
       ''
     ].join(String.fromCharCode(10));
     const scpt = 'do shell script "/bin/bash " & quoted form of (POSIX path of (path to resource "run.sh"))';
@@ -16212,28 +16821,46 @@ async function __createMacShortcut(payload) {
       fs.chmodSync(__runSh, 0o755);
     } catch (_) {}
     let __icnsOk = false;
+    let __icnsPath = '';
     try {
-      const pngBuf = __macIconPngBuffer(String(payload.iconPath || ''), isLive);
-      const icns = __pngToIcnsMac(pngBuf);
-      if (icns) { fs.copyFileSync(icns, path.join(resDir, 'app.icns')); __icnsOk = true; }
-    } catch (_) {}
+      const pngBuf = __macIconPngBuffer(String(payload.iconPath || ''), isLive, __tag);
+      __icnsPath = __pngToIcnsMac(pngBuf, __tag);
+      if (__icnsPath) { fs.copyFileSync(__icnsPath, path.join(resDir, 'app.icns')); __icnsOk = true; }
+      mklog('shortcut.icon.bundle', { tag: __tag, icns: !!__icnsPath, dst: path.join(resDir, 'app.icns'), ok: __icnsOk });
+    } catch (e) { mklog('shortcut.icon.bundle', { tag: __tag, st: 'err', err: String((e && e.message) || e).slice(0, 120) }); }
     // v2.15.4：osacompile 生成的 applet 自带默认卷轴图标（applet.icns/AppletIcon）会盖住自定义图，
     // 生成自定义 icns 后移除默认图，避免 Finder 回落显示卷轴图标。
+    // v5.1.4（工单 4：图标白板）——新版 macOS（Ventura+）osacompile 产物还带 Assets.car，
+    // 它的优先级高于 CFBundleIconFile，不删掉的话 app.icns 白写，Finder 里就是白板/卷轴。
     if (__icnsOk) {
-      for (const dicon of ['applet.icns', 'AppletIcon.icns', 'AppletIcon.rsrc', 'applet.rsrc', 'droplet.rsrc']) {
-        try { fs.rmSync(path.join(resDir, dicon), { force: true }); } catch (_) {}
+      for (const dicon of ['applet.icns', 'AppletIcon.icns', 'AppletIcon.rsrc', 'applet.rsrc', 'droplet.rsrc', 'Assets.car']) {
+        const p = path.join(resDir, dicon);
+        const had = fs.existsSync(p);
+        try { fs.rmSync(p, { force: true }); } catch (_) {}
+        if (had) mklog('shortcut.icon.rm', { tag: __tag, file: dicon, gone: !fs.existsSync(p) });
       }
     }
     try {
       const infoPlist = path.join(contents, 'Info.plist');
       const pb = '/usr/libexec/PlistBuddy';
+      const pbRun = (cmd) => { try { cp.execSync(pb + ' -c ' + __macQuote(cmd) + ' ' + __macQuote(infoPlist), { stdio: 'ignore', timeout: 10000 }); return true; } catch (_) { return false; } };
       const pbSet = (cmd) => { try { cp.execSync(pb + ' -c ' + __macQuote(cmd) + ' ' + __macQuote(infoPlist), { stdio: 'ignore', timeout: 10000 }); } catch (_) {} };
       pbSet('Set :CFBundleName string ' + appName);
       pbSet('Set :CFBundleDisplayName string ' + appName);
       pbSet('Set :CFBundleIdentifier string com.fnos.client.shortcut.' + (isLive ? 'live' : 'app'));
-      if (__icnsOk) pbSet('Set :CFBundleIconFile string app');
+      if (__icnsOk) {
+        // v5.1.4：老 applet 可能没有 CFBundleIconFile 键，Set 会失败 → 必须 Add 兜底
+        if (!pbRun('Set :CFBundleIconFile string app')) pbSet('Add :CFBundleIconFile string app');
+        if (!pbRun('Set :CFBundleIconName string app')) pbSet('Add :CFBundleIconName string app');
+      }
       pbSet('Add :LSUIElement bool true');
+      // 复核：把最终落盘的图标键读回来（白板问题只看日志不好判，这一条能直接对上/不对）
+      let __iconKey = '';
+      try { __iconKey = String(cp.execSync(pb + ' -c ' + __macQuote('Print :CFBundleIconFile') + ' ' + __macQuote(infoPlist) + ' 2>/dev/null', { timeout: 8000 })).trim(); } catch (_) {}
+      mklog('shortcut.icon.plist', { tag: __tag, iconFile: __iconKey, icnsOk: __icnsOk, hasAssetsCar: fs.existsSync(path.join(resDir, 'Assets.car')) });
     } catch (_) {}
+    // v5.1.4：清掉 LaunchServices 里可能存在的旧记录（白板图标有时是缓存命中旧记录）
+    try { cp.execSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u ' + __macQuote(appDir), { stdio: 'ignore', timeout: 15000 }); } catch (_) {}
     try { cp.execSync('codesign --deep --force --sign - ' + __macQuote(appDir), { stdio: 'ignore', timeout: 20000 }); } catch (_) {}
     // v2.15.4：强制 LaunchServices 重新注册 + touch 更新 mtime，刷新 Finder 图标缓存。
     // 否则即便 CFBundleIconFile/app.icns 正确，Finder 仍显示旧的 applet 默认图标。
@@ -16708,7 +17335,25 @@ function __startLaunchServer() {
   try {
     const __http = require('http');
     __launchHttpServer = __http.createServer((req, res) => {
-      if (req.method !== 'POST' || String(req.url || '').split('?')[0] !== '/launch') { try { res.writeHead(404); res.end(); } catch (_) {} return; }
+      const __path0 = String(req.url || '').split('?')[0];
+      // v5.1.4：本地诊断通道（仅 127.0.0.1 + token 校验；用于 mac 真机取证）
+      if (req.method === 'POST' && __path0 === '/diag') {
+        let dbody = '';
+        req.on('data', (c) => { dbody += String(c); if (dbody.length > 65536) { try { req.destroy(); } catch (_) {} } });
+        req.on('end', async () => {
+          try {
+            const dq = new URLSearchParams(dbody);
+            if (!__launchToken || String(dq.get('token') || '') !== __launchToken) { try { res.writeHead(403); res.end('auth'); } catch (_) {} return; }
+            let dparams = {};
+            try { dparams = JSON.parse(String(dq.get('params') || '{}')); } catch (_) {}
+            const out = await __diagHandle(String(dq.get('action') || ''), dparams);
+            const body = JSON.stringify(out);
+            try { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(body); } catch (_) {}
+          } catch (e) { try { res.writeHead(500); res.end(String((e && e.message) || e)); } catch (_) {} }
+        });
+        return;
+      }
+      if (req.method !== 'POST' || __path0 !== '/launch') { try { res.writeHead(404); res.end(); } catch (_) {} return; }
       let body = '';
       req.on('data', (c) => { body += String(c); if (body.length > 2048) { try { req.destroy(); } catch (_) {} } });
       req.on('end', async () => {
@@ -16725,6 +17370,7 @@ function __startLaunchServer() {
           // 不走 FPK 解析/不弹主界面（与菜单"电视直播"行为一致）
           if (appId === LIVE_LAUNCH_ID) {
             try { invokeLiveWindow(); } catch (_) {}
+            try { __macActivateApp('launch.live'); } catch (_) {}
             try { require('./logger.js').log('info', 'live', 'live.shortcut_invoke', { params: { via: 'wscript' } }, __RUN_MODE); } catch (_) {}
             try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
             return;
@@ -16744,6 +17390,7 @@ function __startLaunchServer() {
               } catch (_) {}
               if (__dupWin) {
                 try { if (__dupWin.isMinimized()) __dupWin.restore(); if (!__dupWin.isVisible()) __dupWin.show(); __dupWin.focus(); __dupWin.moveTop(); } catch (_) {}
+                try { __macActivateApp('launch.dup'); } catch (_) {}
                 try { require('./logger.js').log('info', 'launch', 'launch.http dedupe.focus-existing', { params: { appId: appId.slice(0, 120), winId: __dupWin.id } }, __RUN_MODE); } catch (_) {}
                 try { __healReuseWin24(__dupWin, 'launch.http'); } catch (_) {}
                 try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('dup'); } catch (_) {}
@@ -16860,6 +17507,7 @@ function __startLaunchServer() {
             try { require('./logger.js').log('info', 'launch', 'launch.open', { params: { appId: appId.slice(0, 120), ok: !!__openedH, windowType: String(__wth || ''), url: String(u).slice(0, 160), ms: Date.now() - __t0L } }, __RUN_MODE); } catch (_) {}
             __notifyOpenFpkApp(appId, true, u, __openedH ? (__wth || 'popout') : '');
             try { hideMainToBackground(); } catch (_) {}
+            try { __macActivateApp('launch.http'); } catch (_) {}
             try { require('./logger.js').log('info', 'launch', 'launch.http trigger', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
             try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
           } else {
@@ -21458,6 +22106,7 @@ function __handleSecondInstance(_e, commandLine) {
   }
   // v2.3.5：标记握手完成（写 pid），告知新实例主进程已响应，避免误报"进程异常"。
   try { __markHandshakeDone(); } catch (_) {}
+  try { __macActivateApp('second-instance'); } catch (_) {}
   try {
     const argv = commandLine || [];
     let u = '';

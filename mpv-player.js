@@ -1095,6 +1095,8 @@ class MpvPlayer extends EventEmitter {
       return;
     }
     if (msg.event === 'file-loaded') {
+      // v5.0.12（排查用）：每次起播记录，配合 end-file 看是否周期性重载
+      try { this.emit('log', 'file-loaded live=' + (this._isLive ? 1 : 0) + ' url=' + String(this._curUrl || '').slice(-70)); } catch (_) {}
       this._reloadTries = 0; this._restartTries = 0;
       this._startupTries = 0; // 起播确认成功，清掉 startup watchdog 计数
       if (this._startupTimer) { clearTimeout(this._startupTimer); this._startupTimer = null; }
@@ -1129,6 +1131,8 @@ class MpvPlayer extends EventEmitter {
     }
     if (msg.event === 'end-file') {
       const reason = msg.reason;
+      // v5.0.12（排查用）：记录每次 end-file 的原因与播放位置，判断"循环"是 EOF/error/重连
+      try { this.emit('log', 'end-file reason=' + String(reason) + ' live=' + (this._isLive ? 1 : 0) + ' pos=' + Math.round(this._timePosVal || 0) + ' dur=' + Math.round(this._duration || 0)); } catch (_) {}
       // 用户点 mpv 窗口自带关闭按钮：标记为用户关闭（供 exit handler 不做崩溃自愈，
       // 并通知主进程回收嵌入层）。这是修复"关闭 mpv 后又自动打开"的关键。
       if (reason === 'quit' || reason === 'shutdown') {

@@ -1,3 +1,18 @@
+## v5.1.9（macOS 播放方案 A 落地）
+
+### mac 改用 HTML5 播放，并自动绕开私网地址限制
+
+- **背景**：macOS 的 mpv 构建没有运行时窗口定位能力（无 window-* 属性/命令，geometry 仅启动时生效），
+  覆盖窗无法跟随主窗；用户拍板改用 HTML5。
+- **改造**：影视页不再自动嵌入 MPV（`embed.skip.mac-html5`）；`mpv:embed` 在 darwin 直接返回；
+  直播窗隐藏「🎬 MPV 打开」按钮。
+- **关键坑**：Chromium 渲染进程对私有网络地址有 PNA 限制 —— `file://` 页面 fetch `http://192.168.x.x`
+  直接 Failed to fetch（主进程 curl 却 200），导致 hls.js 报 `manifestLoadError` 黑屏。
+- **修复**：`play()` 前用页面自身能力向 FRP / IPv6 线路要播放列表，按频道名找到同频道真实地址并实测，
+  命中即用（换线路必须换主机，只换 `line=` 参数无效）。
+- **实测**：点 CCTV1 后 `video.readyState=4 / paused=false / currentTime=12`，日志出现 first-frame、playing，
+  地址自动切到 `…10301/play/…m3u8?line=frp`。另清理了直播窗 webSecurity 的重复键。
+
 ## v5.1.3
 
 ### macOS：移除 mpv 不支持的窗口定位命令

@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 // 原生直播播放器使用的桥接 API（contextIsolation 安全暴露）
 contextBridge.exposeInMainWorld('fnosLive', {
   // 初始上下文：NAS 基地址、当前线路、收藏、本地代理地址与运行状态
+  // v5.1.6：把平台暴露给页面（mac 上按用户决策 A 走 HTML5，隐藏「🎬 MPV 打开」）
+  platform: process.platform,
   getContext: () => ipcRenderer.invoke('iptv:get-context'),
   // 按线路拉取并解析播放列表（主进程完成网络请求，规避 CORS）
   fetchPlaylist: (line) => ipcRenderer.invoke('iptv:fetch-playlist', line),

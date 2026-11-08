@@ -180,7 +180,7 @@
         <select id="audioSel"></select>
       </div>
       <div id="recList" title="正在录制"></div>
-      <button class="ctl" id="extBtn" title="用内置 MPV 打开当前直播（解码失败 / 4K / HEVC 时使用）">🎬 MPV 打开</button>
+      <button class="ctl" id="extBtn" title="用内置 MPV 打开当前直播（解码失败 / 4K / HEVC 时使用）" data-mac-hide="1">🎬 MPV 打开</button>
       <button class="ctl" id="recBtn" title="录制当前频道（保存为 TS）">● 录制</button>
       <button class="ctl" id="recFolderBtn" title="打开录制保存目录">录制目录</button>
       <button class="ctl" id="epgBtn" title="节目单 / 回看">节目单</button>
@@ -567,6 +567,7 @@ function setPh(title, sub, isErr, loading) {
   $('#phTitle').textContent = title;
   $('#phSub').textContent = sub || '';
   $('#phSub').className = 'sub' + (isErr ? ' err' : '');
+  try { if (api && api.platform === 'darwin') { const b = document.getElementById('extBtn'); if (b) b.style.display = 'none'; } } catch (_) {}
   $('#phSpin').style.display = loading ? 'block' : 'none';
   $('#placeholder').style.display = title ? 'flex' : 'none';
 }
@@ -684,8 +685,38 @@ function destroyHls() {
 }
 
 // v1.24.0：播放调度 —— 优先 VLC 内核（通吃 H.264/HEVC/4K），不可用/失败回退 hls.js
+// v5.1.8（用户决策 A / mac 专用）——Chromium 渲染进程访问「私有网络地址」会被 PNA 策略拦截：
+// file:// 页面 fetch http://192.168.x.x 报 Failed to fetch，而同一地址公网线路（FRP）却正常，
+// 结果就是 hls.js 报 manifestLoadError、画面黑屏。这里在播放前用【页面自身】的能力探测候选线路，
+// 命中哪条就用哪条（探测放在渲染进程才与 hls.js 的限制一致；主进程 probeLines 不受该限制，会误判）。
+async function macPickPlayableUrl(ch) {
+  try {
+    if (!api || api.platform !== 'darwin') return ch.url;
+    if (!/\/\/(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ch.url)) return ch.url;
+    // 关键：换线路必须换「主机」（LAN 主机在渲染进程被 PNA 拦），
+    // 所以直接向各线路要播放列表，按频道名找到同一频道的真实地址再测。
+    for (const line of ['frp', 'ipv6']) {
+      try {
+        const pl = await api.fetchPlaylist(line);
+        const list = (pl && (pl.channels || pl.list)) || [];
+        const hit = list.find((c) => c && (c.name === ch.name || c.id === ch.id));
+        if (!hit || !hit.url) continue;
+        const r = await fetch(hit.url, { cache: 'no-store' });
+        if (!r.ok) continue;
+        const t = await r.text();
+        if (!/#EXTM3U/.test(t)) continue;
+        try { api.liveLog('info', 'mac.line.pick', { line, from: ch.url.slice(-30), to: String(hit.url).slice(-30) }); } catch (_) {}
+        return hit.url;
+      } catch (_) {}
+    }
+    try { api.liveLog('warn', 'mac.line.none', { ch: ch.name }); } catch (_) {}
+  } catch (_) {}
+  return ch.url;
+}
+
 async function play(ch) {
   if (!ch || !ch.url) return;
+  try { ch = Object.assign({}, ch, { url: await macPickPlayableUrl(ch) }); } catch (_) {}
   currentCh = ch;
   $('#npName').textContent = ch.name || '直播中';
   $('#npGroup').textContent = ch.group ? '· ' + ch.group : '';

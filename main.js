@@ -19642,6 +19642,8 @@ function createLiveWindow(autoplayChannel) {
         // misdetected as the settings window and got an opaque dark gradient titlebar,
         // which showed up as a black rectangle where the titlebar should be transparent.
         additionalArguments: ['--fnos-live-window'],
+        // v5.1.7 备注：此处原本想按平台收紧 webSecurity，但下方已有 `webSecurity: false`
+        // （v1.20.0 为 hls.js 跨域所加，后写的键生效）→ 删掉重复键避免误导。
         contextIsolation: true, webviewTag: true,
         nodeIntegration: false,
         sandbox: false, // v1.56：live-preload 需 require 本地 titlebar-inject，必须关闭沙箱
@@ -21424,6 +21426,11 @@ async function embedMpvPlay(hostWin, payload) {
   if ((process.platform !== 'win32' && process.platform !== 'darwin') || !MpvSurfaceMod || !MpvPlayerMod) {
     dlog('warn', 'mpv.embed.skip', { reason: 'platform-or-module', platform: process.platform, hasSurface: !!MpvSurfaceMod, hasPlayer: !!MpvPlayerMod });
     return { ok: false, reason: 'MPV 仅支持 Windows/macOS 且模块已加载' };
+  }
+  // v5.1.6（用户决策 A）：macOS 不接管播放，统一走网页 HTML5/hls.js。
+  if (process.platform === 'darwin') {
+    try { dlog('info', 'mpv.embed.skip', { reason: 'mac-html5-first' }); } catch (_) {}
+    return { ok: false, reason: 'macOS 上已改为 HTML5 播放（MPV 覆盖窗无法跟随主窗）' };
   }
   let exePath = MpvPlayerMod.getMpvExe();
   if (!exePath) {

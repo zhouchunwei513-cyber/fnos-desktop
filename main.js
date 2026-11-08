@@ -4515,7 +4515,7 @@ function __createMenuPopupWindow() {
       show: false,
       frame: false,
       transparent: true,
-      backgroundColor: '#00000000',
+      backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
       // 菜单弹窗是 frame:false 的贴边浮层，两个平台都保持直角（macOS 上也不要系统圆角，
       // 否则弹出的自定义菜单会凭空多出一圈圆角/阴影）。
       roundedCorners: false,
@@ -5772,7 +5772,7 @@ function showDownloadProgress(item, finalPath, tmpPath) {
     skipTaskbar: true,
     show: false,
     icon: ICON_PATH,
-    backgroundColor: '#00000000',
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
     parent: undefined, // 不绑定父窗口，避免主窗最小化时下载窗也被隐藏
     modal: false,
     webPreferences: {
@@ -6166,7 +6166,7 @@ function showGlassDialog(parent, options = {}) {
       focusable: true,
       show: false,
       icon: ICON_PATH,
-      backgroundColor: '#00000000',
+      backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
       webPreferences: {
         preload: DIALOG_PRELOAD,
         contextIsolation: true, webviewTag: true,
@@ -6306,7 +6306,7 @@ function createLockWindow(mode /* 'unlock' | 'setup' | 'change' */ = 'unlock') {
     skipTaskbar: true,
     show: false,
     icon: ICON_PATH,
-    backgroundColor: '#00000000',
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
     hasShadow: false,
     thickFrame: false,
     webPreferences: {
@@ -6998,7 +6998,7 @@ function registerWindow(win, opts = {}) {
           // 于是标题栏那条透明栏透出的就是窗口底色——一条黑色横条，和影视（走
           // createAppWindow，透明窗 + 应用窗分支）的透明标题栏完全两个样子。
           transparent: true,
-          backgroundColor: '#00000000',
+          backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
           roundedCorners: __ROUNDED_CORNERS,
           autoHideMenuBar: true,
           frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
@@ -12969,7 +12969,7 @@ function buildMenuTemplate() {
             // 原来的不透明底色会让四角露出窗口背景，圆角逻辑对不对都看不出来。
             transparent: true,
             roundedCorners: __ROUNDED_CORNERS,
-            backgroundColor: '#00000000',
+            backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
             icon: ICON_PATH,
             parent: mainWindow || undefined,
             modal: false,
@@ -15929,7 +15929,7 @@ function __showUpdChecking() {
     // v3.0.24（用户反馈：检查更新提示框前置等级太高，要按正常逻辑）——不再系统级置顶，
     // 只靠 mpv 降层 + 正常 z-order 浮在程序窗之上，不压其它程序。
     alwaysOnTop: false, show: false, hasShadow: true, icon: ICON_PATH,
-    backgroundColor: '#00000000',
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   win.__isGlassDialog = true;
@@ -15981,7 +15981,7 @@ function __showUpdProgress(ver) {
     frame: false, transparent: true, resizable: false, minimizable: false,
     maximizable: false, fullscreenable: false, skipTaskbar: true,
     alwaysOnTop: false, show: false, hasShadow: true, icon: ICON_PATH, // v3.0.24：用户反馈层级过高，改普通层级
-    backgroundColor: '#00000000',
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
     webPreferences: {
       preload: UPD_PROGRESS_PRELOAD,
       contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
@@ -19628,7 +19628,7 @@ function createLiveWindow(autoplayChannel) {
     liveWindow = new BrowserWindow({
       width: 1280, height: 820, minWidth: 960, minHeight: 600,
       title: APP_NAME + ' · 电视直播',
-      backgroundColor: '#00000000',
+      backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
       transparent: true, // v2.15.25: live window transparent (titlebar shows desktop)
     roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
       // v2.15.0：macOS 用原生标题栏（红绿灯），Windows 保持自绘无边框

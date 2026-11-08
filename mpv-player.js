@@ -708,10 +708,15 @@ class MpvPlayer extends EventEmitter {
     // 而不是很快放弃触发"提前 EOF"。
     // 注意：reconnect_on_http_error 的值(如 4xx,5xx)含逗号，会被 mpv 当成 demuxer-lavf-o 的
     // 选项分隔符，这里不传（默认已覆盖 404/429/500/503）。其余键值用逗号分隔即可。
-    args.push('--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8'
-      // v5.0.9（回归修复）：v5.0.3 的 --hls-live-edge / --demuxer-lavf-o-add 在该 mpv 构建里是未知选项
-      // → mpv 解析失败即 exit 1（用户实测：点 MPV 播放起不来）。改为把直播起点合进 ffmpeg 侧选项。
-      + (opts.isLive ? ',live_start_index=-1' : ''));
+    // v5.0.14（用户实测：直播每 10 秒回一次 0，且客户端无任何重载日志 → 是 ffmpeg 侧在自我重开）
+    // 现场：mpv IPC 采样 time-pos 9.28 → playback-restart → 0.60 → … → 9.12 → restart，周期≈10s。
+    // 元凶是这两个只适合"下载式"场景的参数：
+    //   reconnect_at_eof=1   —— 让 ffmpeg 在 demuxer 认为 EOF 时重开连接（HLS 分片边界即触发）
+    //   live_start_index=-1  —— 每次重开都跳到"最后一段"，于是每 10 秒从新分片头开始
+    // 直播改为只保留网络抖动重连，交给 HLS demuxer + 应用层重连处理续播。
+    args.push(opts.isLive
+      ? '--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15'
+      : '--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
 
     // 形态 A：mpv 原生无边框窗口，覆盖在应用视频区（fntv 同款，最稳，OSC/拖动/键盘全可用）
     //   geometry 使用【屏幕物理像素】坐标（与 Electron getContentBounds()*scaleFactor 一致）。

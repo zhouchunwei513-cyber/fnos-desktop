@@ -1,3 +1,14 @@
+## v5.0.14
+
+### 直播每 10 秒回到开头：移除 ffmpeg 的 reconnect_at_eof / live_start_index
+
+- IPC 实测（家里机 mpv）：time-pos 9.28 → playback-restart → 0.60 → … → 9.12 → restart，周期≈10s；
+  同期客户端 **没有任何 loadfile/end-file 日志** → 不是我们重载，是 ffmpeg 侧自我重开；
+- 根因：`--demuxer-lavf-o` 里的 `reconnect_at_eof=1`（分片边界触发重开）与
+  `live_start_index=-1`（每次重开都跳到最后一段）组合 → 每 10 秒从新分片头开始；
+- 修法：直播只用 `reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay…`，
+  点播保持原参数不变。
+
 ## v5.0.11
 
 ### 自定义内核（mpv-lazy）直播仍循环：禁用 watch-later

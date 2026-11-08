@@ -1214,7 +1214,17 @@ function __rememberFsBounds(win) {
 // 于是任何基于它的判断都会把"已经全屏"当成"没全屏"，退出流程被误触发。
 const __fsStateMap = new WeakMap(); // win -> 是否处于（我们发起的）全屏
 function __isFsOn(win) {
-  try { return !!__fsStateMap.get(win); } catch (_) { return false; }
+  try {
+    if (__fsStateMap.get(win)) return true;
+    // v5.1.14（mac 红绿灯）：macOS 原生绿钮进的是系统全屏，不走下面这套 setFullScreen 状态机。
+    // 不把原生全屏算进来时：ESC 退不出、标题栏/正文不联动、退出后还会把全屏 bounds 当成
+    // 「正常尺寸」写进 settings（下次启动窗口异常放大）。这里统一纳入。
+    if (process.platform === 'darwin' && win && !win.isDestroyed()
+        && typeof win.isFullScreen === 'function') {
+      return !!win.isFullScreen();
+    }
+    return false;
+  } catch (_) { return false; }
 }
 // v3.0.68（用户工单：飞牛影视“全屏退不出”，要按多次 ESC）——
 // 页面里调 requestFullscreen() 走的是 Electron 原生 HTML 全屏，与上面这套 setFullScreen 状态机完全平行，
@@ -3462,17 +3472,94 @@ try { app.on('browser-window-created', (_e, win) => { try { __attachWinDiag(win)
 // 用户报第 5 项：快捷方式启动应用后 Dock 不显示对应图标。
 // 根因：快捷方式 .app 是 LSUIElement（无 Dock 图标），热路径 POST /launch 只在后台开窗，
 // 全项目此前没有任何 app.dock.show()/app.focus() 调用 → 窗口出现但 Dock 不激活、也不前置。
+function __macDockState() {
+  try {
+    return {
+      policy: (() => { try { return typeof app.getActivationPolicy === 'function' ? app.getActivationPolicy() : null; } catch (_) { return null; } })(),
+      dockVisible: app.dock ? app.dock.isVisible() : null,
+      focused: (() => { const w = BrowserWindow.getFocusedWindow(); return w ? w.id : null; })()
+    };
+  } catch (_) { return null; }
+}
 function __macActivateApp(why) {
   if (process.platform !== 'darwin') return;
-  let before = null;
-  try { before = { dockVisible: app.dock ? app.dock.isVisible() : null, focused: (() => { const w = BrowserWindow.getFocusedWindow(); return w ? w.id : null; })() }; } catch (_) {}
-  try { if (app.dock && !app.dock.isVisible()) app.dock.show(); } catch (_) {}
+  const before = __macDockState();
+  // v5.1.14（工单 5：Dock 里看不到图标）——dock.show() 只在 isVisible()=false 时调用，
+  // 而 accessory 进程上 isVisible() 可能报 true、Dock 里其实没有图标。这里无条件
+  // 把激活策略切回 regular 并 show()（幂等）；日志同时记录 activationPolicy，
+  // 下一次真机取证就能直接区分「策略没切回来」还是「图标资源问题」。
+  try { if (typeof app.setActivationPolicy === 'function') app.setActivationPolicy('regular'); } catch (_) {}
+  try {
+    if (app.dock) {
+      const r = app.dock.show();
+      if (r && typeof r.catch === 'function') r.catch(() => {});
+    }
+  } catch (_) {}
+  // Dock 图标兜底：快捷方式链路下 Bundle 图标偶尔拿不到 → 显式塞一张 PNG。
+  // 只有在「当前没有为某个应用单独设置图标」时才回落到 FNOS 主图标。
+  try {
+    if (app.dock && typeof app.dock.setIcon === 'function' && !global.__fnosDockIconApp) {
+      const img = nativeImage.createFromPath(ICON_PNG);
+      if (img && !img.isEmpty()) { app.dock.setIcon(img); global.__fnosDockIconBase = true; }
+    }
+  } catch (_) {}
   try { app.focus({ steal: true }); } catch (_) { try { app.focus(true); } catch (_) {} }
-  setTimeout(() => {
-    let after = null;
-    try { after = { dockVisible: app.dock ? app.dock.isVisible() : null, focused: (() => { const w = BrowserWindow.getFocusedWindow(); return w ? w.id : null; })() }; } catch (_) {}
-    mklog('macdiag.dock.activate', { why, before, after });
-  }, 600);
+  const __after = (ms) => setTimeout(() => {
+    try { mklog('macdiag.dock.activate', { why, afterMs: ms, before, after: __macDockState() }); } catch (_) {}
+  }, ms);
+  __after(300); __after(1200);
+}
+// 工单 5：mac 的「对应应用图标」= 打开应用窗时把 Dock 图标换成该应用的图标，
+// 回到主页/所有应用窗关闭时换回 FNOS 图标（与 Windows 每个应用窗独立任务栏图标对齐）。
+function __macPickAppIconPng(appId, isLive) {
+  try {
+    const id = String(appId || '');
+    if (isLive || id === LIVE_LAUNCH_ID) {
+      try { const b = fs.readFileSync(LIVE_ICON_PNG); if (b && b.length > 100) return b; } catch (_) {}
+    }
+    const cands = [];
+    try { cands.push(path.join(ASSETS_DIR, 'fpklist_' + Buffer.from(id).toString('base64url').slice(0, 40) + '.png')); } catch (_) {}
+    try {
+      const st = loadSettings();
+      const arr = Array.isArray(st.apps) ? st.apps : [];
+      const hit = arr.find((a) => a && (String(a.appId || '') === id || (() => { try { return fpkAppNameFromUrl(a.url || '') === id; } catch (_) { return false; } })()));
+      if (hit && hit.iconPath) cands.push(String(hit.iconPath));
+    } catch (_) {}
+    try { cands.push(path.join(ASSETS_DIR, String(id || 'app').replace(/[^a-zA-Z0-9_-]/g, '_') + '.png')); } catch (_) {}
+    for (const c of cands) {
+      try {
+        if (!c || !fs.existsSync(c) || fs.statSync(c).size < 100) continue;
+        const png = __macImageToPng(c, 'dock:' + id.slice(0, 20));
+        if (png && png.length > 100) return png;
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
+}
+function __macSetDockIcon(appId, why, isLive) {
+  if (process.platform !== 'darwin') return;
+  try {
+    const id = String(appId || '');
+    const png = __macPickAppIconPng(id, !!isLive);
+    if (!png) { try { mklog('macdiag.dock.icon', { why, appId: id.slice(0, 60), st: 'no-icon' }); } catch (_) {} return; }
+    const img = nativeImage.createFromBuffer(png);
+    if (!img || img.isEmpty()) { try { mklog('macdiag.dock.icon', { why, appId: id.slice(0, 60), st: 'empty' }); } catch (_) {} return; }
+    if (app.dock && typeof app.dock.setIcon === 'function') app.dock.setIcon(img);
+    global.__fnosDockIconApp = id;
+    try { mklog('macdiag.dock.icon', { why, appId: id.slice(0, 60), st: 'ok', bytes: png.length, live: !!isLive }); } catch (_) {}
+  } catch (e) { try { mklog('macdiag.dock.icon', { why, appId: String(appId || '').slice(0, 60), st: 'err', err: String((e && e.message) || e).slice(0, 120) }); } catch (_) {} }
+}
+function __macResetDockIcon(why) {
+  if (process.platform !== 'darwin') return;
+  try {
+    if (!global.__fnosDockIconApp) return;
+    const img = nativeImage.createFromPath(ICON_PNG);
+    if (img && !img.isEmpty() && app.dock && typeof app.dock.setIcon === 'function') {
+      app.dock.setIcon(img);
+      global.__fnosDockIconApp = '';
+      try { mklog('macdiag.dock.icon', { why, appId: '', st: 'reset' }); } catch (_) {}
+    }
+  } catch (_) {}
 }
 
 // ---- 登录链路分段探测：DNS → TCP(v4/v6) → TLS → HTTP → Cookie ----
@@ -3551,6 +3638,16 @@ async function __netSegProbe(rawUrl, opts) {
   const isHttps = u.protocol === 'https:';
   const port = Number(u.port || (isHttps ? 443 : 80));
   out.host = host; out.port = port; out.https = isHttps; out.private = __netIsPrivateHost(host);
+  // 0) 该分区实际生效的代理（v5.1.14）——「Node TCP 通、Chromium 却 -109」时，
+  // 第一时间就能区分是代理接管还是系统权限。DIRECT 才说明请求真的直连。
+  try {
+    if (o.partition) {
+      const __ses = session.fromPartition(String(o.partition));
+      const __px = await __ses.resolveProxy(u.href);
+      out.proxy = String(__px || '');
+      mklog('macdiag.net.proxy', { host, port, partition: String(o.partition).slice(0, 60), proxy: out.proxy, direct: /^DIRECT\b/i.test(out.proxy) });
+    }
+  } catch (e) { out.proxy = 'err:' + String((e && e.message) || e).slice(0, 60); }
   // 1) DNS
   try {
     const dns = require('dns');
@@ -3621,17 +3718,18 @@ async function __netSegProbe(rawUrl, opts) {
       });
     } catch (e) { out.http = { ok: false, err: String(e && e.message || e) }; }
     mklog('macdiag.net.http', { host, http: out.http });
-    // 5) Cookie（该分区里已有多少会话票据）
-    try {
-      const part = o.partition || '';
-      if (part) {
-        const ses = session.fromPartition(part);
-        const cks = await ses.cookies.get({});
-        out.cookie = { partition: part, count: cks.length, names: cks.slice(0, 8).map((c) => c.name) };
-        mklog('macdiag.net.cookie', { host, cookie: out.cookie });
-      }
-    } catch (e) { out.cookie = { err: String(e && e.message || e) }; }
   }
+  // 5) Cookie（该分区里已有多少会话票据）
+  // v5.1.14：即使 TCP 不通也要记录——判定「登录后被踢回」到底是分区没票据还是链路断了。
+  try {
+    const part = o.partition || '';
+    if (part) {
+      const ses = session.fromPartition(part);
+      const cks = await ses.cookies.get({});
+      out.cookie = { partition: part, count: cks.length, names: cks.slice(0, 8).map((c) => c.name) };
+      mklog('macdiag.net.cookie', { host, cookie: out.cookie });
+    }
+  } catch (e) { out.cookie = { err: String(e && e.message || e) }; }
   // 6) 结论
   if (out.dns && out.dns.err) out.verdict = 'dns-fail';
   else if (!tcpOk) {
@@ -6827,6 +6925,10 @@ function registerWindow(win, opts = {}) {
     appWindows = appWindows.filter((w) => w.win !== win);
     if (entry.isMain) mainWindow = null;
     scheduleMenuRebuild();
+    // v5.1.14（工单 5）：所有应用窗都关了 → Dock 图标换回 FNOS 主图标。
+    if (process.platform === 'darwin') setTimeout(() => {
+      try { if (!appWindows.some((w) => !w.isHome && w.win && !w.win.isDestroyed())) __macResetDockIcon('all-app-closed'); } catch (_) {}
+    }, 80);
   });
   // v1.18 性能：窗口不在前台（最小化/隐藏/失焦）时降低渲染帧率到 15fps，
   // 回到前台/获得焦点恢复 60fps。开多个应用窗口时可显著降低 CPU/GPU 占用。
@@ -6935,7 +7037,7 @@ function registerWindow(win, opts = {}) {
         });
         if (tries > 5) {
           dlog && dlog('error', 'main.render-gone.giveup', { try: tries, winId: win.id, reason, seriesCount: global.__crashSeriesCount });
-          try { if (!win.isDestroyed()) showConnectPage(); } catch (_) {}
+          try { if (!win.isDestroyed()) showConnectPage({ keepTarget: true }); } catch (_) {}
           return;
         }
         // 指数退避：1200, 2000, 3200, 4800, 6800ms
@@ -6948,9 +7050,9 @@ function registerWindow(win, opts = {}) {
             const target = lastConnectHref || win.webContents.getURL();
             if (target && /^https?:/i.test(target)) {
               dlog && dlog('info', 'main.render-gone.reload', { try: tries, url: String(target).slice(0, 140), winId: win.id, delayMs });
-              win.loadURL(target, { userAgent: getNasUA() }).catch(() => { try { if (!win.isDestroyed()) showConnectPage(); } catch (_) {} });
+              win.loadURL(target, { userAgent: getNasUA() }).catch(() => { try { if (!win.isDestroyed()) showConnectPage({ keepTarget: true }); } catch (_) {} });
             } else {
-              showConnectPage();
+              showConnectPage({ keepTarget: true });
             }
           } catch (_) {}
         }, delayMs);
@@ -7174,6 +7276,16 @@ function registerWindow(win, opts = {}) {
   // 派发；旧实现无条件 __applyFsFor(false)，等于把「被系统打断」当成「用户要退出」，于是全屏样式与 bounds
   // 一起被撤掉。现在：状态机仍认为该窗应全屏（只有 ESC/F11 会改状态）时直接重新进全屏，最多补 8 次防死循环。
   win.on('leave-full-screen', () => {
+    // v5.1.14（mac 红绿灯：绿钮点了还原不回去 / 关闭后残留空格）——
+    // macOS 原生全屏有自己的 Space，不会被别的窗口抢前台「打断」；下面这套 leave-guard
+    // （重进全屏防抖）只针对 Windows frameless 窗口。且原生全屏退出瞬间 isFullScreen()
+    // 可能仍为 true，会被误判成「异常自发退出」→ 立刻 setFullScreen(true) 弹回全屏。
+    // 这里在 darwin 上直接按「用户主动退出」收尾，UI 与 MPV 状态由上方原生事件处理。
+    if (process.platform === 'darwin') {
+      try { mklog('macdiag.win.fs.leave-allow', { tag: (win === mainWindow ? 'main' : String(win.__fnAppId || 'win')) }); } catch (_) {}
+      __applyFsFor(win, false);
+      return;
+    }
     try {
       const __now = Date.now();
       // v3.0.73（工单：飞牛影视全屏按钮“第一次退不出，调窗口后又能退”）——根因 ①：
@@ -7250,6 +7362,33 @@ function registerWindow(win, opts = {}) {
   // 主窗口与各应用窗都在这里接线；<webview> guest 的那一份见 did-attach-webview。
   win.webContents.on('enter-html-full-screen', () => __onHtmlFsEnter(win));
   win.webContents.on('leave-html-full-screen', () => __onHtmlFsLeave(win));
+  // v5.1.14（mac 红绿灯）：绿钮 = 原生全屏（既不是 HTML 全屏，也不是我们的 setFullScreen），
+  // 之前完全没接线 → 全屏后自绘标题栏还压在顶部、ESC 退不出、退出后页面不重排。
+  // 这里只做 UI 联动 + 重排；窗口 bounds 由 macOS 自己保存/还原。
+  try {
+    win.on('enter-full-screen', () => {
+      if (process.platform !== 'darwin') return;
+      try { mklog('macdiag.win.native-fs.enter', { tag: (win === mainWindow ? 'main' : String(win.__fnAppId || 'win')), ...__mkWinState(win) }); } catch (_) {}
+      try { __fsUiAppliedMap.delete(win); } catch (_) {}
+      // 记进入时刻：__fsAuditStart 的「bounds 持续偏小即判失步」巡检要跳过全屏过渡期，
+      // 否则原生全屏动画中的临时 bounds 会被误判成「已经退出全屏」而提前收掉标题栏状态。
+      try { __fsEnterAtMap.set(win, Date.now()); } catch (_) {}
+      try { __syncFsUIFor(win, true); } catch (_) {}
+      setTimeout(() => { try { if (!win.isDestroyed() && win.isFullScreen()) __syncFsUIFor(win, true); } catch (_) {} }, 500);
+    });
+    win.on('leave-full-screen', () => {
+      if (process.platform !== 'darwin') return;
+      try { mklog('macdiag.win.native-fs.leave', { tag: (win === mainWindow ? 'main' : String(win.__fnAppId || 'win')), ...__mkWinState(win) }); } catch (_) {}
+      try { __fsUiAppliedMap.delete(win); } catch (_) {}
+      try { __syncFsUIFor(win, false); } catch (_) {}
+      [0, 160, 480].forEach((ms) => setTimeout(() => {
+        try {
+          if (!win || win.isDestroyed()) return;
+          win.webContents.executeJavaScript('try{window.dispatchEvent(new Event("resize"));}catch(e){}', true).catch(() => {});
+        } catch (_) {}
+      }, ms));
+    });
+  } catch (_) {}
   win.on('maximize', () => __onWindowMaximize(win));
   win.on('unmaximize', () => __onWindowUnmaximize(win));
   win.on('focus', () => { try { if (__isFsOn(win)) win.webContents.focus(); } catch (_) {} });
@@ -10263,7 +10402,28 @@ body{background:%230b0d12;color:%23fff;font-family:-apple-system,BlinkMacSystemF
 function handleMainClose(win) {
   // v2.3.3：按产品需求，点击窗口关闭 = 隐藏到托盘（不弹窗、不退出），
   // 程序继续驻留托盘；只有托盘菜单「退出」或 app.isQuitting 才真正退出。
-  if (mainWindow && !mainWindow.isDestroyed()) { try { mainWindow.hide(); } catch (_) {} }
+  const w = (win && !win.isDestroyed()) ? win
+    : ((mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null);
+  try { mklog('macdiag.win.close.main', { fs: !!(w && w.isFullScreen && w.isFullScreen()), max: !!(w && w.isMaximized && w.isMaximized()), platform: process.platform }); } catch (_) {}
+  // v5.1.14（mac 红绿灯：关闭不干净）——在原生全屏里直接 hide()，macOS 会留下一个空的
+  // 全屏 Space / 黑块，Dock 点回来时窗口 bounds 也是乱的。先退全屏，等 leave-full-screen
+  // 落地再隐藏；事件不触发时用 900ms 兜底，保证窗口一定收起来。
+  try {
+    if (w && process.platform === 'darwin' && (w.isFullScreen() || __isFsOn(w))) {
+      let __hid = false;
+      const __doHide = (why) => {
+        if (__hid) return; __hid = true;
+        try { if (!w.isDestroyed()) w.hide(); } catch (_) {}
+        ensureTray();
+        try { mklog('macdiag.win.close.main.hide', { why: String(why || ''), afterFs: true }); } catch (_) {}
+      };
+      try { w.once('leave-full-screen', () => setTimeout(() => __doHide('leave-full-screen'), 80)); } catch (_) {}
+      try { w.setFullScreen(false); } catch (_) {}
+      setTimeout(() => __doHide('timeout'), 900);
+      return;
+    }
+  } catch (_) {}
+  if (w) { try { w.hide(); } catch (_) {} }
   ensureTray();
 }
 
@@ -10724,6 +10884,7 @@ let __pendingHomeReset = false;
 const __launchDedupe = new Map();
 function __restoreMainHome(reason, force) {
   try {
+    try { __macResetDockIcon('home:' + String(reason || '')); } catch (_) {}
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const wasVisible = mainWindow.isVisible() && !mainWindow.isMinimized();
     try { if (mainWindow.isMinimized()) mainWindow.restore(); } catch (_) {}
@@ -11839,7 +12000,10 @@ function createMainWindow(partition, loadTarget) {
             if (__netPromptOnce('login-fail:' + String(failUrl || '').slice(0, 80), 30000)) {
               try { dialog.showMessageBox(mainWindow, { type: 'error', title: '连接失败', message: '无法连接服务器，将返回连接页，请检查地址后重新输入。\n\n（诊断结论：' + (verdict || 'unknown') + '）', buttons: ['确定'] }); } catch (_) {}
             }
-            setTimeout(() => { try { showConnectPage({ keepTarget: __failIsTransient25(failUrl) }); } catch (_) {} }, 300);
+            // v5.1.14（工单 2/3/9）：自动失败路径一律 keepTarget —— 连接页照常显示（地址仍可改），
+            // 但不再销毁 NAS 分区。旧逻辑用 __failIsTransient25 判定，冷启动首次连接时它恒为 false，
+            // 一次抖动就把分区（Cookie/登录票据）扔掉 = 用户说的「登录后又被踢回连接页」。
+            setTimeout(() => { try { showConnectPage({ keepTarget: true }); } catch (_) {} }, 300);
           })();
           return;
         }
@@ -12096,7 +12260,8 @@ try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_)
         if (verdict === 'dns-fail') {
           try { fnosLog('warn', 'login', 'login.net.blocked reason=dns host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
           try { glassErrorBox('地址无法解析', '无法解析服务器地址：' + String((seg && seg.host) || '') + '\n\n请检查地址/端口是否填写正确。\n\n诊断结论：' + verdict); } catch (_) {}
-          showConnectPage({ keepTarget: __failIsTransient25(loadTarget.href) });
+          // v5.1.14：dns 失败也 keepTarget——地址仍可改（连接页原样加载），但不销毁分区/登录态。
+          showConnectPage({ keepTarget: true });
           return;
         }
         // 链路类失败（tcp/tls/http/timeout）：保留主窗与账号分区，切到内置错误页（可重试）
@@ -12177,6 +12342,24 @@ function showConnectPage(opts) {
   const __keep25 = !!(opts && opts.keepTarget);
   if (__keep25) { __autoReturn25At = Date.now(); __bindAutoReturn25(); }
   else __autoReturn25At = 0;
+  // v5.1.14（工单 2/3/9：登录后被踢回连接页）——即使调用方传了 keepTarget，旧实现仍会
+  // createMainWindow('persist:connect') 销毁当前 NAS 分区窗口。分区一换，Cookie/票据全留在
+  // 旧分区里，用户看到的就是「登录成功又被踢回连接页、重新输一次地址才进得去」。
+  // keepTarget 的语义本来就是「链路抖一下，不是要登出」：这里原地加载连接页，
+  // currentPartition 保持不变，connectTo 同一地址时直接复用原分区的登录态。
+  if (__keep25 && currentPartition !== 'persist:connect' && mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      try { mklog('macdiag.connectpage.keep-inplace', { partition: String(currentPartition || ''), origin: String(currentOrigin || ''), href: String(lastConnectHref || '').slice(0, 120) }); } catch (_) {}
+      try { stopHomeScan(); } catch (_) {}
+      safeSetTitle(`${APP_NAME} · 连接服务器`);
+      mainWindow.loadFile(LOGIN_PAGE).catch(() => {
+        try { mainWindow.loadURL(url.pathToFileURL(LOGIN_PAGE).href).catch(() => {}); } catch (_) {}
+      });
+      try { if (process.platform === 'darwin') __macActivateApp('connectpage.keep'); } catch (_) {}
+      try { if (!mainWindow.isVisible()) mainWindow.show(); } catch (_) {}
+      return;
+    } catch (_) {}
+  }
   if (currentPartition !== 'persist:connect') {
     if (!__keep25) saveSettings({ currentPartition: 'persist:connect' });
     try { fnosLog('warn', 'window', 'window.destroy', { reason: __keep25 ? 'connectpage.keep' : 'connectpage', href: String(lastConnectHref || '').slice(0, 140) }); } catch (_) {}
@@ -12511,7 +12694,8 @@ function doConnectTo(serverInput) {
             if (__w2) { __fnShowErrPage(__w2, { app: 'FNOS 主页面', kind: 'net', code: verdict, url: String(parsed.href), retryUrl: String(parsed.href), noHardReload: true }); return; }
           } catch (_) {}
         }
-        showConnectPage({ keepTarget: __failIsTransient25(parsed.href) });
+        // v5.1.14：同上，保留分区；连接页原地加载，用户改地址后重连不会丢已登录的账号。
+        showConnectPage({ keepTarget: true });
       })();
     };
     mainWindow.loadURL(parsed.href, { userAgent: getNasUA() }).catch(onFail);
@@ -12571,6 +12755,7 @@ function goHomeWithPrompt() {
 }
 
 function goHomeDirect() {
+  try { __macResetDockIcon('home'); } catch (_) {}
   // 隐藏所有子窗口
   appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed()).forEach((e) => {
     e.win.hide();
@@ -12813,6 +12998,28 @@ async function launchUninstaller() {
   if (started) setTimeout(() => { try { app.quit(); } catch (_) {} }, 1500);
 }
 
+// v5.1.14（工单 2/3/9）：macOS「本地网络」权限被拒时，客户端没有任何入口引导用户去改。
+// 这里给出系统设置深链（Ventura+ 的 Privacy_LocalNetwork），供菜单与诊断通道复用。
+function __openMacLocalNetworkPrefs(why) {
+  if (process.platform !== 'darwin') return { ok: false, err: 'not-darwin' };
+  const urls = [
+    'x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork',
+    'x-apple.systempreferences:com.apple.preference.security'
+  ];
+  const attempt = (i) => {
+    if (i >= urls.length) { try { mklog('macdiag.prefs.localnetwork', { why: String(why || ''), ok: false }); } catch (_) {} return; }
+    const u = urls[i];
+    Promise.resolve(shell.openExternal(u)).then(() => {
+      try { mklog('macdiag.prefs.localnetwork', { why: String(why || ''), ok: true, url: u }); } catch (_) {}
+    }).catch((e) => {
+      try { mklog('macdiag.prefs.localnetwork', { why: String(why || ''), ok: false, url: u, err: String((e && e.message) || e).slice(0, 120) }); } catch (_) {}
+      attempt(i + 1);
+    });
+  };
+  attempt(0);
+  return { ok: true };
+}
+
 function buildMenuTemplate() {
   const childWindows = appWindows.filter((e) => !e.isHome && e.win && !e.win.isDestroyed());
 
@@ -12958,6 +13165,10 @@ function buildMenuTemplate() {
     {
       label: '帮助',
       submenu: [
+        ...(IS_MAC ? [
+          { label: '打开「本地网络」权限设置…', click: () => __openMacLocalNetworkPrefs('help-menu') },
+          { type: 'separator' }
+        ] : []),
         { label: '操作步骤帮助', click: () => {
           const helpWin = new BrowserWindow({
             width: 720, height: 680,
@@ -17373,6 +17584,7 @@ function __startLaunchServer() {
           if (appId === LIVE_LAUNCH_ID) {
             try { invokeLiveWindow(); } catch (_) {}
             try { __macActivateApp('launch.live'); } catch (_) {}
+            try { __macSetDockIcon('', 'launch.live', true); } catch (_) {}
             try { require('./logger.js').log('info', 'live', 'live.shortcut_invoke', { params: { via: 'wscript' } }, __RUN_MODE); } catch (_) {}
             try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
             return;
@@ -17510,6 +17722,7 @@ function __startLaunchServer() {
             __notifyOpenFpkApp(appId, true, u, __openedH ? (__wth || 'popout') : '');
             try { hideMainToBackground(); } catch (_) {}
             try { __macActivateApp('launch.http'); } catch (_) {}
+            try { __macSetDockIcon(appId, 'launch.http'); } catch (_) {}
             try { require('./logger.js').log('info', 'launch', 'launch.http trigger', { params: { appId: appId.slice(0, 120), url: String(u).slice(0, 160) } }, __RUN_MODE); } catch (_) {}
             try { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); } catch (_) {}
           } else {
@@ -19671,6 +19884,7 @@ function createLiveWindow(autoplayChannel) {
     liveWindow.once('ready-to-show', () => {
       if (liveWindow && !liveWindow.isDestroyed()) {
         try { liveWindow.show(); } catch (_) {}
+        try { __macSetDockIcon('', 'live.ready', true); } catch (_) {}
       }
     });
     const loadFail = (e, code, desc) => {
@@ -22142,11 +22356,16 @@ function __handleSecondInstance(_e, commandLine) {
       if (a === '--nas' && argv[i + 1]) { nasAddr = decodeURIComponent(String(argv[i + 1])); break; }
     }
     rawAppId = u;
+    try {
+      if (rawAppId === LIVE_LAUNCH_ID) __macSetDockIcon('', 'second-instance.live', true);
+      else if (rawAppId) __macSetDockIcon(rawAppId, 'second-instance');
+    } catch (_) {}
     // v2.4.0（需求第一部分-3）：second-instance 触发日志（含 argv / appId / nas 参数）
     try { require('./logger.js').log('info', 'ipc', 'second-instance 触发', { params: { argv: argv.slice(1).map((x) => String(x).slice(0, 80)), rawAppId: String(rawAppId).slice(0, 120), nasAddr: String(nasAddr).slice(0, 80) } }, __RUN_MODE); } catch (_) {}
     // v2.11.0 r31：电视直播快捷方式热启动（保留 ID）——直达内置直播窗，不经 FPK 解析
     if (rawAppId === LIVE_LAUNCH_ID) {
       try { invokeLiveWindow(); } catch (_) {}
+      try { __macSetDockIcon('', 'second-instance.live', true); } catch (_) {}
       try { require('./logger.js').log('info', 'live', 'live.shortcut_invoke', { params: { via: 'second-instance' } }, __RUN_MODE); } catch (_) {}
       return;
     }
@@ -22253,6 +22472,22 @@ function __handleSecondInstance(_e, commandLine) {
 // v2.0.0: 命令行参数启动时跳过主界面
 const subAppLaunched = launchSubAppFromArgs();
 app.whenReady().then(() => {
+  // v5.1.14（工单 4/5：快捷方式启动后 Dock 里没有应用图标）——
+  // 快捷方式 applet 是 LSUIElement，热启动时本进程也可能停在 accessory 策略；
+  // 而 app.dock.isVisible() 在 accessory 进程上仍可能报 true，导致旧兜底不生效。
+  // 这里在启动最早期无条件切回 regular + show()，并显式设置基础图标，
+  // 之后打开具体应用时再由 __macSetDockIcon 换成该应用图标。
+  if (process.platform === 'darwin') {
+    try {
+      if (typeof app.setActivationPolicy === 'function') app.setActivationPolicy('regular');
+      if (app.dock) { const __dp = app.dock.show(); if (__dp && typeof __dp.catch === 'function') __dp.catch(() => {}); }
+      if (app.dock && typeof app.dock.setIcon === 'function') {
+        const __img0 = nativeImage.createFromPath(ICON_PNG);
+        if (__img0 && !__img0.isEmpty()) app.dock.setIcon(__img0);
+      }
+      try { mklog('macdiag.dock.boot', __macDockState() || {}); } catch (_) {}
+    } catch (_) {}
+  }
   // v4.0.13（用户工单：安装程序弹「FNOS 无法关闭」死循环）——
   // 退出信标文件：安装程序写 %APPDATA%\fnos-client\quit.request 后轮询进程，
   // 本进程监听到即协作退出。给"无法直接起子进程"的场景兜底（UAC 提权切断父子关系）。

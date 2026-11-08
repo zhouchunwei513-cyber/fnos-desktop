@@ -1564,6 +1564,22 @@ class MpvPlayer extends EventEmitter {
 
   play() { this._userPause = false; return this.command(['set_property', 'pause', false]).catch(() => {}); }
   pause() { this._userPause = true; return this.command(['set_property', 'pause', true]).catch(() => {}); }
+  // v5.1.15：mac 上用 AppleScript 移动 mpv 原生窗口（进程名 'mpv'）。
+  _applyMacAppleScriptGeometry(x, y, w, h) {
+    try {
+      const script = `tell application "System Events" to set position of (first process whose name is "mpv") to {${x}, ${y}}`;
+      const script2 = `tell application "System Events" to set size of (first process whose name is "mpv") to {${w}, ${h}}`;
+      this._macGeoQueue = (this._macGeoQueue || Promise.resolve())
+        .then(() => new Promise((res) => {
+          require('child_process').execFile('osascript', ['-e', script], { timeout: 1500 }, () => res());
+        }))
+        .then(() => new Promise((res) => {
+          require('child_process').execFile('osascript', ['-e', script2], { timeout: 1500 }, () => res());
+        }))
+        .catch(() => {});
+    } catch (_) {}
+  }
+
   seek(sec) { return this.command(['seek', Number(sec) || 0, 'absolute']).catch(() => {}); }
   setVolume(v) { return this.command(['set_property', 'volume', Math.max(0, Math.min(130, Number(v) || 0))]).catch(() => {}); }
 
@@ -1581,9 +1597,13 @@ class MpvPlayer extends EventEmitter {
       const x = Math.round(g.x), y = Math.round(g.y);
       const w = Math.max(160, Math.round(g.width)), h = Math.max(90, Math.round(g.height));
       const geoStr = `${w}x${h}+${x}+${y}`;
-      // 与上次实际下发的几何一致就不重复发 IPC（轮询会频繁调用，去抖减少主线程/IPC 负担）
-      if (this._lastGeoStr === geoStr) return;
-      this._lastGeoStr = geoStr;
+      // v5.1.15（用户工单：MPV 不跟随主窗）——去抖缓存改成按【宿主几何】而不是 mpv 下发值：
+      // macOS 上 mpv 的 geometry 属性运行时写不进去（只会读回启动值），旧代码每帧都算出同样的
+      // geoStr → 命中"已下发"去抖 → 一次都不补发 → mpv 永远钉在启动位置。改成只要宿主几何变了，
+      // 就无条件重新下发（mac 上走 alt 通道），Windows 行为不变。
+      const key = `${w}x${h}+${x}+${y}`;
+      if (this._lastGeoStr === key && process.platform !== 'darwin') return;
+      this._lastGeoStr = key;
       // v2.24.0（用户反馈：来回切全屏/最大化时 MPV 跟随卡顿、画面跟不上宿主窗口）——
       // 旧实现真正落地的只有 60ms 定时器里的 set_property geometry，且带序列守卫：窗口动画期间
       // 每来一帧都会取消上一帧的兜底定时器，一整段动画里 mpv 只在最后被挪一次（甚至更晚），
@@ -1609,8 +1629,12 @@ class MpvPlayer extends EventEmitter {
         }
       }
       // v5.1.3（mac 实测）：macOS 上 mpv 构建没有 window-move / window-resize 命令，
-      // 每次几何更新都刷两行 "Command not found" 且完全不生效 → 直接删掉，
-      // 定位改由上面的 set_property geometry（WxH+X+Y）+ window-* 属性完成。
+      // 每次几何更新都刷两行 "Command not found" 且完全不生效 → 直接删掉。
+      // v5.1.15（用户工单：MPV 不跟随主窗）——mac 上 geometry 属性运行时写不进去，
+      // 必须用 AppleScript 移动 mpv 原生窗口，否则覆盖窗永远钉在启动位置。
+      if (process.platform === 'darwin') {
+        this._applyMacAppleScriptGeometry(x, y, w, h);
+      }
       // v2.15.90：窗口几何变化（缩放跟随）后，按新窗口比例重算 cover 缩放，保证 resize 后仍贴合
       if (this._videoW && this._videoH) this._applyCoverZoom(this._videoW, this._videoH);
       // v2.24.0：圆角立即重裁（旧版依赖 _scheduleCorners 的 300ms debounce + 每次重新编译 C#，

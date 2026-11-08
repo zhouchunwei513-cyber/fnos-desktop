@@ -1468,10 +1468,10 @@ contextBridge.exposeInMainWorld('fnos', {
         audioGuid: state.audioGuid || '',
         rect
       };
-      // v5.1.6（用户决策 A：mac 上改用 HTML5 播放）——
-      // macOS 的 mpv 构建没有运行时窗口定位能力（window-* 属性/命令都没有，geometry 只在启动时生效），
-      // 覆盖窗无法跟随主窗。因此 mac 不再自动接管 <video>，交给网页自带的 hls.js/原生播放器。
-      if (process.platform === 'darwin') {
+      // v5.1.14（用户工单：影视 MPV 失效）——
+      // 之前 mac 走 HTML5 是为了绕开 mpv 不跟随主窗的问题，但用户仍要 MPV（影视画质/硬解）。
+      // 改为：mac 上显式 MPV 请求（payload.allowMac）继续走 MPV；HTML5 仅作为 MPV 起不来时的兜底。
+      if (process.platform === 'darwin' && !(payload && payload.allowMac)) {
         log('embed.skip.mac-html5', { source: direct.source, isLive: isLiveNow });
         try { restoreVideoDisplay(); } catch (_) {}
         return false;
@@ -1479,7 +1479,7 @@ contextBridge.exposeInMainWorld('fnos', {
       // mac 上想用 MPV 时（影视页显式设置或 payload.allowMac），继续走 MPV
       log('embed.invoke', { source: direct.source, url: direct.url.slice(0, 96) });
       try {
-        const __r27 = await ipcRenderer.invoke('mpv:embed', payload);
+        const __r27 = await ipcRenderer.invoke('mpv:embed', Object.assign({}, payload, { allowMac: true }));
         // v4.0.27（用户工单：MPV 加载不上，页面永远停在"加载中"）——
         // 主进程探活或起播被判失败时会回 ok:false。旧版这里直接无视返回值：网页已经把
         // <video> 藏掉、MPV 又没起来，用户看到的就是一直加载。现在把页面还原，并弹一条

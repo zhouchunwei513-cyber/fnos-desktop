@@ -714,8 +714,12 @@ class MpvPlayer extends EventEmitter {
     //   reconnect_at_eof=1   —— 让 ffmpeg 在 demuxer 认为 EOF 时重开连接（HLS 分片边界即触发）
     //   live_start_index=-1  —— 每次重开都跳到"最后一段"，于是每 10 秒从新分片头开始
     // 直播改为只保留网络抖动重连，交给 HLS demuxer + 应用层重连处理续播。
+    // v5.0.15（方案 A）：直播只保留最基础的网络重连。
+    // 实测 v5.0.14 的直播参数仍让 ffmpeg 把 3 段窗口（30s）当成完整媒体，读到头就结束
+    //（mpv duration=29.99，pos≈29 时 RESTART）。怀疑 reconnect_streamed/on_network_error
+    // 与 HLS 播放列表自身的 reload 机制冲突，这里直播全部去掉。
     args.push(opts.isLive
-      ? '--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15'
+      ? '--demuxer-lavf-o=reconnect=1,reconnect_delay=2,reconnect_delay_max=15'
       : '--demuxer-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_on_network_error=1,reconnect_delay=2,reconnect_delay_max=15,reconnect_retries=8');
 
     // 形态 A：mpv 原生无边框窗口，覆盖在应用视频区（fntv 同款，最稳，OSC/拖动/键盘全可用）
@@ -774,6 +778,10 @@ class MpvPlayer extends EventEmitter {
     // 直播用轻量 live 档（N100 双路时直播 demuxer 负担/内存最低，20s 缓冲足够抗运营商抖动）。
     const effectiveCache = (opts.isLive && !opts.cacheLevel) ? 'live' : (opts.cacheLevel || 'smooth');
     args.push(...buildCacheArgs(effectiveCache));
+    // v5.0.15：直播额外收紧缓存并保留 HLS 拉流（窗口只有 30s，缓存过大会让解复用器读到窗口末尾就停）
+    if (opts.isLive) {
+      args.push('--cache-secs=15', '--demuxer-max-back=0', '--hls-bitrate=max');
+    }
 
     // v5.0.2（用户工单：自定义 MPV 播直播，10 几秒就循环重播）——
     // 外部内核常带自己的 mpv.conf（懒人包一般写 loop=inf / loop-file=inf），直播流窗口一到期就 EOF，

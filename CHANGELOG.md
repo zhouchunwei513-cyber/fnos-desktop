@@ -1,3 +1,13 @@
+## v5.0.15
+
+### 直播：收紧缓存 + 去掉与 HLS 拉流冲突的重连选项（方案 A）
+
+- 实测 v5.0.14：播放速度正常、硬解 d3d11va、0 丢帧，但 `duration=29.99`（把 3 段窗口当完整媒体），
+  pos≈29 时 RESTART → 每 30 秒跳一次；
+- 修法（直播专用）：`--demuxer-lavf-o=reconnect=1,reconnect_delay=2,reconnect_delay_max=15`
+  （去掉 reconnect_streamed / reconnect_on_network_error），并加
+  `--cache-secs=15 --demuxer-max-back=0 --hls-bitrate=max`，让 ffmpeg 持续拉取 playlist。
+
 ## v5.0.14
 
 ### 直播每 10 秒回到开头：移除 ffmpeg 的 reconnect_at_eof / live_start_index

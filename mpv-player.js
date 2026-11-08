@@ -775,6 +775,11 @@ class MpvPlayer extends EventEmitter {
     // 于是被 mpv 循环重播。这里显式关掉循环（命令行参数优先级高于 mpv.conf）：
     // 直播与点播都由应用层负责续播/重连，不能交给 mpv 的 loop。
     args.push('--loop-file=no', '--loop-playlist=no');
+    // v5.0.11（用户反馈：自定义内核 mpv-lazy 播直播仍循环）——
+    // mpv-lazy 的 portable_config/mpv.conf 里有 `watch-later-options = start,vid,aid,sid`，
+    // 会把"上次播放位置"写进 watch-later，下次/重连时按 start 跳回去 → 直播表现为倒退重播。
+    // 直播禁用 watch-later 与断点恢复（这两个选项各版本 mpv 都有，安全）。
+    if (opts.isLive) args.push('--no-save-position-on-quit', '--no-resume-playback');
     // v5.0.3（用户反馈：自定义内核播直播 10 几秒就"重播"）——
     // 直播多为 HLS 滚动窗口（窗口常 10~15s）。流 EOF/重连后若不指定起点，mpv 会从
     // 播放列表**头部**（窗口最老的那一段）开始 → 视觉上就是把最近十几秒又放了一遍。

@@ -1,3 +1,11 @@
+## v5.0.11
+
+### 自定义内核（mpv-lazy）直播仍循环：禁用 watch-later
+
+- 实测 mpv-lazy 的 `portable_config/mpv.conf` 含 `watch-later-options = start,vid,aid,sid`
+  → 会把上次播放位置写入 watch-later，重连/下次播放时按 `start` 跳回 → 直播倒退重播；
+- 修法：直播播放时追加 `--no-save-position-on-quit --no-resume-playback`。
+
 ## v5.0.10
 
 ### MPV 无法启动（exit 1）——移除内核不认识的参数

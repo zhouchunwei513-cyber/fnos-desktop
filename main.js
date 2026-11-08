@@ -5065,7 +5065,12 @@ async function loadExtensionIntoSession(ses, allowFileAccess) {
   const hasLoader = (ses.extensions && typeof ses.extensions.loadExtension === 'function') ||
     typeof ses.loadExtension === 'function';
   if (!hasLoader) return;
-  const extDir = path.join(__dirname, 'extensions');
+  // v5.1.1（macOS/Electron 修复）：Chromium 扩展加载器只能读真实文件系统，
+  // 扩展放在 app.asar 内会报 "Extension directory not found"。打包时用 asarUnpack 把
+  // extensions/ 解到 app.asar.unpacked/extensions，这里优先取那条路径。
+  const __unpackedRoot = String(app.getAppPath() || '').replace(/app\.asar$/, 'app.asar.unpacked');
+  const __extCandidates = [path.join(__unpackedRoot, 'extensions'), path.join(__dirname, 'extensions')];
+  const extDir = __extCandidates.find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } }) || __extCandidates[1];
   let entries = [];
   try { entries = fs.readdirSync(extDir, { withFileTypes: true }); } catch (_) { return; }
   for (const entry of entries) {

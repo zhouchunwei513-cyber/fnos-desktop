@@ -146,9 +146,12 @@
       "runAfterFinish": true,
       "include": "installer-custom.nsi",
       "artifactName": "FNOS-${version}-setup.${ext}"
-    }
+    },
+    "asarUnpack": [
+      "extensions/**"
+    ]
   },
   "dependencies": {
-    "adm-zip": "^0.6.0"
+    "adm-zip": "^0.6.1"
   }
 }

@@ -42,6 +42,9 @@ function findMpvExe() {
   }
   // 系统安装（mac：Homebrew/MacPorts 常见前缀；win：PATH）
   if (isMac) {
+    // 用户从 mpv.io 下载的 GUI 版放在 /Applications 或 ~/Applications 里
+    candidates.push('/Applications/mpv.app/Contents/MacOS/mpv');
+    try { candidates.push(path.join(os.homedir(), 'Applications', 'mpv.app', 'Contents', 'MacOS', 'mpv')); } catch (_) {}
     candidates.push('/opt/homebrew/bin/mpv');
     candidates.push('/usr/local/bin/mpv');
     candidates.push('/opt/local/bin/mpv');
@@ -67,6 +70,22 @@ function getMpvExe() {
   return mpvMod.exe;
 }
 
+// v5.1.0：清空探测缓存重新找一次。用户可能在程序启动后才 brew install mpv，
+// 或刚在设置里改好自定义路径；设置页「重新检测」/ MPV 不可用提示都会用到。
+function rescanMpv() {
+  mpvMod = null;
+  return getMpvExe();
+}
+
+// v5.1.0：找不到内核时的提示文案按平台区分——Windows 是「安装包缺东西」，
+// macOS 是「本来就不随包，请自己装」。UI 直接把这句话展示给用户。
+function mpvMissingReason() {
+  if (process.platform === 'darwin') {
+    return '未找到 mpv：macOS 不内置 mpv 内核，请先执行 brew install mpv，或在设置中指定 mpv 可执行文件路径';
+  }
+  return '未找到内置 mpv.exe';
+}
+
 // 内置 MPV 配置目录（含中文右键菜单 Lua + mpv.conf）。随包分发在 resources/mpv-config/。
 function findMpvConfigDir() {
   const candidates = [];
@@ -83,6 +102,13 @@ function findMpvConfigDir() {
 }
 
 function getMpvConfigArgs() {
+  // v5.1.0：macOS 不加载随包 mpv-config。原因：
+  //   - 该配置里的 scripts/fnos-menu.lua 用 %WINDIR%\System32\curl.exe 调本地 helper
+  //     （mpv-helper.js 是 Windows 专属 HTTP 助手），mac 上必然失败；
+  //   - 这些脚本还假设 Windows 路径与右键菜单结构；
+  //   - 用户自己 brew install 的 mpv 有自己的 ~/.config/mpv，不应被包内配置覆盖。
+  //   所以 mac 上直接返回空，让 mpv 用默认 OSC / 用户配置。
+  if (process.platform === 'darwin') return [];
   const dir = findMpvConfigDir();
   if (!dir) return [];
   // --config-dir 指定配置根目录（mpv.conf + scripts/ 均在其下）
@@ -646,7 +672,7 @@ class MpvPlayer extends EventEmitter {
     this._exeIsCustom = !!customExe;
     this._exePath = customExe || builtinExe || '';
     const exe = customExe || builtinExe;
-    if (!exe) throw new Error('未找到内置 mpv.exe（resources/mpv/mpv.exe 缺失）');
+    if (!exe) throw new Error(mpvMissingReason());
     if (this.proc) this.stop();
 
     this._startOpts = opts;
@@ -691,7 +717,10 @@ class MpvPlayer extends EventEmitter {
     //   builtin（默认）：--config-dir 指向随包隔离目录，提供中文右键菜单 + 中文 OSC；
     //   own：完全不干预配置，让外部 mpv 读自己的配置目录（mpv-lazy 等自带 mpv.conf，
     //        里面通常已配好插帧/超分/着色器；硬塞 --config-dir 会把它整份顶掉）。
-    const configMode = (opts.configMode === 'own') ? 'own' : 'builtin';
+    // v5.1.0：macOS 没有随包 mpv-config，默认就走 own（用户自己的 ~/.config/mpv），
+    // 否则「内置配置」这一档在 mac 上等于什么都没配、还容易让人误以为菜单该有内容。
+    const __defaultMode = process.platform === 'darwin' ? 'own' : 'builtin';
+    const configMode = (opts.configMode === 'own') ? 'own' : (opts.configMode === 'builtin' ? 'builtin' : __defaultMode);
     if (configMode === 'builtin') args.push(...getMpvConfigArgs());
     // v1.29.2 关键：Windows 构建默认【不加载】内置 @context_menu.lua（Windows 走原生 menu.conf，
     // 而我们没有提供 menu.conf，原生菜单为空），导致 fnos-menu.lua 发出的
@@ -1923,7 +1952,7 @@ function getEmbeddedPlayer() {
 let _externalProc = null;
 function openMpv(url, headers, options = {}) {
   const exe = getMpvExe();
-  if (!exe) return { ok: false, reason: '未找到内置 mpv.exe' };
+  if (!exe) return { ok: false, reason: mpvMissingReason() };
   try {
     if (_externalProc) { try { _externalProc.kill(); } catch (_) {} _externalProc = null; }
 
@@ -1984,7 +2013,7 @@ function openMpv(url, headers, options = {}) {
 // ---------- 外部独立窗口播放的包装（供主进程 mpv:play / mpv:status 使用）----------
 function getMpvInfo() {
   const exe = getMpvExe();
-  if (!exe) return { available: false, reason: '未找到内置 mpv.exe', version: '', source: '' };
+  if (!exe) return { available: false, reason: mpvMissingReason(), version: '', source: '' };
   let version = '';
   try {
     const r = spawnSync(exe, ['--version'], { windowsHide: true, timeout: 4000 });
@@ -2018,6 +2047,8 @@ function killAll() {
 module.exports = {
   MpvPlayer,
   getMpvExe,
+  rescanMpv,
+  mpvMissingReason,
   openMpv,
   getEmbeddedPlayer,
   buildCacheArgs,

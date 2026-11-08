@@ -159,3 +159,104 @@ jobs:
           $names = @($view.assets | ForEach-Object { $_.name })
           if ($names.Count -eq 0) { throw "release assets not visible via auth (see job log)" }
           Write-Host "Release $tag visibility check passed (auth-read): $($names -join ', ')"
+
+  # ===================== v5.1.0：macOS 构建（阶段一：能构建 + 能启动） =====================
+  # 产出 dmg + zip（arm64 / x64 各一份），随 tag 一起挂到同一个 Release。
+  # 注意：
+  #   1) 本轮不做签名/公证（hardenedRuntime=false，CSC_IDENTITY_AUTO_DISCOVERY=false），
+  #      用户首次打开需要右键「打开」或在系统设置里放行；正式分发前需补 Developer ID + notarize。
+  #   2) macOS 不打包 mpv 二进制（体积 + 签名 + GPL 分发链路），运行时探测系统 mpv。
+  #   3) Windows job 完全未改动；两个 job 并行，Release 创建做了并发幂等处理（已在 Windows job 内）。
+  build-macos:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: 语法自检（node --check，与 Windows job 同口径）
+        run: |
+          fail=0
+          for f in *.js; do
+            node --check "$f" || { echo "::error file=$f::JS 语法错误"; fail=1; }
+          done
+          [ "$fail" -eq 0 ] || { echo "存在 JS 语法错误，终止构建"; exit 1; }
+          echo "语法自检通过：$(ls -1 *.js | wc -l | tr -d ' ') 个文件"
+
+      - name: 生成 macOS 图标（sips + iconutil → build/icons/icon.icns）
+        run: bash build/make-icns.sh
+
+      - name: Build macOS ${{ matrix.arch }}（dmg + zip）
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --${{ matrix.arch }} --publish never
+
+      - name: 校验产物（dmg / zip 存在且体积合理）
+        run: |
+          arch='${{ matrix.arch }}'
+          dmg=$(ls dist/FNOS-*-mac-${arch}.dmg 2>/dev/null | head -1 || true)
+          zip=$(ls dist/FNOS-*-mac-${arch}.zip 2>/dev/null | head -1 || true)
+          [ -n "$dmg" ] || { echo "::error::未找到 ${arch} dmg 产物"; exit 1; }
+          [ -n "$zip" ] || { echo "::error::未找到 ${arch} zip 产物"; exit 1; }
+          # 安装包体积下限只防「空包 / 打包失败」，mac 不含 mpv 内核，40MB 足够
+          for f in "$dmg" "$zip"; do
+            sz=$(stat -f%z "$f")
+            echo "$f  $((sz / 1024 / 1024)) MB"
+            [ "$sz" -gt $((40 * 1024 * 1024)) ] || { echo "::error::产物体积异常：$f"; exit 1; }
+          done
+          # app 包必须存在（防止 files 配置写错导致空壳）
+          app=$(find dist -maxdepth 2 -name 'FNOS.app' -type d | head -1 || true)
+          if [ -n "$app" ]; then
+            echo "app: $app"
+          else
+            echo "::warning::未找到 dist/**/FNOS.app（dmg 已生成，跳过该检查）"
+          fi
+
+      - name: Upload artifact (macOS ${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: FNOS-mac-${{ matrix.arch }}-${{ github.ref_name }}
+          path: |
+            dist/FNOS-*-mac-${{ matrix.arch }}.dmg
+            dist/FNOS-*-mac-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+      - name: Release（dmg / zip 追加到同一个 tag Release）
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          files=$(ls dist/FNOS-*-mac-${{ matrix.arch }}.dmg dist/FNOS-*-mac-${{ matrix.arch }}.zip 2>/dev/null || true)
+          [ -n "$files" ] || { echo "::error::没有可上传的 mac 产物"; exit 1; }
+          # 并发幂等：Windows job 可能先/后创建 release，先等它出现再上传
+          for i in 1 2 3 4 5 6; do
+            gh release view "$tag" >/dev/null 2>&1 && break
+            if [ "$i" -eq 1 ]; then
+              extra=""
+              case "$tag" in *-rc|*-beta) extra="--prerelease" ;; esac
+              gh release create "$tag" --title "FNOS $tag" --generate-notes $extra >/dev/null 2>&1 || true
+            fi
+            sleep 5
+          done
+          for f in $files; do
+            ok=0
+            for i in 1 2 3 4; do
+              if gh release upload "$tag" "$f" --clobber; then ok=1; break; fi
+              echo "上传 $f 第 $i 次失败，5s 后重试"; sleep 5
+            done
+            [ "$ok" -eq 1 ] || { echo "::error::资产 $f 连续 4 次上传失败"; exit 1; }
+          done
+          echo "mac ${{ matrix.arch }} 资产上传完成：$files"

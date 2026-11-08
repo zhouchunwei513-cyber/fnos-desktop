@@ -1024,7 +1024,7 @@
           if (rt.custom) {
             html += '<div style="margin-top:6px;color:#60a5fa">● 当前使用自定义 MPV 内核：' + (rt.source || '') + '</div>';
           } else if (rt.customMissing) {
-            html += '<div style="margin-top:6px;color:#fbbf24">● 自定义内核路径无效，已回退内置内核</div>';
+            html += '<div style="margin-top:6px;color:#fbbf24">● 自定义内核路径无效，已回退' + (rt.platform === 'darwin' ? '系统 mpv' : '内置内核') + '</div>';
           }
           html += '<div style="margin-top:6px;opacity:.85">硬件解码：' + hwLabel + ' ｜ 网络缓存：' + cacheLabel +
             ((rt.subStyle && (rt.subStyle.pos != null || rt.subStyle.size != null || rt.subStyle.scale != null))

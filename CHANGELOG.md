@@ -1,3 +1,50 @@
+## [未发布] macOS 移植 · 阶段一（构建 + 启动 + 标题栏与红绿灯并存）
+
+> 本轮不改 `package.json.version`（仍 5.0.16）、不部署、不推 GitHub；只做 Linux 环境可自检的部分。
+> 详细的「已做 / 未做 / 风险」见 `/tmp/mac-gap.md`。
+
+### 构建链路
+
+- `package.json` 新增 `build.mac`：dmg + zip，`arm64` / `x64` 双架构，`category=public.app-category.utilities`，
+  `icon=build/icons/icon.icns`，`artifactName=FNOS-${version}-mac-${arch}.${ext}`，
+  `extendInfo.LSMinimumSystemVersion=11.0`；`hardenedRuntime=false`（本轮不签名/不公证）。
+- 新增脚本 `dist:mac` / `build:mac`（各自带 `pre*` 钩子）与 `icons:mac`；**Windows 脚本一行未动**。
+- 新增 `build/make-icns.sh`：用 macOS `sips` + `iconutil` 从 `icon.png`（1024）生成 10 档标准 iconset → `.icns`；
+  已有且比源图新则跳过；非 macOS 环境明确报错退出（不产出坏图标）。`.gitignore` 忽略生成的 `.icns`。
+- CI `.github/workflows/build.yml` 新增 `build-macos` job（`macos-14`、matrix arm64/x64）：语法自检 → 生成 icns →
+  `electron-builder --mac` → 校验 dmg/zip 存在且 >40MB → 上传 artifact → 追加到同一个 tag Release（并发幂等）。
+  `build-windows` job 未修改。
+
+### 平台审计与降级（macOS 不崩、功能优雅降级）
+
+- 新增平台常量 `IS_MAC` / `IS_WIN` / `__ROUNDED_CORNERS`；`roundedCorners` 在 mac 取 `true`（原生圆角），
+  Windows 仍为 `false`（去 DWM 灰边）；菜单弹窗这种无边框浮层两平台都保持直角。
+- 单实例握手超时提示：Windows 保持 PowerShell MessageBox；mac 改 `osascript display dialog`；
+  结束卡死进程：Windows `taskkill /T`，mac `process.kill(SIGKILL)`。
+- 注册表读取（`AppsUseLightTheme`、`ProxyOverride`）只在 `win32` 分支执行；mac 走 `nativeTheme`。
+- `__wicToPng`（WIC/PresentationCore 图片解码）为 Windows 专有，非 win32 直接返回 `null`，调用方走既有兜底。
+- `settings:vlc-runtime` / `mpv:status` 支持 darwin：mac 上探测系统 mpv（Homebrew / MacPorts / `/Applications/mpv.app`），
+  找不到时给出「brew install mpv 或指定路径」的提示；`settings:pick-mpv-exe` 在 mac 不再按 `.exe` 过滤。
+- 托盘图标在 mac 缩到 18px（菜单栏尺寸）；`download:get-default-path` 在 mac 用 `app.getPath('downloads')`。
+- 卸载器（Windows `FNOS-Uninstaller.exe`）在 mac 不再尝试启动，改为「拖到废纸篓」指引，菜单文案同步。
+- 菜单在 mac 补 App / 编辑 / 窗口三个标准菜单（否则 Cmd+C/V/A/Z 全失效），并把 `Ctrl+X`→`Cmd+X`、
+  `F5`→`Cmd+R`、`Alt+Left/Right`→`Cmd+[/]`；「关于」并入 App 菜单。
+- mac 侧新增一组与平台无关的 `app.commandLine` 开关（自动播放、媒体缓存、后台不节流）；
+  Windows 的 HEVC / D3D11 / DPI 开关仍在 `win32` 块内，逻辑不变。
+
+### 标题栏
+
+- mac 左侧红绿灯安全区 `82px`/`86px` → **78px**（普通标题栏与内嵌窗标题栏一致）；
+  皮肤、牛角、高度、图标配色均未改动；mac 仍不画自绘 `— □ ✕`（交给原生红绿灯）。
+
+### MPV
+
+- mac 不打包 mpv 二进制，改为探测：`/opt/homebrew/bin/mpv`、`/usr/local/bin/mpv`、`/opt/local/bin/mpv`、
+  `/Applications/mpv.app/Contents/MacOS/mpv`、`~/Applications/…`、PATH 里的 `mpv`。
+- 新增 `rescanMpv()`（清缓存重探，供「装完 mpv 不用重启客户端」）与平台化缺失文案 `mpvMissingReason()`。
+- mac 上 `getMpvConfigArgs()` 返回空、`configMode` 默认 `own`：随包 `mpv-config` 里的中文菜单脚本依赖
+  Windows `curl.exe` 与本地 helper，mac 上必然失败，故不加载，交给用户 `~/.config/mpv`。
+
 ## v5.0.15
 
 ### 直播：收紧缓存 + 去掉与 HLS 拉流冲突的重连选项（方案 A）

@@ -83,6 +83,19 @@ if (process.platform === 'win32') {
   } catch (_) {}
 }
 
+// v5.1.0：macOS 侧只保留与平台无关的项（Windows 的 HEVC/D3D11/DPI 开关在 mac 上无意义且可能触发
+// Chromium 关于未知 feature 的告警）。后台节流必须关，否则窗口被遮挡/最小化时直播与轮询会停。
+if (process.platform === 'darwin') {
+  try {
+    app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+    app.commandLine.appendSwitch('disk-cache-size', String(200 * 1024 * 1024));
+    app.commandLine.appendSwitch('media-cache-size', String(200 * 1024 * 1024));
+    app.commandLine.appendSwitch('disable-background-timer-throttling');
+    app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+    app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  } catch (_) {}
+}
+
 // v3.0.45（网友反馈：tailscale 组网地址客户端登录不了、浏览器可以）：
 //   系统开着代理时 Chromium 默认走系统代理，而 Windows 的 ProxyOverride 通常只写
 //   10.* / 172.16-31.* / 192.168.*，不含 100.64.0.0/10（CGNAT，Tailscale 专用网段），
@@ -838,6 +851,18 @@ const HISTORY_FILE = path.join(app.getPath('userData'), 'servers.json');
 try { fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true }); } catch (_) {}
 const ICON_PATH = path.join(__dirname, 'icon.ico');
 const ICON_PNG = path.join(__dirname, 'icon.png');
+
+// ===================== v5.1.0：macOS 移植的平台常量 =====================
+// 说明：本项目历史上已有部分 macOS 分支（v2.14/v2.15 系列），但缺少统一守卫。
+// 这里集中定义，避免各处再写裸 process.platform 判断时漏掉某一平台。
+const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
+// 窗口圆角策略：
+//   Windows —— 必须 false：关掉 Win11 DWM 的 8px 外层圆角（那一圈 #444 边框），
+//              可见圆角由页面 clip-path 统一绘制，行为与历史版本完全一致；
+//   macOS   —— 保留系统原生圆角（红绿灯窗口的圆角、阴影交给系统），否则窗口是直角的、
+//              与 macOS 窗口习惯不符。
+const __ROUNDED_CORNERS = process.platform === 'darwin';
 // v2.11.0 r31（新需求：电视直播播放器桌面快捷方式）：保留启动 ID——设置页"直播设置→
 // 创建桌面快捷方式"专用，不经 FPK/manifest 解析；三链（wscript loopback /launch、
 // --launch-app 冷启动、second-instance 热启动）均识别此 ID 直达内置直播窗（live.html），
@@ -1773,19 +1798,32 @@ function __secondInstanceHandshakeSync(token) {
   }
   try { dlog && dlog('warn', 'shortcut.handshake.timeout', { token }); } catch (_) {}
   // 需求 2.6.1：主进程疑似卡死 -> 弹窗「飞牛客户端进程异常，无法唤起应用，是否重启飞牛？」。
-  // dialog.showMessageBoxSync 需 app ready，此处用 PowerShell 系统弹窗保证 ready 前也可用。
+  // dialog.showMessageBoxSync 需 app ready，此处用系统级弹窗保证 ready 前也可用：
+  //   Windows —— PowerShell + WinForms MessageBox（历史实现，行为不变）；
+  //   macOS   —— osascript display dialog（系统原生，无需任何 npm 依赖）；
+  //   其它平台 —— 直接跳过（rc=1），只写日志，不做重启。
   let __rc = 1;
   try {
     const cp = require('child_process');
-    const psPath = path.join(app.getPath('userData'), 'handshake-dlg.ps1');
-    const psBody = [
-      'Add-Type -AssemblyName System.Windows.Forms',
-      "$r = [System.Windows.Forms.MessageBox]::Show('飞牛客户端进程异常，无法唤起应用，是否重启飞牛？重启后请再次点击桌面快捷方式。', '飞牛客户端', 'YesNo', 'Warning')",
-      "if ($r -eq 'Yes') { exit 0 } else { exit 1 }",
-    ].join('\r\n');
-    fs.writeFileSync(psPath, psBody, 'utf-8');
-    try { cp.execSync('powershell -NoProfile -STA -ExecutionPolicy Bypass -File "' + psPath + '"', { stdio: 'ignore' }); __rc = 0; } catch (_) { __rc = 1; }
-    try { fs.unlinkSync(psPath); } catch (_) {}
+    if (process.platform === 'win32') {
+      const psPath = path.join(app.getPath('userData'), 'handshake-dlg.ps1');
+      const psBody = [
+        'Add-Type -AssemblyName System.Windows.Forms',
+        "$r = [System.Windows.Forms.MessageBox]::Show('飞牛客户端进程异常，无法唤起应用，是否重启飞牛？重启后请再次点击桌面快捷方式。', '飞牛客户端', 'YesNo', 'Warning')",
+        "if ($r -eq 'Yes') { exit 0 } else { exit 1 }",
+      ].join('\r\n');
+      fs.writeFileSync(psPath, psBody, 'utf-8');
+      try { cp.execSync('powershell -NoProfile -STA -ExecutionPolicy Bypass -File "' + psPath + '"', { stdio: 'ignore' }); __rc = 0; } catch (_) { __rc = 1; }
+      try { fs.unlinkSync(psPath); } catch (_) {}
+    } else if (process.platform === 'darwin') {
+      // osascript 返回 "button returned:重启"；用户按取消时 osascript 非 0 退出 → rc 保持 1。
+      try {
+        const r = cp.execSync(
+          "osascript -e 'button returned of (display dialog \"飞牛客户端进程异常，无法唤起应用，是否重启飞牛？重启后请再次点击桌面快捷方式。\" buttons {\"取消\",\"重启\"} default button \"重启\" with title \"飞牛客户端\" with icon caution)'",
+          { stdio: ['ignore', 'pipe', 'ignore'], timeout: 120000, encoding: 'utf8' });
+        __rc = /重启/.test(String(r || '')) ? 0 : 1;
+      } catch (_) { __rc = 1; }
+    }
   } catch (_) {}
   try { dlog && dlog('info', 'shortcut.handshake.restart', { rc: __rc }); } catch (_) {}
   if (__rc === 0) {
@@ -1793,7 +1831,10 @@ function __secondInstanceHandshakeSync(token) {
       const o = JSON.parse(fs.readFileSync(__HANDSHAKE_FILE(), 'utf-8'));
       const pid = o && o.pid;
       if (pid && pid !== process.pid) {
-        try { require('child_process').execSync('taskkill /F /PID ' + pid + ' /T', { stdio: 'ignore' }); } catch (_) {}
+        try {
+          if (process.platform === 'win32') require('child_process').execSync('taskkill /F /PID ' + pid + ' /T', { stdio: 'ignore' });
+          else process.kill(pid, 'SIGKILL');
+        } catch (_) {}
       }
     } catch (_) {}
     try { fs.unlinkSync(__HANDSHAKE_FILE()); } catch (_) {}
@@ -3058,6 +3099,11 @@ ipcMain.handle('download:list', async () => {
 });
 
 ipcMain.handle('download:get-default-path', async () => {
+  // v5.1.0：macOS 没有"exe 同级目录"的概念（app 在 /Applications 里只读），
+  // 走系统标准下载目录；Windows 保持原行为（便携版 exe 同级 downloads）。
+  if (IS_MAC) {
+    try { return app.getPath('downloads'); } catch (_) { return app.getPath('home'); }
+  }
   // 默认下载到 exe 同级 downloads 目录
   const exeDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
   const downloadDir = path.join(exeDir, 'downloads');
@@ -4087,6 +4133,8 @@ function __createMenuPopupWindow() {
       frame: false,
       transparent: true,
       backgroundColor: '#00000000',
+      // 菜单弹窗是 frame:false 的贴边浮层，两个平台都保持直角（macOS 上也不要系统圆角，
+      // 否则弹出的自定义菜单会凭空多出一圈圆角/阴影）。
       roundedCorners: false,
       hasShadow: false,
       resizable: false,
@@ -6292,7 +6340,7 @@ function createSettingsWindow() {
     fullscreenable: false,
     title: 'FNOS 设置',
     transparent: true,
-    roundedCorners: false, // v2.15.71：关闭 Win11 系统 8px 外层圆角，圆角由页面 clip-path 20px 统一绘制
+    roundedCorners: __ROUNDED_CORNERS, // v2.15.71：关闭 Win11 系统 8px 外层圆角，圆角由页面 clip-path 20px 统一绘制
     backgroundColor: '#00000000',
     autoHideMenuBar: true,
     frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v2.15.2：mac 原生红绿灯，Windows 无边框 + settings-preload 注入自绘标题栏
@@ -6558,7 +6606,7 @@ function registerWindow(win, opts = {}) {
           // createAppWindow，透明窗 + 应用窗分支）的透明标题栏完全两个样子。
           transparent: true,
           backgroundColor: '#00000000',
-          roundedCorners: false,
+          roundedCorners: __ROUNDED_CORNERS,
           autoHideMenuBar: true,
           frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', // v1.53：仅 frame:false，禁用 overlay（否则 Windows 重绘系统按钮）
           icon: ICON_PATH,
@@ -8150,7 +8198,7 @@ function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
     // 四个小方块会露出窗口底色（灰），看起来就是"圆角外面套了个直角"。
     // 改为窗口透明（四角真正镂空），由页面 clip-path 裁出 20px 圆角。
     transparent: true,
-    roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
+    roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
     backgroundColor: '#00000000',
     show: false,
     autoHideMenuBar: true,
@@ -10515,10 +10563,13 @@ function __sysThemeDark38() {
     if (__sysDarkCache38 !== null && now - __sysDarkAt38 < 30000) return __sysDarkCache38;
     let dark = null;
     try {
-      const { execFileSync } = require('child_process');
-      const out = execFileSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize', '/v', 'AppsUseLightTheme'], { encoding: 'utf8', windowsHide: true, timeout: 1500 });
-      const m = /AppsUseLightTheme\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(String(out));
-      if (m) dark = (parseInt(m[1], 16) === 0);
+      // 注册表只在 Windows 存在；macOS/Linux 直接走 nativeTheme（系统外观）。
+      if (process.platform === 'win32') {
+        const { execFileSync } = require('child_process');
+        const out = execFileSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize', '/v', 'AppsUseLightTheme'], { encoding: 'utf8', windowsHide: true, timeout: 1500 });
+        const m = /AppsUseLightTheme\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(String(out));
+        if (m) dark = (parseInt(m[1], 16) === 0);
+      }
     } catch (_) {}
     if (dark === null) { try { dark = !!require('electron').nativeTheme.shouldUseDarkColors; } catch (_) { dark = false; } }
     __sysDarkCache38 = !!dark; __sysDarkAt38 = now;
@@ -10736,6 +10787,9 @@ function ensureTray() {
   try {
     iconImage = nativeImage.createFromPath(ICON_PNG);
     if (iconImage.isEmpty()) iconImage = nativeImage.createFromPath(ICON_PATH);
+    // v5.1.0：macOS 菜单栏图标只吃 16~22pt 小图，直接塞 256px 原图会被系统裁成糊块，
+    // 这里先缩到 18px 再交给 Tray；Windows 托盘用原图（尺寸由 shell 缩放）。
+    if (IS_MAC && !iconImage.isEmpty()) iconImage = iconImage.resize({ width: 18, height: 18, quality: 'best' });
   } catch (_) {
     iconImage = nativeImage.createEmpty();
   }
@@ -10958,7 +11012,7 @@ function createMainWindow(partition, loadTarget) {
     // v2.15.36 已用 disable-gpu-compositing 根治白板（GPU 合成异常），透明窗口本身不是白板根因，
     // 故恢复透明让标题栏透出桌面壁纸；body 仍保留飞牛主页背景（titlebar-inject 只 html 透明），不挖空内容。
     transparent: true,
-    roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
+    roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
     backgroundColor: '#00030610',
     show: false,
     paintWhenInitiallyHidden: true,
@@ -12148,7 +12202,7 @@ function createAboutWindow() {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     resizable: false, maximizable: false, minimizable: true,
     transparent: true,
-    roundedCorners: false,
+    roundedCorners: __ROUNDED_CORNERS,
     backgroundColor: '#00000000',
     icon: ICON_PATH,
     parent: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
@@ -12186,6 +12240,17 @@ function getUninstallerPath() {
 
 async function launchUninstaller() {
   try { require('./logger.js').log('info', 'uninstall', 'menu.click', { params: {} }); } catch (_) {}
+  // v5.1.0：macOS 上不存在 FNOS-Uninstaller.exe（那是 Windows 专用卸载器），
+  // 也不应该让客户端自己去删 .app。给出系统习惯的卸载指引后返回。
+  if (IS_MAC) {
+    await showGlassDialog(null, {
+      title: '卸载 FNOS 客户端',
+      message: 'macOS 上请把「FNOS.app」从「应用程序」拖到废纸篓（或右键 → 移到废纸篓）。',
+      detail: '用户数据位于 ~/Library/Application Support/FNOS 与 ~/Library/Preferences/com.fnos.client.plist，如需彻底清理可一并删除。',
+      buttons: ['知道了'], width: 560,
+    });
+    return;
+  }
   const exe = getUninstallerPath();
   try { require('./logger.js').log('info', 'uninstall', 'exe', { params: { exe } }); } catch (_) {}
   if (!exe) {
@@ -12381,7 +12446,7 @@ function buildMenuTemplate() {
             // 帮助窗与偏好设置窗都走 titlebar-inject 的"设置窗口"分支，圆角半径与标题栏同比例。
             // 原来的不透明底色会让四角露出窗口背景，圆角逻辑对不对都看不出来。
             transparent: true,
-            roundedCorners: false,
+            roundedCorners: __ROUNDED_CORNERS,
             backgroundColor: '#00000000',
             icon: ICON_PATH,
             parent: mainWindow || undefined,
@@ -12399,7 +12464,7 @@ function buildMenuTemplate() {
         }},
         { type: 'separator' },
         {
-          label: '卸载 FNOS 客户端…',
+          label: IS_MAC ? '卸载 FNOS 客户端…（拖到废纸篓）' : '卸载 FNOS 客户端…',
           click: () => { launchUninstaller(); },
         },
       ],
@@ -12411,6 +12476,87 @@ function buildMenuTemplate() {
       ],
     },
   ];
+  // ===================== v5.1.0：macOS 菜单适配 =====================
+  // Windows 模板保持不变；darwin 只做两件事：
+  //   1) 补标准 App/编辑/窗口菜单 —— macOS 没有「编辑」菜单时 Cmd+C/V/A/Z 全部失效；
+  //   2) 把 Ctrl+X / Alt+X / F5 这类 Windows 习惯改写成 Cmd+X / Option+X / Cmd+R。
+  if (IS_MAC) {
+    const __macAccel = (acc) => {
+      const a = String(acc || '');
+      if (!a) return acc;
+      if (a === 'F5') return 'Cmd+R';
+      if (a === 'Ctrl+F5') return 'Cmd+Shift+R';
+      if (a === 'F11') return 'Ctrl+Cmd+F';
+      if (a === 'Alt+Left') return 'Cmd+[';
+      if (a === 'Alt+Right') return 'Cmd+]';
+      if (a === 'Alt+H') return 'Cmd+Shift+H';
+      if (/^Ctrl\+/.test(a)) return a.replace(/^Ctrl\+/, 'Cmd+');
+      if (/^Alt\+/.test(a)) return a.replace(/^Alt\+/, 'Option+');
+      return a;
+    };
+    const __walk = (items) => {
+      (items || []).forEach((it) => {
+        if (!it || typeof it !== 'object') return;
+        if (it.accelerator) it.accelerator = __macAccel(it.accelerator);
+        if (Array.isArray(it.submenu)) __walk(it.submenu);
+      });
+    };
+    // 「关于」在 macOS 属于 App 菜单，顶部单独一列不符合习惯 → 摘出来塞进 App 菜单
+    const __aboutIdx = template.findIndex((m) => m && m.label === '关于');
+    const __aboutItem = __aboutIdx >= 0 ? template.splice(__aboutIdx, 1)[0] : null;
+    __walk(template);
+    // App 菜单里已有「偏好设置…」，工具菜单的同名项去掉快捷键，避免重复注册
+    const __stripDupAcc = (items) => {
+      (items || []).forEach((it) => {
+        if (!it || typeof it !== 'object') return;
+        if (/偏好设置/.test(String(it.label || '')) && it.accelerator) delete it.accelerator;
+        if (Array.isArray(it.submenu)) __stripDupAcc(it.submenu);
+      });
+    };
+    __stripDupAcc(template);
+    const __appMenu = {
+      label: APP_NAME,
+      submenu: [
+        ...(__aboutItem ? [{ label: `关于 ${APP_NAME}`, click: () => { createAboutWindow(); } }] : []),
+        { type: 'separator' },
+        { label: '偏好设置…', accelerator: 'Cmd+,', click: () => { createSettingsWindow(); } },
+        { type: 'separator' },
+        { role: 'services', label: '服务' },
+        { type: 'separator' },
+        { role: 'hide', label: `隐藏 ${APP_NAME}` },
+        { role: 'hideOthers', label: '隐藏其他' },
+        { role: 'unhide', label: '全部显示' },
+        { type: 'separator' },
+        { role: 'quit', label: `退出 ${APP_NAME}` },
+      ],
+    };
+    const __editMenu = {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '拷贝' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'delete', label: '删除' },
+        { role: 'selectAll', label: '全选' },
+      ],
+    };
+    const __windowMenu = {
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '缩放' },
+        { type: 'separator' },
+        { role: 'front', label: '前置全部窗口' },
+      ],
+    };
+    template.unshift(__appMenu);
+    const __dlIdx = template.findIndex((m) => m && m.label === '下载');
+    template.splice(__dlIdx > 1 ? __dlIdx : 1, 0, __editMenu);
+    template.push(__windowMenu);
+  }
   return template;
 }
 
@@ -13251,6 +13397,9 @@ const __WS_SCANNER_JS = String.raw`
 // 主进程只吃安全 PNG。转换失败（真损坏/矢量 SVG）才由调用方走 exe 兜底。
 const __wicCache = new Map();
 function __wicToPng(buf) {
+  // v5.1.0：WIC / PresentationCore 是 Windows 专有 API，macOS 上不存在。
+  // 返回 null 让调用方（快捷方式图标生成）走既有兜底：直接放行原图 / 跳过图标定制。
+  if (!IS_WIN) return null;
   try {
     const os = require('os');
     const __tag = Date.now() + '-' + Math.floor(Math.random() * 1e6);
@@ -14104,9 +14253,11 @@ ipcMain.handle('settings:vlc-runtime', async () => {
       hwDecode: settings.hwDecode, cacheLevel: settings.cacheLevel,
       alwaysUse: settings.alwaysUse === true, gpu: {}, settings, mpv: true,
       subStyle: settings.subStyle, exePath: settings.exePath, custom: false, customMissing: false,
-      resume: settings.resume !== false, progressCount: Object.keys(loadProgress()).length
+      resume: settings.resume !== false, progressCount: Object.keys(loadProgress()).length,
+      // v5.1.0：设置页据此区分「内置内核」与「系统 mpv」的措辞（mac 无内置内核）
+      platform: process.platform
     };
-    if (MpvPlayerMod && process.platform === 'win32') {
+    if (MpvPlayerMod && (IS_WIN || IS_MAC)) {
       let exe = MpvPlayerMod.getMpvExe();
       let custom = false;
       // v2.21.0：设置了自定义 mpv.exe 且文件确实存在 → 以它为准
@@ -14119,9 +14270,12 @@ ipcMain.handle('settings:vlc-runtime', async () => {
       info.custom = custom;
       info.customMissing = !!(want && !custom);
       if (exe) info.reason = '';
-      else info.reason = want ? '自定义 mpv 路径无效，且内置内核缺失' : '未找到内置 mpv.exe';
-    } else if (process.platform !== 'win32') {
-      info.reason = 'MPV 外部播放器仅在 Windows 平台启用';
+      else if (want) info.reason = '自定义 mpv 路径无效，且未找到系统 mpv';
+      else info.reason = IS_MAC
+        ? '未找到 mpv：请执行 brew install mpv，或在设置里指定 mpv 可执行文件路径'
+        : '未找到内置 mpv.exe';
+    } else if (!IS_WIN && !IS_MAC) {
+      info.reason = 'MPV 外部播放器仅在 Windows / macOS 平台启用';
     }
     return info;
   } catch (e) {
@@ -14148,9 +14302,10 @@ ipcMain.handle('settings:pick-mpv-exe', async () => {
   try {
     const owner = (settingsWindow && !settingsWindow.isDestroyed()) ? settingsWindow : mainWindow;
     const r = await dialog.showOpenDialog(owner, {
-      title: '选择 mpv 内核（mpv.exe）',
+      title: IS_MAC ? '选择 mpv 可执行文件（例如 /opt/homebrew/bin/mpv）' : '选择 mpv 内核（mpv.exe）',
       properties: ['openFile'],
-      filters: [{ name: 'mpv 内核', extensions: ['exe'] }, { name: '所有文件', extensions: ['*'] }]
+      // v5.1.0：macOS 的 mpv 没有 .exe 扩展名，扩展名过滤会把所有候选都藏掉 → 不过滤
+      ...(IS_MAC ? {} : { filters: [{ name: 'mpv 内核', extensions: ['exe'] }, { name: '所有文件', extensions: ['*'] }] })
     });
     if (!r || r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, canceled: true };
     return { ok: true, path: r.filePaths[0] };
@@ -18820,7 +18975,7 @@ function createLiveWindow(autoplayChannel) {
       title: APP_NAME + ' · 电视直播',
       backgroundColor: '#00000000',
       transparent: true, // v2.15.25: live window transparent (titlebar shows desktop)
-    roundedCorners: false, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
+    roundedCorners: __ROUNDED_CORNERS, // v2.15.79: Win11 DWM still draws a #444444 border layer on frameless transparent windows (1px logical, ~4px on high DPI, plus an 8px system radius). Pixel sampling of the user screenshot shows a 4px rgb(68,68,68) band spanning the full window width at the very top, with ~5px curved ends, sitting between two black lines; it reappears on the top/left/right edges whenever the window is resized. Turning roundedCorners off removes the DWM decoration layer, so the band goes away; the visible 20px corners are still drawn by the page clip-path, exactly like the settings window already does.
       // v2.15.0：macOS 用原生标题栏（红绿灯），Windows 保持自绘无边框
       frame: process.platform === 'darwin', titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
       autoHideMenuBar: true,
@@ -19954,7 +20109,7 @@ ipcMain.handle('mpv:status', async () => {
   try {
     if (!MpvPlayerMod) return { available: false, reason: 'MPV 模块未加载', enabled: getMpvSettings().enabled };
     const st = getMpvSettings();
-    const info = process.platform === 'win32' ? MpvPlayerMod.getMpvInfo() : { available: false, reason: '仅支持 Windows', version: '', source: '' };
+    const info = (IS_WIN || IS_MAC) ? MpvPlayerMod.getMpvInfo() : { available: false, reason: '仅支持 Windows / macOS', version: '', source: '' };
     return Object.assign({}, info, { enabled: st.enabled, hwDecode: st.hwDecode });
   } catch (e) { return { available: false, reason: e.message }; }
 });
@@ -20628,7 +20783,11 @@ async function embedMpvPlay(hostWin, payload) {
   if (!exePath) {
     // mpv.exe 缺失（如 CI 未下载内置内核/打包遗漏）：明确记录，避免静默无任何日志
     dlog('warn', 'mpv.embed.skip', { reason: 'mpv.exe-missing', resourcesPath: process.resourcesPath || '' });
-    return { ok: false, reason: '未找到内置 mpv.exe（内置内核缺失，请重新下载完整安装包）' };
+    // v5.1.0：macOS 没有内置内核，提示直接告诉用户去装 mpv / 指定路径
+    const __missReason = IS_MAC && MpvPlayerMod && typeof MpvPlayerMod.mpvMissingReason === 'function'
+      ? MpvPlayerMod.mpvMissingReason()
+      : '未找到内置 mpv.exe（内置内核缺失，请重新下载完整安装包）';
+    return { ok: false, reason: __missReason };
   }
   // v5.0.7（用户工单：直播十几秒就重播）——根因：embed 分支只取通用 MPV 设置，
   // 没把本次播放的 isLive 传下去 → settings.isLive 恒为 undefined → mpv 按【点播】处理

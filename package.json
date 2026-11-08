@@ -10,7 +10,12 @@
     "dev": "electron .",
     "dist": "electron-builder --win nsis --x64",
     "build": "electron-builder --win nsis --x64",
-    "dist:setup": "electron-builder --win nsis --x64 --publish never"
+    "dist:setup": "electron-builder --win nsis --x64 --publish never",
+    "predist:mac": "bash build/make-icns.sh",
+    "dist:mac": "electron-builder --mac --arm64 --x64 --publish never",
+    "prebuild:mac": "bash build/make-icns.sh",
+    "build:mac": "electron-builder --mac --arm64 --x64 --publish never",
+    "icons:mac": "bash build/make-icns.sh"
   },
   "devDependencies": {
     "electron": "^44.3.0",
@@ -102,6 +107,34 @@
       ],
       "icon": "icon.ico",
       "artifactName": "FNOS-${version}-win.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.utilities",
+      "icon": "build/icons/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "FNOS-${version}-mac-${arch}.${ext}",
+      "darkModeSupport": true,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "LSMinimumSystemVersion": "11.0",
+        "NSHighResolutionCapable": true
+      }
     },
     "nsis": {
       "oneClick": false,

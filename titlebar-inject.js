@@ -2176,7 +2176,7 @@ module.exports = function injectTitleBar(ctx) {
 
         // 左侧：☰ 菜单按钮（弹出原系统菜单栏全部内容）
         const left = document.createElement('div');
-        __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '82px' : '6px') + ';margin-left:4px;');
+        __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;height:34px;padding-left:' + (isMac ? '78px' : '6px') + ';margin-left:4px;');
         const menuBtn = document.createElement('button');
         menuBtn.id = 'fnos-tb-menu';
         menuBtn.title = '菜单（文件/下载/视图/工具/设置/帮助）';
@@ -3087,7 +3087,7 @@ module.exports = function injectTitleBar(ctx) {
         } catch (_) {}
         // 左：应用 logo + 标题
         const left = document.createElement('div');
-        __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '86px' : '12px') + ';overflow:hidden;');
+        __setCss(left, '-webkit-app-region:no-drag;pointer-events:auto;display:flex;align-items:center;gap:8px;height:34px;padding-left:' + (isMac ? '78px' : '12px') + ';overflow:hidden;');
         const logo = document.createElement('img');
         logo.id = 'fnos-embed-logo';
         __setCss(logo, 'width:18px;height:18px;border-radius:4px;flex:0 0 auto;object-fit:cover;display:none;');

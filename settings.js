@@ -981,6 +981,8 @@
   const vlcExeBrowse = document.getElementById('vlc-exe-browse');
   const vlcArgs = document.getElementById('vlc-args');
   const vlcConfig = bindGlassSelect(document.querySelector('[data-select="vlc-config"]'));
+  // v5.0.5：播放内核（内置 / 自定义）
+  const mpvCore = bindGlassSelect(document.querySelector('[data-select="mpv-core"]'));
   const vlcPerf = bindGlassSelect(document.querySelector('[data-select="vlc-perf"]'));
   const vlcSubPos = document.getElementById('vlc-sub-pos');
   const vlcSubSize = document.getElementById('vlc-sub-size');
@@ -1062,6 +1064,7 @@
       if (vlcExe) vlcExe.value = v.exePath || '';
       if (vlcArgs) vlcArgs.value = v.extraArgs || '';
       if (vlcConfig) vlcConfig.value = (v.configMode === 'own') ? 'own' : 'builtin';
+      if (mpvCore) mpvCore.value = (v.coreMode === 'custom') ? 'custom' : 'builtin';
       if (vlcPerf) vlcPerf.value = (v.perfPreset === true) ? 'on' : (v.perfPreset === false ? 'off' : 'auto');
       const ss = (v.subStyle && typeof v.subStyle === 'object') ? v.subStyle : {};
       if (vlcSubPos) vlcSubPos.value = (typeof ss.pos === 'number') ? String(ss.pos) : '';
@@ -1171,6 +1174,7 @@
           // v2.21.0：自定义内核 / 附加参数 / 配置来源 / 低功耗预设 / 字幕样式
           exePath: vlcExe ? String(vlcExe.value || '').trim() : '',
           extraArgs: vlcArgs ? String(vlcArgs.value || '').trim() : '',
+          coreMode: (mpvCore && mpvCore.value === 'custom') ? 'custom' : 'builtin',
           configMode: (vlcConfig && vlcConfig.value === 'own') ? 'own' : 'builtin',
           perfPreset: (vlcPerf ? vlcPerf.value : 'auto') === 'on' ? true
             : ((vlcPerf ? vlcPerf.value : 'auto') === 'off' ? false : null),

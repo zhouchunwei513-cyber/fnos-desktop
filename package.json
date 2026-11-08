@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "5.0.4",
+  "version": "5.0.5",
   "description": "FNOS Desktop Client",
   "main": "main.js",
   "author": "FNOS",

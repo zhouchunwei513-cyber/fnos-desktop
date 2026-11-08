@@ -610,6 +610,23 @@
 
       <div class="hotkey-row" style="margin-top:10px">
         <div class="hotkey-label">
+          <div class="hotkey-title">MPV 播放内核</div>
+          <div class="hotkey-sub">内置 MPV：随客户端打包的内核，开箱即用（推荐）；自定义 MPV：使用你自己填写的 mpv.exe（如 mpv-lazy 懒人包，可插帧/超分）</div>
+        </div>
+        <div style="flex:0 0 260px">
+          <div class="glass-select hotkey-input" data-select="mpv-core" data-value="builtin" tabindex="0" style="width:100%">
+            <span class="glass-select-value">内置 MPV（推荐）</span>
+            <svg class="glass-select-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="glass-select-menu" data-menu="mpv-core">
+            <div class="glass-select-option" data-value="builtin">内置 MPV（推荐）</div>
+            <div class="glass-select-option" data-value="custom">自定义 MPV</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hotkey-row" style="margin-top:10px">
+        <div class="hotkey-label">
           <div class="hotkey-title">自定义 MPV 内核（可选）</div>
           <div class="hotkey-sub">留空则用内置 MPV。填外部 mpv.exe 的完整路径即可换用你自己的内核（如 mpv-lazy 懒人包，自带插帧/超分插件）；路径无效时自动回退内置，不影响播放</div>
         </div>

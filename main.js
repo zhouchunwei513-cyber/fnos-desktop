@@ -2106,6 +2106,7 @@ function defaultSettings() {
       alwaysUse: false,        // v2.20.0：默认用 MPV 播放（所有视频直接交给 MPV，不等解码失败）
       hwDecode: 'auto',        // auto/d3d11va -> d3d11va 零拷贝；dxva2 -> copy；no -> 软解
       // v2.21.0：自定义 MPV 内核（如 mpv-lazy 懒人包，自带插帧/超分）
+      coreMode: 'builtin',     // v5.0.5：builtin = 内置 MPV（忽略 exePath）；custom = 用下面填的外部内核
       exePath: '',             // 外部 mpv.exe 绝对路径；空 = 用内置内核
       extraArgs: '',           // 附加启动参数（空格分隔，支持引号），如 --vf=vapoursynth="D:\svp.vpy"
       configMode: 'builtin',   // builtin = 随包中文配置（右键菜单/中文 OSC）；own = 用 MPV 自身配置
@@ -2145,6 +2146,7 @@ function getMpvSettings() {
     if (hw === 'auto-safe') hw = 'd3d11va';
     const cacheLevel = ['standard', 'smooth', 'unlimited'].includes(v.cacheLevel) ? v.cacheLevel : 'smooth';
     // v2.21.0：自定义 MPV 内核 / 附加启动参数 / 配置来源 / 低功耗预设 / 字幕样式记忆
+    const coreMode = (v.coreMode === 'custom') ? 'custom' : 'builtin';
     const exePath = (typeof v.exePath === 'string') ? v.exePath.trim().slice(0, 400) : '';
     const extraArgs = (typeof v.extraArgs === 'string') ? v.extraArgs.slice(0, 2000) : '';
     const configMode = (v.configMode === 'own') ? 'own' : 'builtin';
@@ -2157,7 +2159,7 @@ function getMpvSettings() {
     try { autoNext = loadSettings().mpvAutoNext !== false; } catch (_) { autoNext = true; }
     return {
       enabled: v.enabled !== false, alwaysUse: v.alwaysUse === true, hwDecode: hw,
-      cacheLevel, exePath, extraArgs, configMode, perfPreset, subStyle, resume, autoNext
+      cacheLevel, coreMode, exePath, extraArgs, configMode, perfPreset, subStyle, resume, autoNext
     };
   } catch (_) {
     return {
@@ -14048,6 +14050,7 @@ ipcMain.handle('settings:set-vlc', async (_e, patch) => {
       hwDecode: ['auto', 'd3d11va', 'dxva2', 'no'].includes(p.hwDecode) ? p.hwDecode : cur.hwDecode,
       cacheLevel: ['standard', 'smooth', 'unlimited'].includes(p.cacheLevel) ? p.cacheLevel : cur.cacheLevel,
       // v2.21.0：自定义内核 / 附加参数 / 配置来源 / 低功耗预设 / 字幕样式
+      coreMode: (p.coreMode === 'custom' || p.coreMode === 'builtin') ? p.coreMode : cur.coreMode,
       exePath: typeof p.exePath === 'string' ? p.exePath.trim().slice(0, 400) : cur.exePath,
       extraArgs: typeof p.extraArgs === 'string' ? p.extraArgs.slice(0, 2000) : cur.extraArgs,
       configMode: (p.configMode === 'own' || p.configMode === 'builtin') ? p.configMode : cur.configMode,

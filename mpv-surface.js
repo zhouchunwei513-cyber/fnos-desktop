@@ -316,7 +316,8 @@ class MpvSurface {
         onNeedFreshUrl: this._onNeedFreshUrl || null,
         // v2.21.0：自定义 MPV 内核（mpv-lazy 等）/ 附加启动参数 / 配置来源 /
         // 低功耗预设（null=自动：内置开、自定义关）/ 字幕样式（位置、字号、缩放）
-        mpvExe: this._startSettings.exePath || '',
+        // v5.0.5（用户要求：设置里可选内置/自定义内核）——只有 coreMode==='custom' 才用外部 exe
+        mpvExe: (this._startSettings.coreMode === 'custom') ? (this._startSettings.exePath || '') : '',
         mpvArgs: this._startSettings.extraArgs || '',
         configMode: this._startSettings.configMode || 'builtin',
         perfPreset: (typeof this._startSettings.perfPreset === 'boolean') ? this._startSettings.perfPreset : undefined,

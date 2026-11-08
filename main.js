@@ -20630,7 +20630,12 @@ async function embedMpvPlay(hostWin, payload) {
     dlog('warn', 'mpv.embed.skip', { reason: 'mpv.exe-missing', resourcesPath: process.resourcesPath || '' });
     return { ok: false, reason: '未找到内置 mpv.exe（内置内核缺失，请重新下载完整安装包）' };
   }
-  const st = getMpvSettings();
+  // v5.0.7（用户工单：直播十几秒就重播）——根因：embed 分支只取通用 MPV 设置，
+  // 没把本次播放的 isLive 传下去 → settings.isLive 恒为 undefined → mpv 按【点播】处理
+  //（不加 --hls-live-edge，EOF 走点播重载），于是从滚动窗口头部重播。
+  const st = Object.assign({}, getMpvSettings(), {
+    isLive: !!(payload.isLive || payload.scope === 'live'),
+  });
   try { global.__mpvSettings = st; } catch (_) {}
   // v2.24.7（用户反馈 6：偏好设置里「默认启用 MPV 播放」开关不起作用，一直用 MPV）——
   // 旧逻辑是 alwaysUse 覆盖 enabled（两者任一为真就接管），等于开关点了没用。

@@ -1471,7 +1471,12 @@ contextBridge.exposeInMainWorld('fnos', {
       // v5.1.14（用户工单：影视 MPV 失效）——
       // 之前 mac 走 HTML5 是为了绕开 mpv 不跟随主窗的问题，但用户仍要 MPV（影视画质/硬解）。
       // 改为：mac 上显式 MPV 请求（payload.allowMac）继续走 MPV；HTML5 仅作为 MPV 起不来时的兜底。
-      if (process.platform === 'darwin' && !(payload && payload.allowMac)) {
+      // v5.1.29（用户反馈：影视里用菜单「🎬 用 MPV 嵌入播放」起不来）——
+      // 日志实证 `embed.skip.mac-html5`：菜单链路走到这里时 payload.allowMac 为空，被这条 mac 保护
+      // 直接跳过。但「菜单点击」本身就是用户的显式意图，必须放行。
+      // 判定：reason === 'menu'（菜单/快捷键触发）视为 allowMac。
+      if (process.platform === 'darwin' && !(payload && payload.allowMac)
+          && String((typeof reason !== 'undefined' && reason) || '') !== 'menu') {
         log('embed.skip.mac-html5', { source: direct.source, isLive: isLiveNow });
         try { restoreVideoDisplay(); } catch (_) {}
         return false;
@@ -2161,6 +2166,23 @@ contextBridge.exposeInMainWorld('fnos', {
         }, 1000);
         if (__videoProbe.unref) __videoProbe.unref();
         // 菜单/快捷键强制接管：不依赖 DOM 监听是否安装，始终响应（即使页面无 <video> 也按路由解析直链）
+        // v5.1.28（真因）：菜单那条链路是主进程 executeJavaScript 派发 DOM 事件，
+        // 而 contextIsolation:true 下「主世界派发的事件」到不了 preload 的隔离世界 ——
+        // 日志实证：广播 fired 了 wc5，但 preload 里连 embed.menu 都没打印。
+        // 这里补一条 IPC 通道（主进程直接 wc.send），100% 送达。
+        try {
+          ipcRenderer.on('mpv:menu-embed', () => {
+            try {
+              installDomObserver();
+              state.handled = false; state.resolving = false;
+              state.itemGuid = state.itemGuid || guidFromPath();
+              readTokenFromStorage();
+              const v = getMainVideo();
+              log('embed.menu', { via: 'ipc', path: location.pathname, itemGuid: state.itemGuid, hasVideo: !!v });
+              triggerEmbed(v, 'menu');
+            } catch (_) {}
+          });
+        } catch (_) {}
         window.addEventListener('fnos:mpv-embed', () => {
           try {
             installDomObserver();
@@ -2322,6 +2344,9 @@ try {
     installNasApp: (payload) => { console.log('[fnApi] installNasApp', payload); return ipcRenderer.invoke('install-nas-app', payload); },
     uninstallNasApp: (payload) => { console.log('[fnApi] uninstallNasApp', payload); return ipcRenderer.invoke('uninstall-nas-app', payload); },
     createDesktopShortcut: (payload) => { console.log('[fnApi] createDesktopShortcut', payload); return ipcRenderer.invoke('create-desktop-shortcut', payload); },
+    // v5.1.32（用户反馈：快捷方式列表自动重排，看不出哪些已经创建过）
+    // 新增：直接向主进程要「桌面上已存在的 FNOS 快捷方式」清单，设置页据此持久标记「✓ 已创建」
+    listDesktopShortcuts: () => ipcRenderer.invoke('list-desktop-shortcuts'),
     // v2.0.0：多账号管理 API
     listAccounts: () => { console.log('[fnApi] listAccounts'); return ipcRenderer.invoke('account:list'); },
     switchAccount: (origin) => { console.log('[fnApi] switchAccount', origin); return ipcRenderer.invoke('account:switch', { origin }); },

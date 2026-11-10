@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('fnMenu', {
   // v4.0.1：主进程发现菜单尺寸异常时要求渲染层重测
   onRemeasure: (cb) => { ipcRenderer.on('fnmenu:remeasure', () => { try { cb(); } catch (_) {} }); },
   ready: (size) => ipcRenderer.send('fnmenu:ready', size),
+  // v5.1.17-menu-fit：macOS 不透明菜单窗按可见面板动态贴合。用 sendSync 保证主进程扩窗完成后再摆子菜单，
+  // 否则 setBounds 与视口更新异步，子菜单会被旧窗口裁一帧。
+  fit: (size) => { try { return ipcRenderer.sendSync('fnmenu:fit', size); } catch (_) { return null; } },
+  isMac: process.platform === 'darwin',
   invoke: (id) => ipcRenderer.send('fnmenu:invoke', id),
   close: () => ipcRenderer.send('fnmenu:close'),
   // v4.0.1：菜单自证日志（写进主进程日志，便于定位「量小了 / 窗口没起来」）

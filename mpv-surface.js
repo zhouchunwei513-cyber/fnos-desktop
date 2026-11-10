@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 // mpv-surface.js —— 应用内"视觉嵌入"播放层
 // 采用 fntv 同款：mpv 自己的原生窗口（无边框、置顶、自带 OSC、可拖动），
@@ -9,6 +9,89 @@
 // viewOffset: <webview> 在宿主页面内的偏移（标题栏等），DIP，{x,y}
 
 const mpvMod = require('./mpv-player');
+
+// ===== v5.1.23：macOS 覆盖窗几何基础设施 =====
+// 真机事实：mac 版 mpv 没有 window-move / window-resize；运行期 set_property geometry 只写属性、
+// 窗口不动。窗口位置只在 spawn 时由 --geometry 决定。因此 mac 上要「严丝合缝」只有两条路：
+//   ① 启动时把坐标换算成 mpv/cocoa 认可的原点（本文件 _macMpvGeometry）；
+//   ② 播放区矩形发生显著变化后，带新 --geometry 重启 mpv（_maybeRestartForGeometry）。
+// 另加一条只读量尺：CGWindowList 取 mpv 窗口真实屏幕矩形（不需要辅助功能/录屏授权），
+// 用来在真机上量化「期望 vs 实际」，并给首次启动做自校准。
+const { execFile: __execFile } = require('child_process');
+
+function __execOut(file, args, timeout) {
+  return new Promise((resolve) => {
+    try {
+      __execFile(file, args, { timeout: timeout || 2500, maxBuffer: 1 << 20 }, (err, stdout) => {
+        resolve(err ? '' : String(stdout || ''));
+      });
+    } catch (_) { resolve(''); }
+  });
+}
+
+let __macCgBroken = false;
+// 用 mpv 自己的 pid 选窗口，避免页面上同时存在多个 mpv（独立窗/残留）时量错。
+async function __macWindowRectByPid(pid) {
+  if (process.platform !== 'darwin' || !pid) return null;
+  if (!__macCgBroken) {
+    const js = "ObjC.import('CoreGraphics');\n"
+      + "var list = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID)) || [];\n"
+      + "var out = null;\n"
+      + "for (var i = 0; i < list.length; i++) {\n"
+      + "  var w = list[i] || {};\n"
+      + "  if (Number(w.kCGWindowOwnerPID) === " + Number(pid) + " && Number(w.kCGWindowLayer) === 0) {\n"
+      + "    var b = w.kCGWindowBounds || {};\n"
+      + "    var x = Number(b.X), y = Number(b.Y), ww = Number(b.Width), hh = Number(b.Height);\n"
+      + "    if (isFinite(x) && isFinite(y) && ww > 1 && hh > 1) { out = {x:x,y:y,width:ww,height:hh,src:'cg'}; break; }\n"
+      + "  }\n"
+      + "}\n"
+      + "JSON.stringify(out);";
+    const out = await __execOut('/usr/bin/osascript', ['-l', 'JavaScript', '-e', js], 3000);
+    try {
+      const o = JSON.parse(String(out).trim() || 'null');
+      if (o && o.width > 1) return o;
+    } catch (_) { __macCgBroken = true; }
+  }
+  // 兜底：System Events（需要「辅助功能」授权；adhoc 重签会让授权失效，故仅作兜底）
+  const se = 'tell application "System Events" to tell (first process whose unix id is ' + Number(pid)
+    + ') to get {position of window 1, size of window 1}';
+  const out2 = await __execOut('/usr/bin/osascript', ['-e', se], 2500);
+  const m = /\{\s*(-?\d+)\s*,\s*(-?\d+)\s*\},\s*\{\s*(\d+)\s*,\s*(\d+)\s*\}/.exec(out2);
+  if (m) return { x: Number(m[1]), y: Number(m[2]), width: Number(m[3]), height: Number(m[4]), src: 'se' };
+  return null;
+}
+
+let __macGeomCache = null;
+function __macGeomPath() {
+  try {
+    const { app } = require('electron');
+    return require('path').join(app.getPath('userData'), 'mpv-mac-geom.json');
+  } catch (_) { return ''; }
+}
+function __loadMacGeom() {
+  if (__macGeomCache) return __macGeomCache;
+  let o = null;
+  try { const f = __macGeomPath(); if (f) o = JSON.parse(require('fs').readFileSync(f, 'utf8')); } catch (_) {}
+  // v5.1.24（真机实测）：mac 上 --geometry 的 y 语义既不是纯左上也不是纯左下，
+  // 实测「期望 (620,100,980,730) → 实际窗口 (620,130,980,730)」= **恒定 +30px 垂直偏移**，
+  // x/宽/高 全部精确。30px 正是 mpv 窗口自带的那条头部（--border=no 也去不掉）。
+  // 自校准本应把这 30px 学出来，但真机上 CGWindowList 量不到窗口（日志 `mpv.calib.nomeasure`），
+  // 于是永远停在默认值。这里把实测值直接写进默认：adjY=-30。
+  // 若将来校准能量到窗口，它会覆盖这里的值。
+  __macGeomCache = Object.assign({ mode: 'top', adjX: 0, adjY: -30, adjW: 0, adjH: 0, calibBroken: true }, (o && typeof o === 'object') ? o : {});
+  return __macGeomCache;
+}
+function __saveMacGeom(g) {
+  // 原地更新：多个 surface（主窗/直播窗）可能共享同一个缓存对象，替换引用会让它们各说各话。
+  if (!__macGeomCache) __macGeomCache = {};
+  Object.assign(__macGeomCache, g);
+  try {
+    const f = __macGeomPath();
+    if (!f) return;
+    require('fs').mkdirSync(require('path').dirname(f), { recursive: true });
+    require('fs').writeFileSync(f, JSON.stringify(__macGeomCache, null, 2));
+  } catch (_) {}
+}
 
 // v5.1.4：本模块的 mac 真机诊断日志（与 main.js 的 [MACDIAG] 同格式，直接落 fnos-diag.log）
 let __mkLogPath = '';
@@ -82,6 +165,28 @@ class MpvSurface {
     this._pipSavedGeo = null;
     // 独立窗口画中画：保存进入小窗前 mpv 自身的窗口几何（屏幕 DIP），退出时精确还原
     this._pipSavedWin = null;
+    // v5.1.23（mac 覆盖窗贴合）：坐标换算参数 / 自校准 / 显著变化重启
+    this._macGeom = (process.platform === 'darwin') ? __loadMacGeom() : null;
+    this._geomAtSpawn = null;     // 本次 spawn 时的期望矩形（Electron 顶左原点，屏幕 DIP）
+    this._spawnGeo = null;        // 本次真正交给 mpv --geometry 的矩形（已换算）
+    this._macCalibPromise = null;
+    this._restartTimer = null;
+    this._restarting = false;
+    this._sigAt = 0;
+    this._lastPlay = null;
+    this._coreHooked = false;
+    this._ownerHooked = false;
+    if (this._macGeom) {
+      try {
+        const __d = this._hostDisplay();
+        const __k = this._macDisplayKey(__d);
+        if (this._macGeom.displayKey && this._macGeom.displayKey !== __k) {
+          // 换了显示器（分辨率/缩放变了）→ 旧的常量修正不可信，重新校准
+          this._macGeom.adjX = 0; this._macGeom.adjY = 0; this._macGeom.adjW = 0; this._macGeom.adjH = 0;
+        }
+        this._macGeom.displayKey = __k;
+      } catch (_) {}
+    }
     // 注：log/end-file/exit 监听由 main.js（embedMpvPlay）统一绑定，这里不重复绑定。
 
     // 独立窗口：不跟随父窗、不绑定父窗生命周期（由 main.js 在 mpv 退出时回收）。
@@ -285,7 +390,10 @@ class MpvSurface {
     // v1.60：内嵌 mpv 是无边框置顶窗，会盖住宿主悬浮标题栏区域。强制把 mpv 顶边压到
     // 标题栏(34px)下方，标题栏永远在 mpv 之上（可拖动/点按钮），标题栏下方即为 mpv 黑底，
     // 自动隐藏标题栏后顶部纯黑与 mpv 黑边一致。standalone（菜单"用mpv打开"）不绑定父窗，不约束。
-    if (!this._standalone && !this._pip) {
+    // v5.1.23：mac 上不做 34px 标题栏下压——直播/影视页的 body 已被 titlebar-inject 整体下移
+    // 34px，上报的 dipRect 就是「播放区」本身；再压一次会在顶部留一条 34px 灰带，
+    // 正好违反用户「上边不许露灰」的要求。Windows 行为不变。
+    if (!this._standalone && !this._pip && process.platform !== 'darwin') {
       // v2.15.93：由单向"向下压"改为双向对齐。点播页 <video> 的 dipRect.y 含飞牛影视自身标题栏
       // （点播页约 51px），而 fnos 主窗口标题栏只有 36px，露出的约 15px 飞牛标题栏会留在 mpv 上方，
       // 导致"覆盖不了标题栏下方"。现将 mpv 顶边对齐到标题栏底边 topY：高于则下压、低于则上扩。
@@ -314,15 +422,296 @@ class MpvSurface {
     };
   }
 
+  // ===== v5.1.23：macOS 覆盖窗几何 =====
+  _hostDisplay() {
+    try {
+      const { screen } = require('electron');
+      const w = this.parent;
+      const b = (w && !w.isDestroyed()) ? w.getBounds() : null;
+      return b ? screen.getDisplayMatching(b) : screen.getPrimaryDisplay();
+    } catch (_) { return null; }
+  }
+
+  _macDisplayKey(d) {
+    if (!d || !d.bounds) return 'unknown';
+    return Math.round(d.bounds.width) + 'x' + Math.round(d.bounds.height)
+      + '@' + (Math.round((d.scaleFactor || 1) * 100) / 100);
+  }
+
+  // Electron 屏幕坐标（左上原点）→ mpv/cocoa --geometry 坐标（左下原点）。
+  // 现象级证据：宿主内容区 (252,118,1280,819)，播放区相对内容区 x=300,y=34,w=980,h=729
+  // → 期望屏幕矩形 (552,152,980,729)；实际观感是整体下移（上方灰带 + 下方压控制条）。
+  // 在 1080p 屏上左下原点换算得到 y=1080-152-729=199，正好下移 47px，与现象一致。
+  // mode/adj* 由首次启动自校准写回（mpv 版本/显示器语义变化时也能自愈）。
+  _macMpvGeometry(geo) {
+    if (!geo) return null;
+    if (process.platform !== 'darwin' || this._standalone) {
+      return { x: geo.x, y: geo.y, width: geo.width, height: geo.height };
+    }
+    const g = this._macGeom || __loadMacGeom();
+    const d = this._hostDisplay();
+    let x = geo.x, y = geo.y, width = geo.width, height = geo.height;
+    if (g.mode === 'bottom' && d && d.bounds) {
+      y = d.bounds.y + d.bounds.height - geo.y - geo.height;
+    }
+    x += Number(g.adjX) || 0;
+    y += Number(g.adjY) || 0;
+    width += Number(g.adjW) || 0;
+    height += Number(g.adjH) || 0;
+    return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+  }
+
+  _isOffscreenRect(r) {
+    return !!(r && (r.x <= -20000 || r.y <= -20000));
+  }
+
+  _rectClose(a, b, tol) {
+    if (!a || !b) return false;
+    const t = (typeof tol === 'number') ? tol : 2;
+    return Math.abs(a.x - b.x) <= t && Math.abs(a.y - b.y) <= t
+      && Math.abs(a.width - b.width) <= t && Math.abs(a.height - b.height) <= t;
+  }
+
+  _measureWindowAfterSpawn() {
+    // 窗口从 spawn 到被 CGWindowList 看见约 200~600ms（mpv 建窗 + 首帧前）。
+    return (async () => {
+      for (let i = 0; i < 14; i++) {
+        await new Promise((r) => setTimeout(r, i === 0 ? 220 : 180));
+        const pid = this.player && this.player.proc && this.player.proc.pid;
+        if (!pid) continue;
+        const r = await __macWindowRectByPid(pid);
+        if (r) return r;
+      }
+      return null;
+    })();
+  }
+
+  async _respawnAndMeasure() {
+    if (this._dead || !this.player) return null;
+    try { this.player.stop(); } catch (_) {}
+    try { this.player._ownerOk = false; } catch (_) {}
+    await new Promise((r) => setTimeout(r, 150));
+    if (this._dead) return null;
+    try { this._start(); } catch (_) { return null; }
+    return await this._measureWindowAfterSpawn();
+  }
+
+  // 首次起播前的自校准（发生在 loadfile 之前，不打断画面）：
+  //   采样 0：默认按「左下原点」换算 → 量真实窗口；
+  //   采样 1：换「左上原点」再量（最常见二选一，命中即收敛）；
+  //   采样 2：用前两次求斜率（+1/-1），解出精确 --geometry，兜住菜单栏/可见区常量偏移。
+  // 结果持久化到 userData/mpv-mac-geom.json，后续启动只做一次校验，不再重启。
+  async _calibrateMacGeometry() {
+    const want = this._computeScreenGeometry();
+    if (!want) return;
+    const wantRect = { x: want.x, y: want.y, width: want.width, height: want.height };
+    let a0 = await this._measureWindowAfterSpawn();
+    if (!a0) {
+      try { __mk('macdiag.mpv.calib.nomeasure', { want: wantRect, spawn: this._spawnGeo }); } catch (_) {}
+      return;
+    }
+    // 量到 -32000 说明 IPC 就绪时那次「移出屏幕隐藏」真的生效了 —— 在 mac 上只有
+    // AppleScript 通道能做到这一点（geometry 属性不会移窗），即辅助功能授权可用。
+    // 这种情况无需换算坐标：随后 _applyGeometry 会用正确顶左坐标把窗口摆回播放区。
+    if (this._isOffscreenRect(a0)) {
+      this.player._asOk = true;
+      try { __mk('macdiag.mpv.calib.as-ok', { got: a0 }); } catch (_) {}
+      return;
+    }
+    try { __mk('macdiag.mpv.calib.sample', { n: 0, mode: this._macGeom.mode, want: wantRect, spawn: this._spawnGeo, got: a0 }); } catch (_) {}
+    if (this._rectClose(a0, wantRect)) { __saveMacGeom(this._macGeom); return; }
+
+    const s0 = this._spawnGeo ? { x: this._spawnGeo.x, y: this._spawnGeo.y, width: this._spawnGeo.width, height: this._spawnGeo.height } : null;
+    const mode0 = this._macGeom.mode;
+    this._macGeom.mode = (mode0 === 'bottom') ? 'top' : 'bottom';
+    const a1 = await this._respawnAndMeasure();
+    if (this._isOffscreenRect(a1)) {
+      // 同上：测量窗口期间被 AppleScript 移到 -32000（隐藏）= 授权可用；把 mode 还原，交给 AS 通道。
+      this.player._asOk = true;
+      this._macGeom.mode = mode0;
+      try { __mk('macdiag.mpv.calib.as-ok', { n: 1, got: a1 }); } catch (_) {}
+      return;
+    }
+    try { __mk('macdiag.mpv.calib.sample', { n: 1, mode: this._macGeom.mode, want: wantRect, spawn: this._spawnGeo, got: a1 }); } catch (_) {}
+    if (a1 && this._rectClose(a1, wantRect)) { __saveMacGeom(this._macGeom); return; }
+    if (!a1 || !s0 || !this._spawnGeo) {
+      // 第二次测不到 → 无法判断哪种语义，回到原 mode（默认左下原点），不要留下投机性结论
+      this._macGeom.mode = mode0;
+      __saveMacGeom(this._macGeom);
+      return;
+    }
+
+    const s1 = { x: this._spawnGeo.x, y: this._spawnGeo.y, width: this._spawnGeo.width, height: this._spawnGeo.height };
+    const dSpawnY = s1.y - s0.y;
+    const slopeY = (Math.abs(dSpawnY) >= 8) ? (a1.y - a0.y) / dSpawnY : 1;
+    const closer = (Math.abs(a1.y - wantRect.y) <= Math.abs(a0.y - wantRect.y)) ? a1 : a0;
+    if (Math.abs(slopeY) < 0.2) {
+      // mpv 完全忽略 y：只能保证尺寸/横向贴合，记日志停止折腾
+      try { __mk('macdiag.mpv.calib.ignore-y', { a0, a1, want: wantRect }); } catch (_) {}
+      __saveMacGeom(this._macGeom);
+      return;
+    }
+    const __prevAdj = { adjX: this._macGeom.adjX, adjY: this._macGeom.adjY, adjW: this._macGeom.adjW, adjH: this._macGeom.adjH, mode: this._macGeom.mode };
+    this._macGeom.adjX += (wantRect.x - closer.x);
+    this._macGeom.adjY += (wantRect.y - closer.y) / slopeY;
+    this._macGeom.adjW += (wantRect.width - closer.width);
+    this._macGeom.adjH += (wantRect.height - closer.height);
+    const sane = Math.abs(this._macGeom.adjX) < 2400 && Math.abs(this._macGeom.adjY) < 2400
+      && Math.abs(this._macGeom.adjW) < 400 && Math.abs(this._macGeom.adjH) < 400;
+    if (!sane) {
+      this._macGeom.adjX = 0; this._macGeom.adjY = 0; this._macGeom.adjW = 0; this._macGeom.adjH = 0;
+      try { __mk('macdiag.mpv.calib.insane', { a0, a1, want: wantRect }); } catch (_) {}
+      __saveMacGeom(this._macGeom);
+      return;
+    }
+    const a2 = await this._respawnAndMeasure();
+    const ok2 = this._rectClose(a2, wantRect);
+    try {
+      __mk('macdiag.mpv.calib.sample', {
+        n: 2, mode: this._macGeom.mode, want: wantRect, spawn: this._spawnGeo, got: a2,
+        adj: { x: this._macGeom.adjX, y: this._macGeom.adjY, w: this._macGeom.adjW, h: this._macGeom.adjH }, ok: ok2
+      });
+    } catch (_) {}
+    // 修正后仍不收敛（例如 CGWindowBounds 含阴影/读到了别的窗口）→ 回退到「最接近的那一档语义」，
+    // 绝不把一次坏修正持久化，避免下次启动从一开始就错。
+    if (!ok2) {
+      this._macGeom.adjX = __prevAdj.adjX; this._macGeom.adjY = __prevAdj.adjY;
+      this._macGeom.adjW = __prevAdj.adjW; this._macGeom.adjH = __prevAdj.adjH;
+    }
+    __saveMacGeom(this._macGeom);
+  }
+
+  _macAlignBeforePlay() {
+    if (process.platform !== 'darwin' || this._standalone) return Promise.resolve();
+    if (this._macCalibPromise) return this._macCalibPromise;
+    this._macCalibPromise = this._calibrateMacGeometry()
+      .catch((e) => { try { __mk('macdiag.mpv.calib.err', { err: String(e && e.message || e) }); } catch (_) {} })
+      .then(() => { this._macCalibPromise = null; });
+    return this._macCalibPromise;
+  }
+
+  async _macVerify(tag) {
+    if (process.platform !== 'darwin' || this._standalone || !this._started) return null;
+    const want = this._computeScreenGeometry();
+    const pid = this.player && this.player.proc && this.player.proc.pid;
+    const got = await __macWindowRectByPid(pid);
+    if (!want || !got) {
+      try { __mk('macdiag.mpv.verify.nomeasure', { tag, want: want, spawn: this._spawnGeo }); } catch (_) {}
+      return null;
+    }
+    const out = {
+      tag, mode: this._macGeom.mode, want, spawn: this._spawnGeo, got,
+      delta: { dx: got.x - want.x, dy: got.y - want.y, dw: got.width - want.width, dh: got.height - want.height }
+    };
+    this._macLastVerify = out;
+    try { __mk('macdiag.mpv.geom.verify', out); } catch (_) {}
+    return out;
+  }
+
+  async getMacWindowRect() {
+    const pid = this.player && this.player.proc && this.player.proc.pid;
+    return __macWindowRectByPid(pid);
+  }
+
+  // 播放区矩形显著变化（>16px 或宽/高 >2%）→ mac 上只能带新 --geometry 重启 mpv。
+  // 只在直播启用：点播重启会打断观看，且点播页用窗口全屏（mpv fullscreen）不依赖几何。
+  // 拖动/缩放期间连续触发，用 650ms 静默期合并成一次重启。
+  _maybeRestartForGeometry(geo) {
+    if (process.platform !== 'darwin' || this._standalone) return;
+    if (!this._startSettings || !this._startSettings.isLive) return;
+    if (this._dead || this._restarting || this._pip || this._isHostFs()) return;
+    if (this._macCalibPromise) return; // 校准期间不要在两次 spawn 之间插重启
+    if (this.player && this.player._asOk) return; // 辅助功能可用时窗口能实时跟随，不必重启
+    const base = this._geomAtSpawn;
+    if (!base || !geo) return;
+    const dx = Math.abs(geo.x - base.x), dy = Math.abs(geo.y - base.y);
+    const dw = Math.abs(geo.width - base.width), dh = Math.abs(geo.height - base.height);
+    const sig = dx > 16 || dy > 16 || dw > 16 || dh > 16
+      || dw > Math.max(1, base.width * 0.02) || dh > Math.max(1, base.height * 0.02);
+    if (!sig) return;
+    this._sigAt = Date.now();
+    if (this._restartTimer) return;
+    const tick = () => {
+      this._restartTimer = null;
+      if (this._dead || this._restarting) return;
+      if (Date.now() - this._sigAt < 650) {
+        this._restartTimer = setTimeout(tick, 200);
+        if (this._restartTimer.unref) this._restartTimer.unref();
+        return;
+      }
+      this._doRestartForGeometry('rect-change');
+    };
+    this._restartTimer = setTimeout(tick, 650);
+    if (this._restartTimer.unref) this._restartTimer.unref();
+  }
+
+  _doRestartForGeometry(reason) {
+    if (this._dead || this._restarting || this._pip || this._standalone) return;
+    if (this._macCalibPromise) return;
+    if (this.player && this.player._asOk) return;
+    const target = this._computeScreenGeometry();
+    if (!target) return;
+    const playInfo = this._lastPlay;
+    const from = this._geomAtSpawn ? { x: this._geomAtSpawn.x, y: this._geomAtSpawn.y, width: this._geomAtSpawn.width, height: this._geomAtSpawn.height } : null;
+    this._restarting = true;
+    try {
+      __mk('macdiag.mpv.restart', {
+        reason, from, to: target,
+        delta: from ? { dx: target.x - from.x, dy: target.y - from.y, dw: target.width - from.width, dh: target.height - from.height } : null
+      });
+    } catch (_) {}
+    try { this.player.stop(); } catch (_) {}
+    try { this.player._ownerOk = false; } catch (_) {}
+    const t = setTimeout(() => {
+      if (this._dead) { this._restarting = false; return; }
+      try { this._start(); } catch (e) {
+        this._restarting = false;
+        try { __mk('macdiag.mpv.restart.fail', { err: String(e && e.message || e) }); } catch (_) {}
+        return;
+      }
+      const release = () => {
+        this._restarting = false;
+        // 立刻把新几何写进 player._geometry：loadfile 的「首帧前隐藏 → 首帧 reveal」用的是它，
+        // 不清会被旧坐标带到错误位置（mac 上属性虽不移窗，但 reveal 路径仍依赖该值）。
+        try { this._applyGeometry(); } catch (_) {}
+        if (playInfo && this.player.isRunning()) {
+          try {
+            this.player.loadfile(playInfo.url, playInfo.headers, playInfo.opts)
+              .catch((err) => { try { __mk('macdiag.mpv.restart.loadfail', { err: String(err && err.message || err) }); } catch (_) {} });
+          } catch (_) {}
+        }
+        const vt = setTimeout(() => { try { this._macVerify('restart'); } catch (_) {} }, 1300);
+        if (vt.unref) vt.unref();
+      };
+      if (this.player.connected) release(); else this.player.once('ipc-ready', release);
+      const guard = setTimeout(() => { this._restarting = false; }, 9000);
+      if (guard.unref) guard.unref();
+    }, 160);
+    if (t.unref) t.unref();
+  }
+
   _start() {
     const geo = this._computeScreenGeometry();
+    // v5.1.23（mac 覆盖窗贴合）——macOS 上 mpv 只在【启动那一刻】按 --geometry 定位，
+    // 运行期改 geometry 属性不会移动窗口。因此这里必须把「Electron 顶左原点坐标」换算成
+    // mpv/cocoa 认可的坐标再交给 spawn（见 _macMpvGeometry），并记录本次启动的期望矩形，
+    // 供首次校准与后续「几何显著变化 → 重启贴合」使用。
+    const spawnGeo = geo ? this._macMpvGeometry(geo) : null;
+    this._geomAtSpawn = geo ? { x: geo.x, y: geo.y, width: geo.width, height: geo.height } : null;
+    this._spawnGeo = spawnGeo ? { x: spawnGeo.x, y: spawnGeo.y, width: spawnGeo.width, height: spawnGeo.height } : null;
+    try {
+      __mk('macdiag.mpv.spawn', {
+        standalone: !!this._standalone, isLive: !!this._startSettings.isLive,
+        want: this._geomAtSpawn, spawn: this._spawnGeo, mode: (this._macGeom && this._macGeom.mode) || ''
+      });
+    } catch (_) {}
     try {
       this.player.start({
         // 关键：必须把 standalone 透传给 MpvPlayer.start()，否则 spawn 会误走嵌入覆盖窗分支
         //（--ontop=yes/--title=FNOS-MPV/--geometry），导致"用 mpv 打开"的独立窗变成带标题栏的置顶窗、
         // 画中画/自由移动等独立窗逻辑全部失效。
         standalone: this._standalone,
-        geometry: geo || undefined,
+        geometry: spawnGeo || undefined,
         isLive: !!this._startSettings.isLive,
         title: this._startSettings.title || '',
         hwDecode: this._startSettings.hwDecode || 'auto',
@@ -345,24 +734,35 @@ class MpvSurface {
       // 注意：绝不能再把 'user-closed' 通过 this.player.emit 回抛出去——该事件的监听者
       // 正是 player 自身，回抛会再次触发本处理器形成无限递归（事件风暴，主线程卡死/日志刷爆）。
       // main.js 直接在 player 上监听 'user-closed'/'exit' 做回收与通知网页，这里不中转。
-      this.player.on('user-closed', () => { this._dead = true; });
-      // 首帧就绪、mpv 窗口从离屏隐藏移回时，立即按当前视频区几何对齐（含 34px 标题栏下压），
-      // 不必等 500ms 轮询，避免首帧短暂盖住悬浮标题栏。
-      this.player.on('first-frame', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); } catch (_) {} });
-      // v2.17.54：换片/自动播放下一集（同一 mpv 进程 loadfile 重载）后强制重新对齐一次。
-      // 首帧前窗口会离屏隐藏（-32000）再 reveal，reveal 用的是最后一次下发的几何；
-      // 这里清掉去抖缓存并重算，避免换集瞬间跳到旧位置/旧尺寸（"丢失跟随"）。
-      this.player.on('loaded', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); this._raiseMpv(); } catch (_) {} });
+      if (!this._coreHooked) {
+        this._coreHooked = true;
+        this.player.on('user-closed', () => { this._dead = true; });
+        // 首帧就绪、mpv 窗口从离屏隐藏移回时，立即按当前视频区几何对齐（含 34px 标题栏下压），
+        // 不必等 500ms 轮询，避免首帧短暂盖住悬浮标题栏。
+        this.player.on('first-frame', () => {
+          try { this.player._lastGeoStr = ''; this._applyGeometry(); } catch (_) {}
+          // v5.1.23：首帧后再量一次真实窗口矩形，把「期望 vs 实际」写进 diag 日志（真机验收用）
+          const __vt = setTimeout(() => { try { this._macVerify('first-frame'); } catch (_) {} }, 900);
+          if (__vt.unref) __vt.unref();
+        });
+        // v2.17.54：换片/自动播放下一集（同一 mpv 进程 loadfile 重载）后强制重新对齐一次。
+        // 首帧前窗口会离屏隐藏（-32000）再 reveal，reveal 用的是最后一次下发的几何；
+        // 这里清掉去抖缓存并重算，避免换集瞬间跳到旧位置/旧尺寸（"丢失跟随"）。
+        this.player.on('loaded', () => { try { this.player._lastGeoStr = ''; this._applyGeometry(); this._raiseMpv(); } catch (_) {} });
+      }
       // v3.0.71（用户要求：MPV 只要压在飞牛影视 / 电视直播之上并跟随它们）——
       // 把 mpv 原生窗口挂成宿主 BrowserWindow 的从属(owner)窗口：
       //   · Windows 保证 owned 窗口恒定在 owner 之上 → 宿主拖动/激活/最大化时 mpv 不会被自己盖住；
       //   · owner 不是 topmost → 切到别的程序时 mpv 不再压在人家和任务栏上面（此前 ontop 的问题）。
       // 挂接成功后才把 mpv 的 ontop 关掉；失败（helper 起不来等）保持原行为，不影响播放。
       try {
-        this.player.on('owner-attached', () => {
-          this._ownerOk = true;
-          try { this._applyTopPolicy(); } catch (_) {}
-        });
+        if (!this._ownerHooked) {
+          this._ownerHooked = true;
+          this.player.on('owner-attached', () => {
+            this._ownerOk = true;
+            try { this._applyTopPolicy(); } catch (_) {}
+          });
+        }
         if (!this._standalone && this.parent && !this.parent.isDestroyed()) {
           this.player.attachOwner(this.parent.getNativeWindowHandle());
         }
@@ -378,6 +778,13 @@ class MpvSurface {
   // 同时保证最后一次几何一定会补发（不会停在动画中间某一帧，动画结束后也不会残留错位）。
   _pushGeometry(geo) {
     if (!geo) return;
+    // v5.1.25（真机实测定位到根因）——运行期下发的是【未换算】的左上原点矩形，
+    // 而 spawn 时下发的是 _macMpvGeometry() 换算后的矩形；cocoa 下 `set_property geometry`
+    // 的 y 会被 mpv 加上自身 30px 头部 → 运行期这一发总是比目标低 30px，
+    // 于是"启动瞬间刚好贴合、200ms 后被跟随逻辑推到 130"（实测 want y=100，窗口落在 130）。
+    // 修法：darwin 上运行期也走同一套换算，保证 spawn 与 follow 用的是同一个坐标系。
+    // v5.1.26：换算下沉到 MpvPlayer.setGeometry（唯一出口），这里不再重复换算，
+    // 否则会双扣 30px。见 mpv-player.js 的 setGeometry。
     const now = Date.now();
     this._geoWant = geo;
     // v5.1.4（用户报第 1 项：mac 上 MPV 窗口不跟随主窗）——
@@ -544,6 +951,8 @@ class MpvSurface {
       } catch (_) {}
     }
     if (geo && this._started) this._auditMpvWin(geo);
+    // v5.1.23（mac）：播放区几何显著变化时，带新 --geometry 重启 mpv（运行期移不动窗口）
+    if (geo && this._started) this._maybeRestartForGeometry(geo);
   }
 
   // v2.17.58（用户第三次反馈"飞牛影视/电视直播全屏下 MPV 还是错位"）——
@@ -922,7 +1331,25 @@ class MpvSurface {
 
   isAlive() { return !this._dead && this.player && this.player.isRunning(); }
 
-  play(url, headers, opts) { return this.player.loadfile(url, headers, opts); }
+  play(url, headers, opts) {
+    // 记住最后一次播放参数：mac 上「几何显著变化 → 重启 mpv」后要原样重放同一路流。
+    this._lastPlay = { url, headers: headers || null, opts: Object.assign({}, opts || {}) };
+    if (process.platform !== 'darwin' || this._standalone) return this.player.loadfile(url, headers, opts);
+    // v5.1.31（用户反馈：影视 MPV 起播慢 4.7 秒）——真机取证定位到根因：
+    // 「播放前自校准」会额外 spawn 1~2 次 mpv 去量窗口真实位置，每次量不到就轮询 ~2.5s 才放弃；
+    // 而真机上 CGWindowList/System Events 都量不到（日志 `macdiag.mpv.calib.nomeasure`），
+    // 于是每次播放白等约 4.7 秒 —— 实测 mpv `spawn→IPC 就绪` 只要 203ms，
+    // 但 mpv 收到 loadfile 已经是 4.949s，差值全在这里。
+    // 既然测量在真机上不可用，且偏移量已由实测常量给出（adjY=-30），直接跳过校准。
+    if (__loadMacGeom().calibBroken) {
+      return this.player.loadfile(url, headers, opts);
+    }
+    // mac：先做启动几何自校准（最多两次额外 spawn，都发生在 loadfile 之前，不会打断画面），再加载媒体。
+    return this._macAlignBeforePlay().then(() => {
+      if (this._dead) return;
+      return this.player.loadfile(url, headers, opts);
+    });
+  }
 
   control(action, value) {
     const p = this.player;
@@ -938,6 +1365,9 @@ class MpvSurface {
   destroy() {
     if (this._dead) return;
     this._dead = true;
+    // v5.1.23：停掉 mac 重启贴合/校准留下的定时器
+    try { if (this._restartTimer) { clearTimeout(this._restartTimer); this._restartTimer = null; } } catch (_) {}
+    try { if (this._macCalibTimer) { clearTimeout(this._macCalibTimer); this._macCalibTimer = null; } } catch (_) {}
     try { if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; } } catch (_) {}
     try { if (this._dockTimer) { clearInterval(this._dockTimer); this._dockTimer = null; } } catch (_) {}
     try {

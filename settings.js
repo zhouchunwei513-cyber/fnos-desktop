@@ -1437,6 +1437,28 @@
   const appActionStatus = document.getElementById('app-action-status');
   // v3.0.25（需求 2）：列表签名——用于静默比对，避免每次轮询都重绘导致闪烁/按钮状态丢失
   let __appListSig = null;
+  async function markCreatedShortcuts() {
+    try {
+      if (!window.fnosSettings || !window.fnosSettings.listDesktopShortcuts) return;
+      const r = await window.fnosSettings.listDesktopShortcuts();
+      const created = (r && r.success && Array.isArray(r.data)) ? r.data : [];
+      if (!created.length) return;
+      const set = {};
+      created.forEach(n => { set[String(n)] = true; });
+      appListEl.querySelectorAll('.app-card').forEach(card => {
+        const nameEl = card.querySelector('.app-card-name');
+        const btn = card.querySelector('.shortcut-btn');
+        if (!nameEl || !btn) return;
+        if (set[String(nameEl.textContent || '').trim()]) {
+          btn.textContent = '✓ 已创建';
+          btn.classList.add('success');
+          btn.disabled = true;
+          btn.dataset.created = '1';
+        }
+      });
+    } catch (_) {}
+  }
+
   async function loadAppList(silent) {
     try {
       if (!window.fnosSettings || !window.fnosSettings.getInstalledApps) {
@@ -1465,6 +1487,16 @@
         return;
       }
       __appListSig = __sig;
+      // v5.1.33（用户要求）：**保持飞牛服务端返回的原始顺序**，不排序。
+      // 但服务端在图标补齐前后可能给出不同顺序，导致"列表自己跳"。
+      // 这里只在会话内锁住第一次见到的顺序（appId → 序号），后续刷新一律按它排列；
+      // 新出现的应用追加到末尾。用户看到的就是稳定、且与飞牛原始顺序一致。
+      try {
+        if (!window.__appOrderIndex) window.__appOrderIndex = {};
+        const idx = window.__appOrderIndex;
+        res.data.forEach(a => { if (idx[a.appId] === undefined) idx[a.appId] = Object.keys(idx).length; });
+        res.data.sort((a, b) => (idx[a.appId] || 0) - (idx[b.appId] || 0));
+      } catch (_) {}
       appListEl.innerHTML = '';
       appListEl.style.display = 'grid';
       res.data.forEach((app) => {
@@ -1482,6 +1514,10 @@
           '</div>';
         appListEl.appendChild(card);
       });
+      // v5.1.32（用户反馈：列表自动重排、看不出哪些已建过快捷方式）——
+      // 渲染后立刻向主进程要「桌面上已存在的 FNOS 快捷方式」清单，命中的卡片直接标成 ✓ 已创建 并禁用按钮。
+      // 这样不依赖「刚点过」的临时状态，重开设置页也还在。
+      markCreatedShortcuts();
       // 绑定事件
       appListEl.querySelectorAll('.shortcut-btn').forEach(btn => {
         btn.addEventListener('click', async () => {

@@ -3481,6 +3481,39 @@ function __macDockState() {
     };
   } catch (_) { return null; }
 }
+
+// mac 收口：把「Bundle 级属性」落进日志。Dock 图标与本地网络权限都由 Info.plist 决定，
+// 而热部署只换 app.asar、不换 Info.plist —— 只看运行时状态永远分不清是代码没生效还是包属性不对。
+// 取四项：LSUIElement（=1 则进程恒为 accessory，Dock 不显示）、CFBundleIconFile（Dock/Finder 图标）、
+// NSLocalNetworkUsageDescription（缺了 macOS 不会弹本地网络授权，三种登录都表现为连不上）。
+function __macBundleInfo() {
+  const out = { execPath: String(process.execPath || ''), bundle: '' };
+  try {
+    if (process.platform !== 'darwin') return out;
+    const bundle = path.resolve(path.dirname(process.execPath), '..', '..');
+    out.bundle = bundle;
+    const plist = path.join(bundle, 'Contents', 'Info.plist');
+    out.hasPlist = fs.existsSync(plist);
+    out.hasAsar = fs.existsSync(path.join(bundle, 'Contents', 'Resources', 'app.asar'));
+    out.hasIconIcns = fs.existsSync(path.join(bundle, 'Contents', 'Resources', 'icon.icns'));
+    if (out.hasPlist) {
+      const pb = '/usr/libexec/PlistBuddy';
+      const read = (k) => {
+        try {
+          return String(cp.execSync(pb + ' -c ' + __macQuote('Print :' + k) + ' ' + __macQuote(plist) + ' 2>/dev/null',
+            { timeout: 5000, encoding: 'utf8' })).trim();
+        } catch (_) { return ''; }
+      };
+      out.cfBundleIdentifier = read('CFBundleIdentifier');
+      out.cfBundleVersion = read('CFBundleVersion');
+      out.cfBundleIconFile = read('CFBundleIconFile');
+      out.lsuielement = read('LSUIElement');
+      out.localNetworkUsage = read('NSLocalNetworkUsageDescription') ? 'present' : 'MISSING';
+      out.bonjour = read('NSBonjourServices');
+    }
+  } catch (e) { out.err = String((e && e.message) || e).slice(0, 160); }
+  return out;
+}
 function __macActivateApp(why) {
   if (process.platform !== 'darwin') return;
   const before = __macDockState();
@@ -3504,10 +3537,21 @@ function __macActivateApp(why) {
     }
   } catch (_) {}
   try { app.focus({ steal: true }); } catch (_) { try { app.focus(true); } catch (_) {} }
-  const __after = (ms) => setTimeout(() => {
-    try { mklog('macdiag.dock.activate', { why, afterMs: ms, before, after: __macDockState() }); } catch (_) {}
+  // mac 收口：dock.show()/setActivationPolicy 在极早期（whenReady 之前或 applet 拉起瞬间）
+  // 可能被系统回退成 accessory；300ms 复查一次，策略不对就再压一次，日志里能直接看到
+  // 「policy=regular + dockVisible=true」是否真的成立（用户报 dockVisible 恒 true 但看不到图标）。
+  const __after = (ms, reassert) => setTimeout(() => {
+    try {
+      if (reassert) {
+        const st0 = __macDockState();
+        if (!st0 || st0.policy !== 'regular') {
+          try { if (typeof app.setActivationPolicy === 'function') app.setActivationPolicy('regular'); } catch (_) {}
+          try { if (app.dock) { const r2 = app.dock.show(); if (r2 && typeof r2.catch === 'function') r2.catch(() => {}); } } catch (_) {}
+        }
+      }
+      mklog('macdiag.dock.activate', { why, afterMs: ms, before, after: __macDockState() }); } catch (_) {}
   }, ms);
-  __after(300); __after(1200);
+  __after(300, true); __after(1200, false);
 }
 // 工单 5：mac 的「对应应用图标」= 打开应用窗时把 Dock 图标换成该应用的图标，
 // 回到主页/所有应用窗关闭时换回 FNOS 图标（与 Windows 每个应用窗独立任务栏图标对齐）。
@@ -3755,9 +3799,29 @@ async function __netSegProbe(rawUrl, opts) {
   // 而在 Chromium 自己的网络栈（系统代理接管 / macOS 本地网络权限 / PNA）。
   // 单列一个 verdict，避免日志里只看到 "verdict":"ok" 而无从判断。
   if (out.verdict === 'ok' && o.chromiumError) {
-    out.verdict = 'chromium-blocked';
-    out.chromiumError = String(o.chromiumError).slice(0, 140);
-    out.hint = '主进程 Node 直连可达，但 Chromium 加载失败：多为系统代理接管 / macOS 本地网络权限 / PNA 拦截。';
+    const __ce = String(o.chromiumError);
+    // mac 收口（关键）：Node 探测全通、Chromium 却 -109 时，旧实现一律判成 chromium-blocked，
+    // 而上面三处「本地网络权限」修复只认 mac-local-network-permission —— 结果恰恰是用户这台
+    // Mac 的实测形态（192.168.31.101:5666 Node 通、Chromium 报 -109）落进了通用失败分支，
+    // 既不提示也无入口去开权限。这里把「本机网段目标 + Chromium 连接类错误」归到同一个 verdict，
+    // 复用已有的提示/深链/去重链路；非本机网段（如 FNID 的公网 fnos.net）仍保持 chromium-blocked。
+    let __localIf2 = out.localIf || '';
+    if (!__localIf2) {
+      try { for (const a of ((out.dns && out.dns.addrs) || [])) { const ni = __netIsLocalSubnetAddr(String(a).split('/')[0]); if (ni) { __localIf2 = ni; break; } } } catch (_) {}
+    }
+    const __ceLocal = /-109\b|-118\b|ADDRESS_UNREACHABLE|TIMED_OUT|NETWORK_CHANGED/i.test(__ce);
+    if (process.platform === 'darwin' && __ceLocal && (out.private || __localIf2)) {
+      out.verdict = 'mac-local-network-permission';
+      out.chromiumError = __ce.slice(0, 140);
+      out.localIf = __localIf2;
+      out.hint = '主进程 Node 直连可达，但 Chromium 被系统拦下（' + __ce.slice(0, 48) + '）：macOS 本地网络权限未授权。'
+        + '系统设置 → 隐私与安全性 → 本地网络 → 勾选 FNOS（改完需重启客户端）'
+        + (__localIf2 ? '｜目标与网卡 ' + __localIf2 + ' 同网段' : '');
+    } else {
+      out.verdict = 'chromium-blocked';
+      out.chromiumError = __ce.slice(0, 140);
+      out.hint = '主进程 Node 直连可达，但 Chromium 加载失败：多为系统代理接管 / macOS 本地网络权限 / PNA 拦截。';
+    }
   }
   mklog('macdiag.net.verdict', out);
   return out;
@@ -3797,8 +3861,11 @@ async function __diagHandle(action, params) {
         userData: app.getPath('userData'),
         partition: (() => { try { return currentPartition; } catch (_) { return ''; } })(),
         origin: (() => { try { return currentOrigin || (loadSettings() && loadSettings().origin) || ''; } catch (_) { return ''; } })(),
-        dock: (() => { try { return process.platform === 'darwin' && app.dock ? { visible: app.dock.isVisible() } : null; } catch (_) { return null; } })(),
-        windows: BrowserWindow.getAllWindows().map((w) => ({ tag: (w === mainWindow ? 'main' : (w.__fnAppId ? 'app:' + String(w.__fnAppId).slice(0, 40) : 'win')), url: (() => { try { return String(w.webContents.getURL()).slice(0, 140); } catch (_) { return ''; } })(), ...__mkWinState(w) }))
+        dock: (() => { try { return process.platform === 'darwin' && app.dock ? { visible: app.dock.isVisible(), policy: (typeof app.getActivationPolicy === 'function' ? app.getActivationPolicy() : null) } : null; } catch (_) { return null; } })(),
+        windows: BrowserWindow.getAllWindows().map((w) => ({ tag: (w === mainWindow ? 'main' : (w.__fnAppId ? 'app:' + String(w.__fnAppId).slice(0, 40) : 'win')), url: (() => { try { return String(w.webContents.getURL()).slice(0, 140); } catch (_) { return ''; } })(), ...__mkWinState(w) })),
+        // v5.1.18-menu-transparent：菜单窗透明 + 贴合度自证（bg / transparent / hugDiffW…），
+        // 详见 __menuPopupDiag() 的字段注释。
+        menuPopup: __menuPopupDiag()
       };
     } else if (act === 'geom') {
       const w = BrowserWindow.fromId(Number(p.winId)) || mainWindow;
@@ -3833,13 +3900,20 @@ async function __diagHandle(action, params) {
       const list = [];
       try {
         for (const [key, surf] of mpvSurfaces.entries()) {
-          const item = { key: String(key), standalone: !!surf._standalone, pip: !!surf._pip, started: !!surf._started, dead: !!surf._dead, pushKey: surf._pushKey || '', tick: surf._pollTick || 0, dipRect: surf.dipRect || null, viewOffset: surf.viewOffset || null, want: surf._geoWant || null, host: (() => { try { return surf.parent && !surf.parent.isDestroyed() ? { id: surf.parent.id, bounds: surf.parent.getBounds(), content: surf.parent.getContentBounds() } : null; } catch (_) { return null; } })() };
+          const item = { key: String(key), standalone: !!surf._standalone, pip: !!surf._pip, started: !!surf._started, dead: !!surf._dead, pushKey: surf._pushKey || '', tick: surf._pollTick || 0, dipRect: surf.dipRect || null, viewOffset: surf.viewOffset || null, want: surf._geoWant || null, host: (() => { try { return surf.parent && !surf.parent.isDestroyed() ? { id: surf.parent.id, bounds: surf.parent.getBounds(), content: surf.parent.getContentBounds() } : null; } catch (_) { return null; } })(),
+            // v5.1.23：mac 覆盖窗贴合诊断 —— 期望矩形 / 实际 spawn 的 geometry / 换算模式 /
+            // 窗口真实屏幕矩形（CGWindowList）/ AppleScript 是否可用。真机核对只差看这四个数。
+            geomAtSpawn: surf._geomAtSpawn || null, spawnGeo: surf._spawnGeo || null,
+            macMode: surf._macGeom ? surf._macGeom.mode : '', macGeom: surf._macGeom || null,
+            asOk: !!(surf.player && surf.player._asOk), lastVerify: surf._macLastVerify || null };
           try {
             if (surf.player && surf.player.isRunning && surf.player.isRunning()) {
               const od = await surf.player.command(['get_property', 'osd-dimensions']).catch(() => null);
               const ge = await surf.player.command(['get_property', 'geometry']).catch(() => null);
               item.osdDimensions = od && od.data ? od.data : od;
               item.mpvGeometry = ge && ge.data ? ge.data : ge;
+              // 窗口真实屏幕矩形（mac），与 want/spawn 逐像素比对
+              try { item.actualRect = await surf.getMacWindowRect(); } catch (_) {}
             }
           } catch (_) {}
           list.push(item);
@@ -3866,10 +3940,199 @@ async function __diagHandle(action, params) {
       ret = await __netSegProbe(p.url, { partition: p.partition, tcpTimeout: p.tcpTimeout });
     } else if (act === 'shortcut') {
       ret = await __createMacShortcut({ appId: String(p.appId || ''), appName: String(p.appName || ''), iconPath: String(p.iconPath || ''), nasAddress: String(p.nasAddress || ''), dirOverride: String(p.dir || '') });
+    } else if (act === 'macinfo') {
+      ret = { bundle: __macBundleInfo(), dock: __macDockState(), platform: process.platform, version: APP_VERSION, execPath: String(process.execPath || '') };
+    } else if (act === 'accounts') {
+      // mac 收口（多账号取证）：只读返回账号列表与每个账号的分区名，用来直接判定
+      // 「多账号能不能切」以及「两个账号是否撞进同一个 partition」。
+      ret = {
+        current: { origin: String(currentOrigin || ''), partition: String(currentPartition || ''), href: String(lastConnectHref || '') },
+        accounts: getAccounts().map((a) => ({ id: String(a.id || ''), label: String(a.label || ''), origin: String(a.origin || ''), partition: String(a.partition || ''), isActive: !!a.isActive, lastConnectedAt: Number(a.lastConnectedAt || 0) })),
+        distinctPartitions: (() => { try { return new Set(getAccounts().map((a) => String(a.partition || ''))).size; } catch (_) { return 0; } })()
+      };
     } else if (act === 'dock') {
       __macActivateApp('diag');
       await new Promise((r) => setTimeout(r, 800));
       ret = { dock: (() => { try { return process.platform === 'darwin' && app.dock ? { visible: app.dock.isVisible() } : null; } catch (_) { return null; } })(), focused: (() => { const w = BrowserWindow.getFocusedWindow(); return w ? { id: w.id, url: (() => { try { return String(w.webContents.getURL()).slice(0, 100); } catch (_) { return ''; } })() } : null; })() };
+    } else if (act === 'menu') {
+      // v5.1.17-menu-fit：菜单贴合度一键自证。open（默认）会像点 ☰ 一样打开自绘菜单，
+      // 等渲染层量完并 setBounds 后回执 menuPopup（bounds + 渲染层 panelW）；
+      // close 则收起。注意 params 里的 token 之外的字段只认 op。
+      const op = String(p.op || 'open');
+      if (op === 'close') {
+        __hideMenuPopup();
+        __afterAppMenuClosed();
+        ret = { closed: true };
+      } else {
+        const host = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+        const ok = host ? showCustomAppMenu(host, { left: 8, bottom: 44 }) : false;
+        await new Promise((r) => setTimeout(r, 1200));
+        const w = __menuPopupWin;
+        ret = {
+          opened: !!ok,
+          host: host ? { id: host.id, bounds: host.getBounds(), zoom: (() => { try { return host.webContents.getZoomFactor(); } catch (_) { return 1; } })() } : null,
+          menuPopup: __menuPopupDiag(),
+          // v5.1.18-menu-transparent：页面侧 alpha 统计（只证明「页面」没画底色，不含窗口底色）。
+          // 注意：面板外那圈 18px 是 CSS box-shadow，alpha 会 >0（但远小于 255），
+          // 不是不透明底：真正「窗口没有底色」的证据看 /diag action=menupix。
+          alphaPixels: w && !w.isDestroyed() ? await __menuAlphaStats(w) : null,
+        };
+      }
+    } else if (act === 'menupix') {
+      // v5.1.18-menu-transparent：**窗口级**「面板外到底透不透」硬证据。
+      // 光截页面（CDP Page.captureScreenshot）只能证明页面自身没画底色，证明不了窗口有没有底色；
+      // getBackgroundColor() 在 Electron 44 会丢 alpha（透明窗也返回 '#000000'），同样不能当证据。
+      // 做法：
+      //   ① 把菜单窗临时放大 320px（面板仍钉在左上角 pad 处），读窗口自身合成面（capturePage）的 alpha：
+      //      「远区」（距面板 >60px，CSS 阴影完全够不到）若 100% alpha=0 → 窗口表面在面板之外什么都没画，
+      //      即没有底色板；「阴影环」（面板外 0~18px）应是 0<alpha<255 的半透明黑（CSS box-shadow）。
+      //   ② 对照组：同样方式读**不透明**主窗（transparent:false + '#14121b'），它必须 100% alpha=255。
+      //      两组一起看才成立：证明 capturePage 的 alpha 确实反映窗口底色，①不是假象。
+      //   ③ 顺带试一次 desktopCapturer 抓真屏（更强证据）；macOS 未授予录屏权限时它会报
+      //      'Failed to get sources.'（本机 frost 抓屏也是同一原因失败），失败就如实记下。
+      // 结束后恢复原 bounds（不放大会话结束时的窗口状态）。
+      const __sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const analyze = (img, rects) => {
+        const sz = img.getSize();
+        const bmp = img.toBitmap();   // BGRA
+        const W = sz.width, H = sz.height;
+        let n = 0, zero = 0, full = 0, mid = 0, over8 = 0, minA = 255, maxA = 0, sum = 0;
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            if (rects && rects.length) {
+              let hit = false;
+              for (let k = 0; k < rects.length; k++) {
+                const r = rects[k];
+                if (x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1) { hit = true; break; }
+              }
+              if (!hit) continue;
+            }
+            const a = bmp[((y * W) + x) * 4 + 3];
+            n++; sum += a;
+            if (a === 0) zero++; else if (a === 255) full++; else mid++;
+            if (a > 8) over8++;
+            if (a < minA) minA = a;
+            if (a > maxA) maxA = a;
+          }
+        }
+        return {
+          size: sz, pixels: n,
+          alphaZero: zero, alphaZeroPct: n ? +((zero / n) * 100).toFixed(2) : null,
+          alphaMid: mid, alphaMidPct: n ? +((mid / n) * 100).toFixed(2) : null,
+          alphaFull: full, alphaFullPct: n ? +((full / n) * 100).toFixed(2) : null,
+          // 真正“看得见”的像素（alpha>8，alpha=1~3 只是合成边缘噪声）
+          alphaOver8: over8,
+          minAlpha: n ? minA : null, maxAlpha: n ? maxA : null,
+          avgAlpha: n ? +(sum / n).toFixed(2) : null,
+        };
+      };
+      const w = __menuPopupWin;
+      if (!w || w.isDestroyed()) throw new Error('menu window not found');
+      if (!w.isVisible()) {
+        try { showCustomAppMenu((mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null, { left: 8, bottom: 44 }); } catch (_) {}
+        await __sleep(900);
+      }
+      const b0 = w.getBounds();
+      const md = (__menuLastMetrics && __menuLastMetrics.data) || {};
+      const pad = Number(md.pad) || 0;
+      const pw = Number(md.panelW) || 0;
+      const ph = Number(md.panelH) || 0;
+      const big = { x: b0.x, y: b0.y, width: b0.width + 320, height: b0.height + 320 };
+      w.setBounds(big);
+      await __sleep(350);
+      const imgMenu = await w.webContents.capturePage();
+      const szM = imgMenu.getSize();
+      const sx = szM.width / Math.max(1, big.width);
+      const sy = szM.height / Math.max(1, big.height);
+      const px0 = Math.round(pad * sx), py0 = Math.round(pad * sy);
+      const px1 = Math.round((pad + pw) * sx), py1 = Math.round((pad + ph) * sy);
+      const gapX = Math.round(60 * sx), gapY = Math.round(60 * sy);
+      const farRects = [
+        { x0: Math.min(szM.width, px1 + gapX), y0: 0, x1: szM.width, y1: szM.height },
+        { x0: 0, y0: Math.min(szM.height, py1 + gapY), x1: szM.width, y1: szM.height },
+      ].filter((r) => r.x1 > r.x0 && r.y1 > r.y0);
+      const ringRects = [
+        { x0: 0, y0: 0, x1: szM.width, y1: py0 },
+        { x0: 0, y0: py1, x1: szM.width, y1: szM.height },
+        { x0: 0, y0: py0, x1: px0, y1: py1 },
+        { x0: px1, y0: py0, x1: szM.width, y1: py1 },
+      ].filter((r) => r.x1 > r.x0 && r.y1 > r.y0);
+      const menuFull = analyze(imgMenu, null);
+      const menuFar = analyze(imgMenu, farRects);
+      const menuRing = analyze(imgMenu, ringRects);
+      try { require('fs').writeFileSync('/tmp/fnos-menu-surface-grown.png', imgMenu.toPNG()); } catch (_) {}
+      try { w.setBounds(b0); } catch (_) {}
+      await __sleep(150);
+      let mainCtl = null;
+      try {
+        const mw = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
+        if (mw) {
+          const imgMain = await mw.webContents.capturePage();
+          try { require('fs').writeFileSync('/tmp/fnos-main-surface.png', imgMain.toPNG()); } catch (_) {}
+          mainCtl = analyze(imgMain, null);
+        }
+      } catch (_) {}
+      let scr = null;
+      try {
+        const { desktopCapturer } = require('electron');
+        const disp = screen.getDisplayMatching(b0);
+        const sources = await desktopCapturer.getSources({ types: ['screen'], fetchWindowIcons: false, thumbnailSize: { width: disp.size.width, height: disp.size.height } });
+        scr = { ok: !!(sources && sources.length), count: sources ? sources.length : 0 };
+      } catch (e) { scr = { ok: false, err: String((e && e.message) || e) }; }
+      // 远区判据：可见像素（alpha>8）为 0 且 alpha=0 占比 ≥99.5%（剩下的是合成边缘 1~3 的噪声）
+      const farOk = !!menuFar && menuFar.pixels > 0 && menuFar.alphaOver8 === 0 && menuFar.alphaZeroPct >= 99.5;
+      const ctlOk = !!mainCtl && mainCtl.alphaFullPct === 100;
+      ret = {
+        windowId: w.id, bounds: b0, boundsWhileCapturing: big,
+        pad: pad, panelW: pw, panelH: ph,
+        panelPxInCapture: [px0, py0, px1, py1],
+        captureScale: { sx: +sx.toFixed(3), sy: +sy.toFixed(3) },
+        // 菜单窗（transparent）自身合成面
+        menuSurfaceFull: menuFull,          // 整帧含大量 alpha=0
+        menuSurfaceFar: menuFar,            // 面板外 >60px：期望 alphaZeroPct=100
+        menuSurfaceShadowRing: menuRing,    // 面板外 0~18px 阴影环：期望 0<alpha<255
+        // 对照组：不透明主窗（transparent:false + '#14121b'），期望 alphaFullPct=100
+        opaqueMainControl: mainCtl,
+        screenCapture: scr,
+        verdict: farOk
+          ? (ctlOk ? 'transparent:no-window-background(control-ok)' : 'transparent:no-window-background(control-missing)')
+          : 'opaque-or-unknown',
+        png: { menuSurface: '/tmp/fnos-menu-surface-grown.png', mainSurface: '/tmp/fnos-main-surface.png' },
+      };
+    } else if (act === 'winsurfaces') {
+      // v5.1.18-menu-transparent：顺手证明「只改了菜单窗，其它窗口仍然不透明」。
+      // 对每个顶层窗读自身合成面（capturePage）的 alpha：不透明窗应 alphaFullPct=100，
+      // 透明窗（本轮的菜单弹窗、以及 Windows 平台的透明窗）会出现大量 alpha<255。
+      const outs = [];
+      for (const w of BrowserWindow.getAllWindows()) {
+        try {
+          if (!w || w.isDestroyed() || !w.isVisible()) continue;
+          const img = await w.webContents.capturePage();
+          const sz = img.getSize();
+          const bmp = img.toBitmap();
+          let n = 0, full = 0, zero = 0, mx = 0;
+          for (let y = 0; y < sz.height; y++) {
+            for (let x = 0; x < sz.width; x++) {
+              const a = bmp[((y * sz.width) + x) * 4 + 3];
+              n++;
+              if (a === 255) full++; else if (a === 0) zero++;
+              if (a > mx) mx = a;
+            }
+          }
+          outs.push({
+            id: w.id,
+            tag: (w === mainWindow ? 'main' : (w.__fnAppId ? 'app:' + String(w.__fnAppId).slice(0, 40) : (w.__isMenuPopup ? 'menu-popup' : 'win'))),
+            url: (() => { try { return String(w.webContents.getURL()).slice(0, 100); } catch (_) { return ''; } })(),
+            bounds: w.getBounds(),
+            bg: (() => { try { return w.getBackgroundColor(); } catch (_) { return null; } })(),
+            pixels: n, alphaFullPct: n ? +((full / n) * 100).toFixed(2) : null,
+            alphaZeroPct: n ? +((zero / n) * 100).toFixed(2) : null,
+            maxAlpha: mx,
+            opaque: n ? full === n : null,
+          });
+        } catch (e) { outs.push({ id: (() => { try { return w.id; } catch (_) { return 0; } })(), err: String((e && e.message) || e) }); }
+      }
+      ret = { windows: outs };
     } else {
       throw new Error('unknown action: ' + act);
     }
@@ -4589,9 +4852,15 @@ function __menuAnchorFrom(hostWin, anchor) {
 //   ② 先 show 后补数据：用上一次的尺寸立刻摆位显示，数据推过去后再由 fnmenu:ready 微调尺寸；
 //   ③ 启动 3 秒后预热一次，让「第一次点 ☰」也走复用路径。
 let __menuLastSize = { w: 320, h: 420 };
+let __menuGoodSize = null;   // v5.1.17-menu-fit：补上声明（旧代码只在 ready 里赋值，首次可疑尺寸分支读它会 ReferenceError）
 let __menuLoadedOnce = false;
 let __menuPendingPayload = null;
 let __menuReadyAt = 0;
+// v5.1.17-menu-fit：菜单渲染层最近一次自量指标（panelW/rootW/visW...），/diag state 直接回执，便于验收贴合度
+let __menuLastMetrics = null;
+// v5.1.18-menu-transparent：菜单窗创建时真正传下去的窗口选项（getBackgroundColor 会丢 alpha，
+// 「透不透明」以这里 + /diag menupix 的屏幕像素对比为准）
+let __menuCreatedOpts = { transparent: null, backgroundColor: null };
 
 // 按锚点（☰ 左下角）算菜单位置，并夹到工作区内
 function __menuPlace(w, h) {
@@ -4614,15 +4883,116 @@ function __hideMenuPopup() {
   if (w && !w.isDestroyed()) { try { w.hide(); } catch (_) {} }
 }
 
+// v5.1.18-menu-transparent：菜单窗「透明 + 贴合」自证（/diag action=state|menu 都回执这份）。
+//   bg            —— win.getBackgroundColor()（Electron 44 的 getter 会丢 alpha：#00000000 → '#000000'）
+//   createdTransparent / createdBg —— 创建菜单窗时实际传进去的选项（真相在这里）
+//   bounds/content—— 窗口几何（DIP）
+//   panelW/panelH —— 渲染层自量主面板尺寸（来自 __menuLastMetrics）
+//   pad            —— 渲染层的阴影/描边余量（两平台现在都是 18px）
+//   hugDiffW/H     —— bounds.width/height - (panelW/H + 2*pad)，应 ≤2px（窗口没有多出无用的空白区）
+//   outerDiffW/H   —— bounds.width/height - panelW/H，恒等于 2*pad（这圈像素是透明的阴影边距）
+// 真正的「透不透」由 /diag action=menupix 的屏幕像素对比给结论（getBackgroundColor 不可靠）。
+function __menuPopupDiag() {
+  try {
+    const w = __menuPopupWin;
+    if (!w || w.isDestroyed()) return null;
+    const bounds = w.getBounds();
+    const content = w.getContentBounds();
+    const md = (__menuLastMetrics && __menuLastMetrics.data) || {};
+    const panelW = Number(md.panelW) || 0;
+    const panelH = Number(md.panelH) || 0;
+    const padN = Number(md.pad);
+    const pad = isFinite(padN) ? padN : null;
+    const bg = (() => { try { return w.getBackgroundColor(); } catch (_) { return null; } })();
+    const out = {
+      id: w.id, visible: w.isVisible(), bounds: bounds, content: content,
+      lastSize: __menuLastSize, lastMetrics: __menuLastMetrics,
+      bg: bg,
+      createdTransparent: !!__menuCreatedOpts.transparent,
+      createdBg: __menuCreatedOpts.backgroundColor,
+      transparentFlag: /^#00000000$/i.test(String(__menuCreatedOpts.backgroundColor || '')),
+      panelW: panelW, panelH: panelH, pad: pad,
+      innerW: Number(md.winW) || 0, innerH: Number(md.winH) || 0,
+      rootW: Number(md.rootW) || 0, dpr: Number(md.dpr) || 0,
+      platform: process.platform,
+    };
+    if (pad != null) {
+      out.hugDiffW = bounds.width - (panelW + pad * 2);
+      out.hugDiffH = bounds.height - (panelH + pad * 2);
+      out.outerDiffW = bounds.width - panelW;
+      out.outerDiffH = bounds.height - panelH;
+    }
+    return out;
+  } catch (_) { return null; }
+}
+
+// v5.1.18-menu-transparent：截菜单窗自己的合成结果，统计「主面板矩形之外」的像素 alpha。
+// 不透明窗（旧版 #14121b）这里的数据会是 alpha=255 的一整片；透明窗必须全部 alpha=0。
+// 顺带把 PNG 落到 /tmp，作为「面板外是透明像素」的原始证据。
+function __menuAlphaStats(w) {
+  return new Promise((resolve) => {
+    try {
+      if (!w || w.isDestroyed()) return resolve({ error: 'no-window' });
+      w.webContents.capturePage().then((img) => {
+        try {
+          const size = img.getSize();
+          const bmp = img.toBitmap();   // BGRA
+          const b = w.getBounds();
+          const md = (__menuLastMetrics && __menuLastMetrics.data) || {};
+          const pad = Number(md.pad) || 0;
+          const pw = Number(md.panelW) || 0;
+          const ph = Number(md.panelH) || 0;
+          const sx = size.width / Math.max(1, b.width);
+          const sy = size.height / Math.max(1, b.height);
+          const px0 = Math.round(pad * sx), py0 = Math.round(pad * sy);
+          const px1 = Math.round((pad + pw) * sx), py1 = Math.round((pad + ph) * sy);
+          let outside = 0, outsideZero = 0, panelPx = 0, panelNonZero = 0, minA = 255, maxOutsideA = 0, sumA = 0;
+          for (let y = 0; y < size.height; y++) {
+            for (let x = 0; x < size.width; x++) {
+              const a = bmp[((y * size.width) + x) * 4 + 3];
+              sumA += a;
+              if (a < minA) minA = a;
+              if (x >= px0 && x < px1 && y >= py0 && y < py1) { panelPx++; if (a > 0) panelNonZero++; }
+              else { outside++; if (a === 0) outsideZero++; else if (a > maxOutsideA) maxOutsideA = a; }
+            }
+          }
+          const png = img.toPNG();
+          const p = '/tmp/fnos-menu-popup-capture.png';
+          try { require('fs').writeFileSync(p, png); } catch (_) {}
+          resolve({
+            pixelSize: size, bounds: b, scale: { sx: +sx.toFixed(3), sy: +sy.toFixed(3) },
+            panelBoxPx: [px0, py0, px1, py1],
+            outsidePixels: outside, outsideAlphaZero: outsideZero,
+            outsideAlphaZeroPct: outside ? +((outsideZero / outside) * 100).toFixed(2) : null,
+            outsideAlphaMax: maxOutsideA,
+            panelPixels: panelPx, panelAlphaNonZero: panelNonZero,
+            minAlpha: minA, avgAlpha: +(sumA / (size.width * size.height)).toFixed(2),
+            pngPath: p, pngBytes: png.length,
+          });
+        } catch (e) { resolve({ error: String((e && e.message) || e) }); }
+      }).catch((e) => resolve({ error: String((e && e.message) || e) }));
+    } catch (e) { resolve({ error: String((e && e.message) || e) }); }
+  });
+}
+
 function __createMenuPopupWindow() {
   let win = null;
+  __menuCreatedOpts = { transparent: true, backgroundColor: '#00000000' };
   try {
     win = new BrowserWindow({
       width: __menuLastSize.w, height: __menuLastSize.h,
       show: false,
       frame: false,
-      transparent: process.platform !== 'darwin',
-      backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
+      // v5.1.18-menu-transparent（用户工单「mac 菜单弹窗一大块纯黑背景板，要去掉、直接透出桌面」）：
+      // 这里曾经是 transparent: process.platform !== 'darwin' + mac 上 backgroundColor '#14121b'。
+      // 那是 v5.1.11~13 为了让 macOS 原生红绿灯可点/拖动不出白块而「把窗口统一改不透明」时被误伤的：
+      // 主窗/应用窗有红绿灯，必须不透明；而菜单弹窗没有红绿灯、只是贴边浮层，页面自己只画了
+      // 左边一块半透明面板（panelW≈99），窗口其余部分就露出窗口底色 #14121b = 用户看到的大黑块。
+      // 现在菜单弹窗单独回到「透明窗 + 页面自绘半透明面板 + CSS 阴影」，与 Windows 版完全一致。
+      // 注意：其它窗口（主窗 / 应用窗 / 设置窗 / 直播窗 …）**仍然保持不透明**，不许跟着回退，
+      // 否则红绿灯 / 拖动白块的老 bug 会立刻复现（见 createAppWindow / createSettingsWindow 的注释）。
+      transparent: true,
+      backgroundColor: '#00000000',
       // 菜单弹窗是 frame:false 的贴边浮层，两个平台都保持直角（macOS 上也不要系统圆角，
       // 否则弹出的自定义菜单会凭空多出一圈圆角/阴影）。
       roundedCorners: false,
@@ -4733,6 +5103,9 @@ function showCustomAppMenu(hostWin, anchor) {
   }
 
   // 先见人：按上一次的尺寸立刻摆位显示，不等渲染层 ready（差的那几十像素由 ready 再微调）
+  // v5.1.17-menu-fit 曾让 mac 首次打开「等渲染层量准再 show」（理由：默认 320×420 是不透明窗，
+  // 会先闪一块黑底）。v5.1.18 菜单窗已改回透明，那块黑底不存在了，首次打开也直接 show，
+  // 不再需要「等 ready + 500ms 兜底」这套分支。
   try { win.setBounds(__menuPlace(__menuLastSize.w, __menuLastSize.h)); } catch (_) {}
   try { win.show(); } catch (_) {}
   try { win.focus(); } catch (_) {}
@@ -4762,6 +5135,11 @@ function showCustomAppMenu(hostWin, anchor) {
 // 旧版直接 setBounds 就把菜单压成 150×260，并且窗口变小又反过来夹住下一次测量（自锁）。
 // 现在对可疑值兜底：先用最近一次可信尺寸显示，再回推 fnmenu:remeasure 让渲染层在稳定窗口里重测。
 function __menuSizeTrusted(w, h) {
+  // v5.1.17-menu-fit：mac 的不透明菜单窗紧贴面板，短菜单可以合法地小于 200×120；
+  // Windows 仍是旧的透明窗（含阴影/子菜单预留），保持原阈值不回退。
+  // 注意两个平台都用严格 >：渲染层在「量到 0」时会 clamp 到下限（win 200/120、mac 60/40），
+  // 严格 > 才能继续把这种特征值判为可疑并回推重测（v4.0.1 自愈不被破坏）。
+  if (process.platform === 'darwin') return isFinite(w) && isFinite(h) && w > 60 && h > 40;
   return isFinite(w) && isFinite(h) && w > 200 && h > 120;
 }
 
@@ -4779,8 +5157,9 @@ ipcMain.on('fnmenu:ready', (e, size) => {
         });
       } catch (_) {}
       const g = __menuGoodSize;
-      try { win.setBounds(__menuPlace(g.w, g.h)); } catch (_) {}
+      if (g) { try { win.setBounds(__menuPlace(g.w, g.h)); } catch (_) {} }
       if (!win.isVisible()) {
+        __menuShownAt = Date.now();
         try { win.show(); } catch (_) {}
         try { win.focus(); } catch (_) {}
       }
@@ -4791,15 +5170,40 @@ ipcMain.on('fnmenu:ready', (e, size) => {
       return;
     }
 
-    const w = Math.max(200, Math.min(820, rawW));
-    const h = Math.max(120, Math.min(920, rawH));
+    // v5.1.17-menu-fit：mac 贴合窗允许更小的下限；Windows 保持原值。
+    const minW = process.platform === 'darwin' ? 60 : 200;
+    const minH = process.platform === 'darwin' ? 40 : 120;
+    const w = Math.max(minW, Math.min(820, rawW));
+    const h = Math.max(minH, Math.min(920, rawH));
     __menuReadyAt = Date.now();
     __menuLastSize = { w: w, h: h };
     __menuGoodSize = { w: w, h: h };
     win.setBounds(__menuPlace(w, h));
-    if (!win.isVisible()) { win.show(); win.focus(); }
+    if (!win.isVisible()) { __menuShownAt = Date.now(); win.show(); win.focus(); }
     try { dlog('info', 'menu.custom.ready', { w: w, h: h }); } catch (_) {}
   } catch (_) {}
+});
+
+// v5.1.17-menu-fit：mac 子菜单展开/收起时，渲染层要求把不透明菜单窗扩/缩到「可见面板并集」。
+// 用同步 IPC（sendSync）返回 setBounds 后的真实内容尺寸，渲染层据此摆子菜单位置。
+// Windows 不调用这里（仍是一次性预留子菜单宽度）。
+ipcMain.on('fnmenu:fit', (e, size) => {
+  let ret = { ok: false };
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (win && win === __menuPopupWin && !win.isDestroyed()) {
+      // 与 fnmenu:ready 的 mac 上下限一致，防极深子菜单把窗口撑到超过工作区
+      const w = Math.max(60, Math.min(820, Math.round(Number(size && size.w) || 0)));
+      const h = Math.max(40, Math.min(920, Math.round(Number(size && size.h) || 0)));
+      if (w > 0 && h > 0) {
+        win.setBounds(__menuPlace(w, h));
+        const cb = win.getContentBounds();
+        ret = { ok: true, w: cb.width, h: cb.height };
+        try { dlog('info', 'menu.custom.fit', { w: w, h: h, outW: cb.width, outH: cb.height }); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  try { e.returnValue = ret; } catch (_) {}
 });
 
 // v4.0.1：渲染层自证日志（菜单测量指标），落进常规日志便于定位
@@ -4808,7 +5212,11 @@ ipcMain.on('fnmenu:diag', (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win || win !== __menuPopupWin) return;
     const tag = String((payload && payload.tag) || 'menu.custom.diag');
-    dlog('info', tag, (payload && payload.data) || {});
+    const data = (payload && payload.data) || {};
+    if (tag.indexOf('menu.custom.measure') === 0) {
+      __menuLastMetrics = { tag: tag, at: Date.now(), data: data };
+    }
+    dlog('info', tag, data);
   } catch (_) {}
 });
 
@@ -5140,10 +5548,28 @@ async function __resolveServerScheme(input) {
 const SHARED_PARTITION = 'persist:fnos-shared';
 
 // v5.1.14（工单 3/6）：partition 名 → 原始 key，用于检测「两个不同账号撞进同一个分区」。
-// 24 字符截断下 FNID 的 key 前缀 "https___fnos_net_" 已占 18 字符，只剩 6 个字符参与区分，
-// 两个 FNID 前 6 位相同就会共享 Cookie/票据（表现为切换/登录后被踢回连接页）。
+// 24 字符截断下 FNID 的 key 前缀经 `/_+/g→'_'` 折叠后是 "https_fnos_net_"（15 字符），
+// 只剩 9 个字符参与区分；两个 FNID 前 9 位相同（如 dashuaibi888 / dashuaibi999）就会共享
+// Cookie/票据（表现为切换/登录后被踢回连接页）。
 // 这里先只做检测 + 日志（不改变既有命名，避免升级后老会话全部失效）；日志确认命中后再改命名。
-const __partOwner56 = new Map();
+const __partOwner56 = new Map();   // partition name -> 原始 key
+const __partName56 = new Map();    // 原始 key -> partition name（同一 key 永远拿到同一名字）
+// mac 收口（多账号/登录被踢回）：24 字符截断下 FNID 的 key 前缀折叠后是 "https_fnos_net_"
+// （15 字符），只剩 9 字符区分。两个 FNID 前 9 位相同就会共用一个 partition、互相覆盖 Cookie，
+// 表现就是「切换/登录 FNID 后被踢回连接页」，且日志看不出异常。
+// 修法：只在真的撞名时给后来者换一个仍为 24 字符的确定性名字（前 15 字符 + FNV-1a 32 位），
+// 并记住 key→name 映射；没有撞名的老账号名字完全不变（不会让存量登录态失效）。
+function __fnv1a32hex(str) {
+  try {
+    let h = 0x811c9dc5;
+    const t = String(str || '');
+    for (let i = 0; i < t.length; i++) {
+      h ^= t.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return ('0000000' + h.toString(16)).slice(-8);
+  } catch (_) { return '00000000'; }
+}
 function partitionForServer(parsed) {
   // v2.0.0：多账号支持——每个 NAS 服务器地址使用独立 partition，
   // 确保多个 NAS 账号的登录态互不干扰、可同时保持在线。
@@ -5151,16 +5577,30 @@ function partitionForServer(parsed) {
   // 账号间隔离，同时避免 origin 语义修正后所有 fnid 塌缩到同一 partition。
   if (parsed && (parsed.origin || parsed.href)) {
     const key = (parsed.isFnId && (parsed.baseHref || parsed.href)) ? (parsed.baseHref || parsed.href) : (parsed.origin || parsed.href);
-    const hash = String(key).replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').slice(0, 24);
-    const name = 'persist:nas-' + hash;
+    const keyStr = String(key);
     try {
-      const prev = __partOwner56.get(name);
-      if (prev === undefined) {
-        __partOwner56.set(name, String(key));
-        try { mklog('macdiag.partition.map', { name, key: String(key).slice(0, 120), fnid: !!(parsed && parsed.isFnId) }); } catch (_) {}
-      } else if (prev !== String(key)) {
-        try { mklog('macdiag.partition.collision', { name, prev: String(prev).slice(0, 120), cur: String(key).slice(0, 120), fnid: !!(parsed && parsed.isFnId) }); } catch (_) {}
+      const cached = __partName56.get(keyStr);
+      if (cached) return cached;
+    } catch (_) {}
+    const hash = String(key).replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').slice(0, 24);
+    let name = 'persist:nas-' + hash;
+    try {
+      let prev = __partOwner56.get(name);
+      if (prev !== undefined && prev !== keyStr) {
+        try { mklog('macdiag.partition.collision', { name, prev: String(prev).slice(0, 120), cur: keyStr.slice(0, 120), fnid: !!(parsed && parsed.isFnId) }); } catch (_) {}
+        const base = 'persist:nas-' + hash.slice(0, 15) + '_' + __fnv1a32hex(keyStr);
+        name = base;
+        let n = 1;
+        while (__partOwner56.has(name) && __partOwner56.get(name) !== keyStr) {
+          name = base + '_' + (n++);
+        }
+        try { mklog('macdiag.partition.collision.renamed', { from: 'persist:nas-' + hash, to: name, cur: keyStr.slice(0, 120) }); } catch (_) {}
       }
+      if (!__partOwner56.has(name)) {
+        __partOwner56.set(name, keyStr);
+        try { mklog('macdiag.partition.map', { name, key: keyStr.slice(0, 120), fnid: !!(parsed && parsed.isFnId) }); } catch (_) {}
+      }
+      __partName56.set(keyStr, name);
     } catch (_) {}
     return name;
   }
@@ -10447,11 +10887,27 @@ function handleMainClose(win) {
         if (__hid) return; __hid = true;
         try { if (!w.isDestroyed()) w.hide(); } catch (_) {}
         ensureTray();
-        try { mklog('macdiag.win.close.main.hide', { why: String(why || ''), afterFs: true }); } catch (_) {}
+        try { mklog('macdiag.win.close.main.hide', { why: String(why || ''), afterFs: true, fsNow: !!(w && !w.isDestroyed() && w.isFullScreen()) }); } catch (_) {}
       };
-      try { w.once('leave-full-screen', () => setTimeout(() => __doHide('leave-full-screen'), 80)); } catch (_) {}
+      // mac 收口：leave-full-screen 事件在 macOS 原生全屏退场动画里可能晚于/早于真实状态，
+      // 旧实现「事件 +80ms / 900ms 兜底」会在动画还没结束时 hide()，Mission Control 里留下
+      // 空的全屏 Space（用户说的「关闭不干净」）。改为以 isFullScreen() 真正变 false 为准轮询，
+      // 3s 仍未退干净才强收，保证窗口一定收起且不残留 Space。
+      const __t0 = Date.now();
+      const __tryHide = (why) => {
+        try {
+          if (w.isDestroyed()) { __hid = true; return; }
+          if (w.isFullScreen() && (Date.now() - __t0) < 3000) {
+            setTimeout(() => __tryHide(why), 80);
+            return;
+          }
+        } catch (_) {}
+        __doHide(why);
+      };
+      try { w.once('leave-full-screen', () => setTimeout(() => __tryHide('leave-full-screen'), 120)); } catch (_) {}
       try { w.setFullScreen(false); } catch (_) {}
-      setTimeout(() => __doHide('timeout'), 900);
+      setTimeout(() => __tryHide('poll'), 120);
+      setTimeout(() => __doHide('timeout-3.2s'), 3200);
       return;
     }
   } catch (_) {}
@@ -12018,7 +12474,8 @@ function createMainWindow(partition, loadTarget) {
             if (verdict === 'mac-local-network-permission') {
               try { fnosLog('warn', 'login', 'login.net.blocked reason=local-network host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
               if (__netPromptOnce('localnet:' + String((seg && seg.host) || ''), 120000)) {
-                try { glassErrorBox('无法访问局域网服务器', '系统已拦截本应用访问局域网（macOS 本地网络权限）。\n\n请打开：系统设置 → 隐私与安全性 → 本地网络 → 勾选「FNOS」，然后重启客户端。\n\n证据：' + ((seg && seg.hint) || '')); } catch (_) {}
+                try { glassErrorBox('无法访问局域网服务器', '系统已拦截本应用访问局域网（macOS 本地网络权限）。\n\n即将为你打开：系统设置 → 隐私与安全性 → 本地网络，请勾选「FNOS」，然后重启客户端。\n\n证据：' + ((seg && seg.hint) || '')); } catch (_) {}
+                try { __openMacLocalNetworkPrefs('auto:nav-giveup'); } catch (_) {}
               }
               try {
                 const __w0 = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : null;
@@ -12293,7 +12750,8 @@ try { consumePendingOpenApp(); startHomeScan(); applyHomeFpkIcons(); } catch (_)
         if (verdict === 'mac-local-network-permission') {
           try { fnosLog('warn', 'login', 'login.net.blocked reason=local-network host=' + String((seg && seg.host) || '').slice(0, 60)); } catch (_) {}
           if (__netPromptOnce('localnet:' + String((seg && seg.host) || ''), 120000)) {
-            try { glassErrorBox('无法访问局域网服务器', '系统已拦截本应用访问局域网（macOS 本地网络权限）。\n\n请打开：系统设置 → 隐私与安全性 → 本地网络 → 勾选「FNOS」，然后重启客户端。\n\n诊断结论：' + verdict); } catch (_) {}
+            try { glassErrorBox('无法访问局域网服务器', '系统已拦截本应用访问局域网（macOS 本地网络权限）。\n\n即将为你打开：系统设置 → 隐私与安全性 → 本地网络，请勾选「FNOS」，然后重启客户端。\n\n诊断结论：' + verdict); } catch (_) {}
+            try { __openMacLocalNetworkPrefs('auto:createmain-fail'); } catch (_) {}
           }
           return;
         }
@@ -12716,9 +13174,10 @@ function doConnectTo(serverInput) {
           try {
             glassErrorBox(
               '无法访问局域网服务器',
-              `本机系统拦截了客户端访问局域网地址 ${(seg && seg.host) || ''}。\n\n请打开：系统设置 → 隐私与安全性 → 本地网络 → 勾选「FNOS」，然后重启客户端。\n\n诊断结论：${verdict}`,
+              `本机系统拦截了客户端访问局域网地址 ${(seg && seg.host) || ''}。\n\n即将为你打开：系统设置 → 隐私与安全性 → 本地网络，请勾选「FNOS」，然后重启客户端。\n\n诊断结论：${verdict}`,
             );
           } catch (_) {}
+          try { __openMacLocalNetworkPrefs('auto:connectto-fail'); } catch (_) {}
           return;
         }
         glassErrorBox(
@@ -13042,7 +13501,11 @@ async function launchUninstaller() {
 // 这里给出系统设置深链（Ventura+ 的 Privacy_LocalNetwork），供菜单与诊断通道复用。
 function __openMacLocalNetworkPrefs(why) {
   if (process.platform !== 'darwin') return { ok: false, err: 'not-darwin' };
+  // mac 收口：macOS 13+（Ventura 起）的「本地网络」窗格 id 改为
+  // com.apple.settings.PrivacySecurity.extension，旧 id 只会落到隐私与安全性首页，
+  // 用户还得自己找「本地网络」——这正是「提示了但修不好」的原因。新版放第一位。
   const urls = [
+    'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork',
     'x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork',
     'x-apple.systempreferences:com.apple.preference.security'
   ];
@@ -13169,15 +13632,35 @@ function buildMenuTemplate() {
                 try { wc && !wc.isDestroyed() && wc.executeJavaScript('window.dispatchEvent(new CustomEvent("fnos:mpv-embed"));', true); } catch (_) {}
               };
               try {
-                const guest = pickMenuGuest();
-                if (guest && !guest.isDestroyed()) {
-                  triggerEmbedInContents(guest);
-                  dlog('info', 'mpv.menu.embed', { target: 'webview-guest', guestId: guest.id });
-                } else {
-                  // 兜底：发到当前聚焦窗口页面（直播窗等非 webview 场景）
-                  triggerEmbedInContents(win.webContents);
-                  dlog('info', 'mpv.menu.embed', { target: 'main-window', win: win.id });
-                }
+                // v5.1.27（用户反馈：影视里用菜单「🎬 用 MPV 嵌入播放当前视频」启动不了）——
+                // 实测日志 mpv.menu.embed target=main-window：pickMenuGuest() 返回 null（影视窗不是
+                // <webview> 结构，或 guest 未登记），事件只发到了应用窗外壳页面，而"知道当前视频直链"
+                // 的是里面真正的影视播放页 → 事件没到，自然没反应。
+                // 改为【广播】：当前窗 + 同窗所有 guest + 全部 webContents 各发一次，谁有视频谁响应
+                // （页面侧只在拿到直链时才动作，重复投递无副作用）。
+                const fired = [];
+                const tryOne = (wc, tag) => {
+                  try {
+                    if (!wc || wc.isDestroyed()) return;
+                    triggerEmbedInContents(wc);
+                    // v5.1.28：DOM 事件跨不过 contextIsolation，补发 IPC（preload 里监听 mpv:menu-embed）
+                    try { wc.send('mpv:menu-embed'); } catch (_) {}
+                    fired.push(tag + ':' + wc.id);
+                  } catch (_) {}
+                };
+                tryOne(win.webContents, 'focused');
+                try {
+                  const { webContents } = require('electron');
+                  for (const wc of webContents.getAllWebContents()) {
+                    if (!wc || wc.isDestroyed()) continue;
+                    tryOne(wc, wc.getType());
+                  }
+                } catch (_) {}
+                try {
+                  const guest = pickMenuGuest();
+                  if (guest && !guest.isDestroyed()) tryOne(guest, 'pick');
+                } catch (_) {}
+                dlog('info', 'mpv.menu.embed', { target: 'broadcast', win: win.id, fired: fired.join(',') });
               } catch (e) { dlog('warn', 'mpv.menu.embed', { err: String(e && e.message || e) }); }
             } catch (e) { /* ignore */ }
           },
@@ -16552,6 +17035,33 @@ function filterBadNavApps(apps) {
 //   * 名字 = FPK title（显示名，如"系统设置"），不再依赖被污染的 manifest
 //   * 图标 = FPK icon_256 下载缓存（settings 页直接可用 file:// 显示）
 //   * manifest 仅 FPK 不可用时兜底（过滤备案垃圾、补齐名字）
+// v5.1.32：列出桌面上已由本客户端创建的快捷方式（bundle id 前缀 com.fnos.client.shortcut）
+// 供设置页持久标记「✓ 已创建」，避免用户分不清哪些建过了。
+ipcMain.handle('list-desktop-shortcuts', async () => {
+  try {
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+    const dir = path.join(os.homedir(), 'Desktop');
+    let names = [];
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch (_) { return { success: true, data: [] }; }
+    for (const f of files) {
+      if (!/\.app$/i.test(f)) continue;
+      const infoPlist = path.join(dir, f, 'Contents', 'Info.plist');
+      let raw = '';
+      try { raw = fs.readFileSync(infoPlist, 'utf8'); } catch (_) { continue; }
+      if (raw.indexOf('com.fnos.client.shortcut') < 0) continue;
+      let name = f.replace(/\.app$/i, '');
+      const m = /<key>CFBundleName<\/key>\s*<string>([^<]*)<\/string>/.exec(raw);
+      if (m && m[1]) name = m[1];
+      names.push(name);
+    }
+    try { mklog('shortcut.list.desktop', { count: names.length, names: names.slice(0, 60) }); } catch (_) {}
+    return { success: true, data: names };
+  } catch (e) { return { success: false, msg: String((e && e.message) || e), data: [] }; }
+});
+
 ipcMain.handle('get-installed-apps', async () => {
   try {
     const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
@@ -17063,10 +17573,81 @@ async function __createMacShortcut(payload) {
     const tmpScpt = path.join(os.tmpdir(), 'fnos-shortcut-' + Date.now() + '.applescript');
     try {
       fs.writeFileSync(tmpScpt, scpt);
-      cp.execSync('osacompile -o ' + __macQuote(appDir) + ' ' + __macQuote(tmpScpt), { stdio: 'ignore', timeout: 20000 });
+      // v5.1.19 修复（用户反馈：部分应用点「创建快捷方式」报 osacompile failed）——
+      // osacompile **不会**覆盖已存在的输出，桌面上只要还留着上次的 <名称>.app（哪怕是失败的残留、
+      // 被 lsregister 登记过的旧 bundle），这一步就必然失败，且错因被 stdio:'ignore' 吞掉。
+      // 统一做法：先删掉目标（含残留），再 osacompile；并把 stderr 抓出来落日志便于定位。
+      try {
+        if (fs.existsSync(appDir)) {
+          fs.rmSync(appDir, { recursive: true, force: true });
+          mklog('shortcut.osacompile.rm-existing', { tag: __tag, appDir });
+        }
+      } catch (_) {}
+      // 同名残留被 LaunchServices 占住时 rm 可能删不干净 → 换一个临时输出再改名
+      let __outDir = appDir;
+      let __renameAfter = false;
+      if (fs.existsSync(appDir)) {
+        __outDir = appDir + '.tmp-' + Date.now();
+        __renameAfter = true;
+      }
+      // v5.1.20（用户反复遇到偶发 osacompile 失败）——osacompile 内部会调 codesign，
+      // 桌面上有同名残留/并发创建/Spotlight 正在索引时都会抛
+      //   `.: replacing existing signature` + `resource fork, Finder information, or similar detritus not allowed`
+      //   + `couldn't write to file … coreFoundationUnknownErr (-4960)`
+      // 这类错误跟我们的逻辑无关且不可预测，所以：先重试 1 次，仍失败就**完全绕开 osacompile**，
+      // 手工搭一个等价的最小 .app 包（shell 脚本当 CFBundleExecutable），效果与 applet 一致
+      // （LSUIElement=true + 自定义图标 + 同一套 launcher 逻辑）。
+      let __r = cp.spawnSync('/usr/bin/osacompile', ['-o', __outDir, tmpScpt], { timeout: 25000, encoding: 'utf-8' });
+      if (__r.status !== 0) {
+        const __err1 = String((__r.stderr || '') + (__r.stdout || '')).trim().slice(0, 300);
+        mklog('shortcut.osacompile.retry', { tag: __tag, err: __err1 });
+        try { if (fs.existsSync(__outDir)) fs.rmSync(__outDir, { recursive: true, force: true }); } catch (_) {}
+        cp.execSync('sleep 0.3', { timeout: 3000 });
+        __r = cp.spawnSync('/usr/bin/osacompile', ['-o', __outDir, tmpScpt], { timeout: 25000, encoding: 'utf-8' });
+        if (__r.status !== 0) {
+          const __err = String((__r.stderr || '') + (__r.stdout || '')).trim().slice(0, 400);
+          mklog('shortcut.osacompile.fail', { tag: __tag, appDir: __outDir, status: __r.status, err: __err });
+          // ---- 兜底：手搭 bundle（不依赖 osacompile）----
+          let __built = false;
+          try {
+            if (fs.existsSync(__outDir)) fs.rmSync(__outDir, { recursive: true, force: true });
+            fs.mkdirSync(path.join(__outDir, 'Contents', 'MacOS'), { recursive: true });
+            fs.mkdirSync(path.join(__outDir, 'Contents', 'Resources'), { recursive: true });
+            const __exe = path.join(__outDir, 'Contents', 'MacOS', 'applet');
+            fs.writeFileSync(__exe, launcher, { mode: 0o755 });
+            try { fs.chmodSync(__exe, 0o755); } catch (_) {}
+            fs.writeFileSync(path.join(__outDir, 'Contents', 'Info.plist'), [
+              '<?xml version="1.0" encoding="UTF-8"?>',
+              '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+              '<plist version="1.0"><dict>',
+              '  <key>CFBundleName</key><string>' + String(appName).replace(/[<&>]/g, '') + '</string>',
+              '  <key>CFBundleDisplayName</key><string>' + String(appName).replace(/[<&>]/g, '') + '</string>',
+              '  <key>CFBundleIdentifier</key><string>com.fnos.client.shortcut.' + (isLive ? 'live_' : '') + 'manual</string>',
+              '  <key>CFBundleExecutable</key><string>applet</string>',
+              '  <key>CFBundleIconFile</key><string>app</string>',
+              '  <key>CFBundlePackageType</key><string>APPL</string>',
+              '  <key>CFBundleShortVersionString</key><string>1.0</string>',
+              '  <key>LSUIElement</key><true/>',
+              '</dict></plist>',
+            ].join('\n'));
+            __built = true;
+            mklog('shortcut.osacompile.manual-bundle', { tag: __tag, appDir: __outDir, ok: true });
+          } catch (e2) {
+            mklog('shortcut.osacompile.manual-bundle', { tag: __tag, st: 'err', err: String((e2 && e2.message) || e2).slice(0, 160) });
+          }
+          if (!__built) {
+            try { if (__renameAfter) fs.rmSync(__outDir, { recursive: true, force: true }); } catch (_) {}
+            return { success: false, msg: 'osacompile failed: ' + (__err || ('status ' + __r.status)), data: null };
+          }
+        }
+      }
+      if (__renameAfter) {
+        try { fs.renameSync(__outDir, appDir); mklog('shortcut.osacompile.renamed', { tag: __tag, from: __outDir, to: appDir }); }
+        catch (_) { try { cp.execSync('mv -f ' + __macQuote(__outDir) + ' ' + __macQuote(appDir), { timeout: 10000 }); } catch (_) {} }
+      }
     } catch (e) {
-      fnosLog('error', 'shortcut.path', 'mac osacompile failed', { appDir, err: String(e.message || e) });
-      return { success: false, msg: 'osacompile failed: cannot build mac shortcut', data: null };
+      fnosLog('error', 'shortcut.path', 'mac osacompile threw', { appDir, err: String(e.message || e) });
+      return { success: false, msg: 'osacompile threw: ' + String(e.message || e), data: null };
     } finally { try { fs.rmSync(tmpScpt, { force: true }); } catch (_) {} }
     try {
       const __runSh = path.join(resDir, 'run.sh');
@@ -17098,13 +17679,30 @@ async function __createMacShortcut(payload) {
       const pb = '/usr/libexec/PlistBuddy';
       const pbRun = (cmd) => { try { cp.execSync(pb + ' -c ' + __macQuote(cmd) + ' ' + __macQuote(infoPlist), { stdio: 'ignore', timeout: 10000 }); return true; } catch (_) { return false; } };
       const pbSet = (cmd) => { try { cp.execSync(pb + ' -c ' + __macQuote(cmd) + ' ' + __macQuote(infoPlist), { stdio: 'ignore', timeout: 10000 }); } catch (_) {} };
-      pbSet('Set :CFBundleName string ' + appName);
-      pbSet('Set :CFBundleDisplayName string ' + appName);
-      pbSet('Set :CFBundleIdentifier string com.fnos.client.shortcut.' + (isLive ? 'live' : 'app'));
+      // v5.1.18 修复（用户反馈：桌面快捷方式图标白板）——
+      // PlistBuddy 的 `Set` **不接受类型关键字**：`Set :Key string abc` 会把 "string abc" 整个当值写进去，
+      // 于是 CFBundleIconFile 变成 "string app"（Finder 找不到 app.icns → 白板）、CFBundleName 变成
+      // "string xxx"；而 Set 对**不存在**的键会失败 → CFBundleIdentifier 根本没写进去（LaunchServices
+      // 无法登记图标）。统一改成：先 Set（无类型关键字），失败再 Add（带類型关键字）。
+      const pbSetOrAdd = (key, type, val) => {
+        if (!pbRun('Set :' + key + ' ' + val)) pbSet('Add :' + key + ' ' + type + ' ' + val);
+      };
+      pbSetOrAdd('CFBundleName', 'string', appName);
+      pbSetOrAdd('CFBundleDisplayName', 'string', appName);
+      // mac 收口：每个快捷方式必须有独立 bundle id。旧实现所有快捷方式共用
+      // com.fnos.client.shortcut.app —— LaunchServices 以 bundle id 为键缓存图标/TCC 身份，
+      // 后建的快捷方式可能命中前一个的缓存（Finder 图标串成白板/卷轴、Dock 归属错乱）。
+      let __bidSuffix = '';
+      try { __bidSuffix = crypto.createHash('md5').update(String(launchName || appName || 'app')).digest('hex').slice(0, 12); } catch (_) {}
+      pbSetOrAdd('CFBundleIdentifier', 'string', 'com.fnos.client.shortcut.' + (isLive ? 'live_' : '') + (__bidSuffix || 'app'));
       if (__icnsOk) {
         // v5.1.4：老 applet 可能没有 CFBundleIconFile 键，Set 会失败 → 必须 Add 兜底
-        if (!pbRun('Set :CFBundleIconFile string app')) pbSet('Add :CFBundleIconFile string app');
-        if (!pbRun('Set :CFBundleIconName string app')) pbSet('Add :CFBundleIconName string app');
+        pbSetOrAdd('CFBundleIconFile', 'string', 'app');
+        // mac 收口（Finder 白板）：CFBundleIconName 指向「Asset Catalog 里的图标名」，而下面
+        // 为了让 app.icns 生效会把 Assets.car 删掉。留着一个指向不存在 asset 的键时，
+        // Finder/Dock 会优先按它取图并落成空白图标（就是用户看到的白板）。
+        // 这里直接删键，只保留 CFBundleIconFile=app → Contents/Resources/app.icns 这一条路径。
+        try { cp.execSync(pb + ' -c ' + __macQuote('Delete :CFBundleIconName') + ' ' + __macQuote(infoPlist), { stdio: 'ignore', timeout: 8000 }); } catch (_) {}
       }
       pbSet('Add :LSUIElement bool true');
       // 复核：把最终落盘的图标键读回来（白板问题只看日志不好判，这一条能直接对上/不对）
@@ -17122,7 +17720,38 @@ async function __createMacShortcut(payload) {
     } catch (_) {}
     try { cp.execSync('touch ' + __macQuote(appDir), { stdio: 'ignore', timeout: 5000 }); } catch (_) {}
     fnosLog('info', 'shortcut.path', 'mac shortcut created', { appDir, isLive, icnsOk: __icnsOk, launchName: launchName.slice(0, 120) });
-    return { success: true, msg: '桌面快捷方式已生成', data: { path: appDir } };
+    // mac 收口：创建后立刻自检并结构化回执（/diag shortcut 直接返回）。白板图标、双击没反应
+    // 这类问题只看「已生成」无法判定，这里把决定性的落盘事实一次取全：
+    //   run.sh 是否可执行 / app.icns 字节数 / Assets.car 是否已删 / Info.plist 四个键的真实值。
+    const __self = { appDir, ok: false };
+    try {
+      const __plist2 = path.join(contents, 'Info.plist');
+      const __run2 = path.join(resDir, 'run.sh');
+      let __icnsBytes = 0;
+      try { __icnsBytes = fs.statSync(path.join(resDir, 'app.icns')).size; } catch (_) {}
+      let __runMode = '';
+      try { __runMode = (fs.statSync(__run2).mode & 0o777).toString(8); } catch (_) {}
+      const __pb2 = '/usr/libexec/PlistBuddy';
+      const __read2 = (k) => { try { return String(cp.execSync(__pb2 + ' -c ' + __macQuote('Print :' + k) + ' ' + __macQuote(__plist2) + ' 2>/dev/null', { timeout: 5000, encoding: 'utf8' })).trim(); } catch (_) { return ''; } };
+      __self.info = {
+        exists: fs.existsSync(appDir),
+        runSh: fs.existsSync(__run2),
+        runMode: __runMode,
+        icnsBytes: __icnsBytes,
+        assetsCar: fs.existsSync(path.join(resDir, 'Assets.car')),
+        plist: {
+          id: __read2('CFBundleIdentifier'),
+          icon: __read2('CFBundleIconFile'),
+          iconName: __read2('CFBundleIconName'),
+          lsuielement: __read2('LSUIElement'),
+          executable: __read2('CFBundleExecutable')
+        }
+      };
+      __self.ok = __self.info.exists && __self.info.runSh && __self.info.icnsBytes > 1000
+        && !__self.info.assetsCar && /^app$/i.test(__self.info.plist.icon || '');
+    } catch (e) { __self.err = String((e && e.message) || e).slice(0, 160); }
+    try { mklog('macdiag.shortcut.selfcheck', __self); } catch (_) {}
+    return { success: true, msg: '桌面快捷方式已生成', data: { path: appDir, selfcheck: __self } };
   } catch (e) {
     fnosLog('error', 'ipc', '__createMacShortcut error', { err: e.message, stack: e.stack });
     let msg = String(e.message || e).slice(0, 300);
@@ -21697,6 +22326,9 @@ async function embedMpvPlay(hostWin, payload) {
     try { dlog('info', 'mpv.embed.skip', { reason: 'mac-html5-first' }); } catch (_) {}
     return { ok: false, reason: 'macOS 默认 HTML5 播放（如需 MPV 请点「🎬 MPV 打开」）' };
   }
+  // v5.1.22：v5.1.21 的「mac 改独立播放器窗口」在真机上 mpv 启动即崩（exit 1，
+  // 同一 URL 手工跑却正常），先回滚到原「嵌入覆盖」路径保证可用；
+  // 贴合问题另想办法（mac 的 mpv 不支持运行时改窗口几何）。
   let exePath = MpvPlayerMod.getMpvExe();
   if (!exePath) {
     // v2.21.0：内置内核缺失但用户配了可用的自定义 mpv.exe → 仍然可以播放
@@ -21745,9 +22377,14 @@ async function embedMpvPlay(hostWin, payload) {
   const dipRect = normalizeDipRect(payload.rect || { x: 0, y: 0, width: 1280, height: 720 });
   // <webview> 在外壳内容区中的位置（DIP）。电影/直播统一用真实测量值；
   // webview 铺满内容区时为 {0,0}，有自定义标题栏时为其偏移。不再对 live 做 {0,0} 特判。
+  // v5.1.30（用户反馈：影视 MPV 起播偏慢）——分段计时，定位停留点
+  const __t0 = Date.now();
   const wvRect = await measureWebviewRect(hostWin);
+  try { dlog('info', 'mpv.embed.timing', { step: 'measureWebviewRect', ms: Date.now() - __t0 }); } catch (_) {}
+  try { global.__fnMpvT0 = __t0; } catch (_) {}
   const viewOffset = wvRect ? { x: wvRect.x, y: wvRect.y } : { x: 0, y: 0 };
 
+  try { dlog('info', 'mpv.embed.timing', { step: 'before-play', ms: Date.now() - (global.__fnMpvT0 || Date.now()) }); } catch (_) {}
   dlog('info', 'mpv.embed.play', {
     host: hostWin.id, scope: payload.scope || 'fnos', isLive: !!payload.isLive,
     url: url.slice(0, 110), dipRect, viewOffset, hasToken: !!payload.token, origin: (payload.origin || '').slice(0, 60)
@@ -22533,6 +23170,7 @@ app.whenReady().then(() => {
         if (__img0 && !__img0.isEmpty()) app.dock.setIcon(__img0);
       }
       try { mklog('macdiag.dock.boot', __macDockState() || {}); } catch (_) {}
+      try { mklog('macdiag.mac.info', Object.assign(__macBundleInfo(), __macDockState() || {})); } catch (_) {}
     } catch (_) {}
   }
   // v4.0.13（用户工单：安装程序弹「FNOS 无法关闭」死循环）——

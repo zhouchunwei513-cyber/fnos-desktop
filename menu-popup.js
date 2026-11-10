@@ -6,7 +6,15 @@
 (function () {
   'use strict';
 
-  var PAD = 18;   /* 留给阴影的边距 */
+  /* v5.1.18-menu-transparent：菜单窗两平台都回到「透明窗 + 页面自绘半透明面板 + CSS 阴影」。
+   * 历史：v5.1.17-menu-fit 期间 mac 的菜单窗被做成不透明窗（修红绿灯/拖动白块时被统一成
+   * #14121b），只能在页面里紧贴面板（PAD=1）并把窗口尺寸压到面板大小，否则多出来的部分是
+   * 一整块纯黑（阴影也画不出来）。现在窗口透明了，阴影余量和 Windows 完全一致取 18px：
+   * 那 36px 全是 alpha=0 的透明像素，透出桌面，不再是黑底。
+   * 贴合逻辑仍按 mac 的「可见面板并集」动态扩/缩窗（openChild → fnMenu.fit），只是余量用 18。 */
+  var __isMac = false;
+  try { __isMac = !!(window.fnMenu && window.fnMenu.isMac); } catch (_) {}
+  var PAD = 18;   /* 阴影/描边余量：两平台一致 18px（窗口透明，这圈像素透出桌面） */
   var GAP = 6;    /* 子菜单与父面板的间隙 */
 
   var root = document.getElementById('root');
@@ -96,40 +104,79 @@
 
   /* ---------- 展开 / 收起 ---------- */
 
-  function closeFrom(level) {
+  function closeFrom(level, silent) {
+    var changed = false;
     /* 关掉层级 > level 的所有面板 */
     for (var i = openChain.length - 1; i >= 0; i--) {
       if (openChain[i].panel.dataset.level - 0 > level) {
         openChain[i].panel.style.display = 'none';
         openChain.splice(i, 1);
+        changed = true;
       }
     }
+    /* mac 的贴合窗（透明）要跟着可见面板缩回去；openChild 内部先 silent 收起旧子菜单，
+     * 避免「先缩到主面板再扩到新子菜单」闪一下。 */
+    if (changed && __isMac && !silent) fitVisible();
   }
 
   function openChild(row, level) {
     var child = row.__child;
     if (!child) return;
-    closeFrom(level);
+    closeFrom(level, true);
     child.style.display = 'block';
-    child.style.visibility = 'visible';
+    child.style.visibility = 'hidden';   /* 先量尺寸，等窗口扩好再显形，避免被旧视口裁一帧 */
     if (openChain.length === 0 || openChain[openChain.length - 1].panel !== child) {
       openChain.push({ item: row, panel: child });
     }
-    positionChild(row, child);
+
+    var winW = 0, winH = 0;
+    if (__isMac) {
+      /* mac：窗口紧贴主面板，子菜单只能靠「先把窗口扩到刚好包住父面板 + 子面板」腾位置。
+       * 这里直接用布局尺寸算目标，不依赖 root.clientWidth（setBounds 后视口异步更新）。 */
+      var host = row.parentElement;
+      var cw = child.offsetWidth || 200;
+      var chh = child.offsetHeight || 100;
+      var left = (host.offsetLeft || PAD) + host.offsetWidth + GAP;
+      var top = Math.max(PAD, host.offsetTop + row.offsetTop - 8);   /* 与 positionChild 的夹取一致，避免底部被窗口裁掉 */
+      var baseRight = basePanel ? basePanel.offsetLeft + basePanel.offsetWidth : PAD;
+      var baseBottom = basePanel ? basePanel.offsetTop + basePanel.offsetHeight : PAD;
+      var fw = Math.ceil(Math.max(baseRight, left + cw) + PAD);
+      var fh = Math.ceil(Math.max(baseBottom, top + chh) + PAD);
+      try {
+        var got = window.fnMenu.fit({ w: fw, h: fh });
+        if (got && got.w > 0 && got.h > 0) { winW = got.w; winH = got.h; }
+      } catch (_) {}
+      if (!winW || !winH) { winW = fw; winH = fh; }
+    }
+
+    positionChild(row, child, winW, winH);
+    if (__isMac) {
+      /* 等窗口尺寸在合成器生效后再显示，避免子菜单被旧视口裁掉一帧 */
+      try { requestAnimationFrame(function () { child.style.visibility = 'visible'; }); }
+      catch (_) { child.style.visibility = 'visible'; }
+    } else {
+      child.style.visibility = 'visible';
+    }
   }
 
-  function positionChild(row, child) {
+  function positionChild(row, child, winW, winH) {
     var host = row.parentElement;                 /* 父面板 */
     var hostLeft = host.offsetLeft || PAD;
     var cw = child.offsetWidth || 200;
     var chh = child.offsetHeight || 100;
-    var rootW = root.clientWidth || window.innerWidth;
-    var rootH = root.clientHeight || window.innerHeight;
+    var rootW = winW || root.clientWidth || window.innerWidth;
+    var rootH = winH || root.clientHeight || window.innerHeight;
 
     var left = hostLeft + host.offsetWidth + GAP;
     if (left + cw > rootW - PAD) {
-      left = hostLeft - cw - GAP;
-      if (left < PAD) left = Math.max(PAD, rootW - PAD - cw);
+      if (__isMac) {
+        /* mac 窗口已按可见面板贴合，正常不会进这里；真到屏幕右缘放不下时贴右缘，
+         * 而不是像 Windows 那样翻到父面板左侧压字。 */
+        left = Math.max(PAD, rootW - PAD - cw);
+      } else {
+        left = hostLeft - cw - GAP;
+        if (left < PAD) left = Math.max(PAD, rootW - PAD - cw);
+      }
     }
     child.style.left = Math.round(left) + 'px';
 
@@ -176,6 +223,24 @@
     return h;
   }
 
+  /* v5.1.17-menu-fit：当前可见面板（主面板 + 已展开的子菜单）的并集尺寸（含 PAD 余量）。
+   * mac 的贴合窗按它扩/缩；Windows 仍用 needWidth 一次性预留全部子菜单宽度（多出来的是透明像素）。 */
+  function visibleSize() {
+    var w = 0, h = 0;
+    for (var i = 0; i < allPanels.length; i++) {
+      var p = allPanels[i];
+      if (!p || p.style.display === 'none') continue;
+      w = Math.max(w, (p.offsetLeft || 0) + (p.offsetWidth || 0));
+      h = Math.max(h, (p.offsetTop || 0) + (p.offsetHeight || 0));
+    }
+    return { w: Math.ceil(w + PAD), h: Math.ceil(h + PAD) };
+  }
+  function fitVisible() {
+    if (!__isMac) return;
+    var s = visibleSize();
+    try { window.fnMenu.fit({ w: s.w, h: s.h }); } catch (_) {}
+  }
+
   /* v4.0.1：子菜单面板在测量时是 display:none，量出来恒为 0 —— 于是窗口宽度只按主面板算，
    * 展开子菜单时右侧没位置，positionChild 只能翻到左边压在主面板上（「两套文字叠在一起」）。
    * 这里在测量期间临时把所有面板设为可布局（visibility:hidden 不会真的显示），量完恢复。 */
@@ -207,23 +272,45 @@
   var __lastReported = { w: 0, h: 0 };
   var __measureSeq = 0;
 
-  function measureAndReport(opts) {
-    if (!basePanel) return;
-    var force = !!(opts && opts.force);
-    var final = !!(opts && opts.final);
+  /* 量「窗口目标尺寸」。
+   * v5.1.17-menu-fit：mac 按可见面板贴合，不预留看不见的子菜单宽度（v5.1.18 起窗口透明，
+   * 预留也不会有黑块，但贴合后窗口更小、不会在桌面上占一大块看不见的点击区）：
+   *   - 没有子菜单展开：只按主面板量（宽度 = panelW + 2*PAD）；
+   *   - 有子菜单展开：窗口尺寸由 openChild()/closeFrom() 的 fit 负责，这里直接不上报。
+   * Windows 保持 v4.0.1 的旧口径（主面板 + 最宽子菜单 + 阴影边距），视觉不变。 */
+  function measureTarget() {
+    if (__isMac) {
+      var r = panelRect(basePanel);
+      return { w: Math.round(r.w + PAD * 2), h: Math.round(r.h + PAD * 2), rawW: r.w, rawH: r.h };
+    }
     var m = withAllPanelsMeasurable(function () {
       return { w: needWidth(basePanel), h: maxHeight() };
     });
-    var w = Math.round(m.w + PAD * 2);
-    var h = Math.round(m.h + PAD * 2);
-    /* v4.0.1：内容宽度明显小于「最小面板」时，说明这一帧还没完成布局（预热窗口刚 show、
+    return { w: Math.round(m.w + PAD * 2), h: Math.round(m.h + PAD * 2), rawW: m.w, rawH: m.h };
+  }
+
+  function measureAndReport(opts) {
+    if (!basePanel) return;
+    /* mac：有子菜单展开时，窗口尺寸归 openChild()/closeFrom() 的 fit 管；此时若再按
+     * 主面板尺寸上报，主进程会把刚扩大的窗口缩回去，把子菜单裁掉。 */
+    if (__isMac && openChain.length > 0) return;
+    var force = !!(opts && opts.force);
+    var final = !!(opts && opts.final);
+    var t = measureTarget();
+    var w = t.w;
+    var h = t.h;
+    /* v4.0.1：内容尺寸明显小于「最小面板」时，说明这一帧还没完成布局（预热窗口刚 show、
      * 首帧还没排），此时上报只会让主进程把菜单压扁。直接不报，交给稳定帧后的补量。
-     * （最小面板 min-width 92 + padding 12 + 两侧 PAD 36 ≈ 140，取 150 作阈值。） */
-    if (!final && (m.w < 150 || m.h < 80)) return;
-    /* v4.0.1：下限从 150 抬到 200 —— 150 正是旧版「量到接近 0 被 clamp」的特征值，
-     * 主进程会把 ≤200 的上报判为可疑并回推重测。 */
-    w = Math.max(200, Math.min(780, w));
-    h = Math.max(120, Math.min(880, h));
+     * Windows 阈值等价于旧的 m.w<150 / m.h<80（含两侧 PAD 36）；mac 贴合后阈值按实际尺寸调小。 */
+    if (!final && (__isMac ? (w < 60 || h < 40) : (t.rawW < 150 || t.rawH < 80))) return;
+    /* v4.0.1：Windows 下限从 150 抬到 200（150 是「量到接近 0 被 clamp」的特征值）。
+     * mac 贴合窗可以合法地小于 200（例如只有 2~3 项的短菜单），下限放宽。 */
+    var minW = __isMac ? 60 : 200;
+    var minH = __isMac ? 40 : 120;
+    var maxW = __isMac ? 820 : 780;
+    var maxH = __isMac ? 920 : 880;
+    w = Math.max(minW, Math.min(maxW, w));
+    h = Math.max(minH, Math.min(maxH, h));
     if (!force && w === __lastReported.w && h === __lastReported.h) return;
     __lastReported = { w: w, h: h };
     try { window.fnMenu.ready({ w: w, h: h }); } catch (_) {}
@@ -260,6 +347,7 @@
       }
     }
     if (basePanel) basePanel.style.visibility = 'visible';
+    if (__isMac) fitVisible();
   }
 
   /* v4.0.1：自证日志——出问题时一眼能看出是「量小了」还是「窗口没起来」 */
@@ -270,11 +358,17 @@
         stage: stage,
         items: basePanel.querySelectorAll('.item').length,
         panelW: basePanel.offsetWidth,
+        panelH: basePanel.offsetHeight,
         panelScrollW: basePanel.scrollWidth,
         panelRectW: panelRect(basePanel).w,
         rootW: root.clientWidth,
         winW: window.innerWidth,
         dpr: window.devicePixelRatio || 1,
+        platform: __isMac ? 'darwin' : 'other',
+        pad: PAD,
+        macFit: __isMac,
+        visW: __isMac ? visibleSize().w : 0,
+        visH: __isMac ? visibleSize().h : 0,
         vis: document.visibilityState,
       });
     } catch (_) {}

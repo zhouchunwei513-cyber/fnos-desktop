@@ -695,6 +695,10 @@ class MpvPlayer extends EventEmitter {
     this.connected = false;
     this._readyPromise = null;
     this._resolveReady = null;
+    // v5.1.23：新进程的窗口不在旧位置上，AppleScript 去重键必须清空（_asOk 保留：授权是进程外的）
+    this._lastAsKey = '';
+    this._asBusy = false;
+    this._asPending = null;
     this._onNeedFreshUrl = (typeof opts.onNeedFreshUrl === 'function') ? opts.onNeedFreshUrl : null;
     this._dead = false;
     this.pipePath = (process.platform === 'darwin')
@@ -786,6 +790,10 @@ class MpvPlayer extends EventEmitter {
         //   首帧解码就绪(video-params)后再揭示。
         // keep-open=yes：网络抖动/读取出错/播完时停在最后一帧，绝不退回 "Drop files" 待机画面
         '--keep-open=yes', '--force-window=yes');
+      // v5.1.22：覆盖窗的窗口比例与视频 aspect 常不一致（网页 <video> 被 CSS 拉伸），
+      // 多出来的部分由 mpv 用自己的背景色填充。mac 上默认不是纯黑 → 用户看到「视频上方/下方
+      // 一条灰带」。这里显式置纯黑，让留边与页面黑底无缝。
+      try { args.push('--background-color=#000000'); } catch (_) {}
       if (opts.geometry && opts.geometry.width > 0) {
         // mpv --geometry=WxH+X+Y（屏幕像素）。运行时跟随主窗口移动/缩放统一用 set_property
         // geometry（shinchiro 构建没有 window-resize/window-move 命令）。
@@ -1564,19 +1572,37 @@ class MpvPlayer extends EventEmitter {
 
   play() { this._userPause = false; return this.command(['set_property', 'pause', false]).catch(() => {}); }
   pause() { this._userPause = true; return this.command(['set_property', 'pause', true]).catch(() => {}); }
-  // v5.1.15：mac 上用 AppleScript 移动 mpv 原生窗口（进程名 'mpv'）。
+  // v5.1.15：mac 上用 AppleScript 移动 mpv 原生窗口。
+  // v5.1.23：三条修正——① 用 unix id 精确定位本进程窗口（旧实现按进程名 "mpv" 选，多实例会移错）；
+  // ② 一次 osascript 同时设 position+size，并按最后一组值去重（40Hz 跟随时不会堆几十个进程）；
+  // ③ 成败落日志：成功置 _asOk（surface 据此不再走「重启贴合」）；失败只记一次，不刷屏。
+  // 注意：adhoc 每次热部署重签都会让辅助功能/自动化授权失效，所以这只是「加速通道」，
+  // 不是 mac 贴合的必由之路（必由之路是启动坐标换算 + 显著变化重启）。
   _applyMacAppleScriptGeometry(x, y, w, h) {
     try {
-      const script = `tell application "System Events" to set position of (first process whose name is "mpv") to {${x}, ${y}}`;
-      const script2 = `tell application "System Events" to set size of (first process whose name is "mpv") to {${w}, ${h}}`;
-      this._macGeoQueue = (this._macGeoQueue || Promise.resolve())
-        .then(() => new Promise((res) => {
-          require('child_process').execFile('osascript', ['-e', script], { timeout: 1500 }, () => res());
-        }))
-        .then(() => new Promise((res) => {
-          require('child_process').execFile('osascript', ['-e', script2], { timeout: 1500 }, () => res());
-        }))
-        .catch(() => {});
+      if (!this.proc || !this.proc.pid || this._dead) return;
+      const key = `${x},${y},${w},${h}`;
+      if (this._lastAsKey === key) return;
+      if (this._asBusy) { this._asPending = { x, y, w, h, key }; return; }
+      this._asBusy = true;
+      const pid = this.proc.pid;
+      const script = `tell application "System Events" to tell (first process whose unix id is ${pid}) to set {position, size} of window 1 to {{${x}, ${y}}, {${w}, ${h}}}`;
+      require('child_process').execFile('osascript', ['-e', script], { timeout: 2000 }, (err) => {
+        this._asBusy = false;
+        this._lastAsKey = key; // 失败也记下，避免同一组值无限重试
+        if (err) {
+          if (!this._asErrLogged) {
+            this._asErrLogged = true;
+            try { this.emit('log', 'mac.applescript.geometry.fail pid=' + pid + ' err=' + String((err && err.message) || err).slice(0, 160)); } catch (_) {}
+          }
+        } else if (!this._asOk) {
+          this._asOk = true;
+          try { this.emit('log', 'mac.applescript.geometry.ok pid=' + pid); } catch (_) {}
+        }
+        const p = this._asPending;
+        this._asPending = null;
+        if (p && !this._dead) this._applyMacAppleScriptGeometry(p.x, p.y, p.w, p.h);
+      });
     } catch (_) {}
   }
 
@@ -1594,7 +1620,12 @@ class MpvPlayer extends EventEmitter {
     if (!g) return;
     this._geometry = g;
     const apply = () => {
-      const x = Math.round(g.x), y = Math.round(g.y);
+      // v5.1.26（真机标定）：macOS 上 mpv 的 `set_property geometry` 与 `--geometry` 的 y
+      // 都会被 mpv 加上自身 30px 头部（实验：请求 +150 → 实际 180；请求 +600 → 实际 630；
+      // 请求 +70 → 实际 100）。所有下发给 mpv 的 y 统一在这里减 30，保证 spawn 与运行期
+      // 走同一个坐标系（此前运行期漏了这步 → 启动瞬间贴合、随后被跟随逻辑推低 30px）。
+      const x = Math.round(g.x);
+      const y = (process.platform === 'darwin' && !this._standalone) ? (Math.round(g.y) - 30) : Math.round(g.y);
       const w = Math.max(160, Math.round(g.width)), h = Math.max(90, Math.round(g.height));
       const geoStr = `${w}x${h}+${x}+${y}`;
       // v5.1.15（用户工单：MPV 不跟随主窗）——去抖缓存改成按【宿主几何】而不是 mpv 下发值：

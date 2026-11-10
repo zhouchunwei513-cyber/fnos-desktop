@@ -893,6 +893,15 @@ module.exports = function injectTitleBar(ctx) {
         const __R = __sh ? (__sr + 'px ' + __sr + 'px 0 0') : (__sr + 'px');
         const __C = __sh ? ('inset(0 round ' + __sr + 'px ' + __sr + 'px 0 0)') : ('inset(0 round ' + __sr + 'px)');
         try { bar.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
+        // v5.1.34（用户要求：大圆角/大半圆角要和 macOS 应用窗口的 R 角比例一致）——
+        // 浏览器 border-radius 是**四分之一圆弧**，macOS 窗口用的是**连续曲率(squircle)**，
+        // 同样 20px 视觉上 macOS 更"方"、圆弧更"尖"。Chrome 139+/Electron 已支持 corner-shape，
+        // 这里对「圆角/半圆角」档统一切成 superellipse(2.2)（≈ Apple 连续曲率的弯曲度），
+        // 让 20px 的比例与 macOS 一致；直角档保持直角。Windows 同款（同一份注入代码）。
+        try {
+          if (__sr > 0) bar.style.setProperty('corner-shape', 'superellipse(2.2)', 'important');
+          else bar.style.setProperty('corner-shape', 'square', 'important');
+        } catch (_) {}
         const bl = bar.__bgLayer;
         if (bl && bl.style) {
           try { bl.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
@@ -1408,10 +1417,22 @@ module.exports = function injectTitleBar(ctx) {
         // v4.0.11（用户工单：半圆角对 xapp 窗口不生效）——
         // xapp 分支把 clip-path 写在 html 上，原来 half 只覆盖 html:root>body，
         // html 的 20px 全圆角压过来 → xapp 窗永远全圆角。现在 half/round 都同时命中 html:root。
+        // v5.1.34（用户要求：mac 上 20px 圆角要和 macOS 应用窗口的 R 角比例一致）——
+        // macOS 的窗口圆角是系统用「连续曲率（squircle）」画的，浏览器里 clip-path:inset(round)
+        // 只能画**圆弧**，比例天生不同（视觉上圆弧更"尖"，20px 圆弧 ≈ macOS 12px squircle）。
+        // 而 mac 上窗口本身已由系统roundedCorners 画了标准 squircle —— 页面再叠一层圆弧只会打架。
+        // 所以：mac 上**不再用页面 clip 画窗口外形**，交给系统；页面只保证不透明底色填满。
+        // （直角档仍需 clip，否则系统圆角会露出来。）
+        if (isMac) {
+          el.textContent = ((__topR === 0 && __botR === 0)
+            ? 'html:root,html:root>body{clip-path:inset(0 round 0) !important;-webkit-clip-path:none !important;border-radius:0 !important;}'
+            : 'html:root,html:root>body{clip-path:none !important;-webkit-clip-path:none !important;}');
+        } else {
         el.textContent = ((__topR === 0 && __botR === 0)
           ? 'html:root,html:root>body{clip-path:none !important;-webkit-clip-path:none !important;border-radius:0 !important;}'
           : ('html:root,html:root>body{clip-path:inset(0 round ' + __wr + ') !important;'
              + '-webkit-clip-path:inset(0 round ' + __wr + ') !important;}'));
+        }
         try { console.log('[fnos-corner]', JSON.stringify({ bar: TB.barCorner, win: TB.winCorner, winHalf: __winHalf, topR: __topR, botR: __botR, clip: __wr })); } catch (_) {}
         try { ipcRenderer.send('fnos:media-log', { stage: 'corner.apply', barCorner: TB.barCorner, winCorner: TB.winCorner, half: __winHalf ? 1 : 0, topR: __topR, botR: __botR }); } catch (_) {}
       } catch (_) {}
@@ -3119,6 +3140,22 @@ module.exports = function injectTitleBar(ctx) {
         // ---- 显隐：document 级鼠标 Y 判定（比 mouseenter 可靠：鼠标已在顶部区域、或元素层级
         //      被其它内容干扰时也能触发）。进入顶部 34px 显示，移出后延迟隐藏（常驻模式永不隐藏） ----
         let __inTop = false;
+        // mac 收口（DPR<1 / 页面 zoom）——触顶判定带必须取标题栏「真实布局高度」，不能写死 34。
+        // 页面 zoom=f 时 bar 的 CSS 高度 = 物理高度 / f（真机日志 --fnos-f=0.826 时
+        // getBoundingClientRect().height=44），写死 34 会让鼠标停在标题栏下沿 34~44 这段时
+        // 被判成「已离开顶部」→ 450ms 后标题栏在鼠标底下自己收起。
+        // 用 offsetHeight：transform 不改变布局盒，标题栏收起（translateY(-100%)）时仍能拿到完整高度。
+        const __topBand = () => {
+          try {
+            // 取两者较大值：offsetHeight 走布局盒、getBoundingClientRect 走视觉盒，
+            // 在 Chromium 新旧 zoom 实现下其中一个才是「页面坐标系里的真实高度」，
+            // 取大者两种实现都不会把标题栏下沿判成「已离开顶部」。
+            const r = Math.round(bar.getBoundingClientRect().height || 0);
+            const o = Math.round(bar.offsetHeight || 0);
+            const h = Math.max(r, o);
+            return (h > 20 && h < 200) ? h : 34;
+          } catch (_) { return 34; }
+        };
         // v2.24.12（用户反馈：自动隐藏后鼠标触顶立即弹出太灵敏）——触顶需停留 1.5s 才调出标题栏；
         // 停留期间移出顶部即取消，避免误弹。常驻模式（非自动隐藏）照旧立即显示。
         let __topShowTimer = null;
@@ -3130,7 +3167,7 @@ module.exports = function injectTitleBar(ctx) {
         };
         document.addEventListener('mousemove', (ev) => {
           try {
-            const inTop = (ev.clientY != null && ev.clientY <= 34);
+            const inTop = (ev.clientY != null && ev.clientY <= __topBand() + 2);
             if (inTop && !__inTop) { __inTop = true; __scheduleTopShow(); }
             else if (!inTop && __inTop) { __inTop = false; __cancelTopShow(); scheduleHide(bar, 450); }
           } catch (_) {}

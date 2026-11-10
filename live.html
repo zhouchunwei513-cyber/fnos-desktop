@@ -1142,18 +1142,43 @@ async function init() {
       // 视频区矩形（相对直播窗视口）。v1.51.0：直播窗已改为无边框 + 自动隐藏标题栏，
       // 顶部需预留 34px 标题栏高度，避免 mpv 覆盖压住标题栏（鼠标移到顶部仍可唤出/拖动）。
       const LIVE_TITLE_H = 0; // v1.54：顶边对齐，配合沉浸黑层
-      const videoEl = document.getElementById('video');
-      const clampRect = (x, y, w, h) => {
-        const top = Math.max(LIVE_TITLE_H, Math.round(y));
-        let hh = Math.round(h) - (top - Math.round(y));
-        if (hh < 120) hh = Math.round(h);
-        return { x: Math.round(x), y: top, width: Math.round(w), height: hh };
+      // v5.1.23：几何来源改为「灰色播放区」#videoArea（用户要盖的那块容器），不再取 #video。
+      // #video 是 object-fit:contain 的内联元素，语义上只是容器里的一层画面，容器本身才是播放区。
+      // getBoundingClientRect 给的是视口坐标（已包含 titlebar-inject 对 body 的 34px 位移），
+      // 主进程再叠加 BrowserWindow.getContentBounds 得到屏幕坐标。
+      const livePlaybackEl = () => document.getElementById('videoArea')
+        || document.getElementById('playerWrap') || document.getElementById('video');
+      const readPlaybackRect = () => {
+        const el = livePlaybackEl();
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (!(r.width > 40 && r.height > 40)) return null;
+        const x = Math.round(r.left), y = Math.round(r.top);
+        return { x, y, width: Math.round(r.width), height: Math.round(r.height) };
       };
-      const rect = (() => {
-        if (!videoEl) return { x: 0, y: LIVE_TITLE_H, width: window.innerWidth, height: window.innerHeight - LIVE_TITLE_H };
-        const r = videoEl.getBoundingClientRect();
-        return clampRect(r.left, r.top, r.width, r.height);
-      })();
+      // 等布局稳定：连续两次读数（间隔 ≥120ms）完全一致才起 mpv。
+      // macOS 上 mpv 只在启动那一刻按 --geometry 定位一次，抢在布局稳定前启动 = 永久错位
+      //（这正是「上方露灰带 / 下方压住控制条」的成因之一）。
+      const waitStableRect = (timeoutMs) => new Promise((resolve) => {
+        const t0 = Date.now();
+        let prev = null, sameSince = 0, last = null;
+        const tick = () => {
+          const r = readPlaybackRect();
+          if (r) {
+            last = r;
+            if (prev && prev.x === r.x && prev.y === r.y && prev.width === r.width && prev.height === r.height) {
+              if (Date.now() - sameSince >= 120) return resolve(r);
+            } else { prev = r; sameSince = Date.now(); }
+          }
+          if (Date.now() - t0 >= (timeoutMs || 1600)) {
+            return resolve(last || { x: 0, y: LIVE_TITLE_H, width: window.innerWidth, height: window.innerHeight - LIVE_TITLE_H });
+          }
+          setTimeout(tick, 60);
+        };
+        tick();
+      });
+      const rect = await waitStableRect(1600);
+      try { api.liveLog && api.liveLog('info', 'mpv.rect.stable', rect); } catch (_) {}
       const res = await api.mpvEmbed({ url, title, isLive: true, scope: 'live', rect, origin: location.origin, allowMac: true });
       if (res && res.ok) {
         setPh('已用 MPV 应用内播放', '频道：' + name + '（HEVC/4K 兼容）', false, false);
@@ -1167,19 +1192,25 @@ async function init() {
         } catch (_) {}
         // 关键：MPV 接管后立即销毁网页 hls.js 并释放 <video>，避免网页与 MPV 同时解码同一路 4K（N100 双路解码会卡）
         try { destroyHls(); } catch (_) {}
-        // 持续跟随视频区尺寸（降频到 1s，减少 IPC/布局开销）
+        // 持续跟随播放区几何：400ms 采样，只有变化时才发 IPC（此前 1s 无条件发，日志/主进程都被刷）。
+        // 另每 5s 无条件补发一次心跳，防止一次丢失让 mpv 永远停在旧位置。
         if (window.__mpvRectTimer) clearInterval(window.__mpvRectTimer);
-        window.__mpvRectTimer = setInterval(() => {
-          const v = document.getElementById('video'); if (!v) return;
-          const r = v.getBoundingClientRect();
-          const top = Math.max(LIVE_TITLE_H, Math.round(r.top));
-          let hh = Math.round(r.height) - (top - Math.round(r.top));
-          if (hh < 120) hh = Math.round(r.height);
-          try { api.mpvEmbedRect({ scope: 'live', x: Math.round(r.left), y: top, width: Math.round(r.width), height: hh }); } catch (_) {}
-        }, 1000);
+        if (window.__mpvRectBeat) clearInterval(window.__mpvRectBeat);
+        let __lastSent = JSON.stringify(rect);
+        const pushPlaybackRect = () => {
+          const r = readPlaybackRect();
+          if (!r) return;
+          const key = JSON.stringify(r);
+          if (key === __lastSent) return;
+          __lastSent = key;
+          try { api.mpvEmbedRect(Object.assign({ scope: 'live' }, r)); } catch (_) {}
+        };
+        window.__mpvRectTimer = setInterval(pushPlaybackRect, 400);
+        window.__mpvRectBeat = setInterval(() => { __lastSent = ''; pushPlaybackRect(); }, 5000);
         try {
           api.onMpvEmbedClosed && api.onMpvEmbedClosed(() => {
             if (window.__mpvRectTimer) { clearInterval(window.__mpvRectTimer); window.__mpvRectTimer = null; }
+            if (window.__mpvRectBeat) { clearInterval(window.__mpvRectBeat); window.__mpvRectBeat = null; }
             // v1.57：还原视频容器背景（不再有全屏黑层）
             try { if (window.__mpvLiveStage) { window.__mpvLiveStage.style.background = window.__mpvLiveStage.__mpvPrevBg || ''; window.__mpvLiveStage = null; } } catch (_) {}
             // MPV 关闭后自动恢复网页播放器继续播放当前频道，避免黑屏

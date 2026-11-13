@@ -133,7 +133,7 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   getLogStatus: () => ipcRenderer.invoke('log:get-status'),
   // v1.47.0：ZDY 增强服务（在线弹幕/字幕/片头片尾）及设置模块已整体下线移除。
   // v2.0.7：应用管理
-  getInstalledApps: () => ipcRenderer.invoke('get-installed-apps'),
+  getInstalledApps: (opts) => ipcRenderer.invoke('get-installed-apps', opts || {}),
   createDesktopShortcut: (payload) => ipcRenderer.invoke('create-desktop-shortcut', payload),
   uninstallNasApp: (payload) => ipcRenderer.invoke('uninstall-nas-app', payload),
   convertSvgIcon: (payload) => ipcRenderer.invoke('app:convert-svg-icon', payload),
@@ -147,6 +147,7 @@ contextBridge.exposeInMainWorld('fnosSettings', {
   // v3.0.19：皮肤管理 —— 列出已安装皮肤 / 安装 .fskin.zip（选择皮肤走 setUIOptions activeSkin）
   listSkins: () => ipcRenderer.invoke('settings:list-skins'),
   installSkin: () => ipcRenderer.invoke('settings:install-skin'),
+  exportSkin: (name) => ipcRenderer.invoke('settings:export-skin', { name: String(name || '') }),
   // v3.0.38：删除已安装皮肤
   deleteSkin: (name) => ipcRenderer.invoke('settings:delete-skin', { name: String(name || '') }),
   close: () => ipcRenderer.send('settings:close'),

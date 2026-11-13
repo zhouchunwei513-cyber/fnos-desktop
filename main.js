@@ -4099,6 +4099,18 @@ async function __diagHandle(action, params) {
           : 'opaque-or-unknown',
         png: { menuSurface: '/tmp/fnos-menu-surface-grown.png', mainSurface: '/tmp/fnos-main-surface.png' },
       };
+    } else if (act === 'shot') {
+      // v5.3.2：窗口截图取证（快捷方式打开桌面模块后，模块窗是飞牛桌面 SPA 内部的窗口，
+      // 日志里没有 appwin.create 可对——只能看画面）。仅 loopback + token，落盘到 %TEMP%。
+      const w = BrowserWindow.fromId(Number(p.winId)) || mainWindow;
+      if (!w || w.isDestroyed()) throw new Error('window not found');
+      try { if (!w.isVisible()) w.show(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 500));
+      const img = await w.webContents.capturePage();
+      const buf = img.toPNG();
+      const file = path.join(app.getPath('temp'), 'fnos-shot-' + Date.now() + '.png');
+      try { fs.writeFileSync(file, buf); } catch (_) {}
+      ret = { winId: w.id, file, bytes: buf.length, size: img.getSize(), url: (() => { try { return String(w.webContents.getURL()).slice(0, 140); } catch (_) { return ''; } })() };
     } else if (act === 'winsurfaces') {
       // v5.1.18-menu-transparent：顺手证明「只改了菜单窗，其它窗口仍然不透明」。
       // 对每个顶层窗读自身合成面（capturePage）的 alpha：不透明窗应 alphaFullPct=100，
@@ -7972,10 +7984,40 @@ let __okurl2Mem = null;
 function __okurl2() {
   if (__okurl2Mem) return __okurl2Mem;
   __okurl2Mem = { v: 2, items: {} };
+  let __okurlLoaded36 = false;
   try {
-    if (fs.existsSync(OKURL2_FILE())) __okurl2Mem = JSON.parse(fs.readFileSync(OKURL2_FILE(), 'utf-8')) || __okurl2Mem;
+    if (fs.existsSync(OKURL2_FILE())) { __okurl2Mem = JSON.parse(fs.readFileSync(OKURL2_FILE(), 'utf-8')) || __okurl2Mem; __okurlLoaded36 = true; }
   } catch (_) {}
   if (!__okurl2Mem.items) __okurl2Mem.items = {};
+  // v5.3.6 / v5.4.0（保留的污染清洗，与打开逻辑解耦）——
+  // 9 个桌面内置模块（Docker/下载/回收站/备份/应用中心/文件管理/日志/系统设置/资源管理）
+  // 曾被历史版本学成 `origin/`（桌面根）写进 ok-url.v2.json。__resolveAppEntry 把 memo 当①号
+  // 候选置顶，若条目是桌面根就会把 /appview?anchor=<id> 顶掉。这里在加载时把「指向桌面根」的
+  // 这批污染条目直接清掉（纯清理，不改写任何 URL）。
+  try {
+    if (__okurlLoaded36) {
+      const __MODS36 = ['trim.docker', 'trim.download-center', 'trim.file-manager.trash', 'trim.backup-and-sync',
+        'trim.app-center', 'trim.file-manager', 'trim.log-center', 'trim.setting', 'trim.resource-manager'];
+      let __purged36 = 0;
+      const __keys36 = Object.keys(__okurl2Mem.items || {});
+      for (const __bk36 of __keys36) {
+        const __it36 = __okurl2Mem.items[__bk36];
+        if (!__it36 || typeof __it36 !== 'object') continue;
+        for (const __id36 of __MODS36) {
+          const __r36 = __it36[__id36];
+          if (!__r36 || !__r36.url) continue;
+          let __p36 = '';
+          try { __p36 = new URL(String(__r36.url)).pathname || '/'; } catch (_) { __p36 = ''; }
+          if (__p36 === '/' || __p36 === '') {
+            delete __it36[__id36];
+            __purged36++;
+            try { fnosLog('warn', 'entry', 'cache.purge536.okurl-root', { acct: String(__bk36).slice(0, 60), appId: __id36, url: String(__r36.url).slice(0, 120) }); } catch (_) {}
+          }
+        }
+      }
+      if (__purged36) __okurl2Save();
+    }
+  } catch (_) {}
   return __okurl2Mem;
 }
 function __okurl2Save() { try { fs.writeFileSync(OKURL2_FILE(), JSON.stringify(__okurl2())); } catch (_) {} }
@@ -8159,6 +8201,28 @@ function __appLoadTarget(win, url, embedStyle, loadOpts) {
       if (__fixed61 && __fixed61 !== __u61) {
         try { require('./logger.js').log('warn', 'launch', 'resolve.v2.final-guard', { params: { before: __u61.slice(0, 150), after: __fixed61.slice(0, 160) } }, __RUN_MODE); } catch (_) {}
         url = __fixed61;
+      }
+    }
+  } catch (_) {}
+  // v5.3.6（用户反馈：FNTB 图标管理器程序内和快捷方式都打不开）——
+  // 这里是 popout 加载前的最后一道漏斗（url 已定型）。该应用不在飞牛 SPA 应用清单里，
+  // appview?anchor=com.fntb.iconmgr 必然报「应用不存在或未安装」，真实地址是独立服务 :18080。
+  try {
+    const __OV37 = { 'com.fntb.iconmgr': '18080' };
+    const __m37 = /\/appview\?anchor=([^&#]+)/i.exec(String(url || ''));
+    if (__m37) {
+      let __id37 = '';
+      try { __id37 = decodeURIComponent(__m37[1]); } catch (_) { __id37 = __m37[1]; }
+      const __p37 = __OV37[__id37];
+      if (__p37) {
+        const __live37 = String(__liveOriginBase() || (loadSettings() && loadSettings().origin) || '').replace(/\/+$/, '');
+        if (/^https?:/i.test(__live37)) {
+          const __u37 = new URL(__live37);
+          __u37.port = __p37;
+          const __to37 = __u37.origin + '/';
+          try { require('./logger.js').log('info', 'appwin', 'standalone37', { params: { app: __id37, from: String(url).slice(0, 120), to: __to37 } }, __RUN_MODE); } catch (_) {}
+          url = __to37;
+        }
       }
     }
   } catch (_) {}
@@ -8422,6 +8486,34 @@ function __entryCacheLoad() {
       });
       if (__dirty405) { try { fs.writeFileSync(ENTRY_CACHE_FILE, JSON.stringify(__entryCacheMem)); } catch (_) {} }
     } catch (_) {}
+    // v5.3.4（根因修）：清掉「桌面模块入口被学成飞牛桌面根」的污染条目。
+    // 真机实证（entry-cache.json）：anchor:trim.setting / app:trim.docker … 的值全是
+    // http://<nas>:5666/（hits 最高 10）。这是 v5.3.2 路线 B 学进去的——窗口最终停在桌面根，
+    // 于是被判为"正确入口"落盘；此后每次双击快捷方式，createAppWindow 在创窗前就把
+    // /appview?anchor=<id> 替换成桌面根，模块探针永远匹配不到 /appview → probe:null → 必回落，
+    // 用户看到的就是"先宫格再切过去"。模块的正确入口只能是 /apps/<x>/ 或 /appview?anchor=<id>，
+    // 桌面根一律判污染删除。
+    try {
+      const __MODS534 = ['trim.docker', 'trim.download-center', 'trim.file-manager.trash', 'trim.backup-and-sync',
+        'trim.app-center', 'trim.file-manager', 'trim.log-center', 'trim.setting', 'trim.resource-manager'];
+      let __dirty534 = 0;
+      Object.keys(__entryCacheMem.items || {}).forEach((k) => {
+        const it = __entryCacheMem.items[k];
+        if (!it || !it.url) return;
+        let nm = '';
+        if (k.indexOf('anchor:') === 0) nm = k.slice(7);
+        else if (k.indexOf('app:') === 0) nm = k.slice(4);
+        if (!nm || __MODS534.indexOf(nm) < 0) return;
+        let p = '';
+        try { p = String(new URL(it.url).pathname || '/'); } catch (_) { p = ''; }
+        if (p === '/' || p === '') {
+          delete __entryCacheMem.items[k];
+          __dirty534++;
+          try { fnosLog('warn', 'entry', 'cache.purge534.deskmodule-root', { key: String(k).slice(0, 60), url: String(it.url).slice(0, 120) }); } catch (_) {}
+        }
+      });
+      if (__dirty534) { try { fs.writeFileSync(ENTRY_CACHE_FILE, JSON.stringify(__entryCacheMem)); } catch (_) {} }
+    } catch (_) {}
   } catch (_) { __entryCacheMem = { ver: 1, items: {} }; }
   return __entryCacheMem;
 }
@@ -8655,8 +8747,27 @@ function createAppWindow(url, opts = {}) {
       let __an32 = '';
       try { __an32 = decodeURIComponent(__m32[1]); } catch (_) { __an32 = __m32[1]; }
       const __fe32 = __fpkLookupSync(__an32);
-      const __fu32 = __fe32 && __fe32.url ? String(__fe32.url) : '';
+      let __fu32 = __fe32 && __fe32.url ? String(__fe32.url) : '';
+      // v5.3.6（用户反馈：FNTB 图标管理器快捷方式打开报「应用不存在或未安装」）——
+      // 它不在飞牛 SPA 应用清单里（appview?anchor 必然失败），真实地址是 http://<nas>:18080/。
+      // FPK 缓存查不到时再补一次「窗口类型缓存」（wintype cache 的 meta.url 里就有）。
+      if (!__fu32) {
+        try { const __eh36 = __windowTypeGetEntry(__an32); if (__eh36 && __eh36.url) __fu32 = String(__eh36.url); } catch (_) {}
+      }
+      let __standalone36 = false;
       if (/^https?:\/\//i.test(__fu32) && !/\/appview(\?|$)/i.test(__fu32) && !/\/login(\?|$|\/)/i.test(__fu32)) {
+        // 端口与当前 NAS 不同 = 独立服务（如图标管理器 :18080）→ 直接用，绝不回落 appview
+        try {
+          const __lu36 = new URL(String(__liveOriginBase() || '').replace(/\/+$/, ''));
+          const __pu36 = new URL(__fu32);
+          if (__pu36.port && __lu36.port && __pu36.port !== __lu36.port) __standalone36 = true;
+        } catch (_) {}
+      }
+      if (__standalone36 && __fu32 !== url) {
+        try { dlog('info', 'appwin.entry-swap36', { app: String(__an32).slice(0, 60), from: String(url).slice(0, 120), to: __fu32.slice(0, 120) }); } catch (_) {}
+        url = __fu32;
+      }
+      if (!__standalone36 && /^https?:\/\//i.test(__fu32) && !/\/appview(\?|$)/i.test(__fu32) && !/\/login(\?|$|\/)/i.test(__fu32)) {
         const __nu32 = __rootUrlFallback(__liveOriginFixUrl(__fu32), __an32);
         if (__nu32 && __nu32 !== url) {
           try { dlog('info', 'appwin.entry-swap32', { from: String(url).slice(0, 140), to: String(__nu32).slice(0, 140), app: String(__an32).slice(0, 60) }); } catch (_) {}
@@ -8737,8 +8848,29 @@ function __winGeoSet(key, bounds) {
 }
 
 function createAppWindowInner(url, opts = {}, __cw_t0 = Date.now()) {
-  // v2.0.5：修复——子应用窗口必须与主窗口使用同一 partition，否则 cookie/session 不共享，
-  // 导致子应用打开后被重定向到登录页。不再将 persist:nas-* 替换为 SHARED_PARTITION。
+  // v5.3.6（用户反馈：FNTB 图标管理器怎么都打不开）——
+  // 它不在飞牛桌面 SPA 的应用清单里，appview?anchor=com.fntb.iconmgr 必然报「应用不存在或未安装」，
+  // 而它的真实地址是独立服务 http://<nas>:18080/。这里用一张确定性覆盖表，在建窗唯一入口
+  // 把这类「独立端口应用」的 appview 地址直接换成真实地址（不用任何缓存/探测，避免时序问题）。
+  try {
+    const __OV36 = { 'com.fntb.iconmgr': '18080' };
+    const __m36 = /\/appview\?anchor=([^&#]+)/i.exec(String(url || ''));
+    if (__m36) {
+      let __id36 = '';
+      try { __id36 = decodeURIComponent(__m36[1]); } catch (_) { __id36 = __m36[1]; }
+      const __port36 = __OV36[__id36];
+      if (__port36) {
+        const __base36 = String(__liveOriginBase() || (loadSettings() && loadSettings().origin) || '').replace(/\/+$/, '');
+        if (/^https?:/i.test(__base36)) {
+          const __u36 = new URL(__base36);
+          __u36.port = __port36;
+          const __to36 = __u36.origin + '/';
+          try { dlog('info', 'appwin.standalone36', { app: __id36, from: String(url).slice(0, 120), to: __to36 }); } catch (_) {}
+          url = __to36;
+        }
+      }
+    }
+  } catch (_) {}
   let partition = opts.partition || currentPartition;
   // v3.0.28（问题3 根因）：快捷方式/历史记录可能带「旧 host 派生」的 partition。
   // partition 是 cookie 隔离边界，落在旧 host 分区就没有当前账号登录态 → 页面跳 /v/login、
@@ -13431,6 +13563,50 @@ function createAboutWindow() {
   return aboutWin;
 }
 
+// ===================== v5.3.2：菜单「捐赠」（关于下方） =====================
+// 用户要求：在「关于」下方加「捐赠」菜单，页面写清楚自愿原则；收款码随包分发（assets/donate-qr.png）。
+let donateWindow = null;
+function createDonateWindow() {
+  try {
+    if (donateWindow && !donateWindow.isDestroyed()) {
+      donateWindow.show(); donateWindow.focus(); return donateWindow;
+    }
+  } catch (_) {}
+  const w = new BrowserWindow({
+    width: 720, height: 760,
+    title: 'FNOS · 捐赠',
+    autoHideMenuBar: true,
+    frame: process.platform === 'darwin',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    resizable: true, maximizable: true, minimizable: true,
+    minWidth: 560, minHeight: 460,
+    // 与「关于」窗完全同款（v5.3.2 修：之前用不透明窗，页面已给的 20px 圆角之外
+    // 与标题栏上方会露出窗口底色 → 用户看到顶部一块黑色底板 + 四角黑色小方块）。
+    // 改回透明窗：圆角之外与标题栏区域都是真正的透明，不再有黑色底板。
+    transparent: process.platform !== 'darwin',
+    roundedCorners: __ROUNDED_CORNERS,
+    backgroundColor: process.platform === 'darwin' ? '#14121b' : '#00000000',
+    icon: ICON_PATH,
+    parent: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
+    modal: false,
+    show: false,
+    webPreferences: {
+      contextIsolation: true, webviewTag: false, nodeIntegration: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.js'),
+      backgroundThrottling: false,
+    },
+  });
+  donateWindow = w;
+  try { w.setMenuBarVisibility(false); } catch (_) {}
+  w.once('ready-to-show', () => { try { w.show(); } catch (_) {} });
+  w.on('closed', () => { if (donateWindow === w) donateWindow = null; });
+  w.webContents.on('did-finish-load', () => __applyGlassUiTheme(w));
+  w.loadFile(path.join(__dirname, 'donate.html'), { query: { v: APP_VERSION } }).catch(() => {});
+  try { require('./logger.js').log('info', 'donate', 'window.open', { params: {} }, __RUN_MODE); } catch (_) {}
+  return w;
+}
+
 // ===================== v4.0.34：菜单内「卸载客户端」 =====================
 // 随包分发 tools/uninstaller 编译出的 FNOS-Uninstaller.exe（electron-builder extraResources → resources/uninstaller/）
 function getUninstallerPath() {
@@ -13477,15 +13653,28 @@ async function launchUninstaller() {
     buttons: ['启动卸载器', '取消'], defaultId: 1, cancelId: 1, width: 580,
   });
   if (!r || r.response !== 0) return;
-  try { require('./logger.js').log('info', 'uninstall', 'launch', { params: { exe } }); } catch (_) {}
+  // v5.2.3（用户实测反馈）：卸载器原本位于安装目录 resources/uninstaller/ 下，
+  // 运行时"自己就在要删除的目录里"，会弹「无法一边运行一边删除它」。
+  // 这里先把它复制到 %TEMP%，从临时目录启动，安装目录就能被完整删除。
+  let runExe = exe;
+  try {
+    const tmpDir = path.join(os.tmpdir(), 'fnos-uninstaller');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpExe = path.join(tmpDir, path.basename(exe));
+    fs.copyFileSync(exe, tmpExe);
+    runExe = tmpExe;
+  } catch (e) {
+    try { require('./logger.js').log('warn', 'uninstall', 'copy.temp.fail', { params: { err: String(e && e.message || e) } }); } catch (_) {}
+  }
+  try { require('./logger.js').log('info', 'uninstall', 'launch', { params: { exe: runExe } }); } catch (_) {}
   let started = false;
   try {
-    const err = await shell.openPath(exe); // ShellExecute：由 exe 清单触发 UAC
+    const err = await shell.openPath(runExe); // ShellExecute：由 exe 清单触发 UAC
     started = !err;
     if (err) throw new Error(err);
   } catch (e) {
     try {
-      const q = exe.replace(/'/g, "''");
+      const q = runExe.replace(/'/g, "''");
       cp.spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Start-Process -FilePath '${q}' -Verb RunAs`], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
       started = true;
     } catch (e2) {
@@ -13718,11 +13907,6 @@ function buildMenuTemplate() {
           // v2.18.0: 把当前版本号传给帮助页，页脚版本号自动跟随 APP_VERSION，不再手写死值。
           helpWin.loadFile(HELP_PAGE, { query: { v: APP_VERSION } }).catch(() => {});
         }},
-        { type: 'separator' },
-        {
-          label: IS_MAC ? '卸载 FNOS 客户端…（拖到废纸篓）' : '卸载 FNOS 客户端…',
-          click: () => { launchUninstaller(); },
-        },
       ],
     },
     {
@@ -13730,6 +13914,16 @@ function buildMenuTemplate() {
       submenu: [
         { label: '关于 FNOS', click: () => { createAboutWindow(); } },
       ],
+    },
+    // v5.3.2（用户要求）：一级菜单「捐赠」，位置在「关于」下方
+    {
+      label: '捐赠',
+      click: () => { createDonateWindow(); },
+    },
+    // v5.2.3（用户要求）：一级菜单，名字就叫「卸载」，位置在「关于」下方，点击直接启动卸载器
+    {
+      label: '卸载',
+      click: () => { launchUninstaller(); },
     },
   ];
   // ===================== v5.1.0：macOS 菜单适配 =====================
@@ -16298,6 +16492,38 @@ ipcMain.handle('settings:install-skin', async () => {
   }
 });
 
+// v5.2.1（用户要求）：导出皮肤包 —— 把已安装的皮肤目录打成 .fskin.zip（manifest.json 在根）
+ipcMain.handle('settings:export-skin', async (_e, payload) => {
+  try {
+    const owner = (settingsWindow && !settingsWindow.isDestroyed()) ? settingsWindow : mainWindow;
+    const want = __safeSkinName(String((payload && payload.name) || '').trim());
+    const active = __safeSkinName(String((loadSettings().activeSkin) || '').trim());
+    const name = want || active;
+    if (!name) return { ok: false, error: '当前没有可导出的皮肤（请先在列表里选中一个自定义皮肤）' };
+    const dir = __findSkinDir(name);
+    if (!dir || !fs.existsSync(path.join(dir, 'manifest.json'))) return { ok: false, error: '皮肤不存在：' + name };
+    const r = await dialog.showSaveDialog(owner, {
+      title: '导出皮肤包',
+      defaultPath: name + '.fskin.zip',
+      filters: [{ name: 'FNOS 皮肤包', extensions: ['zip'] }]
+    });
+    if (!r || r.canceled || !r.filePath) return { ok: false, canceled: true };
+    let AdmZip = null;
+    try { AdmZip = require('adm-zip'); } catch (_) {}
+    if (!AdmZip) return { ok: false, error: '缺少打包组件 adm-zip' };
+    let outPath = r.filePath;
+    if (!/\.zip$/i.test(outPath)) outPath += '.fskin.zip';
+    const zip = new AdmZip();
+    zip.addLocalFolder(dir);            // 目录内容放在 zip 根，manifest.json 位于根
+    zip.writeZip(outPath);
+    const size = (() => { try { return fs.statSync(outPath).size; } catch (_) { return 0; } })();
+    fnosLog('info', 'skin', 'export.ok', { name: String(name).slice(0, 80), size });
+    return { ok: true, name, path: outPath, size };
+  } catch (err) {
+    return { ok: false, error: err?.message || '导出失败' };
+  }
+});
+
 // v3.0.38（用户要求）：删除已安装皮肤 —— 删掉 skins/<name>/ 目录；若删除的是当前激活皮肤，
 // 自动回落默认（activeSkin=''）并广播，避免标题栏继续引用已删除的皮肤目录。
 ipcMain.handle('settings:delete-skin', async (_e, payload) => {
@@ -17062,7 +17288,10 @@ ipcMain.handle('list-desktop-shortcuts', async () => {
   } catch (e) { return { success: false, msg: String((e && e.message) || e), data: [] }; }
 });
 
-ipcMain.handle('get-installed-apps', async () => {
+ipcMain.handle('get-installed-apps', async (_e, payload) => {
+  // v5.3.1（用户要求）：设置页「刷新应用列表和图标」要真正重新向图标管理器要数据——
+  // forceIcons=true 时忽略 6 小时图标缓存，逐个重新下载 /api/icons/<name>/256。
+  const __forceIcons = !!(payload && payload.forceIcons);
   try {
     const iconSes = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed())
       ? mainWindow.webContents.session
@@ -17098,7 +17327,7 @@ ipcMain.handle('get-installed-apps', async () => {
                 const __st5 = fs.statSync(__iconFile);
                 // v3.0.25（需求 2）：图标缓存复用——此前每次打开设置页都对全部应用逐个重新下载
                 // 256 图标，几十个应用串行下载导致「快捷方式面板要关几次设置页才出列表」。
-                if (__st5.size > 100 && (Date.now() - __st5.mtimeMs) < 6 * 3600 * 1000) __reuse = true;
+                if (!__forceIcons && __st5.size > 100 && (Date.now() - __st5.mtimeMs) < 6 * 3600 * 1000) __reuse = true;
               }
             } catch (_) {}
             if (__reuse) {
@@ -20044,6 +20273,26 @@ function __appviewFallbackUrl(name) {
   } catch (_) { return ''; }
 }
 function __resolveLaunchUrl(raw, nasAddr) {
+  // v5.3.6（用户反馈：FNTB 图标管理器怎么都打不开 —— 程序内和快捷方式都打不开）——
+  // 它不在飞牛桌面 SPA 的应用清单里，appview?anchor=com.fntb.iconmgr 必然报「应用不存在或未安装」；
+  // 真实地址是独立服务 http://<nas>:18080/。所有打开路径最终都会经过这里，所以在这里统一改地址。
+  try {
+    const __OV37 = { 'com.fntb.iconmgr': '18080' };
+    let __id37 = String(raw || '');
+    try { __id37 = decodeURIComponent(__id37); } catch (_) {}
+    __id37 = __id37.replace(/^.*?anchor=([^&#]+).*$/i, '$1');
+    const __port37 = __OV37[__id37];
+    if (__port37) {
+      const __live37 = String(__liveOriginBase() || (loadSettings() && loadSettings().origin) || '').replace(/\/+$/, '');
+      if (/^https?:/i.test(__live37)) {
+        const __u37 = new URL(__live37);
+        __u37.port = __port37;
+        const __to37 = __u37.origin + '/';
+        try { require('./logger.js').log('info', 'launch', 'resolve.override37', { params: { app: __id37, to: __to37 } }, __RUN_MODE); } catch (_) {}
+        return __to37;
+      }
+    }
+  } catch (_) {}
   // v4.0.64：传入的 nasAddr 可能过期（切账号后 launcher 文件还没更新），以进程内实时 origin 为准
   try {
     const __live = String(__liveOriginBase() || '');
@@ -20207,6 +20456,10 @@ function launchSubAppFromArgs() {
   // consumePendingOpenApp / tryOpenPendingApp 触发 open-fpk-app，渲染进程在主窗口内
   // 同窗打开应用（程序内启动，v2.4.2 用户反馈），不新建独立应用窗口、登录态共享免二次登录。
   if (appUrl) {
+    // v5.3.2 / v5.4.0 保留（纯 bug 修复，不改写 URL）：冷启动时把 --launch-app 的原始 appId
+    // 一起排队，tryOpenPendingApp 才能按 appId 查窗口形态/账号记忆；此前只排队 URL，
+    // appId 只能从 URL 反推，appview 兜底地址反推不出来。
+    try { __pendingAppId = String(launchArgs.appId || ''); } catch (_) {}
     queuePendingApp(appUrl);
     // v2.1.15：增强日志——记录 pending app 已入队
     fnosLog('info', 'launch', 'pending app queued', { appUrl: String(appUrl).slice(0, 160), nasAddr: String(url).slice(0, 80) });

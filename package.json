@@ -1,6 +1,6 @@
 {
   "name": "fnos-client",
-  "version": "5.2.0",
+  "version": "5.3.6",
   "description": "FNOS Desktop Client",
   "main": "main.js",
   "author": "FNOS",
@@ -57,6 +57,7 @@
       "login.js",
       "help.html",
       "about.html",
+      "donate.html",
       "dialog.html",
       "dialog.css",
       "dialog.js",

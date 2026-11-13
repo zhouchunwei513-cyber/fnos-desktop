@@ -898,8 +898,14 @@ module.exports = function injectTitleBar(ctx) {
         // 同样 20px 视觉上 macOS 更"方"、圆弧更"尖"。Chrome 139+/Electron 已支持 corner-shape，
         // 这里对「圆角/半圆角」档统一切成 superellipse(2.2)（≈ Apple 连续曲率的弯曲度），
         // 让 20px 的比例与 macOS 一致；直角档保持直角。Windows 同款（同一份注入代码）。
+        // v5.3.5（用户反馈：标题栏上两角一直有一圈白色/半透明的毛边）——
+        // 根因：bar 用 corner-shape:superellipse(2.2) 画「更方的圆角」，而 bgLayer / shapeLayer /
+        // 磨砂裁剪层只能用 clip-path:inset(round …) 画**正圆弧**。两种曲线在角上差出几像素，
+        // 中间那圈就露出浅色皮肤/模糊底 → 看起来就是白色毛边。
+        // 解决：Windows 上统一用正圆弧（round），四层曲线完全重合；superellipse 只在 macOS 用
+        // （mac 上系统窗口本身就是 squircle，需要对齐观感）。
         try {
-          if (__sr > 0) bar.style.setProperty('corner-shape', 'superellipse(2.2)', 'important');
+          if (__sr > 0) bar.style.setProperty('corner-shape', isMac ? 'superellipse(2.2)' : 'round', 'important');
           else bar.style.setProperty('corner-shape', 'square', 'important');
         } catch (_) {}
         const bl = bar.__bgLayer;
@@ -908,6 +914,15 @@ module.exports = function injectTitleBar(ctx) {
           try { bl.style.setProperty('clip-path', __C, 'important'); } catch (_) {}
           try { bl.style.setProperty('-webkit-clip-path', __C, 'important'); } catch (_) {}
           try { bl.style.setProperty('overflow', 'hidden', 'important'); } catch (_) {}
+        }
+        // v5.3.3（用户反馈：大半圆角时标题栏两角有灰白毛边）——
+        // 磨砂裁剪层必须和 bar 用同一套 clip-path，否则 blur 会从圆角外溢出。
+        const fc = bar.__frostClip;
+        if (fc && fc.style) {
+          try { fc.style.setProperty('border-radius', __R, 'important'); } catch (_) {}
+          try { fc.style.setProperty('clip-path', __C, 'important'); } catch (_) {}
+          try { fc.style.setProperty('-webkit-clip-path', __C, 'important'); } catch (_) {}
+          try { fc.style.setProperty('overflow', 'hidden', 'important'); } catch (_) {}
         }
         const sl = bar.__shapeLayer;
         if (sl && sl.style) {
@@ -1411,6 +1426,11 @@ module.exports = function injectTitleBar(ctx) {
         // v4.0.110（用户澄清：两套设置必须完全独立，标题栏设置不得影响窗口四角）：
         // 页面（= 窗口外形）四角**只**取【窗口四角】；标题栏自己的圆角由 __fixBarRadius 用
         // 【标题栏四角】独立绘制，二者互不写入对方。窗口选直角/半圆角时，页面顶部就是直角。
+        // v5.3.3（用户要求：两套设置严格独立，互不影响）——
+        // 窗口外形（页面 clip-path）**只**取【窗口四角】：上沿 __topR、下沿 __botR 都来自 winCorner。
+        // 标题栏自己的圆角由 __fixBarRadius 用【标题栏四角】独立绘制。
+        // 标题栏圆角外侧那一小块不会再露出灰白：磨砂层已按同一套圆角裁剪（见 __fixBarRadius
+        // 里的 bar.__frostClip 处理），外侧是透明 → 透出桌面而不是灰块。
         const __topR = __winHalf ? 0 : __winR;
         const __botR = __winR;
         const __wr = __pw(__topR) + ' ' + __pw(__topR) + ' ' + __pw(__botR) + ' ' + __pw(__botR);
@@ -1593,6 +1613,15 @@ module.exports = function injectTitleBar(ctx) {
         ].join(';'));
         __frostClip.appendChild(__frostEl);
       }
+      // v5.3.3：把磨砂裁剪层挂到 bar 上，__fixBarRadius 会按「标题栏四角」给它写同一套圆角。
+      // 之前它只有 border-radius:inherit，在 bar 使用 corner-shape:superellipse 时继承不到，
+      // 模糊层（filter:blur(18px)，四边各外扩 72px）就从圆角外漏出一圈灰白色毛边。
+      try { bar.__frostClip = __frostClip; } catch (_) {}
+      // v5.3.4（用户反馈：标题栏上两角外侧有灰色/半透明磨砂块）——
+      // frostClip 刚创建时只有 border-radius:inherit（在 corner-shape/superellipse 下常常算成 0），
+      // 里面那层 filter:blur(18px) 且四边外扩 72px 的磨砂图就从方角漏出去。
+      // 建好立刻按当前「标题栏四角」显式写一遍圆角裁剪。
+      try { __fixBarRadius(bar); } catch (_) {}
       try { bar.insertBefore(__frostClip, bar.firstChild); } catch (_) {}
       __paintFrost(bar);
       return __frostEl;
@@ -2702,7 +2731,13 @@ module.exports = function injectTitleBar(ctx) {
       // v5.0.1（用户要求：去掉底部横向滚动条与右侧纵向滚动条）——
       // 应用窗统一隐藏滚动条，滚轮/键盘滚动能力保留。
       try {
-        if (!document.getElementById('fnos-hide-sb')) {
+        // v5.2.4（用户反馈：电视直播频道列表的滚动条不见了）——
+        // 上面这条「隐藏所有滚动条」是 v5.0.1 为应用窗加的（html,body,* 通杀），
+        // 但直播窗自己需要频道列表/节目单的滚动条（live.html 里定义了 9px 细滚动条），
+        // 所以直播窗跳过这条全局隐藏。
+        const __argvSb = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+        const __isLiveSb = __argvSb.indexOf('--fnos-live-window') >= 0;
+        if (!__isLiveSb && !document.getElementById('fnos-hide-sb')) {
           const __sb = document.createElement('style');
           __sb.id = 'fnos-hide-sb';
           __sb.textContent = '::-webkit-scrollbar{width:0 !important;height:0 !important;display:none !important;}'

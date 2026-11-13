@@ -1,3 +1,190 @@
+
+## 5.3.6
+
+本次发布把 11-13 当天针对「快捷方式开窗」的全部实验性改动**回滚**，回到 5.3.1 稳定基线，
+只保留下列已经用户验证的改动：
+
+### 新增
+- 一级菜单「捐赠」（关于 → 捐赠 → 卸载）+ `donate.html`：微信收款码随包分发（`assets/donate-qr.png`），
+  页面写明完全自愿、不影响任何功能、无捐赠者特权、学生与未成年人不要捐、不接受定制开发交换、防冒充提醒；
+  跟随偏好设置里的「透明界面」开关。
+
+### 修复
+- **标题栏四角 / 窗口四角五档**：小圆角 10px、大圆角 20px、小半圆角（上 10 / 下 0）、
+  大半圆角（上 20 / 下 0）、直角 0；两套配置**严格独立**，窗口外形只由「窗口四角」决定，
+  标题栏自绘圆角只由「标题栏四角」决定，修复「窗口选圆角后标题栏上两角被强制变成 20px」。
+- **标题栏上两角白色毛边**：`corner-shape: superellipse(2.2)` 与背景层/形状层/磨砂层使用的
+  `clip-path: inset(round …)` 正圆弧在角上差出几像素，中间缝里露出浅色皮肤；
+  Windows 改为四层统一正圆弧（macOS 仍用 superellipse 对齐系统 squircle）。
+- **磨砂层溢出**：磨砂图 `filter: blur(18px)` 四边外扩 72px，裁剪层此前只有 `border-radius:inherit`
+  （在 superellipse 下常算成 0），现按「标题栏四角」显式写圆角裁剪。
+- **FNTB 图标管理器打不开**（程序内 + 快捷方式）：它不在飞牛桌面 SPA 的应用清单里，
+  `appview?anchor=com.fntb.iconmgr` 必然报「应用不存在或未安装」；真实地址是独立服务 `http://<nas>:18080/`，
+  现在在 popout 加载前统一改写为真实地址。
+
+## 5.3.2
+
+- 新增一级菜单「捐赠」（位置：关于 → 捐赠 → 卸载），点击打开「支持 FNOS 桌面客户端」窗口。
+- 新增 `donate.html`：微信收款码 + 捐赠说明（完全自愿、不影响任何功能、无捐赠者特权、学生与未成年人不要捐、
+  不接受定制开发交换、退款与停更说明、防冒充提醒）。
+- 收款码随包分发：`assets/donate-qr.png`（不联网、不上传，仅本地展示）。
+- 版本基线：从 5.3.1 起（已回滚掉 11-13 当天所有快捷方式相关实验改动）。
+
+## 5.4.1
+
+- 快捷方式打开的 appview 窗：隐藏桌面外壳残留（`#LoginFooter` 访客统计「本站总访问量」、`#fnos-account-switcher` 账号浮钮），
+  并去掉 `html.fnos-ui-transparent`（底色改为不透明 #14121b），使窗口内容与「程序内打开」一致，仅标题栏不同。
+- 多次延时补刀（300/900/1800/3200ms）覆盖 busuanzi 异步渲染。
+## v5.3.7（9 个模块窗顶部那条「fnos - 飞牛 fnOS + − □ ✕」= 我们自己的内嵌窗标题栏，改回标准自绘栏）
+
+### 现象
+用户截图（`work/shots/user-report-native-titlebar.png`）：快捷方式打开「系统设置」，窗口顶部是一条
+深色 bar，左边粗体 `fnos - 飞牛 fnOS`、右边 `− □ ✕`，下面还能看到一条 34px 空白带，
+和影视/相册等普通应用窗的标题栏（皮肤 + ☰ + — □ ✕）明显不是一套。
+
+### 诊断（CDP，单位机 9222，trim.setting 窗）
+- `#fnos-titlebar` **存在且可见**：`rect=[0,0,1110,34] z=2147483647`，子节点
+  `#fnos-embed-logo`(display:none) / `#fnos-embed-title`(文本 "fnos - 飞牛 fnOS") /
+  `#fnos-tb-dragstrip` / `#fnos-tb-min|max|close` —— 命中的是 `buildEmbed()` 内嵌窗形态，
+  没有 ☰ 菜单、没有 `#fnos-tb-frost` 皮肤层、没有账号球。
+- 同一窗口 `html` 计算样式 `padding-top:34px`（buildEmbed 写的 `#fnos-embed-offset`）+ `body`
+  `transform:translateY(34px)`（`__ensureContentOffset` 的 `--fnos-app-window` 分支）→
+  `#root` 落在 y=68，多出一条 34px 空白带。
+- SPA 自己的 `trim-ui__app-layout--header`（44px，标题「系统设置」）在 DOM 里但 `display:none`
+  （主进程 insertCSS 隐藏），`#root` 内**没有任何**「− □ ✕」形假窗控（文本形态扫描 0 命中）。
+  ⇒ 结论：那条 bar 不是 SPA 画的，是我们自己的 embed 形态标题栏。
+
+### 修复
+- `main.js __embedAuto`：`source==='deskmodule'` 直接 `return false`——不再传 `--fnos-embed-style`，
+  titlebar-inject 走 `build()`（皮肤底图 + ☰ + — □ ✕ + 顶部热区/中段拖拽条），与普通应用窗同一套；
+  `html{padding-top}` 不再写入，68px 空白带消失。
+- `main.js` 页面自带表头隐藏（`[class*="app-layout--header"]{display:none}`）放开到 deskmodule 窗，
+  保证自绘栏下面不会再冒出 SPA 那条表头。
+- `main.js` 创窗时打标 `win.__fnSource = opts.source`；`titlebar:should-inject` 改用该标记判定
+  `chromeFix`（旧实现依赖 `e.sender.getURL()`，document-start 时还是 `about:blank` → 恒 false），
+  并对每次查询落 `titlebar should-inject {winId, chromeFix, deskModule, url}` 日志。
+
+## v5.3.6（桌面快捷方式「开出来是飞牛宫格」真正根因：ok-url 账号记忆把 9 个模块学成了桌面根）
+
+### 现象
+9 个桌面内置模块双击快捷方式后，窗口停在飞牛桌面宫格；日志里 `module-open.*` 有 209 条，
+`module-open.direct-render` **0 条**，清一色 `probe:null` + `appview-fallback` + `clicked` + `timeout`。
+
+### 根因（实测推翻 v5.3.4 的 entry-cache 判断）
+`ok-url.v2.json` 的当前账号桶里，9 个模块有 8 个被学成了 `origin/`：
+`trim.setting / trim.download-center / trim.backup-and-sync / trim.file-manager.trash /
+trim.log-center / trim.file-manager / trim.app-center / trim.resource-manager → origin/`
+（只有 `trim.docker` 留成了 `appview?anchor=trim.docker`——所以历史上"看起来只有 Docker 正常"）。
+`createAppWindowInner` 里那些"改写成桌面根"的分支 v5.3.4 已对 deskmodule 旁路，
+但窗口真正的装载入口 `__appLoadTarget()` → `__resolveAppEntry()` 把
+`__okurl2Get(appId)`（memo）当**①号候选且优先级最高**，这一层没有旁路：
+`resolve.v2 {appId:"trim.file-manager", kind:"third-party-root", src:"memo", final:"origin/"}`，
+窗口 580ms 就停在 `/` → 探针 URL 判据永不成立 → 必回落宫格。
+
+### 修复
+- `__resolveAppEntry(rawUrl, appId, {noMemo})`：deskmodule 整链旁路 memo / app-center / memo-rebind。
+- `__appLoadTarget()`：`source==='deskmodule'` 时以 `{noMemo:true}` 解析（本轮关键一行）。
+- `__okurl2()` 加载时清洗：9 个模块 id 被学成 `pathname==='/'` 的一律删除落盘（`cache.purge536.okurl-root`）。
+- `did-finish-load` 记账：deskmodule 停在桌面根时拒绝写 memo（堵住污染再生）。
+- `__desktopModuleDirectUrls()`：**删掉** `/apps/docker/`、`/apps/download/` 两个候选——
+  实测它们返回 200 但会 302 回 `origin/` 并渲染**宫格**（v5.3.4 的猜测是错的）；
+  唯一正确入口是 `/appview?anchor=<appName>`（urlprobe 实证 9/9 直渲应用本体）。
+- 探针新增 `path` 判据 + `module-open.probe-root-grid`：落到 `/` 绝不当成功。
+- `/diag action=urlprobe`：token 门控，用当前登录分区批量实测候选地址，回读 finalUrl/HTTP/探针结果。
+
+### 验收（单位机 001@100.73.66.120，v5.3.6 asar 5399456 / sha 6f6fad5d3cb00b3f）
+12 个应用（9 模块 + 影视/相册/百度网盘回归）**全部独立窗直达应用本体，达标 12 / 不达标 0**；
+路线 B 零触发；创窗→显示 585~2408ms；重启后不带 `--remote-debugging-port`（`9222=CLOSED`）。
+
+## v5.3.4 / v5.3.5（过渡版本，已被 v5.3.6 修正）
+- v5.3.4：清理 `entry-cache.json` 里指向 `/` 的 9 条、deskmodule 全链旁路入口改写。
+  （方向对但**没打中真正污染源** `ok-url.v2.json`；并错误地把 `/apps/docker/`、`/apps/download/` 加进候选。）
+- v5.3.5：新增 `/diag action=urlprobe` 诊断动作（用于取得"哪个 URL 才是应用本体"的地面真相）。
+
+## v5.3.3（9 个飞牛桌面内置模块：快捷方式 = 独立窗口直达模块本身）
+
+### 现象（用户两次纠正）
+「我桌面快捷方式启动应用就是为了独立窗打开应用」
+「打开一个主页面又在主页面内打开应用，我要的是以独立窗直接打开应用」——
+v5.3.1/v5.3.2 把模块应用做成「主窗里点一下」，窗口里先是飞牛桌面宫格再切到模块，用户判定为错。
+
+### 静态实证（NAS SPA bundle，非 HTTP 猜测）
+- `assets/appview-Dj9klTDM.js` 的 `O(e,t)`：`e.component` → 直接渲染 React 组件；
+  `e.iframe && e.url` → 渲染内嵌任务窗；都不会渲染桌面。
+- `assets/index-D1auxRov.js` 的 `f1()` 内置应用清单里，9 个模块全部在列：
+  `trim.file-manager` / `trim.setting` / `trim.app-center` / `trim.backup-and-sync` /
+  `trim.resource-manager` / `trim.log-center` / `trim.file-manager.trash` → `component`；
+  `trim.docker` → `iframe /apps/docker/`、`trim.download-center` → `iframe /apps/download/`
+  （两者都是带 `index.html` 的独立 SPA，实测存在于 `/usr/trim/www/apps/`）。
+  → 登录态下 `/appview?anchor=<id>` 会直接渲染模块本身，不需要经过桌面宫格。
+
+### 修复（路线 A 优先 + 路线 B 兜底，窗口全程 show:false）
+- `__openDesktopModuleByClick` 重写：新建**独立窗口**载 `origin + /appview?anchor=<id>`
+  （`source:'deskmodule'`，标题=应用名，appId=模块名，沿用 FPK 图标与窗口几何记忆）。
+- **渲染探针**（主进程 `executeJavaScript`）：页面落在 `/appview` 后检查 DOM——
+  出现「不存在或未安装 / 未指定应用 / 兼容模式 / 未能完整加载」即判失败；
+  出现 `#root` 有子节点（且无 loading）或存在 `iframe` 即判成功 → 打 `module-open.direct-render` 并 show。
+  轮询 700ms × 8（约 5.6s）仍无结论 → 判超时。
+- **路线 B 兜底**（同一窗口，`module-open.appview-fallback`）：改载桌面根，等落到 `pathname==='/'`
+  且加载完成后向**该窗口**发 `open-fpk-app`（`desktopModule:true`）模拟点击同名图标；
+  收到 preload 回执 `fnos:module-clicked` 立即 show，或点击后 4s 放宽；
+  8s 仍失败才显示窗口并记 `module-open.timeout`。
+- `createAppWindowInner` 配合：`source==='deskmodule'` 时**不**自动 `ready-to-show` show、
+  不参与 6s 强制 show（显示时机交给上面的控制器），并且跳过 v3.0.32 的 FPK 地址替换与
+  v5.2.8 `deskmodule28` 对这批 id 的「appview→站点根」改写（否则路线 A 会被自己改回去）。
+- 新增日志：`module-open.new-window` / `module-open.direct-render` / `module-open.appview-fallback` /
+  `module-open.click-sent` / `module-open.clicked` / `module-open.shown` / `module-open.timeout` /
+  `module-open.no-origin` / `module-open.no-window`。
+
+### 未回退
+- v5.2.7 `deskmodule27` / v5.2.8 `deskmodule28` 对**其它**入口（API/内嵌窗）的 URL 改写保持原样；
+- 模块链路仍然**绝不**回落 `window.open`（那正是"跳到飞牛主页面"的来源）。
+
+## v5.3.2（Windows 快捷方式：9 个飞牛桌面内置模块不再跳主页面）
+
+### 现象（用户工单）
+双击 Docker / 下载 / 回收站 / 备份与同步 / 应用中心 / 文件管理 / 日志 / 系统设置 / 资源管理
+这 9 个应用的桌面快捷方式，打开的窗口里是**飞牛桌面首页**，不是应用本身。
+
+### 根因（日志实证，非推测）
+`%APPDATA%\fnos-client\logs\fnos-diag.log` 抓到的 `appwin.create` 是
+`{"app":"trim.docker","url":"http://<nas>:5666/"}` —— 创窗成功但 URL 是站点根。
+链路是三层叠加，全部来自 v5.2.7 / v5.2.8 对「这批应用没有 `/appview?anchor=` 路由」的补救：
+1. `__resolveLaunchUrl` 对 9 个模块直接返回 `origin + '/'`（`appwin.deskmodule27`）；
+2. `__isNasDesktopUrl` 保险丝把站点根又转成 `appview?anchor=<id>`；
+3. `createAppWindow` 的 v5.2.8 改写（`appwin.deskmodule28`）再把它改回 `origin + '/'`。
+
+翻 NAS 上的桌面 SPA bundle（2.9MB，`index-D1auxRov.js`）确认：这 9 项在 FPK 清单里是
+`type: inbuilt` / `nativeApp: true`，**服务端根本没有独立 URL**，只能由桌面内部命令总线打开。
+所以「给它们一个 URL」这个方向本身就错——任何 URL 都只会落到站点根。
+
+### 修复
+改走**用户视角下唯一正确的链路**：显示主窗 → 在首页上模拟点击同名图标 → 飞牛自己弹模块。
+- main.js：
+  - 新增 `__DESKTOP_MODULES29` / `__isDesktopModuleApp` / `__desktopModuleLabels` /
+    `__ensureMainHome29` / `__openDesktopModuleByClick`；
+  - 三个入口全部前置拦截：HTTP `/launch`（快捷方式主链路）、`tryOpenPendingApp`（冷启动),
+    `__handleSecondInstance`（客户端已运行时的热链路），命中即发一次 `open-fpk-app`（`desktopModule:true`），
+    不再 `createAppWindow`，因此不会再产生任何 `origin + '/'` 窗口；
+  - 主窗不在 `/` 时先 `loadURL(origin)`，随后**等 `did-finish-load`（6s 兜底）再发 IPC**——
+    否则消息落在即将销毁的旧文档里会丢（真机实测踩到）；
+  - 冷启动 `launchSubAppFromArgs` 补 `__pendingAppId = launchArgs.appId`：此前只排了 URL，
+    而模块解析出的 URL 就是站点根、反查不出 appId → 冷启动双击仍停在桌面首页（截图实证后修掉）；
+  - 新增 `/diag` 的 `shot` 动作（loopback + token）——模块窗是桌面 SPA 内部的窗口，
+    日志里没有 `appwin.create` 可对，只能靠截图取证。
+- preload.js：
+  - 新增 `__fnosFindModuleIconNode`：优先 `[data-desktop-item-id]` 桌面项（文本/alt/entryKey 三路），
+    再扫底部 140px 程序坞的 `title`/`aria-label`；**评分选优**（文本全等 4 / alt 全等 3.5 /
+    entryKey 3 / 前缀 2 / 包含 1，且弱匹配要求文本不比关键词长超过 1 字），
+    防止「日志」误点「日志推送」；
+  - 命中打 `module-icon-match`（含 `how/score/meta`），5s 内没找到打 `module-icon-not-found`
+    并 dump 现场 40 个桌面项——**模块分支绝不 `window.open` 回落**（那正是旧 bug 的来源）。
+- 未回退：v5.2.7 的 `deskmodule27`、v5.2.8 的 `deskmodule28` 改写保持原样（API/内嵌窗场景仍需它们）。
+
+### 验证
+单位机（001@100.73.66.120）真机：39 个快捷方式全量跑测，逐条读 `appwin.create` 判 URL，
+模块类另看 `module-icon-match` + `/diag shot` 截图确认模块真的在桌面 SPA 内打开了。
+
 ## v5.2.0（macOS 桌面端收口：登录 / 快捷方式 / 播放 / 菜单 / 打包）
 
 > 本轮把 macOS 端从「能跑」推到「可日常用」，覆盖登录、桌面快捷方式、MPV 播放、菜单外观、

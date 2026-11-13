@@ -857,6 +857,30 @@
     }
   }
 
+  // v5.2.2：导出皮肤包（把当前激活皮肤打成 .fskin.zip）
+  const skinExport = document.getElementById('skin-export');
+  if (skinExport) {
+    skinExport.addEventListener('click', async () => {
+      skinExport.disabled = true;
+      __skinMsg('导出中…');
+      try {
+        const res = await fnosSettings.exportSkin('');
+        if (res && res.ok) {
+          __skinMsg('已导出：' + (res.path || res.name || ''));
+          setTimeout(() => __skinMsg(''), 5000);
+        } else if (res && res.canceled) {
+          __skinMsg('');
+        } else {
+          __skinMsg((res && res.error) || '导出失败');
+        }
+      } catch (err) {
+        __skinMsg(err?.message || '导出失败');
+      } finally {
+        skinExport.disabled = false;
+      }
+    });
+  }
+
   if (skinInstall) {
     skinInstall.addEventListener('click', async () => {
       skinInstall.disabled = true;
@@ -1459,13 +1483,13 @@
     } catch (_) {}
   }
 
-  async function loadAppList(silent) {
+  async function loadAppList(silent, forceRefresh) {
     try {
       if (!window.fnosSettings || !window.fnosSettings.getInstalledApps) {
         if (appListLoading) appListLoading.textContent = '应用快捷方式创建功能不可用';
         return;
       }
-      const res = await window.fnosSettings.getInstalledApps();
+      const res = await window.fnosSettings.getInstalledApps({ forceIcons: !!forceRefresh });
       if (appListLoading) appListLoading.style.display = 'none';
       if (!res.success || !res.data || !res.data.length) {
         if (appListEmpty) appListEmpty.style.display = 'block';
@@ -1504,6 +1528,9 @@
         card.className = 'app-card';
         const iconSrc = app.iconPath ? ('file://' + app.iconPath) : '';
         card.innerHTML = 
+          '<label class="app-pick" style="display:flex;align-items:center;padding-right:2px">' +
+            '<input type="checkbox" class="app-sel" data-app-id="' + (app.appId || '') + '" checked style="width:17px;height:17px;cursor:pointer" />' +
+          '</label>' +
           (iconSrc ? '<img class="app-card-icon" src="' + iconSrc + '" onerror="this.style.display=\'none\'" />' : '<div class="app-card-icon"></div>') +
           '<div class="app-card-info">' +
             '<div class="app-card-name">' + (app.appName || app.appId || '未命名') + '</div>' +
@@ -1518,6 +1545,95 @@
       // 渲染后立刻向主进程要「桌面上已存在的 FNOS 快捷方式」清单，命中的卡片直接标成 ✓ 已创建 并禁用按钮。
       // 这样不依赖「刚点过」的临时状态，重开设置页也还在。
       markCreatedShortcuts();
+      // v5.2.5：勾选 + 一键创建（全部 / 部分）
+      try {
+        const bar = document.getElementById('shortcut-batch-bar');
+        if (bar) bar.style.display = 'flex';
+        const selAll = document.getElementById('app-sel-all');
+        const selCount = document.getElementById('app-sel-count');
+        const batchBtn = document.getElementById('shortcut-create-selected');
+        const batchStatus = document.getElementById('shortcut-batch-status');
+        const boxes = () => Array.from(appListEl.querySelectorAll('.app-sel'));
+        const syncCount = () => {
+          const all = boxes();
+          const n = all.filter((b) => b.checked).length;
+          if (selCount) selCount.textContent = '已选 ' + n + ' 个 / 共 ' + all.length + ' 个';
+          if (selAll) {
+            selAll.checked = all.length > 0 && n === all.length;
+            selAll.indeterminate = n > 0 && n < all.length;
+          }
+        };
+        boxes().forEach((b) => b.addEventListener('change', syncCount));
+        if (selAll && !selAll.__fnBound) {
+          selAll.__fnBound = true;
+          selAll.addEventListener('change', () => {
+            boxes().forEach((b) => { b.checked = selAll.checked; });
+            syncCount();
+          });
+        }
+        syncCount();
+        // v5.3.0（用户要求）：刷新应用列表和图标 —— 重新拉 FPK 清单与图标并重绘
+        const refreshBtn = document.getElementById('app-list-refresh');
+        if (refreshBtn && !refreshBtn.__fnBound) {
+          refreshBtn.__fnBound = true;
+          refreshBtn.addEventListener('click', async () => {
+            refreshBtn.disabled = true;
+            const old = refreshBtn.textContent;
+            refreshBtn.textContent = '刷新中…';
+            if (batchStatus) batchStatus.textContent = '正在刷新应用列表与图标…';
+            try {
+              await loadAppList(false, true);
+              if (batchStatus) batchStatus.textContent = '✓ 已刷新（应用列表与图标均重新获取）';
+              setTimeout(() => { if (batchStatus) batchStatus.textContent = ''; }, 4000);
+            } catch (e) {
+              if (batchStatus) batchStatus.textContent = '刷新失败：' + (e && e.message || e);
+            } finally {
+              refreshBtn.disabled = false;
+              refreshBtn.textContent = old;
+            }
+          });
+        }
+        if (batchBtn && !batchBtn.__fnBound) {
+          batchBtn.__fnBound = true;
+          batchBtn.addEventListener('click', async () => {
+          const picked = boxes().filter((b) => b.checked).map((b) => b.dataset.appId);
+          if (!picked.length) { if (batchStatus) batchStatus.textContent = '请先勾选要创建的应用'; return; }
+          batchBtn.disabled = true;
+          let ok = 0, fail = 0;
+          for (let i = 0; i < picked.length; i++) {
+            const appId = picked[i];
+            const appData = res.data.find((a) => a.appId === appId);
+            if (!appData) continue;
+            if (batchStatus) batchStatus.textContent = '正在创建 ' + (i + 1) + '/' + picked.length + '：' + (appData.appName || appId);
+            const cardBtn = appListEl.querySelector('.shortcut-btn[data-app-id="' + appId + '"]');
+            if (cardBtn) { cardBtn.disabled = true; cardBtn.textContent = '创建中...'; }
+            try {
+              const r = await window.fnosSettings.createDesktopShortcut({
+                appId: appData.appId,
+                appName: appData.appName || appData.appId,
+                iconPath: appData.iconPath || '',
+                nasAddress: appData.nasAddress || '',
+              });
+              if (r && r.success) {
+                ok++;
+                if (cardBtn) { cardBtn.textContent = '✓ 已创建'; cardBtn.classList.add('success'); }
+              } else {
+                fail++;
+                if (cardBtn) { cardBtn.textContent = '创建失败'; cardBtn.disabled = false; }
+              }
+            } catch (_) {
+              fail++;
+              if (cardBtn) { cardBtn.textContent = '创建失败'; cardBtn.disabled = false; }
+            }
+            await new Promise((r2) => setTimeout(r2, 120));
+          }
+          if (batchStatus) batchStatus.textContent = '✓ 完成：成功 ' + ok + ' 个，失败 ' + fail + ' 个';
+          setTimeout(() => { if (batchStatus) batchStatus.textContent = ''; }, 6000);
+          batchBtn.disabled = false;
+          markCreatedShortcuts();
+          });
+        }
+      } catch (_) {}
       // 绑定事件
       appListEl.querySelectorAll('.shortcut-btn').forEach(btn => {
         btn.addEventListener('click', async () => {

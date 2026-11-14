@@ -12108,6 +12108,125 @@ function __suppressDwmBorder(win) {
   } catch (_) {}
 }
 
+// ── v5.3.8: 把「飞牛桌面上实际显示的应用」同步给 FNTB 图标管理器 ─────────────
+// 背景：图标管理器（FPK，http://<nas>:18080）要与用户桌面严格一致，但飞牛前端的桌面条目
+// 走加密会话（RSA/AES）与 OAuth（/oauthapi 只对 OfficialAppUsers 组的官方应用开放），
+// 第三方 FPK 拿不到 token。方案 A：客户端在主页加载完成后，把桌面上真实渲染出来的图标
+// （应用名 + 显示名 + 顺序）POST 给 /api/desktop-sync，图标管理器以同步清单为真值。
+const __DESK_SCRAPE_JS = `(function(){
+  try {
+    var P1 = '/static/app/icons/', P2 = '/app-center-static/serviceicon/';
+    var out = [], seen = {}, imgs = document.querySelectorAll('img');
+    for (var i = 0; i < imgs.length; i++) {
+      var img = imgs[i];
+      var s = img.currentSrc || img.src || '';
+      var name = '', rest = '';
+      var i1 = s.indexOf(P1);
+      if (i1 >= 0) {
+        rest = s.slice(i1 + P1.length);
+        name = rest.slice(0, rest.indexOf('/'));
+      } else {
+        var i2 = s.indexOf(P2);
+        if (i2 >= 0) {
+          rest = s.slice(i2 + P2.length);
+          name = rest.slice(0, rest.indexOf('/'));
+        }
+      }
+      if (!name || seen[name]) continue;
+      try { name = decodeURIComponent(name); } catch (e) {}
+      var r = img.getBoundingClientRect();
+      if (r.width < 30 || r.height < 30) continue;
+      var title = '', n = img;
+      for (var k = 0; k < 6 && n; k++) {
+        n = n.parentElement;
+        if (!n) break;
+        var cls = String(n.className || '');
+        var txt = (n.innerText || '').trim();
+        if (txt && (cls.indexOf('cursor-pointer') >= 0 || cls.indexOf('flex-col') >= 0)) {
+          title = txt.split(String.fromCharCode(10))[0].slice(0, 40);
+          break;
+        }
+      }
+      if (!title && n && n.innerText) title = String(n.innerText).trim().split(String.fromCharCode(10))[0].slice(0, 40);
+      seen[name] = 1;
+      out.push({ name: name, title: title, x: Math.round(r.x), y: Math.round(r.y) });
+    }
+    out.sort(function (a, b) { return (a.x - b.x) || (a.y - b.y); });
+    return JSON.stringify({ url: location.href, apps: out });
+  } catch (e) {
+    return JSON.stringify({ err: String((e && e.message) || e) });
+  }
+})()`;
+
+const __deskSync = { at: 0, sig: '', tries: 0, busy: false, timer: null };
+
+function __armDesktopSync(reason) {
+  __deskSync.tries = 0;
+  setTimeout(() => { try { __syncDesktopAppsToIconMgr(reason || 'load'); } catch (_) {} }, 2500);
+  if (!__deskSync.timer) {
+    __deskSync.timer = setInterval(() => { try { __syncDesktopAppsToIconMgr('timer'); } catch (_) {} }, 15 * 60 * 1000);
+    try { __deskSync.timer.unref && __deskSync.timer.unref(); } catch (_) {}
+  }
+}
+
+async function __syncDesktopAppsToIconMgr(reason) {
+  if (__deskSync.busy) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  let cur = '';
+  try { cur = mainWindow.webContents.getURL() || ''; } catch (_) { return; }
+  // 只在飞牛桌面（http(s) 主页）同步；连接页 / fnos.net 检测页 / 登录页跳过
+  if (!/^https?:\/\//i.test(cur) || /\/login\b/i.test(cur) || /fnos\.net\//i.test(cur)) return;
+  __deskSync.busy = true;
+  try {
+    const raw = await mainWindow.webContents.executeJavaScript(__DESK_SCRAPE_JS, true);
+    const data = JSON.parse(raw || '{}');
+    const apps = (data && Array.isArray(data.apps)) ? data.apps : [];
+    if (apps.length < 3) {
+      __deskSync.busy = false;
+      if (__deskSync.tries < 8) { __deskSync.tries++; setTimeout(() => { try { __syncDesktopAppsToIconMgr(reason); } catch (_) {} }, 4000); }
+      return;
+    }
+    const sig = apps.map(a => a.name).join(',');
+    if (sig === __deskSync.sig && (Date.now() - __deskSync.at) < 6 * 3600 * 1000) return;
+    // 始终用「当前页面所在 NAS」的主机 + 配置端口，避免 settings 里的旧地址（换 IP/换网络后失效）
+    let base = '';
+    try {
+      const u = new URL(cur);
+      const st = loadSettings();
+      const port = (st && st.fpkApi && st.fpkApi.port) || 18080;
+      base = (u.protocol === 'https:' ? 'https:' : 'http:') + '//' + u.hostname + ':' + port;
+    } catch (_) { base = getFpkBaseUrl() || ''; }
+    if (!base) return;
+    const body = JSON.stringify({
+      apps: apps.map(a => ({ name: a.name, title: a.title || '' })),
+      client: { name: 'fnos-desktop', version: APP_VERSION, platform: process.platform }
+    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    let resp = null;
+    try {
+      resp = await fetch(base + '/api/desktop-sync', {
+        method: 'POST', signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/json', 'X-FNOS-Client': 'desktop' },
+        body: body
+      });
+    } finally { clearTimeout(timer); }
+    const out = resp ? await resp.json().catch(() => null) : null;
+    if (resp && resp.ok && out && out.ok) {
+      __deskSync.at = Date.now();
+      __deskSync.sig = sig;
+      __deskSync.tries = 0;
+      try { require('./logger.js').log('info', 'launch', 'desktopsync.ok', { params: { reason: reason, total: apps.length, base: base } }, __RUN_MODE); } catch (_) {}
+    } else {
+      try { require('./logger.js').log('warn', 'launch', 'desktopsync.fail', { params: { reason: reason, status: resp ? resp.status : -1, base: base } }, __RUN_MODE); } catch (_) {}
+    }
+  } catch (e) {
+    try { require('./logger.js').log('warn', 'launch', 'desktopsync.error', { params: { reason: reason, err: String((e && e.message) || e) } }, __RUN_MODE); } catch (_) {}
+  } finally {
+    __deskSync.busy = false;
+  }
+}
+
 function createMainWindow(partition, loadTarget) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     isSwitchingPartition = true;
@@ -12679,6 +12798,8 @@ function createMainWindow(partition, loadTarget) {
     // v2.5.1 r17：主窗加载完成即同步昼夜主题（应用跳出窗跟随主程序）
 mainWindow.webContents.on('did-finish-load', () => {
   try { __syncThemeFromMain(); } catch (_) {}
+  // v5.3.8：把桌面上的应用清单同步给 FNTB 图标管理器（方案 A，失败静默）
+  try { __armDesktopSync('did-finish'); } catch (_) {}
   try { __resyncFsUiForMain(); } catch (_) {}
   // v3.0.27：主窗加载完成后做一次"白板/宽度"健康检查（切换账号后白板只能强制刷新 → 自动自愈）
   try { __armMainHealth('did-finish'); } catch (_) {}
